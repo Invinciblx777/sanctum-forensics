@@ -129,10 +129,14 @@ class EraseJob(BaseModel):
 
     job_id: str
     device: Device
-    method: EraseMethod
     level: SanitizationLevel
     dry_run: bool
     confirmed_serial: str | None
+    #: An explicitly requested method, or ``None`` to select from probed
+    #: capability. Only the software methods may be requested; the erase layer
+    #: refuses an explicit request for a firmware method, because those are
+    #: chosen from what the drive reports or not at all.
+    method: EraseMethod | None = None
 
 
 class VerificationResult(BaseModel):

@@ -56,6 +56,10 @@ select = ["E", "F", "I", "W", "UP", "B"]
 
 [tool.mypy]
 python_version = "3.11"
+# The deployment target is Linux and core/erase/drive.py uses Linux-only APIs
+# (fcntl, O_DIRECT, BLKGETSIZE64). Analyse as Linux regardless of the host the
+# type check runs on, so a Windows development box reports the same result CI does.
+platform = "linux"
 plugins = ["pydantic.mypy"]
 namespace_packages = true
 explicit_package_bases = true
