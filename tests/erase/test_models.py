@@ -48,7 +48,7 @@ def plan() -> ErasePlan:
         method=EraseMethod.SINGLE_PASS_OVERWRITE,
         level=SanitizationLevel.CLEAR,
         justification="No firmware sanitize was observed on this bridge.",
-        est_minutes=12.5,
+        est_seconds=750,
         limitations=[],
         hidden_bytes=0,
     )

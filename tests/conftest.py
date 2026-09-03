@@ -13,6 +13,7 @@ from core.models import (
     DeviceCapabilities,
     EraseJob,
     EraseMethod,
+    ErasePlan,
     ForensicReport,
     LedgerEntry,
     SanitizationLevel,
@@ -44,8 +45,18 @@ def sample_capabilities() -> DeviceCapabilities:
         nvme_sanicap={},
         is_sed_opal=False,
         security_frozen=False,
-        est_erase_minutes=1.0,
+        est_erase_seconds=60,
         achievable_levels={SanitizationLevel.CLEAR},
+    )
+
+
+@pytest.fixture
+def sample_plan() -> ErasePlan:
+    return ErasePlan(
+        method=EraseMethod.SINGLE_PASS_OVERWRITE,
+        level=SanitizationLevel.CLEAR,
+        justification="synthetic fixture",
+        est_seconds=750,
     )
 
 
@@ -68,7 +79,7 @@ def sample_verification() -> VerificationResult:
         strategy="sampled",
         bytes_checked=0,
         sample_count=0,
-        confidence_pct=0.0,
+        confidence_bp=0,
         failed_offsets=[],
     )
 
@@ -82,7 +93,7 @@ def sample_candidate() -> CarveCandidate:
         mime="application/octet-stream",
         source="signature",
         validation="corrupt",
-        confidence=0.0,
+        confidence_bp=0,
         bucket="LOW",
         sha256="0" * 64,
         original_name=None,

@@ -164,10 +164,10 @@ class ChainLedgerSink:
     and the chain records its hash, so the entry stays a fixed size while still
     proving exactly what was written.
 
-    Floats do not survive canonicalisation (see :mod:`core.ledger.canon`), and
-    progress payloads are full of them, so :func:`_ledgerable` rewrites every
-    float as integer basis points under a ``_bp`` suffixed key. That keeps the
-    ledger byte-reproducible without asking every caller to pre-round.
+    Payloads are passed to the chain unchanged. Every model that reaches here
+    carries integers where it once carried floats, so there is nothing for this
+    adapter to rewrite: what a verifier reads back is what the operation
+    measured, in the unit the field name states.
     """
 
     def __init__(self, ledger: Ledger, *, actor: str = "sanctum") -> None:
@@ -181,7 +181,7 @@ class ChainLedgerSink:
         self.ledger.append(
             actor=self.actor,
             operation=f"erase.{phase.value.lower()}.{operation}",
-            params=_ledgerable(payload),
+            params=payload,
             result={},
         )
 
@@ -208,31 +208,6 @@ class ChainLedgerSink:
             if self.ledger.params_of(entry).get("job_id") == job_id:
                 selected.append(json.loads(entry.model_dump_json()))
         return selected
-
-
-def _ledgerable(value: Any) -> Any:
-    """Rewrite floats as integer basis points so canonical JSON accepts them.
-
-    A key ``pct`` holding ``99.4`` becomes ``pct_bp`` holding ``994000``. The
-    rename is deliberate: a reader must not mistake basis points for the
-    original unit.
-    """
-    if isinstance(value, dict):
-        out: dict[str, Any] = {}
-        for key, item in value.items():
-            if isinstance(item, float) and not isinstance(item, bool):
-                out[f"{key}_bp"] = int(round(item * 10000))
-            else:
-                out[key] = _ledgerable(item)
-        return out
-    if isinstance(value, list):
-        return [
-            int(round(item * 10000))
-            if isinstance(item, float) and not isinstance(item, bool)
-            else _ledgerable(item)
-            for item in value
-        ]
-    return value
 
 
 # --------------------------------------------------------------------------
@@ -387,16 +362,17 @@ class _Throughput:
         while self.samples and stamp - self.samples[0][0] > self.window_s:
             self._total -= self.samples.popleft()[1]
 
-    def bps(self, now: float | None = None) -> float:
+    def bps(self, now: float | None = None) -> int:
+        """Whole bytes per second. Reported and ledgered, so never a float."""
         if len(self.samples) < 2:
-            return 0.0
+            return 0
         stamp = time.monotonic() if now is None else now
         span = stamp - self.samples[0][0]
-        return self._total / span if span > 0 else 0.0
+        return int(self._total / span) if span > 0 else 0
 
-    def eta_seconds(self, remaining: int, now: float | None = None) -> float:
+    def eta_seconds(self, remaining: int, now: float | None = None) -> int:
         rate = self.bps(now)
-        return remaining / rate if rate > 0 else 0.0
+        return remaining // rate if rate > 0 else 0
 
 
 def _open_for_write(
@@ -537,10 +513,12 @@ def _overwrite(
                 yield Progress(
                     job_id=job_id,
                     phase=ErasePhase.ERASE.value,
-                    pct=100.0 * done / grand_total if grand_total else 100.0,
+                    pct_bp=(
+                        10_000 * done // grand_total if grand_total else 10_000
+                    ),
                     bytes_done=done,
                     bytes_total=grand_total,
-                    throughput_bps=throughput.bps(),
+                    throughput_bytes_per_sec=throughput.bps(),
                     eta_seconds=throughput.eta_seconds(grand_total - done),
                     message=(
                         f"pass {pass_index + 1}/{pass_total}"
@@ -573,61 +551,68 @@ class _FirmwareOutcome:
 def _poll(
     io: SystemProbe,
     argv: tuple[str, ...],
-    parse: Callable[[str], float | None],
+    parse: Callable[[str], int | None],
     *,
     job_id: str,
     phase_message: str,
-    est_minutes: float,
+    est_seconds: int,
     sleep: Callable[[float], None],
     interval_s: float = 5.0,
     max_polls: int = 100_000,
 ) -> Iterator[Progress]:
-    """Poll a firmware operation, reporting its own percentage where it gives one."""
+    """Poll a firmware operation, reporting its own percentage where it gives one.
+
+    ``parse`` returns completion in basis points, or ``None`` when the drive
+    declines to report any. Elapsed-time arithmetic stays in floats because
+    :func:`time.monotonic` is a float; only the reported fields are integers.
+    """
     started = time.monotonic()
-    est_seconds = max(est_minutes * 60.0, 1.0)
+    deadline_s = max(est_seconds, 1)
     for _ in range(max_polls):
         result = io.run(*argv)
         reported = parse(result.stdout) if result.ok else None
         elapsed = time.monotonic() - started
         if reported is None:
-            pct = min(99.0, 100.0 * elapsed / est_seconds)
+            pct_bp = min(9_900, int(10_000 * elapsed / deadline_s))
             message = f"{phase_message} (drive reports no percentage; estimate only)"
         else:
-            pct = reported
+            pct_bp = reported
             message = phase_message
         yield Progress(
             job_id=job_id,
             phase=ErasePhase.ERASE.value,
-            pct=pct,
+            pct_bp=pct_bp,
             bytes_done=0,
             bytes_total=0,
-            throughput_bps=0.0,
-            eta_seconds=max(est_seconds - elapsed, 0.0),
+            throughput_bytes_per_sec=0,
+            eta_seconds=max(int(deadline_s - elapsed), 0),
             message=message,
         )
-        if reported is not None and reported >= 100.0:
+        if reported is not None and reported >= 10_000:
             return
-        if reported is None and elapsed >= est_seconds:
+        if reported is None and elapsed >= deadline_s:
             return
         sleep(interval_s)
 
 
-def _parse_ata_sanitize_progress(text: str) -> float | None:
+def _parse_ata_sanitize_progress(text: str) -> int | None:
+    """Completion in basis points, or ``None`` when the drive reports none."""
     lowered = text.lower()
     if "idle" in lowered or "completed" in lowered or "succeeded" in lowered:
-        return 100.0
+        return 10_000
     return None
 
 
-def _parse_ata_security_cleared(text: str) -> float | None:
-    """100.0 once hdparm reports ATA security is no longer enabled."""
+def _parse_ata_security_cleared(text: str) -> int | None:
+    """10000 basis points once hdparm reports ATA security is no longer enabled."""
     lowered = text.lower()
     if "not	enabled" in lowered or "not enabled" in lowered:
-        return 100.0
+        return 10_000
     return None
 
 
-def _parse_nvme_sprog(text: str) -> float | None:
+def _parse_nvme_sprog(text: str) -> int | None:
+    """Completion in basis points, read from the NVMe sanitize status log."""
     import json
 
     try:
@@ -635,12 +620,13 @@ def _parse_nvme_sprog(text: str) -> float | None:
     except ValueError:
         return None
     if (int(payload.get("sstat") or 0) & 0x7) in {1, 4}:
-        return 100.0
+        return 10_000
     sprog = payload.get("sprog")
     if sprog is None:
         return None
-    # SPROG is a 16-bit fraction of 65536, not a percentage.
-    return min(99.9, 100.0 * int(sprog) / 65536.0)
+    # SPROG is a 16-bit fraction of 65536, not a percentage. Integer division
+    # keeps the conversion exact; cap below 10000 so only sstat reports done.
+    return min(9_990, 10_000 * int(sprog) // 65_536)
 
 
 def _ata_security_erase(
@@ -736,7 +722,7 @@ def _ata_security_erase(
             _parse_ata_security_cleared,
             job_id=job_id,
             phase_message="ATA security erase in progress (not interruptible)",
-            est_minutes=capabilities.est_erase_minutes,
+            est_seconds=capabilities.est_erase_seconds,
             sleep=sleep,
         )
     finally:
@@ -764,7 +750,7 @@ def _ata_sanitize(
     op: str,
     job_id: str,
     io: SystemProbe,
-    est_minutes: float,
+    est_seconds: int,
     sleep: Callable[[float], None],
 ) -> Generator[Progress, None, _FirmwareOutcome]:
     """Issue an ATA SANITIZE operation and poll SANITIZE STATUS EXT.
@@ -779,7 +765,7 @@ def _ata_sanitize(
         _parse_ata_sanitize_progress,
         job_id=job_id,
         phase_message=f"ATA SANITIZE {op} in progress (not interruptible)",
-        est_minutes=est_minutes,
+        est_seconds=est_seconds,
         sleep=sleep,
     )
     status = io.run("hdparm", "--sanitize-status", device.path)
@@ -822,11 +808,11 @@ def _nvme_sanitize(
         _parse_nvme_sprog,
         job_id=job_id,
         phase_message="NVMe sanitize in progress (not interruptible)",
-        est_minutes=capabilities.est_erase_minutes,
+        est_seconds=capabilities.est_erase_seconds,
         sleep=sleep,
     )
     log = io.run("nvme", "sanitize-log", device.path, "-o", "json")
-    ok = _parse_nvme_sprog(log.stdout) == 100.0 if log.ok else False
+    ok = _parse_nvme_sprog(log.stdout) == 10_000 if log.ok else False
     if not ok:
         limitations.append("NVMe sanitize log did not report clean completion.")
     return _FirmwareOutcome(limitations=limitations, hw_attested=ok)
@@ -859,11 +845,11 @@ def _nvme_format_ses1(
         yield Progress(
             job_id=job_id,
             phase=ErasePhase.ERASE.value,
-            pct=100.0 * index / namespaces,
+            pct_bp=10_000 * index // namespaces,
             bytes_done=0,
             bytes_total=0,
-            throughput_bps=0.0,
-            eta_seconds=0.0,
+            throughput_bytes_per_sec=0,
+            eta_seconds=0,
             message=f"format namespace {index}/{namespaces} (SES=1 crypto erase)",
         )
     if failures:
@@ -897,11 +883,11 @@ def _sed_crypto_erase(
     yield Progress(
         job_id=job_id,
         phase=ErasePhase.ERASE.value,
-        pct=0.0,
+        pct_bp=0,
         bytes_done=0,
         bytes_total=0,
-        throughput_bps=0.0,
-        eta_seconds=0.0,
+        throughput_bytes_per_sec=0,
+        eta_seconds=0,
         message="Opal PSID revert (not interruptible)",
     )
     result = io.run("sedutil-cli", "--PSIDrevert", psid, device.path)
@@ -909,11 +895,11 @@ def _sed_crypto_erase(
     yield Progress(
         job_id=job_id,
         phase=ErasePhase.ERASE.value,
-        pct=100.0,
+        pct_bp=10_000,
         bytes_done=0,
         bytes_total=0,
-        throughput_bps=0.0,
-        eta_seconds=0.0,
+        throughput_bytes_per_sec=0,
+        eta_seconds=0,
         message="Opal PSID revert complete" if ok else "Opal PSID revert failed",
     )
     return _FirmwareOutcome(
@@ -964,16 +950,17 @@ def _reread_serial(device: Device, probe: SystemProbe) -> None:
 
 
 def _progress(
-    job_id: str, phase: ErasePhase, pct: float, message: str
+    job_id: str, phase: ErasePhase, pct_bp: int, message: str
 ) -> Progress:
+    """A phase marker with no byte accounting. ``pct_bp`` is basis points."""
     return Progress(
         job_id=job_id,
         phase=phase.value,
-        pct=pct,
+        pct_bp=pct_bp,
         bytes_done=0,
         bytes_total=0,
-        throughput_bps=0.0,
-        eta_seconds=0.0,
+        throughput_bytes_per_sec=0,
+        eta_seconds=0,
         message=message,
     )
 
@@ -1020,7 +1007,7 @@ def execute(
     limitations: list[str] = []
 
     # ---------------- PREFLIGHT ----------------
-    yield _progress(job.job_id, ErasePhase.PREFLIGHT, 0.0, "checking target")
+    yield _progress(job.job_id, ErasePhase.PREFLIGHT, 0, "checking target")
     guard.assert_erasable(device)
     guard.assert_serial_confirmed(device, job.confirmed_serial or "")
     _reread_serial(device, io)
@@ -1036,7 +1023,7 @@ def execute(
         method=method,
         level=job.level,
         justification=_justify(method, job.level, device),
-        est_minutes=capabilities.est_erase_minutes,
+        est_seconds=capabilities.est_erase_seconds,
         limitations=list(limitations),
         hidden_bytes=hidden.hidden_bytes if hidden else 0,
     )
@@ -1060,7 +1047,7 @@ def execute(
     yield _progress(
         job.job_id,
         ErasePhase.PREFLIGHT,
-        100.0,
+        10_000,
         f"plan: {method.value} for {job.level.value}; {plan.justification}",
     )
 
@@ -1081,7 +1068,7 @@ def execute(
             "skipped",
             {"job_id": job.job_id, "reason": reason},
         )
-        yield _progress(job.job_id, ErasePhase.HIDDEN_AREA_UNLOCK, 100.0, reason)
+        yield _progress(job.job_id, ErasePhase.HIDDEN_AREA_UNLOCK, 10_000, reason)
     elif unlock_needed and hidden is not None:
         sink.record(
             ErasePhase.HIDDEN_AREA_UNLOCK,
@@ -1114,12 +1101,12 @@ def execute(
         yield _progress(
             job.job_id,
             ErasePhase.HIDDEN_AREA_UNLOCK,
-            100.0,
+            10_000,
             f"unlocked {hidden.hidden_bytes} hidden bytes",
         )
     else:
         yield _progress(
-            job.job_id, ErasePhase.HIDDEN_AREA_UNLOCK, 100.0, "no hidden areas"
+            job.job_id, ErasePhase.HIDDEN_AREA_UNLOCK, 10_000, "no hidden areas"
         )
 
     # ---------------- ERASE ----------------
@@ -1132,14 +1119,14 @@ def execute(
         message = (
             f"DRY RUN: would run {method.value} over {geometry.size_bytes} bytes "
             f"in {pattern_mod.pass_count(method) if not firmware else 1} pass(es); "
-            f"estimated {plan.est_minutes:.0f} min. No bytes written."
+            f"estimated {plan.est_seconds // 60} min. No bytes written."
         )
         sink.record(
             ErasePhase.ERASE,
             "dry_run",
             {"job_id": job.job_id, "plan": plan.model_dump(mode="json")},
         )
-        yield _progress(job.job_id, ErasePhase.ERASE, 100.0, message)
+        yield _progress(job.job_id, ErasePhase.ERASE, 10_000, message)
     else:
         outcome = yield from _dispatch(
             device,
@@ -1182,7 +1169,7 @@ def execute(
         yield _progress(
             job.job_id,
             ErasePhase.HIDDEN_AREA_RESTORE,
-            100.0,
+            10_000,
             f"restored accessible max to {restore_to} sectors",
         )
     else:
@@ -1192,7 +1179,7 @@ def execute(
             {"job_id": job.job_id},
         )
         yield _progress(
-            job.job_id, ErasePhase.HIDDEN_AREA_RESTORE, 100.0, "nothing to restore"
+            job.job_id, ErasePhase.HIDDEN_AREA_RESTORE, 10_000, "nothing to restore"
         )
 
     # ---------------- VERIFY ----------------
@@ -1204,7 +1191,7 @@ def execute(
             ),
             bytes_checked=0,
             sample_count=0,
-            confidence_pct=0.0,
+            confidence_bp=0,
             failed_offsets=[],
             probability_note="Dry run: nothing was written, so nothing was verified.",
         )
@@ -1220,7 +1207,7 @@ def execute(
     yield _progress(
         job.job_id,
         ErasePhase.VERIFY,
-        100.0,
+        10_000,
         f"{verification.strategy}: "
         + ("passed" if verification.passed else "FAILED"),
     )
@@ -1265,7 +1252,7 @@ def execute(
     yield _progress(
         job.job_id,
         ErasePhase.REPORT,
-        100.0,
+        10_000,
         f"residual risk {residual.level}: {residual.notes}",
     )
     return result
@@ -1326,7 +1313,7 @@ def _dispatch(
             op="sanitize-block-erase",
             job_id=job_id,
             io=io,
-            est_minutes=capabilities.est_erase_minutes,
+            est_seconds=capabilities.est_erase_seconds,
             sleep=sleep,
         )
     elif method is EraseMethod.ATA_SANITIZE_OVERWRITE:
@@ -1335,7 +1322,7 @@ def _dispatch(
             op="sanitize-overwrite",
             job_id=job_id,
             io=io,
-            est_minutes=capabilities.est_erase_minutes,
+            est_seconds=capabilities.est_erase_seconds,
             sleep=sleep,
         )
     elif method is EraseMethod.ATA_SANITIZE_CRYPTO_SCRAMBLE:
@@ -1344,7 +1331,7 @@ def _dispatch(
             op="sanitize-crypto-scramble",
             job_id=job_id,
             io=io,
-            est_minutes=capabilities.est_erase_minutes,
+            est_seconds=capabilities.est_erase_seconds,
             sleep=sleep,
         )
     elif method is EraseMethod.NVME_SANITIZE_BLOCK:

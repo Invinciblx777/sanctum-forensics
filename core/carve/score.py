@@ -12,5 +12,5 @@ __all__ = ["score_candidate"]
 
 
 def score_candidate(candidate: CarveCandidate) -> CarveCandidate:
-    """Return ``candidate`` with ``confidence`` and ``bucket`` populated."""
+    """Return ``candidate`` with ``confidence_bp`` and ``bucket`` populated."""
     raise NotImplementedError

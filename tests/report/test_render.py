@@ -62,7 +62,7 @@ def sample_inputs(**overrides: Any) -> dict[str, Any]:
             "bytes_checked": 4294967296,
             "sample_count": 4096,
             "sample_seed": 1515870810,
-            "confidence_pct": 99.4,
+            "confidence_bp": 9940,
             "failed_offsets": [],
             "probability_note": "P = 1 - (1 - (r + u - 1) / n)^k, n=2000398934016",
             "hw_attested": True,
@@ -190,7 +190,7 @@ def test_json_declares_itself_authoritative() -> None:
 
 def test_json_rejects_a_float_anywhere_in_the_report() -> None:
     inputs = sample_inputs()
-    inputs["verification"]["confidence_pct"] = 99.4
+    inputs["verification"]["confidence_bp"] = 9940
     report = build_report(**inputs)
     # confidence is carried as integer basis points, so canon accepts it.
     assert isinstance(report["sections"]["verification"]["confidence_bp"], int)

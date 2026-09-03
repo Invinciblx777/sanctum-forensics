@@ -10,7 +10,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 __all__ = [
     "SanitizationLevel",
@@ -98,7 +98,10 @@ class DeviceCapabilities(BaseModel):
     nvme_sanicap: dict[str, Any]
     is_sed_opal: bool
     security_frozen: bool
-    est_erase_minutes: float
+    #: Whole seconds the drive estimates a firmware erase will take. hdparm
+    #: reports this in minutes; it is converted at the parse site so the field
+    #: name states its own unit and nothing float reaches a ledger entry.
+    est_erase_seconds: int
     achievable_levels: set[SanitizationLevel]
     #: Plain-language reasons a stronger level could not be established, e.g. a
     #: USB bridge that blocks ATA pass-through. Surfaced verbatim in the report.
@@ -146,7 +149,11 @@ class VerificationResult(BaseModel):
     strategy: Literal["full_read", "sampled", "hw_attested"]
     bytes_checked: int
     sample_count: int
-    confidence_pct: float
+    #: Detection confidence in basis points: 10000 is 100.00%. An integer at
+    #: the source, because this is the one number a third party reads to judge
+    #: whether verification meant anything, and it must not be a lossy rewrite
+    #: of something else.
+    confidence_bp: int = Field(ge=0, le=10_000)
     failed_offsets: list[int]
     #: RNG seed for the sampled strategy, recorded so the sample set is
     #: reproducible by a third party checking the report.
@@ -191,7 +198,9 @@ class ErasePlan(BaseModel):
     method: EraseMethod
     level: SanitizationLevel
     justification: str
-    est_minutes: float
+    #: Whole seconds the plan is expected to take. Named for the unit it
+    #: holds, so a reader never has to guess the scale.
+    est_seconds: int
     limitations: list[str] = []
     hidden_bytes: int = 0
 
@@ -225,7 +234,8 @@ class CarveCandidate(BaseModel):
     mime: str
     source: Literal["fs_metadata", "signature", "structure"]
     validation: Literal["valid", "truncated", "corrupt"]
-    confidence: float
+    #: Carve confidence in basis points: 10000 is 100.00%.
+    confidence_bp: int = Field(ge=0, le=10_000)
     bucket: Literal["HIGH", "MEDIUM", "LOW"]
     sha256: str
     original_name: str | None
@@ -276,13 +286,25 @@ class ForensicReport(BaseModel):
 
 
 class Progress(BaseModel):
-    """Progress record yielded by long-running generator operations."""
+    """Progress record yielded by long-running generator operations.
+
+    Every numeric field is an integer, deliberately. :mod:`core.ledger.canon`
+    rejects floats, so any progress value that reaches a ledger entry would
+    otherwise be rewritten at the boundary - and a boundary rewrite makes the
+    recorded number a lossy transform of the measured one, in units the
+    original caller never chose. Percentages are basis points and throughput is
+    whole bytes per second at the source instead, so the value a verifier reads
+    is the value the operation measured.
+    """
 
     job_id: str
     phase: str
-    pct: float
+    #: Completion in basis points: 10000 is 100.00%.
+    pct_bp: int = Field(ge=0, le=10_000)
     bytes_done: int
     bytes_total: int
-    throughput_bps: float
-    eta_seconds: float
+    throughput_bytes_per_sec: int
+    #: Whole seconds remaining. An ETA does not have sub-second accuracy, so
+    #: recording it at finer resolution would be false precision.
+    eta_seconds: int
     message: str

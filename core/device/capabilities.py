@@ -99,14 +99,19 @@ def _sanitize_ops(text: str) -> list[str]:
     return sorted(set(found))
 
 
-def _erase_minutes(security_block: list[str], *, enhanced: bool) -> float:
-    """Read the erase-time estimate hdparm reports, preferring the enhanced one."""
+def _erase_seconds(security_block: list[str], *, enhanced: bool) -> int:
+    """Read the erase-time estimate hdparm reports, preferring the enhanced one.
+
+    hdparm prints minutes. The conversion happens here, at the parse site, so
+    every consumer downstream handles one unit and the field name matches what
+    it holds.
+    """
     blob = "\n".join(security_block)
     if enhanced and (match := _ENHANCED_TIME.search(blob)):
-        return float(match.group(1))
+        return int(match.group(1)) * 60
     if match := _ERASE_TIME.search(blob):
-        return float(match.group(1))
-    return 0.0
+        return int(match.group(1)) * 60
+    return 0
 
 
 def _probe_ata(
@@ -149,7 +154,7 @@ def _probe_ata(
         "ata_enhanced_erase": enhanced,
         "security_frozen": _security_flag(block, "frozen"),
         "ata_sanitize_ops": _sanitize_ops(text),
-        "est_erase_minutes": _erase_minutes(block, enhanced=enhanced),
+        "est_erase_seconds": _erase_seconds(block, enhanced=enhanced),
     }
 
 
@@ -314,7 +319,7 @@ def probe(device: Device, io: SystemProbe | None = None) -> DeviceCapabilities:
         nvme_sanicap=dict(found.get("nvme_sanicap") or {}),
         is_sed_opal=bool(found.get("is_sed_opal")),
         security_frozen=bool(found.get("security_frozen")),
-        est_erase_minutes=float(found.get("est_erase_minutes") or 0.0),
+        est_erase_seconds=int(found.get("est_erase_seconds") or 0),
         achievable_levels=_achievable_levels(found),
         limitations=limitations,
     )

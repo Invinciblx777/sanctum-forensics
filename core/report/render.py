@@ -100,11 +100,6 @@ _MONOSPACE_KEYS = frozenset(
 )
 
 
-def _to_basis_points(value: float | int) -> int:
-    """Percentage to integer basis points, so nothing float reaches canon."""
-    return int(round(float(value) * 100))
-
-
 def _or_none_recorded(items: list[str]) -> list[str]:
     return list(items) if items else [NONE_RECORDED]
 
@@ -171,9 +166,7 @@ def build_report(
             "bytes_checked": int(verification.get("bytes_checked") or 0),
             "sample_count": int(verification.get("sample_count") or 0),
             "sample_seed": verification.get("sample_seed"),
-            "confidence_bp": _to_basis_points(
-                verification.get("confidence_pct") or 0
-            ),
+            "confidence_bp": int(verification.get("confidence_bp") or 0),
             "failed_offsets": list(verification.get("failed_offsets") or []),
             "probability_note": verification.get("probability_note", ""),
             "hw_attested": bool(verification.get("hw_attested")),

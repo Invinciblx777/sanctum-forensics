@@ -320,7 +320,7 @@ def verify(
         os.close(fd)
 
     if strategy == "full_read":
-        confidence = 100.0
+        confidence_bp = 10_000
         note = (
             "Every addressable block was read and compared. No sampling "
             "assumption applies."
@@ -332,14 +332,17 @@ def verify(
             sample_bytes=config.sample_bytes,
             draws=max(draws, 1),
         )
-        confidence = (
+        # detection_probability returns a fraction in [0, 1]; 10000 basis
+        # points is 100%. Truncating rather than rounding keeps the reported
+        # confidence at or below the computed one, never above it.
+        confidence_bp = int(
             detection_probability(
                 max(size, 1),
                 config.sample_bytes,
                 sample_bytes=config.sample_bytes,
                 draws=max(draws, 1),
             )
-            * 100.0
+            * 10_000
         )
 
     passed = not failed and attested is not False
@@ -348,7 +351,7 @@ def verify(
         strategy=strategy,
         bytes_checked=checked,
         sample_count=draws,
-        confidence_pct=confidence,
+        confidence_bp=confidence_bp,
         failed_offsets=sorted(failed),
         sample_seed=config.seed if draws else None,
         probability_note=note,

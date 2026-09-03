@@ -32,11 +32,11 @@ class JobRegistry:
         yield Progress(  # unreachable: typed async generator stub
             job_id=job_id,
             phase="",
-            pct=0.0,
+            pct_bp=0,
             bytes_done=0,
             bytes_total=0,
-            throughput_bps=0.0,
-            eta_seconds=0.0,
+            throughput_bytes_per_sec=0,
+            eta_seconds=0,
             message="",
         )
 

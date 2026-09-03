@@ -153,13 +153,13 @@ def test_ignores_sanitize_ops_that_are_not_starred() -> None:
 
 def test_reads_enhanced_erase_time_estimate() -> None:
     caps = probe(make_device(), io())
-    assert caps.est_erase_minutes == 226.0
+    assert caps.est_erase_seconds == 226 * 60
 
 
 def test_falls_back_to_plain_erase_time_when_no_enhanced() -> None:
     probe_io = io(**{"hdparm|-I|/dev/sdb": ok(HDPARM_SATA_FROZEN_NO_ENHANCED)})
     caps = probe(make_device(), probe_io)
-    assert caps.est_erase_minutes == 2.0
+    assert caps.est_erase_seconds == 2 * 60
 
 
 def test_permission_error_raises_rather_than_reporting_unsupported() -> None:

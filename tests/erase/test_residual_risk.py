@@ -38,7 +38,7 @@ def caps(**overrides: object) -> DeviceCapabilities:
         "nvme_sanicap": {},
         "is_sed_opal": False,
         "security_frozen": False,
-        "est_erase_minutes": 1.0,
+        "est_erase_seconds": 60,
         "achievable_levels": {SanitizationLevel.CLEAR},
         "limitations": [],
     }
@@ -52,7 +52,7 @@ def verification(**overrides: object) -> VerificationResult:
         "strategy": "full_read",
         "bytes_checked": 1 << 30,
         "sample_count": 0,
-        "confidence_pct": 100.0,
+        "confidence_bp": 10_000,
         "failed_offsets": [],
         "hw_attested": False,
         "probability_note": "",

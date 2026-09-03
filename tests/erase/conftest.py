@@ -103,7 +103,7 @@ def make_caps(**overrides: object) -> DeviceCapabilities:
         "nvme_sanicap": {},
         "is_sed_opal": False,
         "security_frozen": False,
-        "est_erase_minutes": 1.0,
+        "est_erase_seconds": 60,
         "achievable_levels": {SanitizationLevel.CLEAR},
         "limitations": [],
     }
