@@ -1,0 +1,41 @@
+# Signature table for signature-based carving (core/carve/signature.py).
+#
+# This file is an illustrative skeleton, not the real table. The full set is
+# built in M3. Schema per entry:
+#   ext:        canonical extension, no dot
+#   mime:       reported MIME type
+#   header:     hex byte sequence at the start of the object
+#   footer:     hex byte sequence that ends the object (optional)
+#   max_bytes:  hard size cap when no footer is found
+#   notes:      caveats a reviewer should know
+
+version: 0
+
+signatures:
+  - ext: jpg
+    mime: image/jpeg
+    header: "FFD8FF"
+    footer: "FFD9"
+    max_bytes: 20971520
+    notes: "Footer also appears in embedded thumbnails; validation must decode."
+
+  - ext: png
+    mime: image/png
+    header: "89504E470D0A1A0A"
+    footer: "49454E44AE426082"
+    max_bytes: 52428800
+    notes: "IEND chunk is a reliable terminator."
+
+  - ext: pdf
+    mime: application/pdf
+    header: "255044462D"
+    footer: "2525454F46"
+    max_bytes: 104857600
+    notes: "Multiple %%EOF markers with incremental updates; take the last."
+
+  - ext: zip
+    mime: application/zip
+    header: "504B0304"
+    footer: "504B0506"
+    max_bytes: 1073741824
+    notes: "End-of-central-directory; also covers docx/xlsx/pptx/odt. Structure carver preferred."

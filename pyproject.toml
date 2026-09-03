@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sanctum-forensics"
+version = "0.0.0"
+description = "Integrated secure data sanitization and forensic file recovery (SIH 26149, NTRO)"
+readme = "README.md"
+requires-python = "==3.11.*"
+license = { text = "Proprietary" }
+
+# Runtime dependencies. Exact pins; see constraints.txt for the full locked set.
+# NOTE: the SIH prompt named "pyewf-python"; that project does not exist on PyPI.
+# The libewf Python bindings (module `import pyewf`) ship as `libewf-python`.
+dependencies = [
+    "pytsk3==20260715",
+    "libewf-python==20240506",
+    "pyahocorasick==2.3.1",
+    "construct==2.10.70",
+    "pydantic==2.13.5",
+    "cryptography==50.0.1",
+    "reportlab==5.0.1",
+    "pikepdf==10.12.0",
+    "Pillow==12.3.0",
+    "fastapi==0.141.1",
+    "uvicorn==0.52.4",
+    "structlog==26.1.0",
+    "typer==0.27.2",
+    "PyYAML==6.0.3",
+    "blake3==1.0.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "ruff==0.16.5",
+    "mypy==2.3.1",
+    "types-PyYAML==6.0.12.20260815",
+]
+
+[project.scripts]
+sanctum = "api.main:create_app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["core", "helper", "api", "testkit"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+src = ["core", "helper", "api", "testkit", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+plugins = ["pydantic.mypy"]
+namespace_packages = true
+explicit_package_bases = true
+mypy_path = "."
+
+[[tool.mypy.overrides]]
+module = ["pytsk3", "pyewf", "ahocorasick", "construct", "blake3", "reportlab.*", "pikepdf"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
