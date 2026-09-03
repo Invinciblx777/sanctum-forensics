@@ -27,6 +27,7 @@ error.
 from __future__ import annotations
 
 import errno
+import json
 import mmap
 import os
 import struct
@@ -52,6 +53,7 @@ from core.errors import (
     PlatformUnsupported,
     UnsupportedCapability,
 )
+from core.ledger.chain import GENESIS_OPERATION, Ledger
 from core.models import (
     Device,
     DeviceCapabilities,
@@ -71,7 +73,7 @@ from core.models import (
 __all__ = [
     "Geometry",
     "LedgerSink",
-    "InMemoryLedger",
+    "ChainLedgerSink",
     "select_method",
     "device_geometry",
     "execute",
@@ -125,11 +127,6 @@ _LEGACY_DOD_WARNING = (
     "over-provisioned blocks."
 )
 
-_LEDGER_IS_MEMORY_ONLY = (
-    "Ledger entries for this job were held in memory only. The hash-chained "
-    "store lands in M4; until then this run is not independently auditable."
-)
-
 #: Methods executed by drive firmware, which cover the full media including any
 #: HPA/DCO by design. The host does not need to unlock hidden areas for these.
 _FIRMWARE_METHODS = frozenset(set(EraseMethod) - set(pattern_mod.SOFTWARE_METHODS))
@@ -160,37 +157,82 @@ class LedgerSink(Protocol):
         ...
 
 
-@dataclass
-class InMemoryLedger:
-    """Default sink: keeps entries in memory and mirrors them to structlog.
+class ChainLedgerSink:
+    """Adapts the hash-chained :class:`core.ledger.chain.Ledger` to this module.
 
-    Not durable and not hash-chained. :data:`_LEDGER_IS_MEMORY_ONLY` is attached
-    to every result produced with it so the limitation travels with the report.
+    Every phase becomes one real ledger entry: the payload is stored as a blob
+    and the chain records its hash, so the entry stays a fixed size while still
+    proving exactly what was written.
+
+    Floats do not survive canonicalisation (see :mod:`core.ledger.canon`), and
+    progress payloads are full of them, so :func:`_ledgerable` rewrites every
+    float as integer basis points under a ``_bp`` suffixed key. That keeps the
+    ledger byte-reproducible without asking every caller to pre-round.
     """
 
-    entries: list[tuple[ErasePhase, str, dict[str, Any]]] = field(default_factory=list)
+    def __init__(self, ledger: Ledger, *, actor: str = "sanctum") -> None:
+        self.ledger = ledger
+        self.actor = actor
 
     def record(
         self, phase: ErasePhase, operation: str, payload: dict[str, Any]
     ) -> None:
-        self.entries.append((phase, operation, payload))
-        logger.info("ledger_entry", phase=phase.value, operation=operation, **payload)
+        """Append one chained entry for this phase."""
+        self.ledger.append(
+            actor=self.actor,
+            operation=f"erase.{phase.value.lower()}.{operation}",
+            params=_ledgerable(payload),
+            result={},
+        )
 
     def last_checkpoint(self, job_id: str) -> EraseCheckpoint | None:
-        for phase, operation, payload in reversed(self.entries):
-            if phase is ErasePhase.ERASE and operation == "checkpoint":
-                point = EraseCheckpoint.model_validate(payload)
-                if point.job_id == job_id:
-                    return point
+        """Most recent overwrite checkpoint recorded for ``job_id``."""
+        for entry in reversed(self.ledger.entries()):
+            if not entry.operation.endswith(".checkpoint"):
+                continue
+            params = self.ledger.params_of(entry)
+            if params.get("job_id") != job_id:
+                continue
+            return EraseCheckpoint.model_validate(params)
         return None
 
-    def phases(self) -> list[ErasePhase]:
-        """Distinct phases recorded, in the order they first appeared."""
-        seen: list[ErasePhase] = []
-        for phase, _, _ in self.entries:
-            if not seen or seen[-1] is not phase:
-                seen.append(phase)
-        return seen
+    def entries_for(self, job_id: str) -> list[dict[str, Any]]:
+        """Ledger entries belonging to ``job_id``, as plain dicts for the report."""
+        selected: list[dict[str, Any]] = []
+        for entry in self.ledger.entries():
+            if entry.operation == GENESIS_OPERATION:
+                selected.append(json.loads(entry.model_dump_json()))
+                continue
+            if not entry.operation.startswith("erase."):
+                continue
+            if self.ledger.params_of(entry).get("job_id") == job_id:
+                selected.append(json.loads(entry.model_dump_json()))
+        return selected
+
+
+def _ledgerable(value: Any) -> Any:
+    """Rewrite floats as integer basis points so canonical JSON accepts them.
+
+    A key ``pct`` holding ``99.4`` becomes ``pct_bp`` holding ``994000``. The
+    rename is deliberate: a reader must not mistake basis points for the
+    original unit.
+    """
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            if isinstance(item, float) and not isinstance(item, bool):
+                out[f"{key}_bp"] = int(round(item * 10000))
+            else:
+                out[key] = _ledgerable(item)
+        return out
+    if isinstance(value, list):
+        return [
+            int(round(item * 10000))
+            if isinstance(item, float) and not isinstance(item, bool)
+            else _ledgerable(item)
+            for item in value
+        ]
+    return value
 
 
 # --------------------------------------------------------------------------
@@ -967,12 +1009,15 @@ def execute(
         DeviceFrozen, UnsupportedCapability: the level cannot be delivered.
     """
     io = io or SystemProbe()
-    sink: LedgerSink = ledger if ledger is not None else InMemoryLedger()
+    if ledger is None:
+        raise ValueError(
+            "execute() needs a ledger: every phase must be recorded in the "
+            "hash-chained audit log. Pass ChainLedgerSink(Ledger(root, ...))."
+        )
+    sink: LedgerSink = ledger
     device = job.device
     started_at = datetime.now(UTC)
     limitations: list[str] = []
-    if ledger is None:
-        limitations.append(_LEDGER_IS_MEMORY_ONLY)
 
     # ---------------- PREFLIGHT ----------------
     yield _progress(job.job_id, ErasePhase.PREFLIGHT, 0.0, "checking target")

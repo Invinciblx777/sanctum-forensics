@@ -21,9 +21,7 @@ from core.carve import (
     validate,
 )
 from core.erase import files
-from core.ledger import chain, store
 from core.models import Device, EraseJob
-from core.report import render, sign, verify_report
 from helper import daemon, rpc
 
 #: Modules whose milestone has landed. Their behaviour is covered by their own
@@ -35,6 +33,8 @@ IMPLEMENTED = (
     "core.erase.patterns",
     "core.erase.verify",
     "core.erase.drive",
+    "core.ledger",
+    "core.report",
 )
 
 
@@ -61,27 +61,6 @@ def _thunks(
         ),
         "carve.classify_candidate": lambda: classify.classify_candidate(
             candidate  # type: ignore[arg-type]
-        ),
-        "ledger.compute_entry_hash": lambda: chain.compute_entry_hash(
-            entry  # type: ignore[arg-type]
-        ),
-        "ledger.make_entry": lambda: chain.make_entry(
-            seq=0,
-            actor="a",
-            operation="o",
-            params_hash="p",
-            result_hash="r",
-            prev_entry_hash="x",
-        ),
-        "ledger.verify_chain": lambda: chain.verify_chain([]),
-        "ledger.open_store": lambda: store.open_store("/tmp/led"),
-        "report.render_report": lambda: render.render_report(
-            None  # type: ignore[arg-type]
-        ),
-        "report.sign_payload": lambda: sign.sign_payload(b"x", private_key_pem=b"k"),
-        "report.public_key_fingerprint": lambda: sign.public_key_fingerprint(b"k"),
-        "report.verify_report": lambda: verify_report.verify_report(
-            b"x", "sig", public_key_pem=b"k"
         ),
         "helper.rpc.encode_request": lambda: rpc.encode_request("m", {}, req_id=1),
         "helper.rpc.decode_request": lambda: rpc.decode_request(b"{}"),
@@ -112,16 +91,6 @@ def test_every_core_stub_raises_not_implemented(
         except NotImplementedError:
             continue
         raise AssertionError(f"{name} did not raise NotImplementedError")
-
-
-def test_ledger_store_methods_raise(sample_ledger_entry: object) -> None:
-    st = store.LedgerStore("/tmp/led")
-    with pytest.raises(NotImplementedError):
-        st.append(sample_ledger_entry)  # type: ignore[arg-type]
-    with pytest.raises(NotImplementedError):
-        _drain(st.read_all())
-    with pytest.raises(NotImplementedError):
-        st.last()
 
 
 def test_helper_daemon_methods_raise() -> None:

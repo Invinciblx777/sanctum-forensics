@@ -41,7 +41,7 @@ dev = [
 ]
 
 [project.scripts]
-sanctum = "api.main:create_app"
+sanctum = "core.report.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["core", "helper", "api", "testkit"]

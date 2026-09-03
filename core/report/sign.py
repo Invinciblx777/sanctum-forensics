@@ -1,19 +1,224 @@
-"""Detached signing of rendered reports.
+"""Ed25519 detached signing of reports.
 
-Produces a detached signature over the exact rendered bytes so a third party can
-verify the report independently. Deferred to M5.
+The signature is over :func:`core.ledger.canon.canonical_bytes` of the report
+dict with the ``signature`` field removed, so a signed report can carry its own
+signature without the classic chicken-and-egg problem, and so a verifier
+reconstructs exactly the same bytes by applying the same exclusion.
+
+Key handling is deliberately unforgiving:
+
+* The private key is stored as an encrypted PEM using
+  ``BestAvailableEncryption``. The passphrase comes from the
+  ``SANCTUM_KEY_PASSPHRASE`` environment variable or an interactive prompt.
+  There is no default and no hardcoded fallback: a signing key that anyone can
+  load is not a signing key.
+* The key file is created ``0600`` and a key file readable by group or others is
+  **refused**, not warned about. On Windows the POSIX mode bits are not
+  meaningful and that check is skipped.
+
+What a signature proves is narrower than it looks. It proves that whoever held
+this private key signed these exact bytes. It does not, on its own, prove *who*
+that was: an embedded public key is only as trustworthy as the channel the
+verifier got the fingerprint from. See :mod:`core.report.verify_report`.
 """
 
 from __future__ import annotations
 
-__all__ = ["sign_payload", "public_key_fingerprint"]
+import base64
+import getpass
+import hashlib
+import os
+import stat
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import structlog
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
+
+from core.errors import SanctumError
+from core.ledger.canon import CANON_VERSION, canonical_bytes
+from core.models import Signature
+
+__all__ = [
+    "PASSPHRASE_ENV",
+    "SIGNATURE_ALG",
+    "SIGNATURE_FIELD",
+    "KeyPassphraseMissing",
+    "KeyPermissionsUnsafe",
+    "load_or_create_key",
+    "public_key_of",
+    "fingerprint",
+    "sign_report",
+    "verify_signature",
+]
+
+logger = structlog.get_logger(__name__)
+
+PASSPHRASE_ENV = "SANCTUM_KEY_PASSPHRASE"
+SIGNATURE_ALG = "Ed25519"
+SIGNATURE_FIELD = "signature"
+
+_UNSAFE_MODE_BITS = stat.S_IRWXG | stat.S_IRWXO
 
 
-def sign_payload(payload: bytes, *, private_key_pem: bytes) -> str:
-    """Return a detached signature (base64) over ``payload``."""
-    raise NotImplementedError
+class KeyPassphraseMissing(SanctumError):
+    """No passphrase was supplied for the signing key."""
+
+    default_remediation = (
+        f"Set {PASSPHRASE_ENV} in the environment, or run interactively so the "
+        "passphrase can be prompted for. There is deliberately no default."
+    )
 
 
-def public_key_fingerprint(public_key_pem: bytes) -> str:
-    """Return a stable fingerprint string for the given public key."""
-    raise NotImplementedError
+class KeyPermissionsUnsafe(SanctumError):
+    """The private key file is readable by more than its owner."""
+
+    default_remediation = (
+        "Restore owner-only access with `chmod 0600 <keyfile>` and confirm no "
+        "copy was made while it was exposed. Rotate the key if in doubt."
+    )
+
+
+def _prompt_passphrase(path: Path) -> str:
+    """Ask for the passphrase interactively. Separated so tests can replace it."""
+    if not sys.stdin or not sys.stdin.isatty():
+        return ""
+    return getpass.getpass(f"Passphrase for signing key {path}: ")
+
+
+def _passphrase(path: Path) -> bytes:
+    value = os.environ.get(PASSPHRASE_ENV) or _prompt_passphrase(path)
+    if not value:
+        raise KeyPassphraseMissing(
+            f"No passphrase available for {path} ({PASSPHRASE_ENV} is unset and "
+            "no interactive prompt was possible); refusing to write or read an "
+            "unprotected signing key."
+        )
+    return value.encode("utf-8")
+
+
+def _assert_safe_permissions(path: Path) -> None:
+    if sys.platform == "win32":
+        # POSIX mode bits are not enforced here; NTFS ACLs are a different model
+        # and checking st_mode would give a false assurance.
+        return
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if mode & _UNSAFE_MODE_BITS:
+        raise KeyPermissionsUnsafe(
+            f"{path} has mode {mode:04o}; a signing key must be 0600 so only "
+            "its owner can read it."
+        )
+
+
+def load_or_create_key(path: Path | str) -> Ed25519PrivateKey:
+    """Load the Ed25519 private key at ``path``, generating it on first use.
+
+    Raises:
+        KeyPassphraseMissing: No passphrase was available.
+        KeyPermissionsUnsafe: The existing key file is group- or world-readable.
+        ValueError: The passphrase does not decrypt the key.
+    """
+    key_path = Path(path)
+    passphrase = _passphrase(key_path)
+
+    if key_path.exists():
+        _assert_safe_permissions(key_path)
+        loaded = serialization.load_pem_private_key(
+            key_path.read_bytes(), password=passphrase
+        )
+        if not isinstance(loaded, Ed25519PrivateKey):
+            raise ValueError(f"{key_path} does not hold an Ed25519 private key")
+        return loaded
+
+    private = Ed25519PrivateKey.generate()
+    pem = private.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.BestAvailableEncryption(passphrase),
+    )
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(fd, pem)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    logger.info("signing_key_created", path=str(key_path))
+    return private
+
+
+def public_key_of(private: Ed25519PrivateKey) -> Ed25519PublicKey:
+    """The public half of ``private``."""
+    return private.public_key()
+
+
+def _raw_public_bytes(public: Ed25519PublicKey) -> bytes:
+    return public.public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+
+
+def fingerprint(public: Ed25519PublicKey) -> str:
+    """SHA-256 of the raw 32 public key bytes, as uppercase hex pairs."""
+    digest = hashlib.sha256(_raw_public_bytes(public)).hexdigest().upper()
+    return ":".join(digest[i : i + 2] for i in range(0, len(digest), 2))
+
+
+def _signable_bytes(report: dict[str, Any]) -> bytes:
+    """Canonical bytes of ``report`` with the signature field removed."""
+    without = {k: v for k, v in report.items() if k != SIGNATURE_FIELD}
+    return canonical_bytes(without)
+
+
+def _now() -> str:
+    stamp = datetime.now(UTC)
+    return (
+        f"{stamp.year:04d}-{stamp.month:02d}-{stamp.day:02d}"
+        f"T{stamp.hour:02d}:{stamp.minute:02d}:{stamp.second:02d}"
+        f".{stamp.microsecond:06d}Z"
+    )
+
+
+def sign_report(report: dict[str, Any], private: Ed25519PrivateKey) -> Signature:
+    """Sign ``report``'s canonical bytes, excluding any existing signature."""
+    public = public_key_of(private)
+    payload = _signable_bytes(report)
+    return Signature(
+        alg=SIGNATURE_ALG,
+        pubkey_fingerprint=fingerprint(public),
+        pubkey_b64=base64.b64encode(_raw_public_bytes(public)).decode("ascii"),
+        sig_b64=base64.b64encode(private.sign(payload)).decode("ascii"),
+        signed_at=_now(),
+        canon_version=CANON_VERSION,
+    )
+
+
+def verify_signature(report: dict[str, Any], signature: Signature) -> bool:
+    """Whether ``signature`` is valid for ``report`` under its embedded key.
+
+    Reconstructs the signed bytes with the same exclusion :func:`sign_report`
+    used. Returns ``False`` rather than raising for any failure, so a caller can
+    report every check independently.
+    """
+    if signature.alg != SIGNATURE_ALG:
+        logger.warning("signature_alg_unknown", alg=signature.alg)
+        return False
+    try:
+        public = Ed25519PublicKey.from_public_bytes(
+            base64.b64decode(signature.pubkey_b64, validate=True)
+        )
+        public.verify(
+            base64.b64decode(signature.sig_b64, validate=True),
+            _signable_bytes(report),
+        )
+    except (InvalidSignature, ValueError, TypeError):
+        return False
+    return True

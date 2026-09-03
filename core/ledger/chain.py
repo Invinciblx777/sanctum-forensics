@@ -1,35 +1,534 @@
-"""Hash-chain construction and verification for the audit ledger.
+"""Hash-chain construction and verification.
 
-Entry N binds to entry N-1: ``entry.prev_entry_hash`` is the SHA-256 of the
-canonical serialization of entry N-1, and ``entry.entry_hash`` is the SHA-256 of
-entry N including that link. Deferred to M4.
+Entry N binds to entry N-1: ``prev_entry_hash`` is the SHA-256 of entry N-1's
+canonical serialisation, and ``entry_hash`` is the SHA-256 of entry N including
+that link. Changing anything in the middle of the chain therefore invalidates
+every entry after it, and the verifier can say exactly where trust stops.
+
+Two design points worth stating outright:
+
+**A crash is not an attack.** A process killed mid-append leaves a partial final
+line. That is reported as :attr:`ChainStatus.INCOMPLETE_TAIL`, never as
+``BROKEN``. A forensic tool that cries tampering every time a laptop loses power
+will not be believed the one time it matters.
+
+**Time needs a boot identity.** ``monotonic_ns`` is only comparable within a
+single boot. Without ``boot_id`` a verifier cannot distinguish a legitimate
+reboot from a clock rollback, so both are recorded: monotonic time must increase
+within a ``boot_id``, and wall-clock time must not go backwards across the whole
+chain.
+
+The verifier reports the *first* break and keeps scanning, so a report can say
+"chain valid for 0..417, broken at 418, 12 further entries unverifiable" rather
+than simply "invalid".
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
+import time
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from enum import StrEnum
+from pathlib import Path
+from typing import Any
+
+import structlog
+
+from core.ledger.canon import CANON_VERSION, canonical_bytes
+from core.ledger.store import BlobStore, LedgerStore
 from core.models import LedgerEntry
 
-__all__ = ["compute_entry_hash", "make_entry", "verify_chain"]
+__all__ = [
+    "ChainStatus",
+    "FailureKind",
+    "ChainVerification",
+    "Ledger",
+    "GENESIS_OPERATION",
+    "GENESIS_PREV_HASH",
+    "boot_id",
+    "entry_hash_of",
+]
+
+logger = structlog.get_logger(__name__)
+
+GENESIS_OPERATION = "GENESIS"
+GENESIS_PREV_HASH = "0" * 64
+GENESIS_ACTOR = "sanctum"
+
+_BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
+_HASHED_FIELDS = (
+    "seq",
+    "ts_utc",
+    "monotonic_ns",
+    "boot_id",
+    "actor",
+    "operation",
+    "params_hash",
+    "result_hash",
+    "prev_entry_hash",
+)
 
 
-def compute_entry_hash(entry: LedgerEntry) -> str:
-    """Return the SHA-256 hex digest of ``entry``'s canonical serialization."""
-    raise NotImplementedError
+class ChainStatus(StrEnum):
+    """Overall verdict for a chain."""
+
+    VALID = "VALID"
+    BROKEN = "BROKEN"
+    INCOMPLETE_TAIL = "INCOMPLETE_TAIL"
 
 
-def make_entry(
-    *,
-    seq: int,
-    actor: str,
-    operation: str,
-    params_hash: str,
-    result_hash: str,
-    prev_entry_hash: str,
-) -> LedgerEntry:
-    """Build the next ledger entry, filling timestamps and ``entry_hash``."""
-    raise NotImplementedError
+class FailureKind(StrEnum):
+    """What specifically went wrong. ``None`` alongside INCOMPLETE_TAIL."""
+
+    HASH_MISMATCH = "HASH_MISMATCH"
+    LINK_MISMATCH = "LINK_MISMATCH"
+    SEQ_GAP = "SEQ_GAP"
+    SEQ_DUPLICATE = "SEQ_DUPLICATE"
+    TIME_REGRESSION = "TIME_REGRESSION"
+    PARSE_ERROR = "PARSE_ERROR"
+    MISSING_BLOB = "MISSING_BLOB"
 
 
-def verify_chain(entries: list[LedgerEntry]) -> None:
-    """Raise :class:`LedgerChainBroken` at the first broken link, else return."""
-    raise NotImplementedError
+@dataclass(frozen=True)
+class ChainVerification:
+    """Result of walking a chain from genesis."""
+
+    status: ChainStatus
+    explanation: str
+    first_bad_seq: int | None = None
+    failure_kind: FailureKind | None = None
+    verified_through: int | None = None
+    unverifiable_count: int = 0
+    entry_count: int = 0
+
+
+def boot_id() -> str:
+    """A UUID that is stable for this boot and changes across reboots.
+
+    Linux exposes one directly. Elsewhere the per-process fallback still changes
+    across reboots, which is what the monotonic comparison actually needs, and
+    the value is recorded so a verifier can see which entries share a clock.
+    """
+    try:
+        text = _BOOT_ID_PATH.read_text(encoding="utf-8").strip()
+        if text:
+            return text
+    except OSError:
+        pass
+    return str(uuid.UUID(int=uuid.getnode() ^ int(_process_boot_seed())))
+
+
+def _process_boot_seed() -> int:
+    """Stable within this process; distinct across restarts."""
+    return int(time.time() - time.monotonic()) & ((1 << 96) - 1)
+
+
+def entry_hash_of(fields: dict[str, Any]) -> str:
+    """SHA-256 hex of an entry's canonical bytes, excluding ``entry_hash``."""
+    payload = {name: fields[name] for name in _HASHED_FIELDS}
+    return hashlib.sha256(canonical_bytes(payload)).hexdigest()
+
+
+def _entry_to_record(entry: LedgerEntry) -> dict[str, Any]:
+    """The exact dict shape that gets canonicalised and written."""
+    return {
+        "seq": entry.seq,
+        "ts_utc": entry.ts_utc,
+        "monotonic_ns": entry.monotonic_ns,
+        "boot_id": entry.boot_id,
+        "actor": entry.actor,
+        "operation": entry.operation,
+        "params_hash": entry.params_hash,
+        "result_hash": entry.result_hash,
+        "prev_entry_hash": entry.prev_entry_hash,
+        "entry_hash": entry.entry_hash,
+    }
+
+
+class Ledger:
+    """Append-only hash-chained audit log."""
+
+    def __init__(
+        self,
+        root: Path | str,
+        *,
+        tool_version: str,
+        pubkey_fingerprint: str,
+        boot_id_value: str | None = None,
+        monotonic_source: Callable[[], int] = time.monotonic_ns,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        **kwargs: str,
+    ) -> None:
+        self.root = Path(root)
+        self.store = LedgerStore(self.root)
+        self.blobs = BlobStore(self.root)
+        self.tool_version = tool_version
+        self.pubkey_fingerprint = pubkey_fingerprint
+        self.boot_id = boot_id_value or kwargs.get("boot_id") or boot_id()
+        self._monotonic = monotonic_source
+        self._clock = clock
+        #: Chain head as this instance last observed or wrote it. append()
+        #: compares it against disk so a concurrent writer is caught rather
+        #: than silently overwritten.
+        self._head_hash: str | None = None
+
+    # -- reading ---------------------------------------------------------
+
+    def entries(self) -> list[LedgerEntry]:
+        """Every complete entry, in file order. Loads the head for append()."""
+        parsed, _, _ = self._parse()
+        if parsed:
+            self._head_hash = parsed[-1].entry_hash
+        return parsed
+
+    def _parse(self) -> tuple[list[LedgerEntry], bool, int | None]:
+        """Return ``(entries, incomplete_tail, parse_error_index)``."""
+        read = self.store.read()
+        entries: list[LedgerEntry] = []
+        for index, line in enumerate(read.lines):
+            try:
+                entries.append(LedgerEntry.model_validate_json(line))
+            except (ValueError, json.JSONDecodeError):
+                return entries, read.incomplete_tail, index
+        return entries, read.incomplete_tail, None
+
+    def params_of(self, entry: LedgerEntry) -> dict[str, Any]:
+        """Load the stored parameters for ``entry``."""
+        return self._blob_json(entry.params_hash)
+
+    def result_of(self, entry: LedgerEntry) -> dict[str, Any]:
+        """Load the stored result for ``entry``."""
+        return self._blob_json(entry.result_hash)
+
+    def _blob_json(self, digest: str) -> dict[str, Any]:
+        raw = self.blobs.get(digest)
+        if raw is None:
+            raise FileNotFoundError(f"blob {digest} is missing from the store")
+        loaded: dict[str, Any] = json.loads(raw)
+        return loaded
+
+    # -- writing ---------------------------------------------------------
+
+    def append(
+        self,
+        *,
+        actor: str,
+        operation: str,
+        params: dict[str, Any],
+        result: dict[str, Any],
+    ) -> LedgerEntry:
+        """Append one entry, writing genesis first if the chain is empty.
+
+        Raises:
+            RuntimeError: the on-disk tail does not match this instance's head
+                (another writer got there first), or the chain ends in an
+                incomplete line.
+        """
+        existing, incomplete, parse_error = self._parse()
+        if incomplete:
+            raise RuntimeError(
+                "the chain ends in an incomplete line left by a write that did "
+                "not finish. Refusing to append past it: archive the truncated "
+                "file as evidence and start a new chain rather than editing it."
+            )
+        if parse_error is not None:
+            raise RuntimeError(
+                f"chain line {parse_error} does not parse; refusing to append "
+                "to a chain that cannot be verified."
+            )
+
+        if not existing:
+            genesis = self._build(
+                seq=0,
+                actor=GENESIS_ACTOR,
+                operation=GENESIS_OPERATION,
+                params={
+                    "tool_version": self.tool_version,
+                    "canon_version": CANON_VERSION,
+                    "pubkey_fingerprint": self.pubkey_fingerprint,
+                },
+                result={},
+                prev_entry_hash=GENESIS_PREV_HASH,
+            )
+            self._write(genesis)
+            existing = [genesis]
+
+        head = existing[-1]
+        if self._head_hash is not None and self._head_hash != head.entry_hash:
+            raise RuntimeError(
+                f"the on-disk chain head is {head.entry_hash[:12]}..., but this "
+                f"writer expected {self._head_hash[:12]}.... Another writer "
+                "appended concurrently; reload the ledger and retry."
+            )
+
+        entry = self._build(
+            seq=head.seq + 1,
+            actor=actor,
+            operation=operation,
+            params=params,
+            result=result,
+            prev_entry_hash=head.entry_hash,
+        )
+        self._write(entry)
+        return entry
+
+    def _build(
+        self,
+        *,
+        seq: int,
+        actor: str,
+        operation: str,
+        params: dict[str, Any],
+        result: dict[str, Any],
+        prev_entry_hash: str,
+    ) -> LedgerEntry:
+        fields: dict[str, Any] = {
+            "seq": seq,
+            "ts_utc": self._clock(),
+            "monotonic_ns": self._monotonic(),
+            "boot_id": self.boot_id,
+            "actor": actor,
+            "operation": operation,
+            "params_hash": self.blobs.put(canonical_bytes(params)),
+            "result_hash": self.blobs.put(canonical_bytes(result)),
+            "prev_entry_hash": prev_entry_hash,
+        }
+        fields["entry_hash"] = entry_hash_of(fields)
+        return LedgerEntry.model_validate(fields)
+
+    def _write(self, entry: LedgerEntry) -> None:
+        self.store.append(canonical_bytes(_entry_to_record(entry)))
+        self._head_hash = entry.entry_hash
+        logger.debug("ledger_append", seq=entry.seq, operation=entry.operation)
+
+    # -- verification ----------------------------------------------------
+
+    def verify(self, *, check_blobs: bool = False) -> ChainVerification:
+        """Walk the chain from genesis and classify the first problem found."""
+        entries, incomplete, parse_error = self._parse()
+        total = len(entries)
+
+        if parse_error is not None:
+            return ChainVerification(
+                status=ChainStatus.BROKEN,
+                failure_kind=FailureKind.PARSE_ERROR,
+                first_bad_seq=parse_error,
+                verified_through=parse_error - 1 if parse_error else None,
+                unverifiable_count=0,
+                entry_count=total,
+                explanation=(
+                    f"Line {parse_error} of the chain is not valid JSON. "
+                    f"Entries 0..{parse_error - 1} parsed; nothing after line "
+                    f"{parse_error} could be read."
+                ),
+            )
+
+        if not entries:
+            return ChainVerification(
+                status=ChainStatus.INCOMPLETE_TAIL if incomplete else ChainStatus.VALID,
+                explanation=(
+                    "The chain contains only a partial line from a write that "
+                    "did not finish."
+                    if incomplete
+                    else "The chain is empty; nothing has been recorded yet."
+                ),
+                entry_count=0,
+            )
+
+        structural = self._structural_break(entries, incomplete, total)
+        if structural is not None:
+            return structural
+
+        walk = self._walk(entries, incomplete, total, check_blobs=check_blobs)
+        return walk
+
+    def _structural_break(
+        self, entries: list[LedgerEntry], incomplete: bool, total: int
+    ) -> ChainVerification | None:
+        """Classify a missing or repeated seq before walking the links.
+
+        A deletion and a reorder both break the link at the same position, so
+        the distinction has to come from the multiset of sequence numbers: a
+        missing one means an entry was removed, a repeated one means an entry
+        was duplicated, and a clean permutation means the file was reordered.
+        """
+        seen: dict[int, int] = {}
+        for entry in entries:
+            if entry.seq in seen:
+                return ChainVerification(
+                    status=ChainStatus.BROKEN,
+                    failure_kind=FailureKind.SEQ_DUPLICATE,
+                    first_bad_seq=entry.seq,
+                    verified_through=entry.seq - 1 if entry.seq else None,
+                    unverifiable_count=total - seen[entry.seq] - 1,
+                    entry_count=total,
+                    explanation=(
+                        f"Sequence number {entry.seq} appears more than once. "
+                        f"The chain is valid for 0..{entry.seq - 1}; every "
+                        "entry from the duplicate onward is unverifiable."
+                    ),
+                )
+            seen[entry.seq] = len(seen)
+
+        highest = max(seen)
+        missing = sorted(set(range(highest + 1)) - set(seen))
+        if missing:
+            first = missing[0]
+            return ChainVerification(
+                status=ChainStatus.BROKEN,
+                failure_kind=FailureKind.SEQ_GAP,
+                first_bad_seq=first,
+                verified_through=first - 1 if first else None,
+                unverifiable_count=sum(1 for s in seen if s > first),
+                entry_count=total,
+                explanation=(
+                    f"Sequence number {first} is missing from the chain. "
+                    f"Entries 0..{first - 1} are intact; "
+                    f"{sum(1 for s in seen if s > first)} later entries "
+                    "cannot be linked back to them."
+                ),
+            )
+        _ = incomplete
+        return None
+
+    def _walk(
+        self,
+        entries: list[LedgerEntry],
+        incomplete: bool,
+        total: int,
+        *,
+        check_blobs: bool,
+    ) -> ChainVerification:
+        previous: LedgerEntry | None = None
+        monotonic_by_boot: dict[str, int] = {}
+
+        for entry in entries:
+            problem = self._check_entry(
+                entry, previous, monotonic_by_boot, check_blobs=check_blobs
+            )
+            if problem is not None:
+                kind, detail = problem
+                verified = previous.seq if previous is not None else None
+                remaining = total - entries.index(entry) - 1
+                return ChainVerification(
+                    status=ChainStatus.BROKEN,
+                    failure_kind=kind,
+                    first_bad_seq=entry.seq,
+                    verified_through=verified,
+                    unverifiable_count=remaining,
+                    entry_count=total,
+                    explanation=(
+                        f"Chain valid for 0..{verified if verified is not None else 0}"
+                        f", broken at {entry.seq} ({kind.value}: {detail}), "
+                        f"{remaining} further entries unverifiable."
+                    ),
+                )
+            monotonic_by_boot[entry.boot_id] = entry.monotonic_ns
+            previous = entry
+
+        last = entries[-1].seq
+        if incomplete:
+            return ChainVerification(
+                status=ChainStatus.INCOMPLETE_TAIL,
+                verified_through=last,
+                entry_count=total,
+                explanation=(
+                    f"Entries 0..{last} verify. The file ends in a partial line "
+                    "from a write that did not finish, which is a crash, not "
+                    "tampering."
+                ),
+            )
+        return ChainVerification(
+            status=ChainStatus.VALID,
+            verified_through=last,
+            entry_count=total,
+            explanation=f"All {total} entries verify, 0..{last}.",
+        )
+
+    def _check_entry(
+        self,
+        entry: LedgerEntry,
+        previous: LedgerEntry | None,
+        monotonic_by_boot: dict[str, int],
+        *,
+        check_blobs: bool,
+    ) -> tuple[FailureKind, str] | None:
+        expected_prev = (
+            GENESIS_PREV_HASH if previous is None else previous.entry_hash
+        )
+        if entry.prev_entry_hash != expected_prev:
+            return (
+                FailureKind.LINK_MISMATCH,
+                f"prev_entry_hash is {entry.prev_entry_hash[:12]}..., expected "
+                f"{expected_prev[:12]}...",
+            )
+
+        recomputed = entry_hash_of(_entry_to_record(entry))
+        if recomputed != entry.entry_hash:
+            return (
+                FailureKind.HASH_MISMATCH,
+                f"stored entry_hash {entry.entry_hash[:12]}... does not match "
+                f"the recomputed {recomputed[:12]}...; the entry's contents "
+                "were altered",
+            )
+
+        if previous is not None and entry.ts_utc < previous.ts_utc:
+            return (
+                FailureKind.TIME_REGRESSION,
+                f"ts_utc {entry.ts_utc.isoformat()} precedes the previous "
+                f"entry's {previous.ts_utc.isoformat()}",
+            )
+
+        last_monotonic = monotonic_by_boot.get(entry.boot_id)
+        if last_monotonic is not None and entry.monotonic_ns < last_monotonic:
+            return (
+                FailureKind.TIME_REGRESSION,
+                f"monotonic_ns {entry.monotonic_ns} is below {last_monotonic} "
+                f"within boot {entry.boot_id}",
+            )
+
+        if check_blobs:
+            for label, digest in (
+                ("params", entry.params_hash),
+                ("result", entry.result_hash),
+            ):
+                if not self.blobs.has(digest):
+                    return (
+                        FailureKind.MISSING_BLOB,
+                        f"{label} blob {digest[:12]}... is not in the store, so "
+                        "the recorded content cannot be produced",
+                    )
+        return None
+
+    # -- merkle ----------------------------------------------------------
+
+    def merkle_root(self, from_seq: int, to_seq: int) -> str:
+        """Binary Merkle root over ``entry_hash`` for the inclusive range.
+
+        On an odd number of nodes at any level the last node is duplicated and
+        paired with itself. That choice changes the root, so it is stated here
+        and in the report: a verifier reproducing the root must do the same.
+        """
+        entries = self.entries()
+        available = {entry.seq: entry for entry in entries}
+        if from_seq > to_seq or from_seq not in available or to_seq not in available:
+            raise ValueError(
+                f"range {from_seq}..{to_seq} is not covered by the chain "
+                f"(0..{max(available) if available else 'empty'})"
+            )
+        level = [
+            bytes.fromhex(available[seq].entry_hash)
+            for seq in range(from_seq, to_seq + 1)
+        ]
+        while len(level) > 1:
+            if len(level) % 2:
+                level.append(level[-1])
+            level = [
+                hashlib.sha256(level[i] + level[i + 1]).digest()
+                for i in range(0, len(level), 2)
+            ]
+        return level[0].hex()

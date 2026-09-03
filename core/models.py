@@ -238,12 +238,28 @@ class LedgerEntry(BaseModel):
     seq: int
     ts_utc: datetime
     monotonic_ns: int
+    #: Per-boot UUID. ``monotonic_ns`` is only comparable within one boot; without
+    #: this a verifier cannot tell a reboot from a clock rollback.
+    boot_id: str
     actor: str
     operation: str
     params_hash: str
     result_hash: str
     prev_entry_hash: str
     entry_hash: str
+
+
+class Signature(BaseModel):
+    """A detached signature over a report's canonical bytes."""
+
+    alg: str
+    pubkey_fingerprint: str
+    pubkey_b64: str
+    sig_b64: str
+    signed_at: str
+    #: Which canonicalisation rules produced the signed bytes. A verifier that
+    #: does not implement this version cannot check the signature honestly.
+    canon_version: str
 
 
 class ForensicReport(BaseModel):
@@ -256,7 +272,7 @@ class ForensicReport(BaseModel):
     pubkey_fingerprint: str
     sections: dict[str, Any]
     ledger_excerpt: list[LedgerEntry]
-    signature: str
+    signature: Signature | None = None
 
 
 class Progress(BaseModel):

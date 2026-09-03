@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 from core.device._sysio import SystemProbe
+from core.ledger.chain import ChainStatus, Ledger
 from core.models import EraseMethod, ErasePhase, SanitizationLevel
 
 from ..device.conftest import FakeRunner, ok
@@ -21,7 +22,7 @@ from .conftest import ROOT_ONLY, make_caps, make_device, make_job, sha256_of
 if sys.platform != "linux":  # pragma: no cover - platform gate
     pytest.skip("core.erase.drive is Linux-only", allow_module_level=True)
 
-from core.erase.drive import InMemoryLedger, execute  # noqa: E402
+from core.erase.drive import ChainLedgerSink, execute  # noqa: E402
 
 pytestmark = ROOT_ONLY
 
@@ -35,6 +36,18 @@ EXPECTED_PHASES = [
     ErasePhase.VERIFY,
     ErasePhase.REPORT,
 ]
+
+
+
+def make_sink(root: Path) -> ChainLedgerSink:
+    """A real hash-chained ledger rooted under the test's tmp_path."""
+    return ChainLedgerSink(
+        Ledger(
+            root / "ledger-store",
+            tool_version="0.0.0-test",
+            pubkey_fingerprint="AA:BB:CC",
+        )
+    )
 
 
 def probe_for(path: str, serial: str = "SYN-0001") -> SystemProbe:
@@ -97,7 +110,7 @@ def test_dry_run_writes_zero_bytes(loop_device: str, tmp_path: Path) -> None:
     device = make_device(path=loop_device, serial="SYN-0001", by_id_path=None)
     job = make_job(device, dry_run=True)
     result, _ = drain(
-        execute(job, make_caps(), io=probe_for(loop_device), ledger=InMemoryLedger())
+        execute(job, make_caps(), io=probe_for(loop_device), ledger=make_sink(tmp_path))
     )
 
     assert result.dry_run is True
@@ -105,14 +118,14 @@ def test_dry_run_writes_zero_bytes(loop_device: str, tmp_path: Path) -> None:
     assert sha256_of(backing) == before
 
 
-def test_dry_run_still_emits_the_full_plan(loop_device: str) -> None:
+def test_dry_run_still_emits_the_full_plan(loop_device: str, tmp_path: Path) -> None:
     device = make_device(path=loop_device, serial="SYN-0001", by_id_path=None)
     result, progress = drain(
         execute(
             make_job(device, dry_run=True),
             make_caps(),
             io=probe_for(loop_device),
-            ledger=InMemoryLedger(),
+            ledger=make_sink(tmp_path),
         )
     )
     assert result.plan.method == EraseMethod.SINGLE_PASS_OVERWRITE
@@ -125,9 +138,11 @@ def test_dry_run_still_emits_the_full_plan(loop_device: str) -> None:
 # --------------------------------------------------------------------------
 
 
-def test_real_wipe_zeroes_the_device_and_verifies(loop_device: str) -> None:
+def test_real_wipe_zeroes_the_device_and_verifies(
+    loop_device: str, tmp_path: Path
+) -> None:
     device = make_device(path=loop_device, serial="SYN-0001", by_id_path=None)
-    ledger = InMemoryLedger()
+    ledger = make_sink(tmp_path)
     result, _ = drain(
         execute(
             make_job(device, dry_run=False),
@@ -146,9 +161,9 @@ def test_real_wipe_zeroes_the_device_and_verifies(loop_device: str) -> None:
 # --------------------------------------------------------------------------
 
 
-def test_ledger_records_every_phase_in_order(loop_device: str) -> None:
+def test_ledger_records_every_phase_in_order(loop_device: str, tmp_path: Path) -> None:
     device = make_device(path=loop_device, serial="SYN-0001", by_id_path=None)
-    ledger = InMemoryLedger()
+    ledger = make_sink(tmp_path)
     drain(
         execute(
             make_job(device, dry_run=True),
@@ -157,17 +172,29 @@ def test_ledger_records_every_phase_in_order(loop_device: str) -> None:
             ledger=ledger,
         )
     )
-    assert ledger.phases() == EXPECTED_PHASES
+    recorded = [
+        entry.operation.split('.')[1].upper()
+        for entry in ledger.ledger.entries()
+        if entry.operation.startswith('erase.')
+    ]
+    seen: list[str] = []
+    for phase in recorded:
+        if not seen or seen[-1] != phase:
+            seen.append(phase)
+    assert seen == [phase.value for phase in EXPECTED_PHASES]
+    assert ledger.ledger.verify().status is ChainStatus.VALID
 
 
-def test_progress_reports_every_phase_in_order(loop_device: str) -> None:
+def test_progress_reports_every_phase_in_order(
+    loop_device: str, tmp_path: Path
+) -> None:
     device = make_device(path=loop_device, serial="SYN-0001", by_id_path=None)
     _, progress = drain(
         execute(
             make_job(device, dry_run=True),
             make_caps(),
             io=probe_for(loop_device),
-            ledger=InMemoryLedger(),
+            ledger=make_sink(tmp_path),
         )
     )
     seen: list[str] = []
@@ -183,7 +210,7 @@ def test_progress_reports_every_phase_in_order(loop_device: str) -> None:
 
 
 def test_serial_swap_between_confirmation_and_execution_is_caught(
-    loop_device: str,
+    loop_device: str, tmp_path: Path
 ) -> None:
     from core.errors import DeviceVanished
 
@@ -195,12 +222,12 @@ def test_serial_swap_between_confirmation_and_execution_is_caught(
                 make_job(device, dry_run=True),
                 make_caps(),
                 io=swapped,
-                ledger=InMemoryLedger(),
+                ledger=make_sink(tmp_path),
             )
         )
 
 
-def test_wrong_typed_serial_refuses(loop_device: str) -> None:
+def test_wrong_typed_serial_refuses(loop_device: str, tmp_path: Path) -> None:
     from core.errors import ConfirmationMismatch
 
     device = make_device(path=loop_device, serial="SYN-0001", by_id_path=None)
@@ -208,12 +235,12 @@ def test_wrong_typed_serial_refuses(loop_device: str) -> None:
     with pytest.raises(ConfirmationMismatch):
         drain(
             execute(
-                job, make_caps(), io=probe_for(loop_device), ledger=InMemoryLedger()
+                job, make_caps(), io=probe_for(loop_device), ledger=make_sink(tmp_path)
             )
         )
 
 
-def test_mounted_device_refuses(loop_device: str) -> None:
+def test_mounted_device_refuses(loop_device: str, tmp_path: Path) -> None:
     from core.errors import MountedRefused
 
     device = make_device(
@@ -225,12 +252,12 @@ def test_mounted_device_refuses(loop_device: str) -> None:
                 make_job(device, dry_run=True),
                 make_caps(),
                 io=probe_for(loop_device),
-                ledger=InMemoryLedger(),
+                ledger=make_sink(tmp_path),
             )
         )
 
 
-def test_system_disk_refuses(loop_device: str) -> None:
+def test_system_disk_refuses(loop_device: str, tmp_path: Path) -> None:
     from core.errors import SystemDiskRefused
 
     device = make_device(
@@ -242,13 +269,13 @@ def test_system_disk_refuses(loop_device: str) -> None:
                 make_job(device, dry_run=True),
                 make_caps(),
                 io=probe_for(loop_device),
-                ledger=InMemoryLedger(),
+                ledger=make_sink(tmp_path),
             )
         )
 
 
 def test_purge_on_a_frozen_drive_raises_rather_than_downgrading(
-    loop_device: str,
+    loop_device: str, tmp_path: Path
 ) -> None:
     from core.errors import DeviceFrozen
 
@@ -261,4 +288,4 @@ def test_purge_on_a_frozen_drive_raises_rather_than_downgrading(
     )
     job = make_job(device, dry_run=True, level=SanitizationLevel.PURGE)
     with pytest.raises(DeviceFrozen):
-        drain(execute(job, caps, io=probe_for(loop_device), ledger=InMemoryLedger()))
+        drain(execute(job, caps, io=probe_for(loop_device), ledger=make_sink(tmp_path)))

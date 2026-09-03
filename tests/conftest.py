@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 
 import pytest
+import structlog
 from core.models import (
     CarveCandidate,
     Device,
@@ -94,6 +96,7 @@ def sample_ledger_entry() -> LedgerEntry:
         seq=0,
         ts_utc=datetime(2026, 1, 1, tzinfo=UTC),
         monotonic_ns=0,
+        boot_id="00000000-0000-0000-0000-000000000000",
         actor="test",
         operation="noop",
         params_hash="0" * 64,
@@ -113,5 +116,13 @@ def sample_report(sample_ledger_entry: LedgerEntry) -> ForensicReport:
         pubkey_fingerprint="AA:BB",
         sections={},
         ledger_excerpt=[sample_ledger_entry],
-        signature="",
+        signature=None,
+    )
+
+
+def pytest_configure() -> None:
+    """Silence structlog below WARNING so test output stays readable."""
+    structlog.configure(
+        wrapper_class=structlog.make_filtering_bound_logger(logging.WARNING),
+        cache_logger_on_first_use=True,
     )
