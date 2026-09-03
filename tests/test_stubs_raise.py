@@ -20,15 +20,22 @@ from core.carve import (
     structure,
     validate,
 )
-from core.erase import drive, files, patterns, verify
+from core.erase import files
 from core.ledger import chain, store
 from core.models import Device, EraseJob
 from core.report import render, sign, verify_report
 from helper import daemon, rpc
 
-#: Packages whose milestone has landed. Their behaviour is covered by their own
-#: tests (tests/device/, ...), so the stub gate below no longer applies to them.
-IMPLEMENTED = ("device",)
+#: Modules whose milestone has landed. Their behaviour is covered by their own
+#: tests (tests/device/, tests/erase/), so the stub gate below no longer applies.
+#: core.erase.drive is listed because its Linux-only import guard makes it
+#: unimportable here; tests/erase/ covers it on Linux.
+IMPLEMENTED = (
+    "core.device",
+    "core.erase.patterns",
+    "core.erase.verify",
+    "core.erase.drive",
+)
 
 
 def _thunks(
@@ -36,15 +43,7 @@ def _thunks(
 ) -> dict[str, Callable[[], object]]:
     img = object()  # ReadableImage is a Protocol; a stub never inspects it
     return {
-        "erase.run_erase": lambda: drive.run_erase(job),
         "erase.erase_paths": lambda: files.erase_paths(["/tmp/x"], job_id="j"),
-        "erase.pattern_passes": lambda: patterns.pattern_passes(
-            job.method, block_size=4096
-        ),
-        "erase.verify_erase": lambda: verify.verify_erase(job),
-        "erase.assess_residual_risk": lambda: verify.assess_residual_risk(
-            job, None, None  # type: ignore[arg-type]
-        ),
         "carve.open_readonly": lambda: acquire.open_readonly("/dev/sdz"),
         "carve.acquire_image": lambda: acquire.acquire_image("/dev/sdz", "/tmp/e.E01"),
         "carve.undelete": lambda: fsaware.undelete(img),  # type: ignore[arg-type]
@@ -161,7 +160,10 @@ def test_no_core_public_function_returns_none_silently() -> None:
     core_root = Path(__file__).resolve().parent.parent / "core"
     offenders: list[str] = []
     for py in core_root.rglob("*.py"):
-        if py.parent.name in IMPLEMENTED:
+        dotted = "core." + str(
+            py.relative_to(core_root).with_suffix("")
+        ).replace("\\", ".").replace("/", ".")
+        if dotted.startswith(IMPLEMENTED):
             continue
         src = py.read_text(encoding="utf-8")
         if "raise NotImplementedError" not in src and "def " in src:
@@ -180,11 +182,11 @@ def test_inspect_finds_no_pass_only_bodies() -> None:
     for py in pkg_root.rglob("*.py"):
         if py.name in {"__init__.py", "models.py", "errors.py"}:
             continue
-        if py.parent.name in IMPLEMENTED:
-            continue
         mod_name = "core." + str(py.relative_to(pkg_root).with_suffix("")).replace(
             "\\", "."
         ).replace("/", ".")
+        if mod_name.startswith(IMPLEMENTED):
+            continue
         mod = __import__(mod_name, fromlist=["*"])
         for _, obj in inspect.getmembers(mod):
             if inspect.isfunction(obj) and obj.__module__ == mod_name:

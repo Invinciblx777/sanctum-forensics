@@ -30,3 +30,11 @@ def test_default_remediation_is_non_empty(cls: type[SanctumError]) -> None:
 def test_explicit_remediation_overrides_default() -> None:
     err = ConfirmationMismatch("bad serial", remediation="type it again")
     assert err.remediation == "type it again"
+
+
+def test_platform_unsupported_names_a_linux_route() -> None:
+    from core.errors import PlatformUnsupported
+
+    err = PlatformUnsupported("drive erasure requires Linux")
+    assert "WSL2" in err.remediation
+    assert "usbipd-win" in err.remediation

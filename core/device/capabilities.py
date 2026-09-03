@@ -276,10 +276,10 @@ def _achievable_levels(caps: dict[str, Any]) -> set[SanitizationLevel]:
 #: Ordered PURGE mechanisms, strongest and most directly attested first.
 _PURGE_PREFERENCE: tuple[tuple[str, EraseMethod], ...] = (
     ("ATA_SANITIZE_BLOCK_ERASE", EraseMethod.ATA_SANITIZE_BLOCK_ERASE),
-    ("ATA_SANITIZE_CRYPTO", EraseMethod.CRYPTO_ERASE),
+    ("ATA_SANITIZE_CRYPTO", EraseMethod.ATA_SANITIZE_CRYPTO_SCRAMBLE),
     ("ATA_SANITIZE_OVERWRITE", EraseMethod.ATA_SANITIZE_OVERWRITE),
     ("NVME_SANITIZE_BLOCK", EraseMethod.NVME_SANITIZE_BLOCK),
-    ("SED_CRYPTO", EraseMethod.CRYPTO_ERASE),
+    ("SED_CRYPTO", EraseMethod.SED_CRYPTO_ERASE),
     ("NVME_FORMAT_SES1", EraseMethod.NVME_FORMAT_SES1),
     ("ATA_ENHANCED", EraseMethod.ATA_SECURITY_ERASE_ENHANCED),
 )

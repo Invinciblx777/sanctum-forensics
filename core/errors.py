@@ -18,6 +18,7 @@ __all__ = [
     "EvidenceIntegrityError",
     "LedgerChainBroken",
     "SignatureInvalid",
+    "PlatformUnsupported",
 ]
 
 
@@ -110,4 +111,22 @@ class SignatureInvalid(SanctumError):
     default_remediation = (
         "Confirm the correct public key and that the payload was not modified after "
         "signing."
+    )
+
+
+class PlatformUnsupported(SanctumError):
+    """The operation requires a platform this host does not provide.
+
+    Whole-device sanitization needs Linux block-device semantics: O_DIRECT with
+    logical-block alignment, the BLKGETSIZE64 ioctl, sysfs queue attributes, and
+    ATA/NVMe pass-through. None of these have a faithful equivalent elsewhere, and
+    a shim that pretended otherwise would be a silent correctness hazard on the
+    one code path where being wrong destroys evidence.
+    """
+
+    default_remediation = (
+        "Run this on Linux. On Windows use WSL2 and attach the target disk with "
+        "usbipd-win (`usbipd bind --busid <id>` then `usbipd attach --wsl`), or "
+        "use a Linux VM with the controller passed through. File and folder "
+        "erasure (core.erase.files) remains available on this platform."
     )

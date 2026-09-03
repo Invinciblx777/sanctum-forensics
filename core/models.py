@@ -15,6 +15,11 @@ from pydantic import BaseModel
 __all__ = [
     "SanitizationLevel",
     "EraseMethod",
+    "ErasePhase",
+    "UnwritableRange",
+    "EraseCheckpoint",
+    "ErasePlan",
+    "EraseResult",
     "Device",
     "DeviceCapabilities",
     "HiddenAreaReport",
@@ -46,7 +51,22 @@ class EraseMethod(StrEnum):
     ATA_SANITIZE_OVERWRITE = "ATA_SANITIZE_OVERWRITE"
     NVME_SANITIZE_BLOCK = "NVME_SANITIZE_BLOCK"
     NVME_FORMAT_SES1 = "NVME_FORMAT_SES1"
-    CRYPTO_ERASE = "CRYPTO_ERASE"
+    # Two distinct crypto-erase mechanisms on two different subsystems. They are
+    # kept separate so the erase dispatcher never has to re-derive which one a
+    # job means from the capability set.
+    ATA_SANITIZE_CRYPTO_SCRAMBLE = "ATA_SANITIZE_CRYPTO_SCRAMBLE"
+    SED_CRYPTO_ERASE = "SED_CRYPTO_ERASE"
+
+
+class ErasePhase(StrEnum):
+    """The phases an erase job moves through, in execution order."""
+
+    PREFLIGHT = "PREFLIGHT"
+    HIDDEN_AREA_UNLOCK = "HIDDEN_AREA_UNLOCK"
+    ERASE = "ERASE"
+    HIDDEN_AREA_RESTORE = "HIDDEN_AREA_RESTORE"
+    VERIFY = "VERIFY"
+    REPORT = "REPORT"
 
 
 Transport = Literal["sata", "nvme", "usb", "mmc", "unknown"]
@@ -124,6 +144,72 @@ class VerificationResult(BaseModel):
     sample_count: int
     confidence_pct: float
     failed_offsets: list[int]
+    #: RNG seed for the sampled strategy, recorded so the sample set is
+    #: reproducible by a third party checking the report.
+    sample_seed: int | None = None
+    #: The detection-probability formula with this run's values substituted.
+    #: A bare percentage hides its own assumptions; the formula does not.
+    probability_note: str = ""
+    #: True only when the drive's own sanitize log reported clean completion.
+    hw_attested: bool = False
+
+
+class UnwritableRange(BaseModel):
+    """A byte range the overwrite pass could not write, and why.
+
+    A single bad sector must not abort a multi-terabyte wipe, so these are
+    collected and surfaced as a residual-risk factor instead.
+    """
+
+    offset: int
+    length: int
+    errno: int
+
+    @property
+    def end(self) -> int:
+        """First byte after the range."""
+        return self.offset + self.length
+
+
+class EraseCheckpoint(BaseModel):
+    """Resume point written to the ledger during a long overwrite."""
+
+    job_id: str
+    pass_index: int
+    offset: int
+    bytes_written: int
+    ts_utc: datetime
+
+
+class ErasePlan(BaseModel):
+    """What the tool intends to do, shown in full before anything is written."""
+
+    method: EraseMethod
+    level: SanitizationLevel
+    justification: str
+    est_minutes: float
+    limitations: list[str] = []
+    hidden_bytes: int = 0
+
+
+class EraseResult(BaseModel):
+    """Outcome of one erase job. Returned by the ``execute`` generator."""
+
+    job_id: str
+    method: EraseMethod
+    level: SanitizationLevel
+    dry_run: bool
+    started_at: datetime
+    finished_at: datetime
+    bytes_written: int
+    passes: int
+    plan: ErasePlan
+    residual_risk: ResidualRiskAssessment
+    unwritable_ranges: list[UnwritableRange] = []
+    limitations: list[str] = []
+    #: True only when the drive's own sanitize status reported clean completion.
+    #: Never sufficient on its own; verification always samples as well.
+    hw_attested: bool = False
 
 
 class CarveCandidate(BaseModel):

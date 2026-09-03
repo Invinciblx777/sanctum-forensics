@@ -338,3 +338,34 @@ def test_recommend_never_returns_destroy() -> None:
     caps = probe(make_device(), io())
     with pytest.raises(UnsupportedCapability):
         recommend_method(caps, SanitizationLevel.DESTROY)
+
+
+def test_ata_crypto_scramble_is_distinct_from_sed_crypto_erase() -> None:
+    caps = probe(make_device(), io())
+    assert caps.is_sed_opal is False
+    assert (
+        recommend_method(caps, SanitizationLevel.PURGE)
+        != EraseMethod.SED_CRYPTO_ERASE
+    )
+
+
+def test_sed_only_device_recommends_sed_crypto_erase() -> None:
+    caps = probe(nvme_device(), nvme_io(NVME_ID_CTRL_NONE, sed=SEDUTIL_OPAL2))
+    assert (
+        recommend_method(caps, SanitizationLevel.PURGE)
+        == EraseMethod.SED_CRYPTO_ERASE
+    )
+
+
+def test_ata_crypto_scramble_only_device_recommends_that_method() -> None:
+    hdparm_crypto_only = HDPARM_SATA_FULL
+    for op in ("BLOCK_ERASE_EXT", "OVERWRITE_EXT"):
+        hdparm_crypto_only = hdparm_crypto_only.replace(
+            f"\t   *\t   {op} command\n", f"\t    \t   {op} command\n"
+        )
+    caps = probe(make_device(), io(**{"hdparm|-I|/dev/sdb": ok(hdparm_crypto_only)}))
+    assert caps.ata_sanitize_ops == ["CRYPTO_SCRAMBLE_EXT"]
+    assert (
+        recommend_method(caps, SanitizationLevel.PURGE)
+        == EraseMethod.ATA_SANITIZE_CRYPTO_SCRAMBLE
+    )
