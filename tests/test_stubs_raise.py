@@ -20,13 +20,15 @@ from core.carve import (
     structure,
     validate,
 )
-from core.device import capabilities, guard, hidden_areas
-from core.device import enumerate as enum_mod
 from core.erase import drive, files, patterns, verify
 from core.ledger import chain, store
-from core.models import Device, EraseJob, SanitizationLevel
+from core.models import Device, EraseJob
 from core.report import render, sign, verify_report
 from helper import daemon, rpc
+
+#: Packages whose milestone has landed. Their behaviour is covered by their own
+#: tests (tests/device/, ...), so the stub gate below no longer applies to them.
+IMPLEMENTED = ("device",)
 
 
 def _thunks(
@@ -34,17 +36,6 @@ def _thunks(
 ) -> dict[str, Callable[[], object]]:
     img = object()  # ReadableImage is a Protocol; a stub never inspects it
     return {
-        "device.enumerate_devices": enum_mod.enumerate_devices,
-        "device.get_device": lambda: enum_mod.get_device("/dev/sdz"),
-        "device.probe_capabilities": lambda: capabilities.probe_capabilities(device),
-        "device.recommend_method": lambda: capabilities.recommend_method(
-            None, SanitizationLevel.CLEAR  # type: ignore[arg-type]
-        ),
-        "device.detect_hidden_areas": lambda: hidden_areas.detect_hidden_areas(device),
-        "device.assert_erasable": lambda: guard.assert_erasable(device),
-        "device.assert_serial_confirmed": lambda: guard.assert_serial_confirmed(
-            device, "SYN-0001"
-        ),
         "erase.run_erase": lambda: drive.run_erase(job),
         "erase.erase_paths": lambda: files.erase_paths(["/tmp/x"], job_id="j"),
         "erase.pattern_passes": lambda: patterns.pattern_passes(
@@ -170,6 +161,8 @@ def test_no_core_public_function_returns_none_silently() -> None:
     core_root = Path(__file__).resolve().parent.parent / "core"
     offenders: list[str] = []
     for py in core_root.rglob("*.py"):
+        if py.parent.name in IMPLEMENTED:
+            continue
         src = py.read_text(encoding="utf-8")
         if "raise NotImplementedError" not in src and "def " in src:
             # models.py / errors.py legitimately have no stubs
@@ -186,6 +179,8 @@ def test_inspect_finds_no_pass_only_bodies() -> None:
     pkg_root = Path(core.__file__).resolve().parent
     for py in pkg_root.rglob("*.py"):
         if py.name in {"__init__.py", "models.py", "errors.py"}:
+            continue
+        if py.parent.name in IMPLEMENTED:
             continue
         mod_name = "core." + str(py.relative_to(pkg_root).with_suffix("")).replace(
             "\\", "."

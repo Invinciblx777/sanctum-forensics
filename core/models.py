@@ -64,6 +64,9 @@ class Device(BaseModel):
     is_system_disk: bool
     mounted_at: list[str]
     pt_type: str | None
+    #: Stable ``/dev/disk/by-id`` path. ``path`` is not stable across replug, so
+    #: anything that must survive a reconnect refers to the device by this.
+    by_id_path: str | None = None
 
 
 class DeviceCapabilities(BaseModel):
@@ -77,6 +80,9 @@ class DeviceCapabilities(BaseModel):
     security_frozen: bool
     est_erase_minutes: float
     achievable_levels: set[SanitizationLevel]
+    #: Plain-language reasons a stronger level could not be established, e.g. a
+    #: USB bridge that blocks ATA pass-through. Surfaced verbatim in the report.
+    limitations: list[str] = []
 
 
 class HiddenAreaReport(BaseModel):
