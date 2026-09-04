@@ -37,6 +37,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest==9.1.1",
+    # starlette's TestClient needs it; the API tests drive every endpoint
+    # in-process rather than over a real socket.
+    "httpx2==2.12.0",
     # Calibration tooling only: testkit/calibrate.py draws the bucket chart.
     # core/ never imports it, and the harness degrades to CSV-only without it.
     "matplotlib==3.11.1",
@@ -59,6 +62,13 @@ src = ["core", "helper", "api", "testkit", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B"]
+# B008 forbids a function call in an argument default, which is exactly how
+# FastAPI's Depends() is spelled. The rule is right about mutable defaults and
+# wrong about this framework, so it is disabled for the router modules only -
+# core/ and helper/ still get it.
+[tool.ruff.lint.per-file-ignores]
+"api/routes/*.py" = ["B008"]
+"api/main.py" = ["B008"]
 
 [tool.mypy]
 python_version = "3.11"

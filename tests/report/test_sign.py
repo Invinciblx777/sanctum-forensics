@@ -212,3 +212,85 @@ def test_the_signature_field_itself_is_excluded_from_the_signed_bytes(
     signature = sign_report(REPORT, key)
     with_signature = {**REPORT, "signature": signature.model_dump()}
     assert verify_signature(with_signature, signature) is True
+
+
+def test_a_report_built_with_its_signature_still_verifies(key_path: Path) -> None:
+    """The signature must not cover itself, in either place it appears.
+
+    ``build_report`` mirrors the signature into ``sections.signature`` because
+    the report renders nine sections in a fixed order and the signature is the
+    ninth. Excluding only the top-level key made
+    ``build_report(..., signature=...)`` produce a document whose signature
+    could never verify: the sections copy was empty when the bytes were signed
+    and populated when they were checked.
+
+    Every test in this file passed while that was broken, because they all sign
+    a report and attach the signature to the top level themselves. The API's
+    end-to-end run is what surfaced it.
+    """
+    from datetime import UTC, datetime
+
+    from core.ledger.chain import Ledger
+    from core.report.render import build_report
+
+    ledger = Ledger(
+        key_path.parent / "ledger", tool_version="0.0.0", pubkey_fingerprint="AA:BB"
+    )
+    fields: dict[str, Any] = {
+        "case_id": "CASE-SIGNED",
+        "operator": "tester",
+        "generated_at": datetime.now(UTC),
+        "tool_version": "0.0.0",
+        "device": {},
+        "method": {},
+        "hidden_areas": {},
+        "verification": {},
+        "residual_risk": {},
+        "limitations": [],
+        "ledger_excerpt": [],
+        "chain_verification": ledger.verify(),
+        "pubkey_fingerprint": "AA:BB",
+    }
+
+    key = load_or_create_key(key_path)
+    unsigned = build_report(**fields)
+    signature = sign_report(unsigned, key)
+
+    signed = build_report(**fields, signature=signature)
+    assert signed["sections"]["signature"], "the section must be populated"
+    assert verify_signature(signed, signature) is True
+
+
+def test_tampering_is_still_caught_inside_a_section(key_path: Path) -> None:
+    """The exclusion must be narrow: only the signature blocks, nothing else."""
+    from datetime import UTC, datetime
+
+    from core.ledger.chain import Ledger
+    from core.report.render import build_report
+
+    ledger = Ledger(
+        key_path.parent / "ledger2", tool_version="0.0.0", pubkey_fingerprint="AA:BB"
+    )
+    fields: dict[str, Any] = {
+        "case_id": "CASE-TAMPER",
+        "operator": "tester",
+        "generated_at": datetime.now(UTC),
+        "tool_version": "0.0.0",
+        "device": {"serial": "SYN-1"},
+        "method": {},
+        "hidden_areas": {},
+        "verification": {},
+        "residual_risk": {},
+        "limitations": [],
+        "ledger_excerpt": [],
+        "chain_verification": ledger.verify(),
+        "pubkey_fingerprint": "AA:BB",
+    }
+    key = load_or_create_key(key_path)
+    signature = sign_report(build_report(**fields), key)
+    signed = build_report(**fields, signature=signature)
+
+    assert verify_signature(signed, signature) is True
+
+    signed["sections"]["device_identity"]["serial"] = "SOMEONE-ELSES-DISK"
+    assert verify_signature(signed, signature) is False

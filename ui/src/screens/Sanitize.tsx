@@ -1,0 +1,458 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { api, RequestFailed, streamJob } from '../lib/api'
+import type { Capabilities, DeviceRow, JobStatus, Progress } from '../lib/api'
+import { bytes, duration, exactBytes } from '../lib/format'
+import {
+  Chip,
+  ErrorNotice,
+  Limitations,
+  Notice,
+  Panel,
+  ProgressView,
+  Stat,
+} from '../components/widgets'
+
+interface MethodOption {
+  id: string
+  label: string
+  level: 'CLEAR' | 'PURGE'
+  available: boolean
+  legacy?: boolean
+  /** Why this method is or is not available, quoting what was probed. */
+  evidence: string
+}
+
+/**
+ * Build the method list from the capability report.
+ *
+ * Every entry carries the *evidence* for its own availability, not just the
+ * conclusion. "Purge available" tells an operator what the tool decided;
+ * "hdparm reported BLOCK_ERASE_EXT in the SANITIZE feature set" tells them why,
+ * and only the second can be checked by someone who doubts it.
+ */
+export function methodsFor(caps: Capabilities | null): MethodOption[] {
+  const ops = caps?.ata_sanitize_ops ?? []
+  const nvme = (caps?.nvme_sanicap ?? {}) as Record<string, unknown>
+  const frozen = caps?.security_frozen ?? false
+
+  return [
+    {
+      id: 'ATA_SANITIZE_BLOCK_ERASE',
+      label: 'ATA SANITIZE — block erase',
+      level: 'PURGE',
+      available: ops.includes('BLOCK_ERASE_EXT'),
+      evidence: ops.includes('BLOCK_ERASE_EXT')
+        ? 'hdparm -I reported BLOCK_ERASE_EXT in the SANITIZE feature set. The ' +
+          'drive erases every block internally, including remapped and ' +
+          'over-provisioned ones a host overwrite cannot address.'
+        : 'BLOCK_ERASE_EXT was not present in the SANITIZE feature set.',
+    },
+    {
+      id: 'ATA_SANITIZE_CRYPTO_SCRAMBLE',
+      label: 'ATA SANITIZE — cryptographic scramble',
+      level: 'PURGE',
+      available: ops.includes('CRYPTO_SCRAMBLE_EXT'),
+      evidence: ops.includes('CRYPTO_SCRAMBLE_EXT')
+        ? 'hdparm -I reported CRYPTO_SCRAMBLE_EXT. The media encryption key is ' +
+          'destroyed, which renders every block unreadable at once.'
+        : 'CRYPTO_SCRAMBLE_EXT was not present in the SANITIZE feature set.',
+    },
+    {
+      id: 'NVME_SANITIZE_BLOCK',
+      label: 'NVMe SANITIZE — block erase',
+      level: 'PURGE',
+      available: Boolean(nvme.block_erase) || Boolean(nvme.crypto_erase),
+      evidence:
+        Boolean(nvme.block_erase) || Boolean(nvme.crypto_erase)
+          ? 'Identify Controller SANICAP reported sanitize support. Note that ' +
+            'NVMe sanitize acts at controller scope: it destroys every ' +
+            'namespace, not only the one named.'
+          : 'SANICAP reported no sanitize support.',
+    },
+    {
+      id: 'SED_CRYPTO_ERASE',
+      label: 'SED cryptographic erase (Opal)',
+      level: 'PURGE',
+      available: Boolean(caps?.is_sed_opal),
+      evidence: caps?.is_sed_opal
+        ? 'sedutil-cli reported an Opal SSC. The data encryption key is ' +
+          'replaced, so the ciphertext on the media becomes undecryptable.'
+        : 'No Opal self-encrypting drive was reported.',
+    },
+    {
+      id: 'ATA_SECURITY_ERASE_ENHANCED',
+      label: 'ATA SECURITY ERASE (enhanced)',
+      level: 'PURGE',
+      available: Boolean(caps?.ata_enhanced_erase) && !frozen,
+      evidence: frozen
+        ? 'The drive reports ATA security as frozen, so no SECURITY command can ' +
+          'be issued. Power-cycle the drive or issue an S3 sleep/wake to clear it.'
+        : caps?.ata_enhanced_erase
+          ? 'hdparm -I reported enhanced erase support and security is not frozen.'
+          : 'Enhanced erase was not reported.',
+    },
+    {
+      id: 'SINGLE_PASS_OVERWRITE',
+      label: 'Single-pass overwrite',
+      level: 'CLEAR',
+      available: true,
+      evidence:
+        'Always available: the host writes a pattern over every addressable ' +
+        'LBA. It cannot reach blocks the flash translation layer has remapped, ' +
+        'over-provisioned capacity, or anything behind an unopened HPA/DCO, so ' +
+        'the result is a Clear and never a Purge.',
+    },
+    {
+      id: 'DOD_5220_22_M_3PASS',
+      label: 'DoD 5220.22-M — 3 pass',
+      level: 'CLEAR',
+      available: true,
+      legacy: true,
+      evidence:
+        'LEGACY. Superseded by NIST SP 800-88 Rev.1, which states that a single ' +
+        'overwrite pass is sufficient for any drive manufactured after 2001. ' +
+        'Offered only because operators are sometimes contractually required to ' +
+        'name it. On flash media it is actively harmful: every extra pass burns ' +
+        'program/erase cycles without reaching a single remapped block.',
+    },
+  ]
+}
+
+function autoSelect(options: MethodOption[]): MethodOption {
+  // The same preference order core/device/capabilities.py uses, so the
+  // preselection matches what the engine would choose on its own.
+  return (
+    options.find((item) => item.available && item.level === 'PURGE') ??
+    options.find((item) => item.id === 'SINGLE_PASS_OVERWRITE')!
+  )
+}
+
+export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
+  const options = useMemo(
+    () => methodsFor(selected?.capabilities ?? null),
+    [selected],
+  )
+  const auto = useMemo(() => autoSelect(options), [options])
+  const [chosen, setChosen] = useState(auto.id)
+  const [dryRun, setDryRun] = useState(true)
+  const [typed, setTyped] = useState('')
+  const [confirming, setConfirming] = useState(false)
+  const [jobId, setJobId] = useState<string | null>(null)
+  const [progress, setProgress] = useState<Progress | null>(null)
+  const [status, setStatus] = useState<JobStatus | null>(null)
+  const [error, setError] = useState<{
+    message: string
+    kind?: string
+    remediation?: string
+  } | null>(null)
+  const detach = useRef<(() => void) | null>(null)
+
+  useEffect(() => setChosen(auto.id), [auto.id])
+  useEffect(() => () => detach.current?.(), [])
+
+  const option = options.find((item) => item.id === chosen) ?? auto
+  const device = selected?.device
+  const hidden = selected?.hidden_areas
+
+  async function start() {
+    if (!device) return
+    setError(null)
+    try {
+      const accepted = await api.eraseDrive({
+        path: device.path,
+        level: option.level,
+        dry_run: dryRun,
+        typed_serial: dryRun ? '' : typed,
+      })
+      setJobId(accepted.job_id)
+      setProgress(null)
+      setStatus(null)
+      setConfirming(false)
+      detach.current?.()
+      detach.current = streamJob(accepted.job_id, {
+        onProgress: setProgress,
+        onState: setStatus,
+      })
+    } catch (exc) {
+      const failure = exc as RequestFailed
+      setError({
+        message: failure.message,
+        kind: failure.kind,
+        remediation: failure.remediation,
+      })
+      setConfirming(false)
+    }
+  }
+
+  if (!device) {
+    return (
+      <>
+        <div className="screen-head">
+          <h1>Sanitize</h1>
+          <p>Select a device on the Devices screen first.</p>
+        </div>
+        <div className="screen-body">
+          <Notice tone="info">
+            No device selected. A locked device — the system disk, or one with a
+            mounted filesystem — cannot be selected at all.
+          </Notice>
+        </div>
+      </>
+    )
+  }
+
+  const running = Boolean(jobId) && !status
+  const residualFactors =
+    (status?.result?.residual_risk as { factors?: string[] } | undefined)
+      ?.factors ?? []
+
+  return (
+    <>
+      <div className="screen-head">
+        <h1>Sanitize</h1>
+        <p className="path">{device.path}</p>
+        <Chip tone="muted">{device.model}</Chip>
+        <span className="serial" style={{ color: 'var(--fg-faint)' }}>
+          {device.serial}
+        </span>
+      </div>
+
+      <div className="screen-body">
+        <ErrorNotice error={error} />
+
+        {hidden && hidden.hidden_bytes > 0 && (
+          <Notice tone="warn">
+            <strong>{bytes(hidden.hidden_bytes)}</strong> are hidden behind an{' '}
+            {hidden.hpa_present ? 'HPA' : 'DCO'} (
+            {hidden.accessible_sectors.toLocaleString('en-US')} of{' '}
+            {hidden.native_max_sectors.toLocaleString('en-US')} sectors are
+            accessible). A host overwrite does not reach them unless the native
+            max is unlocked first; a firmware sanitize covers the full media by
+            design.
+          </Notice>
+        )}
+
+        <div className="split">
+          <div className="col">
+            <Panel title="Method">
+              <div className="col" style={{ gap: 9 }}>
+                {options.map((item) => (
+                  <label
+                    key={item.id}
+                    className="inline"
+                    style={{
+                      alignItems: 'flex-start',
+                      opacity: item.available ? 1 : 0.45,
+                      cursor: item.available ? 'pointer' : 'not-allowed',
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="method"
+                      value={item.id}
+                      checked={chosen === item.id}
+                      disabled={!item.available || running}
+                      onChange={() => setChosen(item.id)}
+                      style={{ marginTop: 3 }}
+                    />
+                    <span className="col" style={{ gap: 3 }}>
+                      <span className="row" style={{ gap: 7 }}>
+                        <strong style={{ color: 'var(--fg)', fontSize: 12 }}>
+                          {item.label}
+                        </strong>
+                        <Chip tone={item.level === 'PURGE' ? 'low' : 'medium'}>
+                          {item.level}
+                        </Chip>
+                        {item.legacy && (
+                          <Chip tone="high" title="Superseded by NIST SP 800-88 Rev.1">
+                            LEGACY
+                          </Chip>
+                        )}
+                        {item.id === auto.id && (
+                          <Chip tone="accent">auto-selected</Chip>
+                        )}
+                      </span>
+                      {/* The evidence, not the conclusion. */}
+                      <span style={{ color: 'var(--fg-dim)', fontSize: 11 }}>
+                        {item.evidence}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </Panel>
+
+            <Panel title="Run">
+              <div className="col" style={{ gap: 11 }}>
+                <label className="inline">
+                  <input
+                    type="checkbox"
+                    checked={dryRun}
+                    disabled={running}
+                    onChange={(event) => setDryRun(event.target.checked)}
+                  />
+                  <span>
+                    Dry run — plan and report only, nothing is written
+                  </span>
+                </label>
+
+                {!dryRun && (
+                  <Notice tone="danger">
+                    This will <strong>permanently destroy</strong> every byte on{' '}
+                    <span className="path">{device.path}</span> (
+                    {bytes(device.size_bytes)}). There is no undo. The device
+                    serial must be typed to confirm.
+                  </Notice>
+                )}
+
+                <div className="row">
+                  <button
+                    className={dryRun ? 'btn primary' : 'btn destructive'}
+                    disabled={running}
+                    onClick={() => (dryRun ? void start() : setConfirming(true))}
+                  >
+                    {dryRun ? 'Run dry run' : 'Erase this device'}
+                  </button>
+                  {jobId && !status && (
+                    <button
+                      className="btn"
+                      onClick={() => void api.cancel(jobId)}
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  {jobId && (
+                    <span className="mono" style={{ color: 'var(--fg-faint)' }}>
+                      {jobId}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </Panel>
+
+            {jobId && (
+              <Panel title="Progress">
+                <ProgressView progress={progress} destructive={!dryRun} />
+                {status && (
+                  <div style={{ marginTop: 11 }}>
+                    <Notice tone={status.state === 'complete' ? 'ok' : 'warn'}>
+                      Job {status.state}
+                      {status.error ? `: ${status.error}` : ''}
+                    </Notice>
+                    {status.remediation && (
+                      <p style={{ color: 'var(--fg-dim)', fontSize: 11 }}>
+                        {status.remediation}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </Panel>
+            )}
+          </div>
+
+          {/* Residual risk is shown during the run, not only after it. An
+              operator deciding whether to let a wipe finish needs to know what
+              it will not have covered while there is still a decision to make. */}
+          <Panel title="Residual risk">
+            <div className="col" style={{ gap: 10 }}>
+              <Stat
+                label="target level"
+                value={option.level}
+              />
+              <Stat
+                label="capacity"
+                value={
+                  <span title={exactBytes(device.size_bytes)}>
+                    {bytes(device.size_bytes)}
+                  </span>
+                }
+              />
+              <Stat
+                label="estimated"
+                value={duration(selected?.capabilities?.est_erase_seconds ?? 0)}
+              />
+
+              {option.level === 'CLEAR' && !device.rotational && (
+                <Notice tone="warn">
+                  This is flash media and the selected method is a host
+                  overwrite. Blocks the FTL has remapped, over-provisioned
+                  capacity and anything still in the write cache are not
+                  reachable by any write pattern. The result is a{' '}
+                  <strong>Clear</strong>, not a Purge.
+                </Notice>
+              )}
+
+              {hidden && hidden.hidden_bytes > 0 && option.level === 'CLEAR' && (
+                <Notice tone="warn">
+                  {bytes(hidden.hidden_bytes)} behind the HPA/DCO are only
+                  covered if the unlock succeeds. If it fails, that region is
+                  not erased and the report says so.
+                </Notice>
+              )}
+
+              {(selected?.capabilities?.limitations ?? []).length > 0 && (
+                <Limitations items={selected!.capabilities!.limitations} />
+              )}
+
+              {residualFactors.length > 0 && (
+                <Limitations items={residualFactors} />
+              )}
+            </div>
+          </Panel>
+        </div>
+      </div>
+
+      {confirming && (
+        <div className="modal-backdrop" onClick={() => setConfirming(false)}>
+          <div className="modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">Confirm irreversible erasure</div>
+            <div className="modal-body">
+              <p style={{ margin: 0 }}>
+                Every byte on <span className="path">{device.path}</span> will be
+                destroyed using <strong>{option.label}</strong>. This cannot be
+                undone.
+              </p>
+              <dl className="kv">
+                <dt>model</dt>
+                <dd>{device.model}</dd>
+                <dt>capacity</dt>
+                <dd>{exactBytes(device.size_bytes)}</dd>
+                <dt>serial</dt>
+                <dd>{device.serial}</dd>
+              </dl>
+              <label>
+                Type the device serial to confirm
+                <input
+                  type="text"
+                  value={typed}
+                  autoFocus
+                  spellCheck={false}
+                  placeholder={device.serial}
+                  onChange={(event) => setTyped(event.target.value)}
+                />
+              </label>
+              {typed && typed !== device.serial && (
+                <span style={{ color: 'var(--high)', fontSize: 11 }}>
+                  Does not match. The server re-reads the serial from the device
+                  itself and will refuse regardless of what is typed here.
+                </span>
+              )}
+            </div>
+            <div className="modal-foot">
+              <button className="btn" onClick={() => setConfirming(false)}>
+                Cancel
+              </button>
+              <button
+                className="btn destructive"
+                disabled={typed !== device.serial}
+                onClick={() => void start()}
+              >
+                Erase {device.path}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  )
+}

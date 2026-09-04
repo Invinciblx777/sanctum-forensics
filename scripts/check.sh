@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ruff check .
-mypy --strict core/
+mypy --strict core/ helper/ api/
 # The Windows platform backend, checked as Windows. See the Makefile.
 mypy --strict --platform win32 core/erase/_platform/win.py
 pytest -q

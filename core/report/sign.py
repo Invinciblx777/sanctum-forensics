@@ -173,8 +173,26 @@ def fingerprint(public: Ed25519PublicKey) -> str:
 
 
 def _signable_bytes(report: dict[str, Any]) -> bytes:
-    """Canonical bytes of ``report`` with the signature field removed."""
+    """Canonical bytes of ``report`` with every signature block removed.
+
+    Two blocks, not one. The signature lives at the top level *and* is mirrored
+    into ``sections.signature``, because the report renders nine sections in a
+    fixed order and the signature is the ninth. Both must be excluded from what
+    is signed, for the obvious reason: a signature cannot cover itself.
+
+    Stripping only the top-level key - which this function did until it was
+    caught by the API's end-to-end test - made
+    ``build_report(..., signature=...)`` produce a document whose signature
+    could never verify, because the sections copy was empty when the bytes were
+    signed and populated when they were checked. Signing and then attaching to
+    the top level alone happened to work, so every existing test passed.
+    """
     without = {k: v for k, v in report.items() if k != SIGNATURE_FIELD}
+    sections = without.get("sections")
+    if isinstance(sections, dict) and SIGNATURE_FIELD in sections:
+        without["sections"] = {
+            k: v for k, v in sections.items() if k != SIGNATURE_FIELD
+        }
     return canonical_bytes(without)
 
 

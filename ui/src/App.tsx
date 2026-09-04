@@ -1,122 +1,84 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import { useEffect, useState } from 'react'
+import type { DeviceRow } from './lib/api'
+import { api } from './lib/api'
+import Audit from './screens/Audit'
+import Devices from './screens/Devices'
+import FileEraser from './screens/FileEraser'
+import Recovery from './screens/Recovery'
+import Sanitize from './screens/Sanitize'
 
-function App() {
-  const [count, setCount] = useState(0)
+type ScreenId = 'devices' | 'sanitize' | 'files' | 'recovery' | 'audit'
+
+const SCREENS: { id: ScreenId; label: string }[] = [
+  { id: 'devices', label: 'Devices' },
+  { id: 'sanitize', label: 'Sanitize' },
+  { id: 'files', label: 'File eraser' },
+  { id: 'recovery', label: 'Recovery' },
+  { id: 'audit', label: 'Audit' },
+]
+
+export default function App() {
+  const [screen, setScreen] = useState<ScreenId>('devices')
+  const [selected, setSelected] = useState<DeviceRow | null>(null)
+  const [health, setHealth] = useState<Record<string, unknown> | null>(null)
+
+  useEffect(() => {
+    void api.health().then(setHealth).catch(() => setHealth(null))
+  }, [])
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
-
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
+    <div className="shell">
+      <nav className="sidebar">
+        <div className="brand">
+          <svg width="17" height="19" viewBox="0 0 32 32" aria-hidden>
+            <path
+              d="M16 4 L26 8 v9 c0 6-4 9-10 11 C10 26 6 23 6 17 V8 Z"
+              fill="none"
+              stroke="var(--accent)"
+              strokeWidth="2"
+            />
+            <path d="M11 16 h10 M16 11 v10" stroke="var(--accent)" strokeWidth="2" />
           </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
+          <div className="col" style={{ gap: 0 }}>
+            <span className="brand-name">Sanctum</span>
+            <span className="brand-sub">forensics</span>
+          </div>
         </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+        <div className="nav">
+          {SCREENS.map((item, index) => (
+            <button
+              key={item.id}
+              className={screen === item.id ? 'nav-item active' : 'nav-item'}
+              onClick={() => setScreen(item.id)}
+            >
+              <span className="nav-index">{index + 1}</span>
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="sidebar-foot">
+          <span>{(health?.tool_version as string) ?? 'offline'}</span>
+          <span>127.0.0.1 only</span>
+          {selected && <span title={selected.device.path}>▸ {selected.device.path}</span>}
+        </div>
+      </nav>
+
+      <main className="main">
+        {screen === 'devices' && (
+          <Devices
+            onSelect={(row) => {
+              setSelected(row)
+              setScreen('sanitize')
+            }}
+          />
+        )}
+        {screen === 'sanitize' && <Sanitize selected={selected} />}
+        {screen === 'files' && <FileEraser />}
+        {screen === 'recovery' && <Recovery />}
+        {screen === 'audit' && <Audit />}
+      </main>
+    </div>
   )
 }
-
-export default App
