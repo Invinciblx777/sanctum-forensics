@@ -1,7 +1,8 @@
 """Acceptance: every stub raises NotImplementedError. None returns None silently.
 
 When a milestone implements a module, its lines move out of this file into that
-module's own tests.
+module's own tests. As of M2 only ``helper/`` is still stubbed; every module in
+``core/`` is listed in :data:`IMPLEMENTED` and covered by its own suite.
 """
 
 from __future__ import annotations
@@ -11,7 +12,6 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
-from core.erase import files
 from core.models import Device, EraseJob
 from helper import daemon, rpc
 
@@ -35,6 +35,12 @@ IMPLEMENTED = (
     "core.carve.score",
     "core.carve.classify",
     "core.carve.fsaware",
+    "core.erase.files",
+    "core.erase.inspect",
+    "core.erase.metadata",
+    "core.erase.residual",
+    "core.erase.sink",
+    "core.erase._platform",
 )
 
 
@@ -42,7 +48,6 @@ def _thunks(
     device: Device, job: EraseJob, candidate: object, entry: object
 ) -> dict[str, Callable[[], object]]:
     return {
-        "erase.erase_paths": lambda: files.erase_paths(["/tmp/x"], job_id="j"),
         "helper.rpc.encode_request": lambda: rpc.encode_request("m", {}, req_id=1),
         "helper.rpc.decode_request": lambda: rpc.decode_request(b"{}"),
         "helper.rpc.encode_response": lambda: rpc.encode_response(1, result={}),

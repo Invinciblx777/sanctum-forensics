@@ -10,6 +10,7 @@ from __future__ import annotations
 import errno
 import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -270,3 +271,145 @@ def test_eio_region_makes_verification_fail(
     )
     assert result.passed is False
     assert bad_offset in result.failed_offsets
+
+
+# --------------------------------------------------------------------------
+# Regression: the mmap buffer is released, and the wipe is still correct
+# --------------------------------------------------------------------------
+#
+# `_overwrite` writes from an mmap and closes it in a `finally`. Slicing a
+# memoryview of an mmap is an *export* of it, and an mmap with a live export
+# refuses to close - so a leaked slice turned the end of an otherwise complete
+# wipe into `BufferError: cannot close exported pointers exist`.
+#
+# The failure mode is nastier than a crash: by the time it fired, every byte had
+# already been written correctly. The device was wiped and the caller got an
+# exception instead of the outcome, so a caller that logged and moved on would
+# have recorded a failed wipe that actually succeeded, and one that retried
+# would have wiped a second time for nothing. Asserting only "no exception" is
+# therefore not enough; these assert the wipe is still right.
+
+
+def test_a_completed_wipe_returns_its_outcome_and_the_data_is_correct(
+    backing_file: Path,
+) -> None:
+    """The exact path that used to raise: a clean wipe reaching the finally block."""
+    size = backing_file.stat().st_size
+    outcome, _ = run_overwrite(backing_file, buffer_bytes=1 * MIB)
+
+    # The outcome object exists at all, which is what the BufferError destroyed.
+    assert outcome is not None
+    assert outcome.passes == 1
+    assert outcome.bytes_written == size, (
+        f"wrote {outcome.bytes_written} of {size} bytes"
+    )
+    assert outcome.unwritable == []
+
+    data = backing_file.read_bytes()
+    assert len(data) == size
+    assert set(data) == {0}
+
+
+def test_the_salvage_path_also_returns_a_correct_outcome(
+    backing_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The second leak site was the block-by-block retry, which slices per block.
+
+    It only runs after an EIO, so a wipe over healthy media never reached it and
+    the leak there would have survived a green test run.
+    """
+    bad_offset = 8 * MIB
+    real_write = os.write
+
+    def flaky_write(fd: int, data: Any) -> int:
+        position = os.lseek(fd, 0, os.SEEK_CUR)
+        if position <= bad_offset < position + len(data):
+            raise OSError(errno.EIO, "injected I/O error")
+        return real_write(fd, data)
+
+    monkeypatch.setattr(os, "write", flaky_write)
+    outcome, _ = run_overwrite(backing_file, buffer_bytes=1 * MIB)
+
+    assert outcome is not None
+    assert len(outcome.unwritable) == 1
+    # One block is unwritable; every other byte was still written.
+    size = backing_file.stat().st_size
+    assert outcome.bytes_written == size - BLOCK
+
+    data = backing_file.read_bytes()
+    assert data[bad_offset : bad_offset + BLOCK] == b"\xaa" * BLOCK
+    assert set(data[:bad_offset]) == {0}
+    assert set(data[bad_offset + BLOCK :]) == {0}
+
+
+def test_a_view_left_bound_in_a_frame_is_what_blocks_the_close() -> None:
+    """Why this bug needed a generator to appear at all.
+
+    Worth stating, because it decides where the fix has to go. A plain function
+    that slices a memoryview into a local is harmless on CPython: the local dies
+    with the frame at `return`, refcounting drops the export, and the mmap
+    closes. That is why `_write_block_by_block` alone never reproduced this -
+    reverting only its fix leaves every test in this file green.
+
+    `_overwrite` is a **generator**. Its frame survives across every `yield`, so
+    a view bound there stays alive for the whole wipe and is still holding the
+    export when the `finally` runs. This models both halves and shows only the
+    second one failing.
+    """
+    import mmap
+
+    def slices_and_returns(buffer: mmap.mmap) -> None:
+        view = memoryview(buffer)[:BLOCK]
+        assert len(view) == BLOCK  # bound, then dropped with the frame
+
+    plain = mmap.mmap(-1, 4 * BLOCK)
+    slices_and_returns(plain)
+    plain.close()  # fine: the frame is gone
+    assert plain.closed
+
+    def slices_and_yields(buffer: mmap.mmap) -> Any:
+        view = memoryview(buffer)[:BLOCK]
+        yield len(view)
+
+    generator = mmap.mmap(-1, 4 * BLOCK)
+    running = slices_and_yields(generator)
+    next(running)
+    with pytest.raises(BufferError):
+        generator.close()  # the suspended frame still holds the export
+    running.close()
+    generator.close()
+    assert generator.closed
+
+
+def test_the_salvage_helper_releases_every_slice_it_takes() -> None:
+    """`_write_block_by_block` under a caller that keeps its view alive.
+
+    On CPython this passes with or without the `with` inside the helper, for the
+    reason the test above shows. It is here so the contract is pinned rather
+    than left resting on refcounting: the helper takes N slices and must leave
+    none of them outstanding, which is what a non-refcounting runtime and any
+    future caller that holds its view both depend on.
+    """
+    import mmap
+
+    from core.erase.drive import _write_block_by_block
+
+    buffer = mmap.mmap(-1, 4 * BLOCK)
+    buffer.write(b"\xaa" * (4 * BLOCK))
+    view = memoryview(buffer)  # deliberately kept alive, as _overwrite does
+    with tempfile.TemporaryDirectory() as directory:
+        target = Path(directory) / "target.bin"
+        target.write_bytes(b"\x00" * (4 * BLOCK))
+        fd = os.open(target, os.O_WRONLY)
+        try:
+            written, bad = _write_block_by_block(fd, view, 0, BLOCK)
+        finally:
+            os.close(fd)
+        assert target.read_bytes() == b"\xaa" * (4 * BLOCK)
+
+    assert written == 4 * BLOCK
+    assert bad == []
+
+    view.release()
+    buffer.close()
+    assert buffer.closed

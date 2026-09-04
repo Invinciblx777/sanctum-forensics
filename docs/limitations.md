@@ -237,6 +237,90 @@ an existing segment set — and checkpoints during one are recorded in the ledge
 but not forced to disk, because `pyewf` exposes no flush. Both are refused or
 recorded rather than worked around. Acquiring to raw resumes normally.
 
+## Per-file overwrite is best effort, and the report names every gap
+
+`core/erase/files.py` writes through a file handle. That reaches the file's
+current data extents and nothing else. It does not reach:
+
+- the ext3/ext4/xfs journal or the NTFS `$LogFile`,
+- the NTFS `$UsnJrnl` change journal,
+- `$MFT` record slack or `$I30` index slack,
+- file slack between end-of-file and end-of-cluster,
+- any block a copy-on-write filesystem has already redirected away from,
+- a page a flash translation layer remapped after a TRIM.
+
+`core/erase/residual.py` enumerates each of these as a named finding with a
+derived severity rather than leaving them out of the report. **The enumeration
+is the deliverable.** A tool that reports "shredded, unrecoverable" is lying; a
+tool that reports "overwrote 3 extents, the ext4 journal may retain content, and
+2 snapshots still reference the old extents" is evidence.
+
+That the journal really is a recovery route is not a claim taken on trust here:
+`core/carve/fsaware.py` recovers deleted ext4 content from exactly that
+structure, and `tests/erase/files/test_residual_against_real_filesystems.py`
+pins the two modules to the same mechanism.
+
+### A file erase is usually unverifiable, and is reported as unverifiable
+
+`verify_file_erase` returns a **tri-state** `passed`. `None` means "the original
+physical location could not be read, so nothing is claimed", and it is the
+common answer. It refuses in four distinct situations:
+
+| situation | why nothing can be claimed |
+|---|---|
+| no extent map was captured | there is no address to read back |
+| copy-on-write filesystem | the overwrite went to freshly allocated blocks |
+| data was resident in metadata | there is no data extent at all |
+| raw device read refused | reading the original blocks needs root |
+
+Only after all four are cleared does it open the block device read-only, seek to
+the pre-erase physical offsets and compare. **Exactly one function in
+`core/erase/verify.py` can construct `passed=True`, and it is reachable only
+after that read.** A test parses the module's AST and fails the build if a
+second construction site appears.
+
+On an ordinary unprivileged run the honest outcome is: the file was overwritten,
+renamed, unlinked — and verification reports `not_possible`.
+
+### Hard-linked files are not overwritten by default
+
+A file with `st_nlink > 1` shares its inode with names the operator did not
+give. Overwriting it would destroy their content too, so by default only the
+named link is unlinked and `HARDLINK_SURVIVES` is reported at HIGH with the link
+count. **The data survives, and the report says so.** `break_hardlinks=True`
+overwrites anyway, and the finding still reports that it happened.
+
+### Metadata cleansing runs before the overwrite, and never claims a false clean
+
+Cleansed bytes are what get destroyed. The other order would leave the original
+EXIF block in whatever the overwrite did not reach.
+
+A file that could not be parsed is reported `parsed=False` with a reason, never
+as a clean file with zero fields — those two read identically in a report and
+only one of them is true. OLE compound documents (`.doc`, `.xls`, `.ppt`) and
+HTML are **identified but not rewritten**: doing so safely needs a full writer
+for each format, and a partial rewrite risks a document that no longer opens.
+Their metadata is destroyed by the overwrite that follows, not by the cleanser.
+
+A PDF updated incrementally keeps its earlier revisions in the same file.
+Clearing the current metadata does not clear a copy held in a previous revision.
+
+### Directory fsync is not available on Windows
+
+The rename chain is flushed with `fsync` on a directory handle, which POSIX
+supports and Windows does not expose unprivileged. On Windows the renames may
+remain recoverable from the directory index until the filesystem flushes on its
+own schedule, and the limitation is recorded on the record.
+
+### The Windows backend is untested on this build
+
+`core/erase/_platform/win.py` is written against the Win32 API and is
+type-checked as Windows in a second mypy pass, but no test has executed it: this
+project's CI host is Linux. Every method degrades to an honest unknown plus a
+recorded limitation when a call fails, so the worst case on an untried Windows
+build is a report full of unknowns rather than a false guarantee. The
+NTFS-specific tests skip off Windows with that stated as the reason.
+
 ## Platform
 
 Whole-device sanitization is Linux only. `core/erase/drive.py` refuses to import

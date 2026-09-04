@@ -37,8 +37,15 @@ install:
 lint:
 	$(PY) -m ruff check .
 
+# Two passes, because no single one can check both platform backends. The
+# first analyses as Linux (pyproject sets platform = "linux") and excludes
+# core/erase/_platform/win.py, whose ctypes-over-Win32 body cannot resolve
+# there. The second checks exactly that file as Windows. Without it the Windows
+# backend would never be type-checked at all: under platform = "linux" mypy
+# treats the `if sys.platform == "win32"` import as unreachable and skips it.
 typecheck:
 	$(PY) -m mypy --strict core/
+	$(PY) -m mypy --strict --platform win32 core/erase/_platform/win.py
 
 # No -q here: pyproject's addopts already sets it, and a second -q suppresses
 # the summary line, hiding the pass and skip counts.

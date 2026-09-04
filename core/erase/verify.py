@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import os
 import random
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
@@ -37,6 +37,9 @@ from core.models import (
     Device,
     DeviceCapabilities,
     EraseMethod,
+    Extent,
+    FileInspection,
+    FileVerificationResult,
     HiddenAreaReport,
     ResidualRiskAssessment,
     SanitizationLevel,
@@ -52,6 +55,7 @@ __all__ = [
     "detection_probability",
     "probability_statement",
     "assess_residual_risk",
+    "verify_file_erase",
 ]
 
 logger = structlog.get_logger(__name__)
@@ -471,4 +475,181 @@ def assess_residual_risk(
         factors=factors,
         purge_achieved=purge_achieved,
         notes=notes,
+    )
+
+
+# --------------------------------------------------------------------------
+# File-level verification
+# --------------------------------------------------------------------------
+#
+# The single worst bug this project can ship is a verifier that reports a pass
+# it did not earn: it tells an operator that data is gone when the tool never
+# looked at the place the data used to be. For a whole-device erase the medium
+# is right there to read. For a *file* erase it usually is not - the file is
+# unlinked, its extents may be reallocated, and reading the block device needs
+# root - so `passed` here is tri-state and `None` is the common answer.
+#
+# The structure enforces it rather than the discipline. There is exactly one
+# function in this module that can construct `passed=True`, it is only
+# reachable after a physical read has happened, and a test asserts both facts
+# against the source text.
+
+#: Filesystems whose writes land somewhere other than the original blocks. On
+#: these, reading the pre-erase extents proves nothing about the old content:
+#: the overwrite went to freshly allocated blocks and the originals are still
+#: out there, referenced by a snapshot or waiting to be reused.
+_COW_FILESYSTEMS = frozenset({"btrfs", "zfs", "apfs", "refs", "bcachefs", "nilfs2"})
+
+#: Cap on bytes read back per extent, so verifying a 40 GiB file does not read
+#: 40 GiB. The prefix is what an overwrite would have changed first.
+_VERIFY_EXTENT_CAP = 8 * MIB
+
+
+def _passed_after_physical_read(
+    *, extents_checked: int, bytes_checked: int, failed_offsets: list[int]
+) -> FileVerificationResult:
+    """The ONLY constructor that may report a file erase as verified.
+
+    Reaching this function means :func:`_read_physical_extents` opened the block
+    device ``O_RDONLY``, seeked to the pre-erase physical offsets and compared
+    the bytes it found there. Every other path in this module returns
+    ``passed=None`` with a reason.
+
+    Keep it that way. A second ``passed=True`` anywhere in this file would let a
+    future edit ship a verification the tool never performed, and
+    ``test_exactly_one_construction_site_can_produce_a_pass`` fails the build if
+    one appears.
+    """
+    return FileVerificationResult(
+        passed=True if not failed_offsets else False,
+        strategy="physical_extent_read",
+        reason=(
+            f"Read {bytes_checked} bytes at {extents_checked} pre-erase "
+            "physical extent(s) directly from the block device and compared "
+            "the overwrite pattern."
+            + (
+                ""
+                if not failed_offsets
+                else f" {len(failed_offsets)} offset(s) still held other data."
+            )
+        ),
+        extents_checked=extents_checked,
+        bytes_checked=bytes_checked,
+        failed_offsets=failed_offsets,
+    )
+
+
+def _not_possible(reason: str) -> FileVerificationResult:
+    """Every refusal. ``passed`` is None: nothing is claimed in either direction."""
+    return FileVerificationResult(passed=None, strategy="not_possible", reason=reason)
+
+
+def _read_physical_extents(
+    device: str, extents: Sequence[Extent], expected_byte: int
+) -> tuple[int, int, list[int]]:
+    """Read each extent from the raw device. Returns (extents, bytes, failures).
+
+    Opened ``O_RDONLY`` with the same read-only flags the device verifier uses.
+    Nothing in this module ever opens a device for writing.
+    """
+    pattern = bytes([expected_byte])
+    fd = os.open(device, _READ_ONLY_FLAGS)
+    checked = 0
+    total = 0
+    failures: list[int] = []
+    try:
+        for extent in extents:
+            remaining = min(extent.length, _VERIFY_EXTENT_CAP)
+            cursor = extent.physical_offset
+            checked += 1
+            while remaining > 0:
+                os.lseek(fd, cursor, os.SEEK_SET)
+                chunk = os.read(fd, min(remaining, MIB))
+                if not chunk:
+                    break
+                total += len(chunk)
+                if chunk.strip(pattern):
+                    failures.append(cursor)
+                    break
+                cursor += len(chunk)
+                remaining -= len(chunk)
+    finally:
+        os.close(fd)
+    return checked, total, failures
+
+
+def verify_file_erase(
+    inspection: FileInspection,
+    *,
+    device_path: str | None = None,
+    expected_byte: int = 0x00,
+) -> FileVerificationResult:
+    """Confirm, by reading the medium, that a file's old blocks no longer hold it.
+
+    Refuses in four distinct situations, each with its own reason, and returns
+    ``passed=None`` for every one of them. Only after all four are cleared does
+    it read the raw device and hand the result to
+    :func:`_passed_after_physical_read`.
+
+    ``None`` is the honest answer far more often than not: an unprivileged file
+    erase on a copy-on-write filesystem, or one whose filesystem would not
+    produce an extent map, cannot be verified at all. Saying so is the point.
+    """
+    if not inspection.extents:
+        return _not_possible(
+            "No physical extent map was captured before the erase, so there is "
+            "no address to read back. This is the usual case on a filesystem "
+            "that does not answer FIEMAP or FSCTL_GET_RETRIEVAL_POINTERS, and "
+            "on a file whose data was resident in its metadata record. Nothing "
+            "is claimed."
+        )
+
+    if inspection.fs_type.lower() in _COW_FILESYSTEMS:
+        return _not_possible(
+            f"{inspection.fs_type} is copy-on-write: the overwrite was written "
+            "to newly allocated blocks, so reading the pre-erase extents would "
+            "test blocks the overwrite never touched. A clean read here would "
+            "mean nothing and a dirty one would mean nothing either. Nothing "
+            "is claimed."
+        )
+
+    if inspection.is_resident is True:
+        return _not_possible(
+            "The file's data was resident inside a filesystem metadata record, "
+            "which has no data extent to read. Nothing is claimed."
+        )
+
+    device = device_path
+    if device is None:
+        from core.erase._platform import backend
+
+        device, limitations = backend().block_device_for(Path(inspection.path))
+        if device is None:
+            return _not_possible(
+                "The block device holding this file could not be identified, so "
+                "its original physical blocks cannot be read back. "
+                + " ".join(limitations)
+            )
+
+    try:
+        checked, total, failures = _read_physical_extents(
+            device, inspection.extents, expected_byte
+        )
+    except OSError as exc:
+        return _not_possible(
+            f"Raw read access to {device} was refused ({exc}). Verifying a file "
+            "erase requires reading the original physical blocks, which needs "
+            "root or administrator. Nothing is claimed."
+        )
+
+    logger.info(
+        "file_erase_verified",
+        path=inspection.path,
+        device=device,
+        extents=checked,
+        bytes_checked=total,
+        failures=len(failures),
+    )
+    return _passed_after_physical_read(
+        extents_checked=checked, bytes_checked=total, failed_offsets=failures
     )

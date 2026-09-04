@@ -39,6 +39,19 @@ __all__ = [
     "LedgerEntry",
     "ForensicReport",
     "Progress",
+    # M2: file and folder erasure
+    "Extent",
+    "FileInspection",
+    "ResidualKind",
+    "Severity",
+    "ResidualFinding",
+    "MetadataField",
+    "MetadataCleanseResult",
+    "FileErasePhase",
+    "FileEraseOptions",
+    "FileEraseRecord",
+    "FileEraseResult",
+    "FileVerificationResult",
 ]
 
 
@@ -524,3 +537,272 @@ class Progress(BaseModel):
     #: recording it at finer resolution would be false precision.
     eta_seconds: int
     message: str
+
+
+# ---------------------------------------------------------------------------
+# M2: file and folder erasure
+# ---------------------------------------------------------------------------
+
+
+class Extent(BaseModel):
+    """One contiguous physical run of a file, captured *before* erasure.
+
+    The timing is the whole point. Once the file is unlinked there is no handle
+    left that maps to those physical blocks, so an extent map captured
+    afterwards does not exist and post-erase verification would have nothing to
+    read back. This is the only record of where the bytes actually were.
+    """
+
+    #: Logical offset within the file, in bytes.
+    logical_offset: int
+    #: Physical offset on the volume, in bytes from the start of the volume.
+    physical_offset: int
+    length: int
+
+    @property
+    def end(self) -> int:
+        """First byte after the extent, physically."""
+        return self.physical_offset + self.length
+
+
+class FileInspection(BaseModel):
+    """Everything known about a file *before* anything is written to it.
+
+    Every field a platform may be unable to determine is ``bool | None`` or
+    ``list[...] | None``, and ``None`` means "could not determine". Reporting an
+    unknown as ``False`` would be the tool claiming a guarantee it does not
+    have - "there are no snapshots" and "nobody could ask about snapshots" lead
+    an operator to opposite decisions.
+    """
+
+    path: str
+    size_bytes: int
+    fs_type: str = ""
+    #: Cluster/allocation-unit size in bytes; 0 when it could not be read.
+    cluster_bytes: int = 0
+    is_resident: bool | None = None
+    extents: list[Extent] = []
+    is_sparse: bool | None = None
+    is_compressed: bool | None = None
+    is_encrypted: bool | None = None
+    hardlink_count: int = 1
+    #: Alternate data stream names as reported by the OS, e.g. ":hidden:$DATA".
+    alt_data_streams: list[str] = []
+    xattrs: list[str] = []
+    is_immutable: bool | None = None
+    is_reparse_point: bool = False
+    #: Names of snapshots referencing this subvolume/dataset; None = unknown.
+    cow_snapshots: list[str] | None = None
+    #: Shadow copy IDs on this volume; None = unknown (usually: not admin).
+    vss_shadow_ids: list[str] | None = None
+    vss_present: bool | None = None
+    trim_likely: bool | None = None
+    #: True when the path lies under a known cloud-sync directory.
+    in_sync_directory: bool = False
+    #: Plain-language reasons a field above is unknown. Surfaced in the report.
+    limitations: list[str] = []
+
+    @property
+    def slack_bytes(self) -> int:
+        """Bytes between end-of-file and end-of-cluster. 0 when unknown.
+
+        0 is returned both for "no slack" and for "cluster size unknown", which
+        would be a dangerous conflation anywhere else. It is safe here because
+        the residual scanner reports FILE_SLACK only on a positive value, so an
+        unknown produces no finding rather than a false reassurance - and the
+        unknown itself is already carried as a limitation.
+        """
+        if self.cluster_bytes <= 0:
+            return 0
+        remainder = self.size_bytes % self.cluster_bytes
+        return 0 if remainder == 0 else self.cluster_bytes - remainder
+
+
+class ResidualKind(StrEnum):
+    """What kind of thing survived. One member per detection this tool makes."""
+
+    RESIDENT_MFT_DATA = "RESIDENT_MFT_DATA"
+    ALT_DATA_STREAM = "ALT_DATA_STREAM"
+    FS_JOURNAL = "FS_JOURNAL"
+    USN_JOURNAL = "USN_JOURNAL"
+    MFT_SLACK = "MFT_SLACK"
+    INDEX_SLACK = "INDEX_SLACK"
+    COW_SNAPSHOT = "COW_SNAPSHOT"
+    VSS_SHADOW_COPY = "VSS_SHADOW_COPY"
+    FILE_SLACK = "FILE_SLACK"
+    TRIM_REMAP = "TRIM_REMAP"
+    COMPRESSED_REALLOC = "COMPRESSED_REALLOC"
+    ENCRYPTED_EFS = "ENCRYPTED_EFS"
+    HARDLINK_SURVIVES = "HARDLINK_SURVIVES"
+    SPARSE_UNWRITTEN = "SPARSE_UNWRITTEN"
+    BACKUP_COPY_LIKELY = "BACKUP_COPY_LIKELY"
+
+
+class Severity(StrEnum):
+    """Derived from what survives, never guessed.
+
+    HIGH: the full content plausibly survives.
+    MEDIUM: fragments or metadata survive.
+    LOW: only filenames survive.
+    """
+
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+
+
+class ResidualFinding(BaseModel):
+    """One thing this erase could not guarantee, in words an operator can act on."""
+
+    kind: ResidualKind
+    severity: Severity
+    explanation: str
+    #: True when the operator can do something about it (delete the snapshots,
+    #: erase the other hardlink). False when only the filesystem or firmware can.
+    addressable: bool
+    detail: dict[str, Any] = {}
+
+
+class MetadataField(BaseModel):
+    """One metadata field that was found, and whether it was removed."""
+
+    container: str
+    name: str
+    removed: bool
+
+
+class MetadataCleanseResult(BaseModel):
+    """What cleansing found and removed. Never claims clean on an unparsed file."""
+
+    path: str
+    format: str
+    parsed: bool
+    fields: list[MetadataField] = []
+    #: Why the file could not be parsed, or a caveat about what survived.
+    limitations: list[str] = []
+
+    @property
+    def removed_count(self) -> int:
+        return sum(1 for field in self.fields if field.removed)
+
+
+class FileErasePhase(StrEnum):
+    """Phases of a single-file erase, in execution order. One ledger entry each."""
+
+    INSPECT = "INSPECT"
+    CLEANSE = "CLEANSE"
+    OVERWRITE = "OVERWRITE"
+    STREAMS = "STREAMS"
+    TRUNCATE = "TRUNCATE"
+    RENAME = "RENAME"
+    UNLINK = "UNLINK"
+    RESIDUAL = "RESIDUAL"
+    VERIFY = "VERIFY"
+
+
+class FileEraseOptions(BaseModel):
+    """Caller-controlled policy. Both destructive gates default to closed."""
+
+    #: Gate 1. Nothing is written while this is True.
+    dry_run: bool = True
+    #: Gate 2. Must be set explicitly even when dry_run is False.
+    confirm: bool = False
+    cleanse_metadata: bool = True
+    #: When False (the default) a file with st_nlink > 1 is unlinked but NOT
+    #: overwritten, because overwriting would destroy data reachable under a
+    #: name the operator did not ask about. Either way HARDLINK_SURVIVES is
+    #: reported.
+    break_hardlinks: bool = False
+    rename_rounds: int = 8
+    recursive: bool = True
+    #: None means cpu_count(). 1 forces the inline path with no pool.
+    workers: int | None = None
+    #: Below this many paths the pool is not started; spawn costs more than it
+    #: saves. Exposed so tests can force either path.
+    pool_threshold: int = 32
+
+
+class FileVerificationResult(BaseModel):
+    """Whether the erased bytes were physically confirmed gone.
+
+    ``passed`` is tri-state on purpose. ``False`` means "read the original
+    physical location and the pattern was not there". ``None`` means "could not
+    read it, so nothing is claimed". Collapsing those two into one boolean is
+    how a tool ends up reporting a pass it never earned, and for a file erase
+    ``None`` is by far the common case.
+    """
+
+    passed: bool | None
+    strategy: Literal["physical_extent_read", "not_possible"]
+    reason: str = ""
+    extents_checked: int = 0
+    bytes_checked: int = 0
+    failed_offsets: list[int] = []
+
+
+class FileEraseRecord(BaseModel):
+    """Outcome for one path. Batch results hold these in input order."""
+
+    path: str
+    ok: bool
+    dry_run: bool
+    inspection: FileInspection
+    #: Bytes overwritten in the unnamed data stream.
+    bytes_overwritten: int = 0
+    #: Streams and xattrs overwritten then removed.
+    streams_removed: list[str] = []
+    xattrs_removed: list[str] = []
+    #: Sizes passed to ftruncate, in order.
+    truncate_steps: list[int] = []
+    #: The names the file was renamed through, in order. Same length as the
+    #: original name by construction; a test asserts it.
+    rename_chain: list[str] = []
+    unlinked: bool = False
+    #: True when this record describes a directory rather than a file.
+    is_directory: bool = False
+    cleanse: MetadataCleanseResult | None = None
+    findings: list[ResidualFinding] = []
+    verification: FileVerificationResult | None = None
+    limitations: list[str] = []
+    #: Populated instead of raising. A batch never aborts for one bad file.
+    error: str | None = None
+    error_kind: str | None = None
+
+    @property
+    def highest_severity(self) -> Severity | None:
+        order = {Severity.LOW: 0, Severity.MEDIUM: 1, Severity.HIGH: 2}
+        return (
+            max((item.severity for item in self.findings), key=lambda s: order[s])
+            if self.findings
+            else None
+        )
+
+
+class FileEraseResult(BaseModel):
+    """Outcome of one ``erase_paths`` call."""
+
+    job_id: str
+    started_at: datetime
+    finished_at: datetime
+    dry_run: bool
+    #: In the order the caller supplied the paths, regardless of completion order.
+    records: list[FileEraseRecord] = []
+    limitations: list[str] = []
+
+    @property
+    def succeeded(self) -> int:
+        return sum(1 for record in self.records if record.ok)
+
+    @property
+    def failed(self) -> int:
+        return sum(1 for record in self.records if not record.ok)
+
+    @property
+    def highest_severity(self) -> Severity | None:
+        order = {Severity.LOW: 0, Severity.MEDIUM: 1, Severity.HIGH: 2}
+        found = [
+            finding.severity
+            for record in self.records
+            for finding in record.findings
+        ]
+        return max(found, key=lambda s: order[s]) if found else None
