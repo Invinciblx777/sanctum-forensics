@@ -716,23 +716,42 @@ def validate_bytes(
 
 
 def validate_candidate(
-    candidate: CarveCandidate, image: EvidenceHandle
+    candidate: CarveCandidate,
+    image: EvidenceHandle | None = None,
+    *,
+    data: bytes | None = None,
 ) -> CarveCandidate:
     """Return ``candidate`` with ``validation`` set from a real decode attempt.
 
     The evidence handle is read-only, and the candidate's bytes are copied into
     memory before any decoder sees them, so nothing a decoder does can reach
     the image.
+
+    ``data`` supplies the bytes directly, and a caller that has them **must**
+    pass them. ``candidate.offset`` and ``candidate.length`` describe one
+    contiguous range, which is the wrong shape for a file the filesystem stored
+    in several runs: reading that range back from the image would hand the
+    decoder the right length of the wrong bytes, and the verdict would be about
+    something that was never a file. :func:`core.carve.fsaware.read_recovered`
+    produces the correct bytes for those candidates, and this is where they go
+    in - mirroring ``data`` on :func:`~core.carve.classify.classify_candidate`
+    and :func:`~core.carve.score.score_candidate`.
     """
-    if candidate.length > MAX_VALIDATE_BYTES:
+    if data is None and image is None:
+        raise ValueError("validate_candidate needs either data or an image to read")
+
+    if data is None and candidate.length > MAX_VALIDATE_BYTES:
         report = _unavailable(
             "none",
             f"candidate is {candidate.length} bytes, above the "
             f"{MAX_VALIDATE_BYTES} byte in-memory validation budget",
         )
     else:
-        data = _read_candidate(candidate, image)
-        report = validate_bytes(data, candidate.ext)
+        payload = data
+        if payload is None:
+            assert image is not None
+            payload = _read_candidate(candidate, image)
+        report = validate_bytes(payload, candidate.ext)
 
     logger.debug(
         "candidate.validated",

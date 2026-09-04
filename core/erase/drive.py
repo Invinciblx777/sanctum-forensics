@@ -402,20 +402,25 @@ def _write_block_by_block(
     written = 0
     bad: list[UnwritableRange] = []
     for start in range(0, len(buffer), block):
-        chunk = buffer[start : start + block]
-        os.lseek(fd, offset + start, os.SEEK_SET)
-        try:
-            os.write(fd, chunk)
-        except OSError as exc:
-            if exc.errno != errno.EIO:
-                raise
-            bad.append(
-                UnwritableRange(
-                    offset=offset + start, length=len(chunk), errno=exc.errno
+        # Released explicitly: a slice of a memoryview is itself an export of
+        # the underlying mmap, and an mmap with a live export refuses to close.
+        # Leaving these to the garbage collector made the whole wipe end in
+        # "BufferError: cannot close exported pointers exist" from the finally
+        # block that releases the buffer.
+        with buffer[start : start + block] as chunk:
+            os.lseek(fd, offset + start, os.SEEK_SET)
+            try:
+                os.write(fd, chunk)
+            except OSError as exc:
+                if exc.errno != errno.EIO:
+                    raise
+                bad.append(
+                    UnwritableRange(
+                        offset=offset + start, length=len(chunk), errno=exc.errno
+                    )
                 )
-            )
-        else:
-            written += len(chunk)
+            else:
+                written += len(chunk)
     return written, bad
 
 
@@ -480,15 +485,19 @@ def _overwrite(
                     # Final partial block: pad up to a whole block. Never a
                     # short write, and never an unaligned length under O_DIRECT.
                     span = ((span // block) + 1) * block
-                view = memoryview(buffer)[:span]
-                try:
-                    os.lseek(fd, offset, os.SEEK_SET)
-                    written = os.write(fd, view)
-                except OSError as exc:
-                    if exc.errno != errno.EIO:
-                        raise
-                    written, bad = _write_block_by_block(fd, view, offset, block)
-                    unwritable.extend(bad)
+                # ``with``, so the export is dropped before the next iteration
+                # and before the mmap is closed. Without it every pass leaks a
+                # view and ``buffer.close()`` raises BufferError at the end of
+                # an otherwise complete wipe.
+                with memoryview(buffer)[:span] as view:
+                    try:
+                        os.lseek(fd, offset, os.SEEK_SET)
+                        written = os.write(fd, view)
+                    except OSError as exc:
+                        if exc.errno != errno.EIO:
+                            raise
+                        written, bad = _write_block_by_block(fd, view, offset, block)
+                        unwritable.extend(bad)
 
                 advanced = span
                 total_written += written

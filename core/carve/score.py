@@ -20,7 +20,9 @@ component                     weight  what it establishes
 ``entropy``                     1000  the byte distribution matches what this
                                       format produces
 ``fs_metadata``                 1500  a surviving filesystem record agrees
-                                      that a file lives here
+                                      that a file lived here - which is not
+                                      the same as the bytes there now being
+                                      that file, and is weighted accordingly
 ``no_overlap``                   500  no higher-scoring candidate claims the
                                       same bytes
 ============================  ======  ====================================
@@ -183,8 +185,34 @@ ORIGINAL_WEIGHTS = ScoreWeights()
 #:   parser-derived length agree is worth more than a corrupt one; 1000 keeps
 #:   it out of HIGH by construction, since 2000 + 1500 + 1000 + 1000 + 1500 +
 #:   500 is 7500 even with every other component awarded.
+#:
+#: ``fs_metadata`` did **not** move, and is now stated explicitly rather than
+#: inherited from the default, because it has finally been measured. The
+#: filesystem calibration run swept it from 0 to 5000 over real NTFS, FAT32,
+#: exFAT, ext2, ext3 and ext4 images and found two hard boundaries:
+#:
+#: * At **2000** a candidate that recovered *no bytes at all* reaches MEDIUM -
+#:   a filename read out of NTFS ``$I30`` slack whose content is gone. A report
+#:   must not give an examiner a middling confidence in a file it did not
+#:   recover.
+#: * At **4000** the component alone carries a candidate no decoder confirmed
+#:   into HIGH: 2000 header + 1500 derived length + 500 no-overlap + 4000 is
+#:   exactly the 8000 floor with a decoder verdict of *corrupt*.
+#:
+#: Below 2000 the sweep is flat - HIGH precision stays at 100.0% and the bucket
+#: contents do not change - so the measurement bounds the weight from above and
+#: says nothing from below. 1500 is therefore retained as the largest value the
+#: evidence permits. Raising it to 5000 makes the aggregate numbers look
+#: *better* (96.0% precision, 93.8% recall) by promoting three hundred
+#: correctly recovered filler files, while simultaneously scoring HIGH a FAT32
+#: recovery the corpus knows is wrong. That is the trap this component exists
+#: to avoid: a filesystem record agreeing that a file lived at an offset says
+#: nothing about whether the bytes there now are that file.
 CALIBRATED_WEIGHTS = ScoreWeights(
-    decoder_valid=4000, decoder_truncated=1000, decoder_unavailable=1000
+    decoder_valid=4000,
+    decoder_truncated=1000,
+    decoder_unavailable=1000,
+    fs_metadata=1500,
 )
 
 WEIGHTS = CALIBRATED_WEIGHTS
@@ -313,6 +341,17 @@ def gather_evidence(
         entropy_matches = _entropy_matches(
             candidate.ext, entropy_millibits, high_windows_bp
         )
+    if payload is not None and not payload:
+        # Zero bytes measure as zero bits per byte, which clears the floor for
+        # every "low entropy" format and awarded the component to a candidate
+        # that recovered nothing at all. An unmeasurable component scores zero;
+        # it does not score full marks for being empty. Found by the
+        # filesystem calibration run: a name recovered from NTFS $I30 slack,
+        # with no content behind it, was being handed the entropy component and
+        # pushed towards MEDIUM.
+        entropy_matches = False
+        entropy_millibits = None
+        high_windows_bp = None
 
     return ScoreEvidence(
         header_match=header_match,

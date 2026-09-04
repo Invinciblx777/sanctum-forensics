@@ -119,13 +119,123 @@ controller, not only the one named. `format` acts **per namespace**; every
 namespace is iterated and named, and a namespace created after the run is not
 covered.
 
-## The ledger is not yet hash-chained
+## The ledger is mandatory, and there is no longer a fallback
 
-`core/erase/drive.py` currently defaults to `InMemoryLedger`, which keeps entries
-in memory and mirrors them to structlog. It is neither durable nor hash-chained.
-Until M4 lands `core/ledger`, a run made with the default sink is **not
-independently auditable**, and that limitation is attached to every result it
-produces.
+This section previously recorded that `core/erase/drive.py` defaulted to an
+in-memory ledger that was neither durable nor hash-chained, so a run made
+without an explicit sink was not independently auditable.
+
+That hole is closed. `execute()` now **refuses to start** without a ledger:
+
+```
+execute() needs a ledger: every phase must be recorded in the hash-chained
+audit log. Pass ChainLedgerSink(Ledger(root, ...)).
+```
+
+The in-memory implementation is gone from `core/`. An equivalent lives in
+`tests/erase/test_overwrite_file.py`, where its lack of durability costs
+nothing, because what those tests need is to see the phase records the
+overwrite loop emits — the chain itself is covered by `tests/ledger/`.
+
+## Undelete recovers a different amount on every filesystem
+
+`core/carve/fsaware.py` recovers deleted files from surviving filesystem
+records. How much that is worth is not the same on any two filesystems, and
+averaging them into one number would describe none of them. Measured against
+`testkit/generate_corpus.py`'s real filesystem images, on the date in
+`docs/performance/calibration.md`:
+
+| filesystem | deleted | recovered exactly | recall |
+|---|---:|---:|---:|
+| NTFS | 25 | 24 | 96.0% |
+| FAT32 | 246 | 235 | 95.5% |
+| ext2 | 2 | 2 | 100.0% |
+| ext3 | 2 | 2 | 100.0% |
+| exFAT | 2 | 1 | 50.0% |
+| **ext4** | **2** | **0** | **0.0%** |
+
+### ext4 recovers essentially nothing, by design
+
+`ext4_ext_remove_space` zeroes the inode's extent tree when a file is
+unlinked. The inode survives with its size, its mode and its timestamps, and
+points at **no blocks at all**. There is nothing to follow, and no
+implementation can change that.
+
+What is recovered instead comes from the jbd2 journal: stale copies of
+inode-table blocks written before the tree was zeroed. The journal is a
+circular buffer covering only the recent past, so a file deleted before it
+wrapped is gone from it, and the recovered inodes carry no filename — ext4
+keeps names in directory blocks, which cannot be tied to an inode number
+without the transaction that wrote both.
+
+**ext4 is not demonstrated.** On ext4, use the signature carver over the
+unallocated map, which `undelete_report()` returns for exactly this reason.
+
+### FAT recovery is a reconstruction, however clean the result looks
+
+FAT deletion zeroes the file's cluster chain. The start cluster and the size
+survive; the layout does not. Recovery walks forward from the start cluster
+taking clusters the FAT currently shows as free and skipping any a live file
+now owns.
+
+That reconstruction is right for an unfragmented file, and right surprisingly
+often for a fragmented one — but only while its neighbours still exist. Once a
+neighbouring file has *also* been deleted, its freed clusters are
+indistinguishable from this file's and are pulled into the result. The
+recovered file is then the right length and the wrong content, and **nothing on
+the volume can detect it**. Every FAT candidate is therefore marked
+`contiguity_assumed`, whatever it looks like.
+
+Where a cluster between a file's first and last is allocated to a live file,
+fragmentation is *proven* and the candidate says so separately. The absence of
+that proof is not evidence of contiguity.
+
+### exFAT is the one case where the filesystem records the answer
+
+The stream extension entry carries a `NoFatChain` flag. When it is set, exFAT
+stored the file as one run and kept no chain for it *while it was live*, so a
+contiguous read is a recorded fact rather than an assumption, and
+`contiguity_assumed` is false. When it is clear, the file used a chain that
+deletion destroyed and exFAT is no better off than FAT32. Which case applied is
+recorded on every exFAT candidate.
+
+### ext3's measured recall is an upper bound
+
+The corpus deletes ext2 and ext3 files by unlinking, freeing the blocks and
+setting `i_dtime`, leaving the block pointers in the inode. That is exactly
+what ext2 does. A Linux 2.6 or later kernel also runs `ext3_truncate` on
+delete, which zeroes `i_block` as well — so **real ext3 recall is at or below
+the 100% measured here**, and on a modern kernel it will be closer to ext4's.
+ext2's figure stands as measured.
+
+### NTFS resident files are reassembled around the update sequence
+
+A file small enough to fit inside its MFT record has no run list: its content
+is part of the record, and NTFS has overwritten the last two bytes of each
+sector of that record with a check value. Those bytes are spliced back from the
+record's update sequence array, so the recovered content is exact. If a future
+NTFS variant changed the fixup layout, this would produce two wrong bytes per
+sector in small files, which is why `candidate.sha256` is computed over the
+same extents `read_recovered()` returns rather than over the bytes TSK hands
+back — the claim is checkable.
+
+## E01 acquisition is uncompressed, and slightly larger than the source
+
+`pyewf` binds exactly one write-configuration setter, `set_header_codepage`.
+`libewf_handle_set_compression_values` is not reachable from Python, so
+`AcquireOptions.compression` is accepted and **has no effect**. libewf's default
+is not "fast"; it is *no compression*.
+
+An E01 written by this tool is therefore marginally **larger** than the source.
+Confirmed with `ewfinfo` against a container this codebase wrote: 8 MiB of a
+single repeated byte produced 8,394,899 bytes. E01 here is a container format
+and an integrity record, never a space saving. Use `ewfacquire -c fast` where a
+compressed container is required.
+
+An E01 acquisition also **cannot be resumed** — libewf has no append mode for
+an existing segment set — and checkpoints during one are recorded in the ledger
+but not forced to disk, because `pyewf` exposes no flush. Both are refused or
+recorded rather than worked around. Acquiring to raw resumes normally.
 
 ## Platform
 

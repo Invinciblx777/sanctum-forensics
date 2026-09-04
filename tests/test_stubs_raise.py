@@ -11,7 +11,6 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
-from core.carve import fsaware
 from core.erase import files
 from core.models import Device, EraseJob
 from helper import daemon, rpc
@@ -35,16 +34,15 @@ IMPLEMENTED = (
     "core.carve.validate",
     "core.carve.score",
     "core.carve.classify",
+    "core.carve.fsaware",
 )
 
 
 def _thunks(
     device: Device, job: EraseJob, candidate: object, entry: object
 ) -> dict[str, Callable[[], object]]:
-    img = object()  # EvidenceHandle is a Protocol; a stub never inspects it
     return {
         "erase.erase_paths": lambda: files.erase_paths(["/tmp/x"], job_id="j"),
-        "carve.undelete": lambda: fsaware.undelete(img),  # type: ignore[arg-type]
         "helper.rpc.encode_request": lambda: rpc.encode_request("m", {}, req_id=1),
         "helper.rpc.decode_request": lambda: rpc.decode_request(b"{}"),
         "helper.rpc.encode_response": lambda: rpc.encode_response(1, result={}),

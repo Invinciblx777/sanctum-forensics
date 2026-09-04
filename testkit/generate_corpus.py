@@ -51,6 +51,11 @@ __all__ = [
     "MANIFEST_NAME",
     "generate_corpus",
     "load_manifest",
+    "FilesystemFile",
+    "FilesystemCorpus",
+    "FS_MANIFEST_NAME",
+    "generate_filesystem_corpus",
+    "load_filesystem_manifest",
     "main",
 ]
 
@@ -447,3 +452,462 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# --------------------------------------------------------------------------
+# Filesystem corpus
+# --------------------------------------------------------------------------
+#
+# The image above is a flat canvas with objects planted in it, which measures
+# the signature and structure carvers and nothing else. Filesystem-aware
+# recovery needs real volumes: real mkfs output, real directory entries, real
+# deletion. Those are built here, on top of testkit.fsimage, and the manifest
+# records per file what filesystem it was on, whether it was deleted, whether
+# it was fragmented, and its SHA-256 - which is what makes a per-filesystem
+# recall table possible rather than one averaged number that hides ext4 behind
+# NTFS.
+
+FS_MANIFEST_NAME = "filesystem_truth.json"
+
+#: NTFS needs room for its metadata files before it will accept any content.
+NTFS_IMAGE_BYTES = 24 * MIB
+
+#: The smallest volume ``mkfs.vfat -F 32`` will still format as FAT32 with
+#: room to spare. This image is filled to capacity to force fragmentation, so
+#: unlike the others it occupies its full size on disk.
+FAT_IMAGE_BYTES = 40 * MIB
+
+#: Filler size, and therefore the size of every hole the fragmented file is
+#: threaded through.
+FAT_FILLER_BYTES = 256 * KIB
+
+#: The fragmented file, sized to span several holes and so be fragmented
+#: several times over rather than merely split in two.
+FAT_FRAGMENT_BYTES = 5 * FAT_FILLER_BYTES
+
+#: exFAT and ext hold a handful of small files and need nothing more.
+SMALL_IMAGE_BYTES = 12 * MIB
+
+
+@dataclass(frozen=True)
+class FilesystemFile:
+    """One file planted in one filesystem image, with its ground truth."""
+
+    image: str
+    filesystem: str
+    name: str
+    sha256: str
+    size: int
+    deleted: bool
+    fragmented: bool
+    #: True when a correct undelete reproduces these bytes exactly. Deleted
+    #: files on ext4 are deliberately **not** recoverable: the extent tree is
+    #: gone, and a corpus that claimed otherwise would be measuring a
+    #: filesystem nobody runs.
+    recoverable: bool
+    #: Why this row is what it is, for a reader of the manifest.
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class FilesystemCorpus:
+    """Every filesystem image built, and everything planted in them."""
+
+    images: list[str]
+    files: list[FilesystemFile]
+    #: Images built to be damaged, and what was done to each.
+    damaged: dict[str, str]
+    #: Image-absolute byte offset of each partition in the multi-partition
+    #: image, so a test can check a recovered offset against a known plant.
+    partition_offsets: list[int]
+
+    def for_filesystem(self, filesystem: str) -> list[FilesystemFile]:
+        return [item for item in self.files if item.filesystem == filesystem]
+
+    def recoverable_digests(self, filesystem: str | None = None) -> set[str]:
+        return {
+            item.sha256
+            for item in self.files
+            if item.recoverable
+            and (filesystem is None or item.filesystem == filesystem)
+        }
+
+
+def _fs_objects(rng: random.Random) -> list[tuple[str, bytes]]:
+    """Real files, produced by real encoders, for planting in a volume."""
+    return [
+        ("photo.jpg", make_jpeg(rng, 128, gps=True)),
+        ("screenshot.png", make_png(rng, 96)),
+        ("statement.pdf", make_pdf()),
+        ("archive.zip", make_zip(rng)),
+        ("letter.docx", make_docx()),
+        ("budget.xlsx", make_xlsx()),
+        ("contacts.sqlite", make_sqlite()),
+        ("sticker.gif", make_gif()),
+        ("clip.mp4", make_mp4()),
+        ("second.jpg", make_jpeg(rng, 160)),
+    ]
+
+
+def _ntfs_objects(rng: random.Random) -> list[tuple[str, bytes]]:
+    """Twenty distinct files for the NTFS image.
+
+    Distinct is the requirement, not merely twenty. Several of the generators
+    above take no randomness - ``make_pdf`` and ``make_gif`` produce the same
+    bytes every call - so planting one list twice yields duplicate content, and
+    a recall counted over SHA-256 would report eight recovered files as six. So
+    every object here is parameterised by something that actually varies.
+    """
+    objects: list[tuple[str, bytes]] = []
+    for index in range(10):
+        photo = make_jpeg(rng, 96 + index * 8, gps=index % 2 == 0)
+        objects.append((f"photo{index:02d}.jpg", photo))
+    for index in range(5):
+        objects.append((f"shot{index:02d}.png", make_png(rng, 64 + index * 16)))
+    for index in range(3):
+        objects.append((f"arch{index:02d}.zip", make_zip(rng, entries=2 + index)))
+    objects.append(("contacts.sqlite", make_sqlite(rows=120)))
+    objects.append(("messages.sqlite", make_sqlite(rows=260)))
+    return objects
+
+
+def generate_filesystem_corpus(  # noqa: C901 - one pass per filesystem, read top to bottom
+    out_dir: Path, *, seed: int = 0
+) -> FilesystemCorpus:
+    """Build one image per filesystem, plus the damaged and multi-partition ones.
+
+    Needs no root. Every builder in :mod:`testkit.fsimage` writes the on-disk
+    structures directly or drives a tool that does, because a corpus that only
+    builds under ``sudo`` stops being built and nobody finds out until it
+    matters.
+    """
+    # Image sizes are kept small on purpose. The corpus is built into pytest's
+    # tmp_path, which on most Linux hosts is a tmpfs - so every megabyte here
+    # is a megabyte of RAM, held for the session and for the two previous
+    # sessions pytest keeps. Filling a FAT32 volume to capacity to force
+    # fragmentation materialises the whole image, so that one dominates: it is
+    # sized to the smallest volume mkfs.vfat will still format as FAT32.
+    from testkit.fsimage import (
+        PlantedFile,
+        build_exfat,
+        build_ext,
+        build_fat32,
+        build_ntfs,
+        build_two_partition_image,
+        damage_boot_sector,
+        damage_partition_table,
+        ntfs_reuse_record,
+        quick_format,
+        sparse_copy,
+    )
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rng = random.Random(seed)
+    objects = _fs_objects(rng)
+    rows: list[FilesystemFile] = []
+    images: list[str] = []
+
+    def record(
+        image: str,
+        filesystem: str,
+        planted: PlantedFile,
+        *,
+        recoverable: bool,
+        note: str = "",
+    ) -> None:
+        rows.append(
+            FilesystemFile(
+                image=image,
+                filesystem=filesystem,
+                name=planted.name,
+                sha256=hashlib.sha256(planted.data).hexdigest(),
+                size=len(planted.data),
+                deleted=planted.deleted,
+                fragmented=planted.fragmented,
+                recoverable=recoverable,
+                note=note,
+            )
+        )
+
+    # -- NTFS: the demo filesystem. 20 files, 8 deleted, all recoverable. ----
+    # Twenty *distinct* objects, not ten planted twice. Identical content would
+    # collapse to ten digests, and a recall figure counted over digests would
+    # then report ten recoveries as five and be wrong in the flattering
+    # direction only by accident.
+    ntfs_objects = _ntfs_objects(random.Random(seed + 1))
+    ntfs_files = [
+        PlantedFile(f"{index:02d}-{name}", data, deleted=index % 5 in (0, 3))
+        for index, (name, data) in enumerate(ntfs_objects)
+    ]
+    build_ntfs(out_dir / "ntfs.img", ntfs_files, size=NTFS_IMAGE_BYTES)
+    images.append("ntfs.img")
+    for planted in ntfs_files:
+        record(
+            "ntfs.img",
+            "ntfs",
+            planted,
+            recoverable=planted.deleted,
+            note="MFT record and $DATA run list both survive deletion",
+        )
+
+    # -- NTFS with a reused record: a name in $I30 slack and no content. -----
+    # The file whose record gets reused has to be the *last* entry in the
+    # directory's index. NTFS removes an entry by shifting the ones after it
+    # down, so a middle entry's bytes are overwritten by its successors and
+    # nothing of it survives. Only the last entry has nothing after it to
+    # shift: the end marker lands on its 16-byte header and leaves its
+    # $FILE_NAME key sitting in slack, which is the state being modelled. The
+    # names are index-prefixed, so the last entry is simply the highest index.
+    reuse_files = [
+        PlantedFile(
+            f"{index:02d}-{name}",
+            data,
+            deleted=index % 5 in (0, 3) or index == len(ntfs_objects) - 1,
+        )
+        for index, (name, data) in enumerate(ntfs_objects)
+    ]
+    records = build_ntfs(
+        out_dir / "ntfs-reused.img", reuse_files, size=NTFS_IMAGE_BYTES
+    )
+    images.append("ntfs-reused.img")
+    reused_name = reuse_files[-1].name
+    ntfs_reuse_record(
+        out_dir / "ntfs-reused.img", records[reused_name], "X" * len(reused_name)
+    )
+    for planted in reuse_files:
+        record(
+            "ntfs-reused.img",
+            "ntfs",
+            planted,
+            recoverable=planted.deleted and planted.name != reused_name,
+            note=(
+                "MFT record reused by another file: the name survives in $I30 "
+                "slack and no content does"
+                if planted.name == reused_name
+                else ""
+            ),
+        )
+
+    # -- FAT32, twice: once with live neighbours, once without. -------------
+    fragment_payload = rng.randbytes(FAT_FRAGMENT_BYTES)
+    for image_name, keep in (("fat32.img", False), ("fat32-neighbours.img", True)):
+        fat_files = [
+            PlantedFile("keep.jpg", objects[0][1]),
+            PlantedFile("gone.png", objects[1][1], deleted=True),
+            PlantedFile("gone.pdf", objects[2][1], deleted=True),
+            PlantedFile(
+                "split.bin", fragment_payload, deleted=True, fragmented=True
+            ),
+        ]
+        fillers = build_fat32(
+            out_dir / image_name,
+            fat_files,
+            size=FAT_IMAGE_BYTES,
+            filler_bytes=FAT_FILLER_BYTES,
+            keep_fillers=keep,
+        )
+        images.append(image_name)
+        # The fillers are ordinary files that were written and, for half of
+        # them, deleted. Recovery finds them, so leaving them out of the
+        # manifest would score several hundred correct recoveries as false
+        # positives and report FAT precision near zero for a reason that has
+        # nothing to do with FAT.
+        for planted in fillers:
+            record(
+                image_name,
+                "fat32",
+                planted,
+                recoverable=planted.deleted,
+                note="filler written to force fragmentation of split.bin",
+            )
+        for planted in fat_files:
+            recoverable = planted.deleted and not (planted.fragmented and not keep)
+            record(
+                image_name,
+                "fat32",
+                planted,
+                recoverable=recoverable,
+                note=(
+                    "fragmented; the neighbouring fillers still exist, so the "
+                    "reconstruction can route around them and happens to be exact"
+                    if planted.fragmented and keep
+                    else "fragmented and its neighbours were deleted too, so the "
+                    "reconstruction pulls in their bytes and is wrong"
+                    if planted.fragmented
+                    else "cluster chain destroyed; recovered on the free-cluster "
+                    "assumption"
+                    if planted.deleted
+                    else ""
+                ),
+            )
+
+    # -- exFAT: one file with NoFatChain set, one without. -------------------
+    exfat_files = [
+        PlantedFile("contiguous.jpg", objects[9][1], deleted=True),
+        PlantedFile("chained.png", objects[1][1], deleted=True),
+        PlantedFile("neighbour.pdf", objects[2][1]),
+    ]
+    flags = build_exfat(
+        out_dir / "exfat.img",
+        exfat_files,
+        size=SMALL_IMAGE_BYTES,
+        contiguous=["contiguous.jpg"],
+    )
+    images.append("exfat.img")
+    for planted in exfat_files:
+        no_chain = flags.get(planted.name, False)
+        record(
+            "exfat.img",
+            "exfat",
+            planted,
+            recoverable=planted.deleted and no_chain,
+            note=(
+                "NoFatChain set: exFAT stored this as one run and recorded that "
+                "it had, so the contiguous read is a fact"
+                if no_chain
+                else "NoFatChain clear: it used a chain, deletion destroyed it, "
+                "and the file was laid out non-contiguously on purpose"
+            ),
+        )
+
+    # -- ext2, ext3, ext4 ----------------------------------------------------
+    for kind in ("ext2", "ext3", "ext4"):
+        ext_files = [
+            PlantedFile("report.pdf", objects[2][1], deleted=True),
+            PlantedFile("photo.jpg", objects[0][1], deleted=True),
+            PlantedFile("kept.zip", objects[3][1]),
+        ]
+        build_ext(
+            out_dir / f"{kind}.img", ext_files, kind=kind, size=SMALL_IMAGE_BYTES
+        )
+        images.append(f"{kind}.img")
+        for planted in ext_files:
+            record(
+                f"{kind}.img",
+                kind,
+                planted,
+                # ext4 zeroes the extent tree on unlink. Nothing points at the
+                # blocks any more, so nothing is recoverable from the inode.
+                recoverable=planted.deleted and kind != "ext4",
+                note=(
+                    "ext4 zeroes the inode's extent tree on unlink; recovery "
+                    "from metadata is not possible and this row is expected to "
+                    "be a miss"
+                    if kind == "ext4" and planted.deleted
+                    else "block pointers survive the unlink"
+                    if planted.deleted
+                    else ""
+                ),
+            )
+
+    # -- A plain FAT32 volume: no fillers, no fragmentation, so it stays
+    # sparse. Used for the partition-offset image and the quick-format one,
+    # neither of which needs the packed volume.
+    plain_fat_files = [
+        PlantedFile("holiday.jpg", objects[0][1], deleted=True),
+        PlantedFile("notes.pdf", objects[2][1], deleted=True),
+        PlantedFile("kept.gif", objects[7][1]),
+    ]
+    build_fat32(
+        out_dir / "fat32-plain.img", plain_fat_files, size=FAT_IMAGE_BYTES
+    )
+    images.append("fat32-plain.img")
+    for planted in plain_fat_files:
+        record(
+            "fat32-plain.img",
+            "fat32",
+            planted,
+            recoverable=planted.deleted,
+            note="unfragmented; the free-cluster reconstruction is exact here",
+        )
+
+    # -- Two partitions, so offsets can be checked against a known plant. ----
+    offsets = build_two_partition_image(
+        out_dir / "two-partitions.img",
+        [(out_dir / "ntfs.img", "ntfs"), (out_dir / "fat32-plain.img", "fat32")],
+    )
+    images.append("two-partitions.img")
+    for planted in ntfs_files:
+        record(
+            "two-partitions.img",
+            "ntfs",
+            planted,
+            recoverable=planted.deleted,
+            note=f"partition 1 at image offset {offsets[0]}",
+        )
+    # The second partition is a byte-for-byte copy of fat32.img, so everything
+    # planted there is planted here too. Recording only the NTFS half would
+    # leave a hundred and ninety FAT32 recoveries with no manifest row to match
+    # against, and they would be counted as false positives.
+    for planted in plain_fat_files:
+        record(
+            "two-partitions.img",
+            "fat32",
+            planted,
+            recoverable=planted.deleted,
+            note=f"partition 2 at image offset {offsets[1]}",
+        )
+
+    # -- Damaged variants ----------------------------------------------------
+    damaged: dict[str, str] = {}
+
+    sparse_copy(out_dir / "ntfs.img", out_dir / "damaged-boot.img")
+    damage_boot_sector(out_dir / "damaged-boot.img")
+    damaged["damaged-boot.img"] = "NTFS volume with its boot sector zeroed"
+
+    sparse_copy(
+        out_dir / "two-partitions.img", out_dir / "damaged-parttable.img"
+    )
+    damage_partition_table(out_dir / "damaged-parttable.img")
+    damaged["damaged-parttable.img"] = (
+        "two-partition image whose MBR entries are garbage but whose 55 AA "
+        "signature is intact, so a volume system tries and fails to parse it"
+    )
+
+    # Copied from the *unfilled* FAT32 volume, not the one deliberately packed
+    # to capacity: this variant is about what a quick format leaves behind, and
+    # a hundred filler files would only make it bigger, not more instructive.
+    sparse_copy(out_dir / "fat32-plain.img", out_dir / "quick-formatted.img")
+    quick_format(out_dir / "quick-formatted.img", kind="fat32")
+    damaged["quick-formatted.img"] = (
+        "FAT32 volume re-created over its own contents: every record gone, "
+        "every data block still there"
+    )
+    images.extend(sorted(damaged))
+
+    corpus = FilesystemCorpus(
+        images=images,
+        files=rows,
+        damaged=damaged,
+        partition_offsets=offsets,
+    )
+    (out_dir / FS_MANIFEST_NAME).write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "seed": seed,
+                "images": corpus.images,
+                "damaged": corpus.damaged,
+                "partition_offsets": corpus.partition_offsets,
+                "files": [asdict(item) for item in corpus.files],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return corpus
+
+
+def load_filesystem_manifest(corpus_dir: Path) -> FilesystemCorpus:
+    """Read a manifest written by :func:`generate_filesystem_corpus`."""
+    raw = json.loads(
+        (Path(corpus_dir) / FS_MANIFEST_NAME).read_text(encoding="utf-8")
+    )
+    return FilesystemCorpus(
+        images=raw["images"],
+        files=[FilesystemFile(**item) for item in raw["files"]],
+        damaged=raw["damaged"],
+        partition_offsets=raw["partition_offsets"],
+    )

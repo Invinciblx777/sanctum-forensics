@@ -29,6 +29,7 @@ __all__ = [
     "Validation",
     "CarveCategory",
     "CarveFlags",
+    "MacTimestamps",
     "CarveCandidate",
     "SubstitutedRange",
     "BadSectorRange",
@@ -270,6 +271,27 @@ class CarveFlags(BaseModel):
     inspected: bool = False
 
 
+class MacTimestamps(BaseModel):
+    """Filesystem MAC timestamps carried by a surviving metadata record.
+
+    Every field is ``None`` when the record did not carry it. ``None`` never
+    means the epoch: a FAT directory entry has no access *time* at all, only an
+    access date, and reporting midnight for it would invent a precision the
+    filesystem never had.
+
+    Named for what they are rather than by initial, because "C" means *created*
+    on NTFS and *metadata changed* on ext - which is exactly the confusion a
+    timeline built from mixed filesystems has to avoid.
+    """
+
+    modified: datetime | None = None
+    accessed: datetime | None = None
+    #: Metadata-change time on ext and the ``$STANDARD_INFORMATION`` MFT-change
+    #: time on NTFS. Never the creation time.
+    changed: datetime | None = None
+    created: datetime | None = None
+
+
 class CarveCandidate(BaseModel):
     """A recovered-or-recoverable object produced by the carving pipeline."""
 
@@ -310,6 +332,25 @@ class CarveCandidate(BaseModel):
     #: Every other offset the identical content was found at, ascending. The
     #: candidate itself carries the first one in ``offset``.
     duplicate_offsets: list[int] = []
+    # ---- filesystem-metadata recovery (source="fs_metadata") --------------
+    #: The filesystem the metadata came from: ``ntfs``, ``fat32``, ``exfat``,
+    #: ``ext2``, ``ext3``, ``ext4``. Empty for every other source.
+    fs_type: str = ""
+    #: MAC timestamps from the surviving metadata record. ``None`` when no
+    #: record was involved, which is every candidate that is not
+    #: ``fs_metadata``.
+    mac: MacTimestamps | None = None
+    #: True when the recovery had no cluster chain and assumed the file was
+    #: laid out contiguously from its start cluster. Always true on FAT32,
+    #: where deletion destroys the chain. On exFAT it is true only when the
+    #: stream extension's ``NoFatChain`` flag was clear; when the flag was set
+    #: the file genuinely was contiguous and this stays false.
+    contiguity_assumed: bool = False
+    #: True when the assumption above is provably wrong - a cluster inside the
+    #: assumed run is allocated to a live file, so the recovered bytes contain
+    #: someone else's data. The candidate is still reported: a partial recovery
+    #: that says it is partial is evidence, and silently dropping it is not.
+    contiguity_contradicted: bool = False
 
 
 class SubstitutedRange(BaseModel):

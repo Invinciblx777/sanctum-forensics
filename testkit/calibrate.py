@@ -27,8 +27,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from core.carve.classify import classify_candidate, dedupe
@@ -38,7 +39,14 @@ from core.carve.structure import carve_structures
 from core.carve.validate import validate_candidate
 from core.models import CarveCandidate
 
-from testkit.generate_corpus import CorpusManifest, generate_corpus, load_manifest
+from testkit.generate_corpus import (
+    CorpusManifest,
+    FilesystemCorpus,
+    generate_corpus,
+    generate_filesystem_corpus,
+    load_filesystem_manifest,
+    load_manifest,
+)
 
 __all__ = [
     "BucketRow",
@@ -49,6 +57,17 @@ __all__ = [
     "write_csv",
     "write_chart",
     "calibrate",
+    "FilesystemRow",
+    "WeightTrial",
+    "FilesystemCalibration",
+    "FS_CSV_COLUMNS",
+    "FS_WEIGHT_SWEEP",
+    "score_filesystem_candidates",
+    "measure_filesystems",
+    "sweep_fs_metadata_weight",
+    "calibrate_filesystems",
+    "format_filesystem_table",
+    "format_weight_sweep",
     "main",
 ]
 
@@ -338,7 +357,28 @@ def main() -> None:
         help="carve an existing corpus instead of regenerating it",
     )
     parser.add_argument("--no-chart", action="store_true")
+    parser.add_argument(
+        "--filesystems",
+        action="store_true",
+        help=(
+            "build the real filesystem images instead of the flat corpus, and "
+            "measure per-filesystem recall plus the fs_metadata weight sweep"
+        ),
+    )
     args = parser.parse_args()
+
+    if args.filesystems:
+        filesystems = calibrate_filesystems(
+            args.corpus_dir,
+            args.out_dir,
+            seed=args.seed,
+            regenerate=not args.reuse_corpus,
+        )
+        print(format_filesystem_table(filesystems.rows))  # noqa: T201 - a CLI
+        print()  # noqa: T201
+        print(format_weight_sweep(filesystems.sweep))  # noqa: T201
+        print(f"\nwrote {filesystems.csv_path}")  # noqa: T201
+        return
 
     result = calibrate(
         args.corpus_dir,
@@ -352,6 +392,336 @@ def main() -> None:
     if result.chart_path is not None:
         print(f"wrote {result.chart_path}")  # noqa: T201
 
+
+
+# --------------------------------------------------------------------------
+# Filesystem-aware recovery
+# --------------------------------------------------------------------------
+#
+# The corpus above is a flat image, so it exercises the signature and structure
+# carvers and never produces an fs_metadata candidate. That is why the
+# fs_metadata weight went uncalibrated through the first run and kept its
+# invented value. This section measures it against real filesystem images, and
+# reports recall per filesystem rather than one averaged number - because the
+# average of NTFS and ext4 describes neither.
+
+#: Weights to try for the fs_metadata component. 0 asks what the component is
+#: worth at all; 3000 is past the point where it could carry a candidate into
+#: HIGH on its own.
+FS_WEIGHT_SWEEP = (0, 500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 5000)
+
+FS_CSV_COLUMNS = (
+    "filesystem",
+    "deleted",
+    "candidates",
+    "named",
+    "exact",
+    "recall_bp",
+    "precision_bp",
+)
+
+
+@dataclass(frozen=True)
+class FilesystemRow:
+    """What recovery achieved on one filesystem, measured against the manifest."""
+
+    filesystem: str
+    #: Deleted files planted, counted by distinct SHA-256.
+    deleted: int
+    #: ``source="fs_metadata"`` candidates the pass emitted.
+    candidates: int
+    #: Candidates carrying an original filename.
+    named: int
+    #: Deleted files reproduced byte for byte.
+    exact: int
+    #: ``exact / deleted``, in basis points. The honest answer to "how well
+    #: does it work" - the denominator is every deleted file, not only the ones
+    #: the manifest expects to be recoverable, because using the latter would
+    #: be marking one's own homework.
+    recall_bp: int
+    #: ``exact / candidates``, in basis points.
+    precision_bp: int
+
+    def as_row(self) -> dict[str, str | int]:
+        return {
+            "filesystem": self.filesystem,
+            "deleted": self.deleted,
+            "candidates": self.candidates,
+            "named": self.named,
+            "exact": self.exact,
+            "recall_bp": self.recall_bp,
+            "precision_bp": self.precision_bp,
+        }
+
+
+@dataclass(frozen=True)
+class WeightTrial:
+    """What one candidate value of the fs_metadata weight produced."""
+
+    high_count: int
+    #: Share of HIGH candidates that reproduced a planted file exactly.
+    high_precision_bp: int
+    #: Share of deleted files recovered exactly *and* scored HIGH.
+    high_recall_bp: int
+    #: Candidates at MEDIUM or above that recovered **no bytes at all**. These
+    #: are the name-only recoveries: a filename from index slack with nothing
+    #: behind it. Any number above zero here means the weight is telling an
+    #: examiner to give weight to a candidate that recovered nothing.
+    contentless_at_medium_or_above: int
+    #: Candidates at HIGH that no decoder confirmed. The fs_metadata component
+    #: must never be large enough to put one of these in HIGH on its own:
+    #: "a filesystem record agrees a file lived here" says nothing about
+    #: whether the bytes now at that location are that file.
+    unconfirmed_at_high: int
+
+
+@dataclass(frozen=True)
+class FilesystemCalibration:
+    """One sweep of the fs_metadata weight over the filesystem corpus."""
+
+    rows: list[FilesystemRow]
+    #: ``{weight: WeightTrial}``.
+    sweep: dict[int, WeightTrial]
+    #: Every scored candidate from the run at the weight in force.
+    candidates: list[CarveCandidate]
+    csv_path: Path | None = None
+
+
+def score_filesystem_candidates(
+    corpus_dir: Path,
+    corpus: FilesystemCorpus,
+    *,
+    weights: ScoreWeights = WEIGHTS,
+) -> list[tuple[str, CarveCandidate, bytes]]:
+    """Run undelete, then the rest of the pipeline, over every corpus image.
+
+    Returns ``(image, scored candidate, recovered bytes)``. The bytes travel
+    with the candidate because they have to: a candidate whose file lived in
+    several runs cannot be re-read from ``offset`` and ``length``, so the
+    decoder, the classifier and the scorer are all handed the reassembled
+    content rather than left to fetch a contiguous range that was never a file.
+    """
+    from core.carve.fsaware import read_recovered, undelete_report
+
+    out: list[tuple[str, CarveCandidate, bytes]] = []
+    for image in corpus.images:
+        path = Path(corpus_dir) / image
+        if not path.exists():
+            continue
+        with open_evidence(path) as handle:
+            report = undelete_report(handle)
+            scored: list[CarveCandidate] = []
+            payloads: list[bytes] = []
+            for item in report.files:
+                payload = read_recovered(handle, item)
+                candidate = validate_candidate(item.candidate, data=payload)
+                candidate = classify_candidate(candidate, data=payload)
+                candidate = score_candidate(candidate, data=payload, weights=weights)
+                scored.append(candidate)
+                payloads.append(payload)
+        # Overlaps are resolved per image: two candidates in different images
+        # cannot claim the same bytes, and pooling them would invent conflicts.
+        resolved = resolve_overlaps(scored, weights=weights)
+        by_offset = {(item.offset, item.length): item for item in resolved}
+        for candidate, payload in zip(scored, payloads, strict=True):
+            final = by_offset.get((candidate.offset, candidate.length), candidate)
+            out.append((image, final, payload))
+    return out
+
+
+def measure_filesystems(
+    corpus_dir: Path, corpus: FilesystemCorpus, *, weights: ScoreWeights = WEIGHTS
+) -> list[FilesystemRow]:
+    """Recall and precision per filesystem, counted on byte-identical recovery."""
+    scored = score_filesystem_candidates(corpus_dir, corpus, weights=weights)
+
+    # Counted per image and then summed, never pooled by digest across images.
+    # The same NTFS file is planted in ntfs.img, ntfs-reused.img and
+    # two-partitions.img; pooling would put it in the denominator once and in
+    # the numerator once while three separate recoveries of it sat in the
+    # candidate count, and NTFS precision would come out at a third of the
+    # truth for an arithmetic reason rather than a forensic one.
+    # Keyed by (image, filesystem), not by image. two-partitions.img holds an
+    # NTFS volume and a FAT32 one; keying by image alone would file every FAT32
+    # candidate under NTFS and report NTFS precision at a sixth of the truth.
+    deleted: dict[tuple[str, str], set[str]] = {}
+    for planted in corpus.files:
+        if planted.deleted:
+            key = (planted.image, planted.filesystem)
+            deleted.setdefault(key, set()).add(planted.sha256)
+
+    per_image_hits: dict[tuple[str, str], set[str]] = {}
+    counted: dict[tuple[str, str], int] = {}
+    named: dict[tuple[str, str], int] = {}
+    for image, candidate, payload in scored:
+        key = (image, candidate.fs_type or "unknown")
+        counted[key] = counted.get(key, 0) + 1
+        if candidate.original_name:
+            named[key] = named.get(key, 0) + 1
+        if payload:
+            digest = hashlib.sha256(payload).hexdigest()
+            if digest in deleted.get(key, set()):
+                per_image_hits.setdefault(key, set()).add(digest)
+
+    totals: dict[str, list[int]] = {}
+    for key in set(deleted) | set(counted):
+        bucket = totals.setdefault(key[1], [0, 0, 0, 0])
+        bucket[0] += len(deleted.get(key, set()))
+        bucket[1] += counted.get(key, 0)
+        bucket[2] += named.get(key, 0)
+        bucket[3] += len(per_image_hits.get(key, set()))
+
+    return [
+        FilesystemRow(
+            filesystem=filesystem,
+            deleted=want,
+            candidates=candidates,
+            named=with_names,
+            exact=hits,
+            recall_bp=_rate_bp(hits, want),
+            precision_bp=_rate_bp(hits, candidates),
+        )
+        for filesystem, (want, candidates, with_names, hits) in sorted(totals.items())
+    ]
+
+
+def sweep_fs_metadata_weight(
+    corpus_dir: Path,
+    corpus: FilesystemCorpus,
+    *,
+    weights: Sequence[int] = FS_WEIGHT_SWEEP,
+) -> dict[int, WeightTrial]:
+    """Measure HIGH precision and recall at each candidate fs_metadata weight.
+
+    HIGH is the bucket the report tells an examiner to trust, so it is the one
+    the weight has to be chosen for. Recall here is over every deleted file in
+    the corpus, across all five filesystems, which means the ext4 rows drag it
+    down - correctly. A weight tuned on NTFS alone would be a weight tuned on
+    the easiest case.
+    """
+    per_image_truth: dict[tuple[str, str], set[str]] = {}
+    for planted in corpus.files:
+        if planted.deleted:
+            key = (planted.image, planted.filesystem)
+            per_image_truth.setdefault(key, set()).add(planted.sha256)
+    total_deleted = sum(len(items) for items in per_image_truth.values())
+
+    results: dict[int, tuple[int, int, int]] = {}
+    for weight in weights:
+        trial = replace(WEIGHTS, fs_metadata=weight)
+        scored = score_filesystem_candidates(corpus_dir, corpus, weights=trial)
+        high = [
+            ((image, candidate.fs_type or "unknown"), payload)
+            for image, candidate, payload in scored
+            if candidate.bucket == "HIGH"
+        ]
+        correct = 0
+        hits: dict[tuple[str, str], set[str]] = {}
+        for key, payload in high:
+            if not payload:
+                continue
+            digest = hashlib.sha256(payload).hexdigest()
+            if digest in per_image_truth.get(key, set()):
+                correct += 1
+                hits.setdefault(key, set()).add(digest)
+        contentless = sum(
+            1
+            for _image, candidate, payload in scored
+            if candidate.bucket in {"HIGH", "MEDIUM"} and not payload
+        )
+        unconfirmed = sum(
+            1
+            for _image, candidate, _payload in scored
+            if candidate.bucket == "HIGH" and candidate.validation != "valid"
+        )
+        results[weight] = WeightTrial(
+            high_count=len(high),
+            high_precision_bp=_rate_bp(correct, len(high)),
+            high_recall_bp=_rate_bp(
+                sum(len(items) for items in hits.values()), total_deleted
+            ),
+            contentless_at_medium_or_above=contentless,
+            unconfirmed_at_high=unconfirmed,
+        )
+    return results
+
+
+def calibrate_filesystems(
+    corpus_dir: Path,
+    out_dir: Path = DEFAULT_OUT_DIR,
+    *,
+    seed: int = 0,
+    regenerate: bool = True,
+    weights: ScoreWeights = WEIGHTS,
+) -> FilesystemCalibration:
+    """Build the filesystem corpus, measure it, and sweep the fs_metadata weight."""
+    corpus_dir = Path(corpus_dir)
+    corpus = (
+        generate_filesystem_corpus(corpus_dir, seed=seed)
+        if regenerate
+        else load_filesystem_manifest(corpus_dir)
+    )
+    rows = measure_filesystems(corpus_dir, corpus, weights=weights)
+    sweep = sweep_fs_metadata_weight(corpus_dir, corpus)
+    scored = score_filesystem_candidates(corpus_dir, corpus, weights=weights)
+
+    path = Path(out_dir) / "calibration-filesystems.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(FS_CSV_COLUMNS))
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row.as_row())
+
+    return FilesystemCalibration(
+        rows=rows,
+        sweep=sweep,
+        candidates=[candidate for _image, candidate, _payload in scored],
+        csv_path=path,
+    )
+
+
+def format_filesystem_table(rows: Sequence[FilesystemRow]) -> str:
+    """Render the per-filesystem measurement for a commit message."""
+    header = (
+        f"{'filesystem':<12}{'deleted':>8}{'cands':>7}{'named':>7}"
+        f"{'exact':>7}{'recall':>9}{'precision':>11}"
+    )
+    lines = [header, "-" * len(header)]
+    for row in rows:
+        lines.append(
+            f"{row.filesystem:<12}{row.deleted:>8}{row.candidates:>7}"
+            f"{row.named:>7}{row.exact:>7}"
+            f"{row.recall_bp / 100:>8.1f}%{row.precision_bp / 100:>10.1f}%"
+        )
+    return "\n".join(lines)
+
+
+def format_weight_sweep(sweep: dict[int, WeightTrial]) -> str:
+    """Render the fs_metadata sweep for a commit message.
+
+    The last two columns are the ones that decide the weight. Precision and
+    recall can both be improved by raising it, because this corpus contains
+    hundreds of correctly recovered filler files - and the same rise puts
+    candidates in HIGH that no decoder ever confirmed, including one the corpus
+    knows is wrong. An aggregate that improves while those columns go non-zero
+    is an aggregate to distrust.
+    """
+    header = (
+        f"{'fs_metadata':<13}{'HIGH n':>8}{'precision':>11}{'recall':>9}"
+        f"{'empty>=MED':>12}{'unconfirmed@HIGH':>18}"
+    )
+    lines = [header, "-" * len(header)]
+    for weight in sorted(sweep):
+        trial = sweep[weight]
+        lines.append(
+            f"{weight:<13}{trial.high_count:>8}"
+            f"{trial.high_precision_bp / 100:>10.1f}%"
+            f"{trial.high_recall_bp / 100:>8.1f}%"
+            f"{trial.contentless_at_medium_or_above:>12}"
+            f"{trial.unconfirmed_at_high:>18}"
+        )
+    return "\n".join(lines)
 
 if __name__ == "__main__":
     main()

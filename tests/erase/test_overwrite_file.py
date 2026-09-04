@@ -22,11 +22,36 @@ from .conftest import make_device
 if sys.platform != "linux":  # pragma: no cover - platform gate
     pytest.skip("core.erase.drive is Linux-only", allow_module_level=True)
 
-from core.erase.drive import (  # noqa: E402
-    Geometry,
-    InMemoryLedger,
-    _overwrite,
-)
+from core.erase.drive import Geometry, _overwrite  # noqa: E402
+from core.models import EraseCheckpoint, ErasePhase  # noqa: E402
+
+
+class RecordingLedger:
+    """An in-memory :class:`~core.erase.drive.LedgerSink` for these tests.
+
+    It lives here rather than in ``core/`` deliberately. A ledger that keeps
+    entries in memory is neither durable nor hash-chained, and while ``core``
+    shipped one it was possible for a real erase to default to it and produce a
+    result nobody could audit - which is the limitation
+    ``docs/limitations.md`` records. Test scaffolding is the right home for it:
+    what these tests need is to see the phase records the overwrite loop emits,
+    not to prove anything about the chain, which ``tests/ledger`` covers.
+    """
+
+    def __init__(self) -> None:
+        self.entries: list[tuple[ErasePhase, str, dict[str, Any]]] = []
+
+    def record(
+        self, phase: ErasePhase, operation: str, payload: dict[str, Any]
+    ) -> None:
+        self.entries.append((phase, operation, dict(payload)))
+
+    def last_checkpoint(self, job_id: str) -> EraseCheckpoint | None:
+        for _phase, operation, payload in reversed(self.entries):
+            if operation != "checkpoint" or payload.get("job_id") != job_id:
+                continue
+            return EraseCheckpoint.model_validate(payload)
+        return None
 
 MIB = 1024 * 1024
 KIB = 1024
@@ -57,7 +82,7 @@ def run_overwrite(
     method: EraseMethod = EraseMethod.SINGLE_PASS_OVERWRITE,
     **kwargs: Any,
 ) -> Any:
-    ledger = kwargs.pop("ledger", None) or InMemoryLedger()
+    ledger = kwargs.pop("ledger", None) or RecordingLedger()
     outcome = drain(
         _overwrite(
             make_device(path=str(path), size_bytes=path.stat().st_size),
@@ -150,7 +175,7 @@ def test_checkpoints_are_recorded_at_the_configured_interval(
 def test_interrupted_wipe_resumes_and_finishes_the_whole_device(
     backing_file: Path,
 ) -> None:
-    ledger = InMemoryLedger()
+    ledger = RecordingLedger()
     device = make_device(
         path=str(backing_file), size_bytes=backing_file.stat().st_size
     )

@@ -73,7 +73,7 @@ file.
 | `decoder_truncated` | 1500 | **1000** | yes |
 | `decoder_unavailable` | 0 | **1000** | yes |
 | `entropy` | 1000 | 1000 | — |
-| `fs_metadata` | 1500 | 1500 | — |
+| `fs_metadata` | 1500 | 1500 | — (measured separately, below) |
 | `no_overlap` | 500 | 500 | — |
 
 The same corpus, same pipeline, original weights:
@@ -146,13 +146,147 @@ found them.
 * The corpus is synthetic and small: 33 candidates, 15 recoverable files. MEDIUM
   carries two candidates, so its 100.0% precision is a weak claim and is quoted
   here as "above the 70% target", not as a rate.
-* No fragmented file and no filesystem-metadata source is exercised, so the
-  `fs_metadata` weight is **not** calibrated. It keeps its original value, and
-  will stay uncalibrated until `core/carve/fsaware.py` lands and the corpus
-  grows real filesystem images.
+* No fragmented file and no filesystem-metadata source is exercised **in this
+  run**, so the `fs_metadata` weight is not calibrated by it. That gap is now
+  closed by a second run over real filesystem images; see
+  "Filesystem-aware recovery" below.
 * MP4 is scored on a structural walk alone on any machine without `ffprobe`.
   The number that machine produces is a different number, and the candidate
   says so in its `validation_detail`.
 * Real media is messier than any generator: fragmentation, partial overwrites
   and slack are what a live case looks like. These figures describe this
   corpus, on this build, on this date.
+
+---
+
+# Filesystem-aware recovery
+
+**Run date:** 2026-09-04 · **Corpus seed:** 0 · **Harness:**
+`testkit/calibrate.py --filesystems` · **Table:**
+[`calibration-filesystems.csv`](calibration-filesystems.csv)
+
+Reproduce it with:
+
+```
+python -m testkit.calibrate --corpus-dir <scratch dir> --filesystems
+```
+
+The corpus above is a flat image, so it produces no `fs_metadata` candidates at
+all — which is why the `fs_metadata` weight went through the first run
+uncalibrated. This second run builds thirteen **real filesystem images** with
+the real `mkfs` for each, populates them through tools that write the real
+on-disk structures, deletes a recorded subset the way the kernel deletes it, and
+runs the whole pipeline over the result.
+
+No image needs root. See `docs/technical.md` for how, and
+`tests/carve/fsaware/test_corpus_needs_no_root.py` for the test that fails
+loudly if that ever stops being true.
+
+## Per-filesystem recall
+
+A recovery counts only when it reproduces the planted file **byte for byte**.
+The denominator is every deleted file, not only the ones the manifest expects
+to be recoverable — using the latter would be marking our own homework.
+
+| filesystem | deleted | candidates | named | exact | recall | precision |
+|---|---:|---:|---:|---:|---:|---:|
+| ntfs | 25 | 25 | 25 | 24 | **96.0%** | 96.0% |
+| fat32 | 246 | 244 | 244 | 235 | **95.5%** | 96.3% |
+| ext2 | 2 | 2 | 2 | 2 | **100.0%** | 100.0% |
+| ext3 | 2 | 2 | 2 | 2 | **100.0%** | 100.0% |
+| exfat | 2 | 2 | 2 | 1 | **50.0%** | 50.0% |
+| ext4 | 2 | 2 | 2 | 0 | **0.0%** | 0.0% |
+
+Reading the rows:
+
+* **NTFS** misses one of twenty-five, and that one is deliberate: its MFT
+  record was reused by another file, so only its name survives, recovered from
+  `$I30` index slack. Reporting the name is right; reporting content for it
+  would be attributing one file's bytes to another.
+* **FAT32**'s large counts are the filler files written to force
+  fragmentation. They are real deleted files and are in the manifest — omitting
+  them would have scored two hundred correct recoveries as false positives. The
+  misses are the fragmented file whose neighbours were also deleted, and the
+  handful of fillers whose clusters it took.
+* **exFAT**'s two files are the whole point of the row: one had `NoFatChain`
+  set and came back exactly, one used a chain that deletion destroyed and did
+  not. 50% here is two data points, not a rate.
+* **ext3**'s 100% is an **upper bound**, not a measurement of ext3 on a modern
+  kernel. See `docs/limitations.md`.
+* **ext4**'s 0.0% is the finding. It is what `ext4_ext_remove_space` guarantees.
+
+`ext2`, `ext3` and `exfat` carry two files each. Those rows are illustrations,
+not rates.
+
+## The fs_metadata weight, measured at last
+
+Swept from 0 to 5000 over the whole filesystem corpus:
+
+| fs_metadata | HIGH n | precision | recall | empty ≥ MEDIUM | unconfirmed @ HIGH |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 37 | 100.0% | 13.3% | 0 | 0 |
+| 500 | 37 | 100.0% | 13.3% | 0 | 0 |
+| 1000 | 37 | 100.0% | 13.3% | 0 | 0 |
+| **1500** | **37** | **100.0%** | **13.3%** | **0** | **0** |
+| 2000 | 37 | 100.0% | 13.3% | **2** | 0 |
+| 2500 | 37 | 100.0% | 13.3% | 3 | 0 |
+| 3000 | 37 | 100.0% | 13.3% | 3 | 0 |
+| 3500 | 37 | 100.0% | 13.3% | 3 | 0 |
+| 4000 | 44 | 86.4% | 13.6% | 3 | **7** |
+| 5000 | 274 | 95.6% | 93.9% | 3 | 237 |
+
+The last two columns are the ones that decide it:
+
+* **empty ≥ MEDIUM** counts candidates that recovered **zero bytes** and were
+  still scored MEDIUM or better — a filename out of `$I30` slack with nothing
+  behind it. It goes non-zero at **2000**.
+* **unconfirmed @ HIGH** counts candidates in HIGH that no decoder confirmed.
+  It goes non-zero at **4000**, where 2000 header + 1500 derived length + 500
+  no-overlap + 4000 reaches the 8000 floor with a decoder verdict of *corrupt*.
+
+Below 2000 the sweep is flat: precision stays at 100.0% and the bucket contents
+do not change. **The measurement bounds the weight from above and says nothing
+from below, so `fs_metadata` stays at 1500 — now as the largest value the
+evidence permits rather than as a number somebody chose.**
+
+### The row that looks best is the one to distrust
+
+At 5000 the aggregate improves sharply: 95.6% precision and 93.9% recall
+against 100.0% and 13.3%. It is worse. The gain comes from promoting 237
+candidates that no decoder confirmed — mostly filler files, which happen to be
+correct — and among them is a FAT32 recovery **the corpus knows is wrong**,
+scored HIGH. The aggregate is carried by the easy cases while the component
+starts doing exactly what it must not: treating "a filesystem record says a file
+lived at this offset" as evidence that the bytes there now are that file.
+
+## A scoring defect this run found
+
+`gather_evidence` awarded the **entropy component to candidates holding no
+bytes**. Zero bytes measure as zero bits per byte, which clears the "low
+entropy" floor for formats like `.txt` and `.sqlite`, so a name recovered from
+`$I30` slack — with nothing behind it at all — was collecting 1000 bp for its
+byte distribution and being pushed towards MEDIUM.
+
+Fixed: an unmeasurable component scores zero rather than full marks for being
+empty. `entropy_millibits_per_byte` and `high_entropy_windows_bp` are left
+`None` on such a candidate, which is the difference between "not measured" and
+"measured zero" that the field comments already promised.
+
+This did not change the flat corpus's numbers by a single basis point — it has
+no empty candidates — which is precisely why it took a filesystem corpus to
+find.
+
+## Honest limits of this measurement
+
+* Four of the six filesystems carry two deleted files each. Those rows show
+  which mechanism applies, not a rate.
+* FAT32's counts are dominated by filler files of identical shape. They are
+  real, they are in the manifest, and they are also 244 of the 246 rows — so
+  FAT32's 95.5% describes recovery of 256 KiB blocks of repeated bytes more
+  than it describes recovery of documents.
+* The ext4 journal scan is not exercised by this corpus at all. The corpus is
+  built with `debugfs`, which writes no journal; that parser is measured
+  separately against a journal constructed byte by byte in
+  `tests/carve/fsaware/test_ext4_journal.py`.
+* Every image is small and freshly made. Real media is older, fuller and
+  messier, and its metadata has been overwritten more times.

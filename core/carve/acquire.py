@@ -93,10 +93,40 @@ WRITE_BLOCK_REFUSED = (
 )
 
 E01_WRITE_UNSUPPORTED = (
-    "This build of libewf-python ({version}) binds no E01 write-configuration "
-    "setters: pyewf.handle has no set_media_size, so libewf cannot finalise a "
-    "segment file and any container written would be truncated. Reading E01 is "
-    "fully supported; only acquisition to E01 is unavailable."
+    "This build of libewf-python ({version}) cannot write E01. libewf refuses "
+    "the write open with 'write access currently not supported - compiled "
+    "without zlib': the upstream sdist's setup.py configures with "
+    "--disable-shared-libs, and m4/zlib.m4 reads that same switch as 'use the "
+    "local deflate implementation', which libewf will not write with. Reading "
+    "E01 is fully supported; only acquisition to E01 is unavailable."
+)
+
+#: Attached to every E01 acquisition, because it is true of these bindings
+#: rather than of a broken build of them. libewf's C API can set the
+#: compression method and level; ``pyewf`` binds none of those setters, so the
+#: option is accepted, has no effect, and says so.
+#:
+#: The operationally important half is the second sentence. libewf's default is
+#: not "fast", it is **no compression at all**, confirmed with ewfinfo against
+#: a container this module wrote: 8 MiB of a single repeated byte produced
+#: 8,394,899 bytes, larger than the source. An E01 written here is a container
+#: format and an integrity record, never a space saving.
+E01_COMPRESSION_NOT_SELECTABLE = (
+    "E01_COMPRESSION_NOT_SELECTABLE: libewf-python {version} binds none of "
+    "libewf's write-configuration setters - pyewf.handle exposes set_header_"
+    "codepage and nothing else, so libewf_handle_set_compression_values cannot "
+    "be reached. AcquireOptions.compression={requested!r} had no effect: the "
+    "container was written at libewf's default, which ewfinfo reports as "
+    "'no compression'. Expect an E01 slightly LARGER than the source, not "
+    "smaller. Use ewfacquire -c fast if the container must be compressed."
+)
+
+#: pyewf exposes no flush, so a checkpoint cannot make an in-progress E01
+#: durable the way an fsync makes a raw image durable.
+E01_NO_DURABLE_CHECKPOINT = (
+    "E01_NO_DURABLE_CHECKPOINT: pyewf exposes no flush, so checkpoints during "
+    "an E01 acquisition are recorded in the ledger but not forced to disk. An "
+    "E01 interrupted mid-run is not resumable and must be re-acquired."
 )
 
 
@@ -275,19 +305,51 @@ def apply_write_block(path: Path | str) -> WriteBlockOutcome:
 # --------------------------------------------------------------------------
 
 
+#: Memoised result of :func:`_probe_e01_write`. The probe costs a few hundred
+#: bytes of temporary I/O, and the answer cannot change inside one process.
+_E01_WRITE_PROBE: bool | None = None
+
+
 def e01_write_supported() -> bool:
     """True only when this libewf build can actually finalise an E01.
 
-    Probed, never assumed. ``libewf-python`` ships read-focused bindings on
-    some platforms: ``write`` exists but the setters that must precede it do
-    not, so a write starts and then fails at close, leaving a container that
-    opens and reads short.
+    **Probed by writing one**, never inferred from an attribute. An earlier
+    version of this function tested ``hasattr(pyewf.handle, "set_media_size")``
+    and was wrong in both directions: ``pyewf`` binds no write-configuration
+    setters on *any* platform, including builds that write E01 perfectly well,
+    so the attribute test reported "unsupported" on a working install. What
+    actually decides the answer is whether libewf was compiled against real
+    zlib, and that is not visible from Python at all.
+
+    The probe writes a 512-byte container into a temporary directory and checks
+    the segment file appeared. It never touches the caller's destination.
     """
+    global _E01_WRITE_PROBE
+    if _E01_WRITE_PROBE is None:
+        _E01_WRITE_PROBE = _probe_e01_write()
+    return _E01_WRITE_PROBE
+
+
+def _probe_e01_write() -> bool:
+    """Write a throwaway E01 and report whether libewf produced one."""
     try:
         import pyewf
     except ImportError:
         return False
-    return hasattr(pyewf.handle, "set_media_size")
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="sanctum-ewf-probe-") as directory:
+        base = os.path.join(directory, "probe")
+        handle = pyewf.handle()
+        try:
+            handle.open([base], "w")
+            handle.write(b"\x00" * 512)
+            handle.close()
+        except (OSError, MemoryError, RuntimeError, ValueError) as exc:
+            logger.debug("e01.write_probe_failed", error=str(exc))
+            return False
+        return os.path.exists(base + ".E01")
 
 
 def _ewf_version() -> str:
@@ -302,6 +364,28 @@ def _ewf_version() -> str:
 # --------------------------------------------------------------------------
 # Destination
 # --------------------------------------------------------------------------
+
+
+class _ImageWriter(Protocol):
+    """What the read pass needs from a destination, raw or E01.
+
+    The seam exists so :func:`_read_pass` contains exactly one loop. An image
+    format that cannot seek or cannot resume says so by raising from the
+    method, rather than by the read pass carrying a branch for every format.
+    """
+
+    def open(self, *, append: bool) -> None: ...
+
+    def write(self, data: bytes) -> None: ...
+
+    def seek(self, offset: int) -> None: ...
+
+    def flush_durable(self) -> None: ...
+
+    def close(self) -> None: ...
+
+    @property
+    def segments(self) -> list[Path]: ...
 
 
 class _RawWriter:
@@ -356,6 +440,95 @@ class _RawWriter:
     @property
     def segments(self) -> list[Path]:
         return list(self._segments)
+
+
+class _EwfWriter:
+    """Writes an E01 through ``pyewf``.
+
+    Two things about libewf's write side are not obvious and are handled here
+    rather than left to the caller:
+
+    **The name is a base, not a filename.** libewf appends the segment
+    extension itself, so opening ``case.E01`` for write produces
+    ``case.E01.E01``. The extension is stripped before the open, which makes
+    the file that appears on disk exactly the destination the caller named.
+
+    **Nothing about the container is configurable from Python.** ``pyewf``
+    binds ``set_header_codepage`` and no other setter, so the compression
+    method and level, the segment size, the media type and the sectors per
+    chunk are all libewf's defaults - and the default compression level is
+    *none*, so the E01 comes out marginally larger than the source rather than
+    smaller. The acquisition records :data:`E01_COMPRESSION_NOT_SELECTABLE`
+    rather than let a caller believe ``AcquireOptions.compression`` reached the
+    container.
+
+    Writing is strictly sequential and cannot be resumed: libewf has no append
+    mode for an existing segment set, and :func:`acquire` refuses the
+    combination rather than silently starting over.
+    """
+
+    #: Extensions libewf appends for itself. One is stripped from the
+    #: destination to recover the base name libewf actually wants.
+    _SEGMENT_SUFFIXES = (".e01", ".ex01", ".s01", ".l01", ".lx01")
+
+    def __init__(self, dest: Path) -> None:
+        self.dest = dest
+        self._handle: Any = None
+        self._base = (
+            dest.with_suffix("")
+            if dest.suffix.lower() in self._SEGMENT_SUFFIXES
+            else dest
+        )
+
+    def open(self, *, append: bool) -> None:
+        if append:
+            raise UnsupportedCapability(
+                "an E01 acquisition cannot be resumed",
+                remediation=(
+                    "libewf has no append mode for an existing segment set. "
+                    "Delete the partial container and acquire again, or "
+                    "acquire to raw, which does resume."
+                ),
+            )
+        import pyewf
+
+        self._handle = pyewf.handle()
+        self._handle.open([str(self._base)], "w")
+
+    def write(self, data: bytes) -> None:
+        assert self._handle is not None
+        self._handle.write(data)
+
+    def seek(self, offset: int) -> None:
+        raise UnsupportedCapability(
+            "an E01 is written sequentially and cannot be seeked",
+            remediation="Acquire to raw if the destination must be seekable.",
+        )
+
+    def flush_durable(self) -> None:
+        """No-op: ``pyewf`` exposes no flush. See E01_NO_DURABLE_CHECKPOINT."""
+
+    def close(self) -> None:
+        if self._handle is not None:
+            self._handle.close()
+            self._handle = None
+
+    @property
+    def segments(self) -> list[Path]:
+        """The segment files libewf actually produced, in address order."""
+        if self._handle is not None:
+            return []
+        import pyewf
+
+        first = self._base.with_name(f"{self._base.name}.E01")
+        if not first.exists():
+            return []
+        try:
+            return [Path(name) for name in pyewf.glob(str(first))]
+        except (OSError, MemoryError, RuntimeError, ValueError):
+            # glob is only used to enumerate what was written; a failure here
+            # must not cost the caller an acquisition that already succeeded.
+            return [first]
 
 
 # --------------------------------------------------------------------------
@@ -495,6 +668,21 @@ def acquire(
             ),
         )
 
+    if fmt == "e01" and resume:
+        # Refused before anything is opened. libewf cannot append to an
+        # existing segment set, so the only thing "resume" could mean here is
+        # a silent re-image from zero - which looks like a resume in the log,
+        # takes as long as the original run, and would let an operator believe
+        # the first run's bytes were reused.
+        raise UnsupportedCapability(
+            "an E01 acquisition cannot be resumed",
+            remediation=(
+                "libewf has no append mode for an existing segment set. "
+                "Delete the partial container and acquire again, or acquire "
+                "to raw, which does resume from a chunk boundary."
+            ),
+        )
+
     reader, source_path, owns_reader = _open_source(source, options)
     started_at = datetime.now(UTC)
     limitations: list[str] = []
@@ -591,9 +779,25 @@ def _read_pass(
     bad_sectors: list[BadSectorRange] = []
     substituted: list[SubstitutedRange] = []
 
-    writer = _RawWriter(destination, segment_bytes=options.segment_bytes)
+    writer: _ImageWriter = (
+        _EwfWriter(destination)
+        if fmt == "e01"
+        else _RawWriter(destination, segment_bytes=options.segment_bytes)
+    )
+    if fmt == "e01":
+        limitations.append(
+            E01_COMPRESSION_NOT_SELECTABLE.format(
+                version=_ewf_version(), requested=options.compression
+            )
+        )
+        limitations.append(E01_NO_DURABLE_CHECKPOINT)
+
     start_offset = 0
     prior_bytes = destination.stat().st_size if destination.exists() else 0
+    # An E01 is never resumed: libewf cannot append to an existing segment
+    # set, so re-reading the source from zero is the only correct behaviour.
+    if fmt == "e01":
+        prior_bytes = 0
     if resume and prior_bytes:
         # Align down to a chunk boundary: the chunk hash list is built in
         # order, so restarting mid-chunk would produce a hash over a partial

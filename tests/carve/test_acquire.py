@@ -329,25 +329,101 @@ def test_e01_acquisition_either_works_or_refuses_with_a_named_reason(
 ) -> None:
     """Never emit an E01 that libewf could not actually finalise.
 
-    This build of libewf-python binds no write-configuration setters, so an
-    E01 write cannot be completed. Refusing loudly is correct; producing a
-    truncated container that opens but reads short would be the worst outcome.
+    Whether E01 can be written depends on whether libewf was compiled against
+    real zlib, which is not visible from Python. ``e01_write_supported()``
+    therefore writes a throwaway container and looks. Either branch is a
+    correct outcome; producing a truncated container that opens and reads
+    short would be the worst one.
     """
     dest = tmp_path / "case.E01"
     if e01_write_supported():
         record = _run(acquire(source_file, dest, fmt="e01"))
+        assert dest.exists(), "libewf appended its own extension to the base name"
         with open_evidence(dest) as handle:
             assert handle.read(0, handle.size) == source_file.read_bytes()
             assert handle.source.fmt == "ewf"
         assert record.sha256 == hashlib.sha256(  # type: ignore[union-attr]
             source_file.read_bytes()
         ).hexdigest()
+        assert record.source.segments == [str(dest)]  # type: ignore[union-attr]
         return
 
     with pytest.raises(UnsupportedCapability) as excinfo:
         _run(acquire(source_file, dest, fmt="e01"))
-    assert "set_media_size" in str(excinfo.value)
+    assert "compiled without zlib" in str(excinfo.value)
     assert not dest.exists(), "a refused acquisition must leave no partial image"
+
+
+def test_e01_acquisition_admits_that_compression_was_not_selectable(
+    source_file: Path, tmp_path: Path
+) -> None:
+    """``AcquireOptions.compression`` cannot reach libewf through pyewf.
+
+    pyewf binds ``set_header_codepage`` and no other setter, so
+    ``libewf_handle_set_compression_values`` is unreachable and the container
+    is written at libewf's default whatever the caller asked for. Silently
+    accepting the option would let a report claim a compression level that was
+    never applied.
+    """
+    if not e01_write_supported():
+        pytest.skip("this libewf build cannot write E01; nothing to record")
+
+    record = _run(
+        acquire(
+            source_file,
+            tmp_path / "compressed.E01",
+            fmt="e01",
+            options=AcquireOptions(compression="best"),
+        )
+    )
+    limitations = record.limitations  # type: ignore[union-attr]
+    assert any("E01_COMPRESSION_NOT_SELECTABLE" in item for item in limitations)
+    assert any("'best'" in item for item in limitations), (
+        "the limitation must name the value that was ignored"
+    )
+    assert any("no compression" in item for item in limitations), (
+        "the limitation must say what libewf actually did, not only what it "
+        "ignored: the default is no compression, so the container is larger "
+        "than the source"
+    )
+    assert any("E01_NO_DURABLE_CHECKPOINT" in item for item in limitations)
+
+
+def test_an_e01_written_here_is_not_smaller_than_its_source(
+    tmp_path: Path
+) -> None:
+    """Documents the surprise, so nobody plans storage around a saving.
+
+    libewf's default compression level is none. A container written through
+    pyewf is therefore slightly larger than the source even when the source is
+    a single repeated byte, which is the most compressible input that exists.
+    """
+    if not e01_write_supported():
+        pytest.skip("this libewf build cannot write E01")
+
+    source = tmp_path / "compressible.dd"
+    source.write_bytes(b"A" * (4 * MIB))
+    dest = tmp_path / "nocompress.E01"
+    _run(acquire(source, dest, fmt="e01"))
+
+    assert dest.stat().st_size >= source.stat().st_size, (
+        "if this ever fails, pyewf gained a compression setter and "
+        "E01_COMPRESSION_NOT_SELECTABLE needs revisiting"
+    )
+
+
+def test_an_e01_acquisition_refuses_to_resume_rather_than_restarting_silently(
+    source_file: Path, tmp_path: Path
+) -> None:
+    """libewf cannot append to a segment set. Say so; do not re-image quietly."""
+    if not e01_write_supported():
+        pytest.skip("this libewf build cannot write E01; nothing to resume")
+
+    dest = tmp_path / "partial.E01"
+    _run(acquire(source_file, dest, fmt="e01"))
+    with pytest.raises(UnsupportedCapability) as excinfo:
+        _run(acquire(source_file, dest, fmt="e01", resume=True))
+    assert "cannot be resumed" in str(excinfo.value)
 
 
 # --------------------------------------------------------------------------

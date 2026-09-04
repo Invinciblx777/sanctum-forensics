@@ -1,0 +1,7 @@
+filesystem,deleted,candidates,named,exact,recall_bp,precision_bp
+exfat,2,2,2,1,5000,5000
+ext2,2,2,2,2,10000,10000
+ext3,2,2,2,2,10000,10000
+ext4,2,2,2,0,0,0
+fat32,246,244,244,235,9553,9631
+ntfs,25,25,25,24,9600,9600

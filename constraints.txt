@@ -1,6 +1,31 @@
 # Locked dependency set for Sanctum Forensics (full transitive lock).
 # Generated on Windows/CPython 3.11 with: pip freeze --exclude-editable
 # Regenerate the same way after any pyproject dependency change.
+#
+# Three things about the two native dependencies, established by building them
+# on Fedora 44 / CPython 3.11.16 on 2026-09-04. The long version, with the
+# configure snippets, is in docs/technical.md.
+#
+# 1. Python 3.11 is required. Fedora 44's `python3` is 3.14, which fails the
+#    `requires-python` pin and has no libewf-python wheel. Install python3.11
+#    and python3.11-devel; the Makefile bootstraps the venv with it.
+#
+# 2. pytsk3==20260715 ships a cp311 manylinux_2_28_x86_64 wheel. No libtsk
+#    build, no compiler, no sleuthkit package needed - the wheel bundles its
+#    own libtsk. (The sleuthkit CLI tools are still handy for debugging
+#    core/carve/fsaware.py, but nothing in this codebase calls them.)
+#
+# 3. libewf-python==20240506 has NO cp311 Linux wheel and builds from the
+#    bundled C source, so it needs gcc, make, python3.11-devel and zlib
+#    headers. Fedora's packaged libewf is 20140608 - ten years stale - and
+#    must NOT be linked against.
+#
+#    A plain `pip install` of it produces a module that reads E01 and cannot
+#    write one: upstream's setup.py passes `--disable-shared-libs`, which
+#    m4/zlib.m4 also reads as "use the local deflate", and libewf refuses write
+#    access without real zlib. Run scripts/build-libewf-python.sh to get a
+#    write-capable build; it patches the configure line, links -lz -lbz2, and
+#    verifies by round-tripping a container.
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.15.0
