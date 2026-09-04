@@ -23,6 +23,7 @@ dependencies = [
     "reportlab==5.0.1",
     "pikepdf==10.12.0",
     "Pillow==12.3.0",
+    "olefile==0.47",
     "fastapi==0.141.1",
     "uvicorn==0.52.4",
     "structlog==26.1.0",
@@ -34,6 +35,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest==9.1.1",
+    # Calibration tooling only: testkit/calibrate.py draws the bucket chart.
+    # core/ never imports it, and the harness degrades to CSV-only without it.
+    "matplotlib==3.11.1",
     "pytest-cov==7.1.0",
     "ruff==0.16.5",
     "mypy==2.3.1",
@@ -66,7 +70,17 @@ explicit_package_bases = true
 mypy_path = "."
 
 [[tool.mypy.overrides]]
-module = ["pytsk3", "pyewf", "ahocorasick", "construct", "blake3", "reportlab.*", "pikepdf"]
+module = [
+    "pytsk3",
+    "pyewf",
+    "ahocorasick",
+    "construct",
+    "blake3",
+    "reportlab.*",
+    "pikepdf",
+    "olefile",
+    "matplotlib.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

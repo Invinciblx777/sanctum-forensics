@@ -26,6 +26,9 @@ __all__ = [
     "ResidualRiskAssessment",
     "EraseJob",
     "VerificationResult",
+    "Validation",
+    "CarveCategory",
+    "CarveFlags",
     "CarveCandidate",
     "SubstitutedRange",
     "BadSectorRange",
@@ -230,6 +233,43 @@ class EraseResult(BaseModel):
     hw_attested: bool = False
 
 
+#: Outcome of a real decode attempt. ``decoder_unavailable`` is not a verdict
+#: about the bytes: it says the decoder for this format could not be run (an
+#: optional dependency is missing, or the decode exceeded its deadline), so the
+#: file is unjudged rather than condemned.
+Validation = Literal["valid", "truncated", "corrupt", "decoder_unavailable"]
+
+#: What an investigator filters on, one step coarser than the MIME type.
+CarveCategory = Literal[
+    "document",
+    "image",
+    "media",
+    "database",
+    "executable",
+    "archive",
+    "unknown",
+]
+
+
+class CarveFlags(BaseModel):
+    """Content properties an investigator triages on.
+
+    Every flag defaults to False, and False means "not observed", never
+    "observed absent". A format whose decoder did not run cannot set any of
+    them, which is why :attr:`inspected` exists: it separates a document with
+    no macros from a document nobody opened.
+    """
+
+    has_exif_gps: bool = False
+    is_password_protected: bool = False
+    is_encrypted: bool = False
+    contains_macros: bool = False
+    has_embedded_files: bool = False
+    is_signed: bool = False
+    #: True once a decoder actually examined the bytes for the flags above.
+    inspected: bool = False
+
+
 class CarveCandidate(BaseModel):
     """A recovered-or-recoverable object produced by the carving pipeline."""
 
@@ -238,13 +278,38 @@ class CarveCandidate(BaseModel):
     ext: str
     mime: str
     source: Literal["fs_metadata", "signature", "structure"]
-    validation: Literal["valid", "truncated", "corrupt"]
+    validation: Validation
     #: Carve confidence in basis points: 10000 is 100.00%.
     confidence_bp: int = Field(ge=0, le=10_000)
     bucket: Literal["HIGH", "MEDIUM", "LOW"]
     sha256: str
     original_name: str | None
     possibly_fragmented: bool
+    #: What the decoder said, in the operator's words. Empty when no decoder ran.
+    validation_detail: str = ""
+    #: Mean Shannon entropy over the candidate, in thousandths of a bit per
+    #: byte: 7500 is 7.5 bits/byte. An integer for the same reason
+    #: ``confidence_bp`` is one - the report shows this number to justify a
+    #: score, and it must not be a lossy rewrite of a float. ``None`` means not
+    #: measured, never "measured zero".
+    entropy_millibits_per_byte: int | None = Field(default=None, ge=0, le=8000)
+    #: Fraction of 4 KiB windows at or above 7.5 bits/byte, in basis points.
+    high_entropy_windows_bp: int | None = Field(default=None, ge=0, le=10_000)
+    #: Per-component score contributions in basis points, keyed by component
+    #: name. The report renders this so "0.35" can be taken apart by a reader
+    #: who was not there when it was computed.
+    score_components: dict[str, int] = {}
+    #: True when a higher-scoring candidate covers overlapping bytes. Kept and
+    #: reported, never dropped: a suppressed candidate that turns out to matter
+    #: is something an examiner must be able to see.
+    overlapped: bool = False
+    #: Offset of the winning candidate this one was suppressed in favour of.
+    overlaps_with: int | None = None
+    category: CarveCategory = "unknown"
+    flags: CarveFlags = CarveFlags()
+    #: Every other offset the identical content was found at, ascending. The
+    #: candidate itself carries the first one in ``offset``.
+    duplicate_offsets: list[int] = []
 
 
 class SubstitutedRange(BaseModel):

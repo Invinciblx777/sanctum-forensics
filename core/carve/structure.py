@@ -26,6 +26,7 @@ nothing, not attempt a four-gigabyte read.
 
 from __future__ import annotations
 
+import re
 import time
 import zlib
 from collections.abc import Iterator
@@ -120,15 +121,21 @@ def parse_zip(
     position plus its own length is the archive's exact end. That is why a ZIP
     can be carved exactly while a footer search cannot: the EOCD signature also
     occurs inside compressed data.
+
+    The *first* consistent record wins, not the last one inside ``max_size``.
+    An unallocated region holds many archives, and a ZIP's cap is a gigabyte,
+    so "last record in the window" hands one archive an end address belonging
+    to another one megabytes away. Consistency is what settles it: the central
+    directory this record describes must start at ``PK\x01\x02`` and must end
+    exactly where the record itself begins.
     """
     cap = min(start + max_size, handle.size)
     budget = _Budget()
     window = 1 * MIB
     cursor = start
-    last_eocd: int | None = None
+    end_of_archive: int | None = None
 
-    # Scan forward for EOCD records; the last one inside the cap is the real end.
-    while cursor < cap and budget.step():
+    while cursor < cap and budget.step() and end_of_archive is None:
         block = _read(handle, cursor, window, cap)
         if not block:
             break
@@ -142,24 +149,30 @@ def parse_zip(
             if len(trailer) == 22:
                 comment_length = int.from_bytes(trailer[20:22], "little")
                 end = absolute + 22 + comment_length
-                if end <= cap:
-                    # Corroborate: the record must point at a plausible central
-                    # directory inside this object.
-                    cd_size = int.from_bytes(trailer[12:16], "little")
-                    cd_offset = int.from_bytes(trailer[16:20], "little")
-                    if start + cd_offset + cd_size <= end:
-                        last_eocd = end
+                cd_size = int.from_bytes(trailer[12:16], "little")
+                cd_offset = int.from_bytes(trailer[16:20], "little")
+                cd_start = start + cd_offset
+                if (
+                    end <= cap
+                    and cd_start + cd_size == absolute
+                    and (
+                        cd_size == 0
+                        or _read(handle, cd_start, 4, cap) == b"PK\x01\x02"
+                    )
+                ):
+                    end_of_archive = end
+                    break
             position = found + 1
         cursor += max(len(block) - len(_EOCD) - 1, 1)
 
-    if last_eocd is None:
+    if end_of_archive is None:
         return ParsedObject(
             length=min(max_size, handle.size - start),
             validation="truncated",
             detail="no end-of-central-directory record within max_size",
         )
     return ParsedObject(
-        length=last_eocd - start,
+        length=end_of_archive - start,
         validation="valid",
         detail="length from the end-of-central-directory record",
     )
@@ -177,18 +190,25 @@ def parse_pdf(
 
     An incrementally updated PDF holds one ``%%EOF`` per revision, and every
     earlier one is a valid-looking but wrong end. Following ``startxref`` from
-    the last marker confirms which revision actually terminates the file, and
-    incidentally proves earlier revisions are still present - a fact the report
-    states, because those revisions can hold content the author believed
+    each marker confirms which revisions actually belong to *this* document,
+    and incidentally proves earlier revisions are still present - a fact the
+    report states, because those revisions can hold content the author believed
     deleted.
+
+    Corroboration is what stops the walk running into the next PDF in
+    unallocated space. That document's ``startxref`` holds an offset relative
+    to *its* first byte, so measured from this object's start it points at
+    filler rather than at an ``xref`` keyword or an object header, and the
+    marker is rejected.
     """
     cap = min(start + max_size, handle.size)
     budget = _Budget()
     window = 1 * MIB
     cursor = start
-    markers: list[int] = []
+    accepted: list[int] = []
+    rejected = 0
 
-    while cursor < cap and budget.step():
+    while cursor < cap and budget.step() and rejected == 0:
         block = _read(handle, cursor, window, cap)
         if not block:
             break
@@ -197,18 +217,30 @@ def parse_pdf(
             found = block.find(b"%%EOF", position)
             if found == -1:
                 break
-            markers.append(cursor + found + 5)
+            marker = cursor + found
+            contiguous = not accepted or _revision_follows(
+                handle, accepted[-1], marker, cap
+            )
+            if contiguous and _startxref_corroborates(handle, start, marker, cap):
+                accepted.append(marker + 5)
+            elif accepted:
+                # A marker this object cannot account for is where this object
+                # ends. Anything past it belongs to something else.
+                rejected += 1
+                break
             position = found + 1
+        if rejected:
+            break
         cursor += max(len(block) - 5, 1)
 
-    if not markers:
+    if not accepted:
         return ParsedObject(
             length=min(max_size, handle.size - start),
             validation="truncated",
-            detail="no %%EOF marker within max_size",
+            detail="no %%EOF marker with a corroborating startxref within max_size",
         )
 
-    end = markers[-1]
+    end = accepted[-1]
     # Consume a trailing newline so the length matches the file on disk.
     tail = _read(handle, end, 2, cap)
     if tail.startswith(b"\r\n"):
@@ -216,13 +248,68 @@ def parse_pdf(
     elif tail[:1] in (b"\n", b"\r"):
         end += 1
 
-    detail = "length from the final %%EOF"
-    if len(markers) > 1:
+    detail = "length from the final corroborated %%EOF"
+    if len(accepted) > 1:
         detail += (
-            f"; {len(markers) - 1} earlier revision(s) present, which may retain "
+            f"; {len(accepted) - 1} earlier revision(s) present, which may retain "
             "content removed in later ones"
         )
     return ParsedObject(length=end - start, validation="valid", detail=detail)
+
+
+#: What the first bytes of a PDF revision look like: a comment, an object
+#: header, a cross-reference table or a trailer.
+_REVISION_START = re.compile(
+    rb"^[ \t\r\n]*(%|[0-9]+[ \t\r\n]+[0-9]+[ \t\r\n]+obj|xref|trailer)"
+)
+
+
+def _revision_follows(
+    handle: EvidenceHandle, previous_end: int, marker: int, cap: int
+) -> bool:
+    """Whether the bytes after the previous ``%%EOF`` continue the same document.
+
+    An incremental update begins immediately after the revision it updates.
+    Random unallocated bytes between one ``%%EOF`` and the next mean the second
+    marker belongs to a different file that happens to lie further along the
+    image - which is exactly the case that hands one PDF an end address five
+    megabytes away.
+    """
+    if marker <= previous_end:
+        return False
+    return bool(_REVISION_START.match(_read(handle, previous_end, 24, cap)))
+
+
+#: How far back from a ``%%EOF`` the ``startxref`` keyword and its operand sit.
+#: The trailer between them is short by construction.
+_STARTXREF_LOOKBACK = 128
+
+_XREF_OBJECT = re.compile(rb"^\d+\s+\d+\s+obj")
+
+
+def _startxref_corroborates(
+    handle: EvidenceHandle, start: int, marker: int, cap: int
+) -> bool:
+    """Whether the ``startxref`` before ``marker`` points into this object.
+
+    The offset is relative to the first byte of the document, which is exactly
+    what makes it useful here: measured from a *different* document's start it
+    lands on nothing.
+    """
+    look_from = max(start, marker - _STARTXREF_LOOKBACK)
+    tail = _read(handle, look_from, marker - look_from, cap)
+    keyword = tail.rfind(b"startxref")
+    if keyword == -1:
+        return False
+    digits = tail[keyword + len(b"startxref") :].strip()
+    number = digits.split(b"%")[0].strip()
+    if not number.isdigit():
+        return False
+    target = start + int(number)
+    if not start <= target < marker:
+        return False
+    at_target = _read(handle, target, 24, cap)
+    return at_target.startswith(b"xref") or bool(_XREF_OBJECT.match(at_target))
 
 
 # --------------------------------------------------------------------------

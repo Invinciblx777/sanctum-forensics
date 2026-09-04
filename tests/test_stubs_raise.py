@@ -11,12 +11,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
-from core.carve import (
-    classify,
-    fsaware,
-    score,
-    validate,
-)
+from core.carve import fsaware
 from core.erase import files
 from core.models import Device, EraseJob
 from helper import daemon, rpc
@@ -37,6 +32,9 @@ IMPLEMENTED = (
     "core.carve.signature",
     "core.carve.structure",
     "core.carve.fragmentation",
+    "core.carve.validate",
+    "core.carve.score",
+    "core.carve.classify",
 )
 
 
@@ -47,15 +45,6 @@ def _thunks(
     return {
         "erase.erase_paths": lambda: files.erase_paths(["/tmp/x"], job_id="j"),
         "carve.undelete": lambda: fsaware.undelete(img),  # type: ignore[arg-type]
-        "carve.validate_candidate": lambda: validate.validate_candidate(
-            candidate, img  # type: ignore[arg-type]
-        ),
-        "carve.score_candidate": lambda: score.score_candidate(
-            candidate  # type: ignore[arg-type]
-        ),
-        "carve.classify_candidate": lambda: classify.classify_candidate(
-            candidate  # type: ignore[arg-type]
-        ),
         "helper.rpc.encode_request": lambda: rpc.encode_request("m", {}, req_id=1),
         "helper.rpc.decode_request": lambda: rpc.decode_request(b"{}"),
         "helper.rpc.encode_response": lambda: rpc.encode_response(1, result={}),
