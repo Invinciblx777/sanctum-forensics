@@ -1041,6 +1041,28 @@ def execute(
             f"unlocked {hidden.hidden_bytes} hidden bytes",
         )
     else:
+        # Ledgered even though there is nothing to unlock, and this is not
+        # bookkeeping for its own sake. HIDDEN_AREA_RESTORE already records
+        # "not_required" in exactly the analogous negative case; without the
+        # matching entry here, a chain read afterwards cannot tell "the tool
+        # probed for an HPA and found none" from "the tool never probed", and
+        # those two support opposite conclusions about whether the sectors
+        # beyond the accessible max were ever considered.
+        sink.record(
+            ErasePhase.HIDDEN_AREA_UNLOCK,
+            "not_required",
+            {
+                "job_id": job.job_id,
+                "hidden_bytes": hidden.hidden_bytes if hidden else 0,
+                "accessible_sectors": hidden.accessible_sectors if hidden else 0,
+                "native_max_sectors": hidden.native_max_sectors if hidden else 0,
+                "reason": (
+                    "The drive reported no HPA or DCO, so the accessible max "
+                    "already covers the whole medium and there was nothing to "
+                    "unlock."
+                ),
+            },
+        )
         yield _progress(
             job.job_id, ErasePhase.HIDDEN_AREA_UNLOCK, 10_000, "no hidden areas"
         )

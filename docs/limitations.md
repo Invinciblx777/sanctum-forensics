@@ -112,6 +112,21 @@ restore to. If the unlock fails, the hidden region is **not** erased and the
 report says so. Firmware sanitize covers the full media by design, so no unlock
 is attempted there.
 
+The `HIDDEN_AREA_UNLOCK` phase is ledgered on **every** run, including when the
+drive reports no hidden area at all — as `not_required`, carrying the probed
+sector counts. A chain that simply omitted the phase would be indistinguishable
+from one where the tool never probed, and those two support opposite conclusions
+about whether the sectors beyond the accessible max were ever considered. The
+same is true of `HIDDEN_AREA_RESTORE`, which has always recorded its own
+negative case.
+
+No loopback device reports an HPA or a DCO — they are ATA features of real
+media — so the branch where sectors genuinely are hidden cannot be reached by
+pointing the erase engine at one. It is covered against a faked hidden-area
+report in `tests/erase/test_hidden_area_phases.py`, which fakes the *probe* and
+leaves the unlock decision, the geometry widening, the ledger entries and the
+restore running unaltered.
+
 ## NVMe scope
 
 `sanitize` acts at **controller** scope: it destroys every namespace on the

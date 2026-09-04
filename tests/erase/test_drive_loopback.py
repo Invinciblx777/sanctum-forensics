@@ -28,6 +28,12 @@ pytestmark = ROOT_ONLY
 
 MIB = 1024 * 1024
 
+#: Every phase, unconditionally. A loop device has no HPA or DCO, so nothing is
+#: ever unlocked here - but the phase is still ledgered as ``not_required``,
+#: because a chain that omitted it could not be told apart from one where the
+#: tool never probed for a hidden area at all. The branch where sectors really
+#: are hidden cannot be reached with a loop device and is covered against a
+#: faked hidden-area report in ``tests/erase/test_hidden_area_phases.py``.
 EXPECTED_PHASES = [
     ErasePhase.PREFLIGHT,
     ErasePhase.HIDDEN_AREA_UNLOCK,
