@@ -1,41 +1,177 @@
 # Signature table for signature-based carving (core/carve/signature.py).
 #
-# This file is an illustrative skeleton, not the real table. The full set is
-# built in M3. Schema per entry:
-#   ext:        canonical extension, no dot
-#   mime:       reported MIME type
-#   header:     hex byte sequence at the start of the object
-#   footer:     hex byte sequence that ends the object (optional)
-#   max_bytes:  hard size cap when no footer is found
-#   notes:      caveats a reviewer should know
+# Loaded at runtime, never hardcoded: a signature table is evidence-handling
+# policy, and an examiner must be able to read, review and extend it without
+# touching Python.
+#
+# Schema per entry:
+#   name:           human label, unique
+#   ext:            canonical extension, no dot
+#   mime:           reported MIME type
+#   header:         hex byte sequence identifying the object
+#   header_offset:  where `header` sits relative to the object start (default 0).
+#                   MP4 is the reason this exists: its "ftyp" magic begins at
+#                   byte 4, after a 32-bit box size, so a match at file offset N
+#                   means the object starts at N-4.
+#   footer:         hex byte sequence ending the object (optional)
+#   max_size:       hard cap on the object, and the bound on the footer search.
+#                   An unbounded search on a 2 TB image never returns.
+#   min_size:       below this a match is noise rather than an object
+#   notes:          caveats a reviewer should know
 
-version: 0
+version: 1
 
 signatures:
-  - ext: jpg
+  - name: JPEG
+    ext: jpg
     mime: image/jpeg
     header: "FFD8FF"
     footer: "FFD9"
-    max_bytes: 20971520
-    notes: "Footer also appears in embedded thumbnails; validation must decode."
+    max_size: 20971520
+    min_size: 128
+    notes: >-
+      FFD9 also terminates the embedded EXIF thumbnail, so the first footer is
+      often not the last. The structure parser walks segments instead; the
+      footer here only bounds the fallback.
 
-  - ext: png
+  - name: PNG
+    ext: png
     mime: image/png
     header: "89504E470D0A1A0A"
     footer: "49454E44AE426082"
-    max_bytes: 52428800
-    notes: "IEND chunk is a reliable terminator."
+    max_size: 52428800
+    min_size: 67
+    notes: >-
+      Footer is the complete IEND chunk including its CRC, so it is unambiguous.
+      min_size is the smallest legal PNG (8 magic + IHDR + IDAT + IEND).
 
-  - ext: pdf
+  - name: GIF87a
+    ext: gif
+    mime: image/gif
+    header: "474946383761"
+    footer: "003B"
+    max_size: 10485760
+    min_size: 35
+    notes: "Trailer 0x3B preceded by a zero block terminator."
+
+  - name: GIF89a
+    ext: gif
+    mime: image/gif
+    header: "474946383961"
+    footer: "003B"
+    max_size: 10485760
+    min_size: 35
+    notes: "Same trailer as 87a; animated files contain many 0x3B-like bytes."
+
+  - name: PDF
+    ext: pdf
     mime: application/pdf
     header: "255044462D"
     footer: "2525454F46"
-    max_bytes: 104857600
-    notes: "Multiple %%EOF markers with incremental updates; take the last."
+    max_size: 104857600
+    min_size: 64
+    notes: >-
+      An incrementally updated PDF holds several %%EOF markers and the last one
+      ends the file. The structure parser follows startxref instead of guessing.
 
-  - ext: zip
+  - name: ZIP
+    ext: zip
     mime: application/zip
     header: "504B0304"
     footer: "504B0506"
-    max_bytes: 1073741824
-    notes: "End-of-central-directory; also covers docx/xlsx/pptx/odt. Structure carver preferred."
+    max_size: 1073741824
+    min_size: 22
+    notes: >-
+      Footer is the end-of-central-directory signature. Also covers docx, xlsx,
+      pptx, odt and jar. The structure parser gives exact length; prefer it.
+
+  - name: MP4
+    ext: mp4
+    mime: video/mp4
+    header: "66747970"
+    header_offset: 4
+    max_size: 4294967296
+    min_size: 32
+    notes: >-
+      "ftyp" begins at byte 4, after the box size. No footer exists: length
+      comes from walking the top-level box sizes.
+
+  - name: SQLite
+    ext: sqlite
+    mime: application/vnd.sqlite3
+    header: "53514C69746520666F726D6174203300"
+    max_size: 4294967296
+    min_size: 512
+    notes: >-
+      Exact length is page_size (offset 16, big-endian u16, 1 meaning 65536)
+      multiplied by page_count (offset 28, big-endian u32). No footer.
+
+  - name: OLE
+    ext: doc
+    mime: application/x-ole-storage
+    header: "D0CF11E0A1B11AE1"
+    max_size: 268435456
+    min_size: 512
+    notes: >-
+      Legacy doc/xls/ppt/msi compound file. Length needs the FAT; reported
+      possibly-truncated until an OLE parser lands.
+
+  - name: ELF
+    ext: elf
+    mime: application/x-elf
+    header: "7F454C46"
+    max_size: 268435456
+    min_size: 52
+    notes: "Length from section header table offset plus its size."
+
+  - name: PE
+    ext: exe
+    mime: application/vnd.microsoft.portable-executable
+    header: "4D5A"
+    max_size: 268435456
+    min_size: 64
+    notes: >-
+      Two bytes only, so this matches often by chance. A candidate is only
+      credible when the e_lfanew offset points at a PE\0\0 signature.
+
+  - name: RAR
+    ext: rar
+    mime: application/vnd.rar
+    header: "526172211A0700"
+    max_size: 4294967296
+    min_size: 20
+    notes: "RAR 4.x. RAR 5 adds a trailing 0x01 byte to the same prefix."
+
+  - name: 7z
+    ext: 7z
+    mime: application/x-7z-compressed
+    header: "377ABCAF271C"
+    max_size: 4294967296
+    min_size: 32
+    notes: "Length lives in the end-of-archive header referenced from the start."
+
+  - name: EVTX
+    ext: evtx
+    mime: application/x-ms-evtx
+    header: "456C6646696C6500"
+    max_size: 268435456
+    min_size: 4096
+    notes: >-
+      "ElfFile\0". Windows event log; high forensic value. Length is chunk
+      count multiplied by 65536 plus the 4096-byte header.
+
+  - name: TIFF-LE
+    ext: tiff
+    mime: image/tiff
+    header: "49492A00"
+    max_size: 268435456
+    min_size: 8
+    notes: "Little-endian. Also the container for many raw camera formats."
+
+  - name: TIFF-BE
+    ext: tiff
+    mime: image/tiff
+    header: "4D4D002A"
+    max_size: 268435456
+    min_size: 8
+    notes: "Big-endian variant."

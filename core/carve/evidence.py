@@ -338,10 +338,21 @@ class BytesEvidence(_BaseEvidence):
         data: bytes,
         *,
         unreadable: Iterable[tuple[int, int]] = (),
+        recorded_substituted: Iterable[tuple[int, int]] = (),
         sector_size: int = DEFAULT_SECTOR_BYTES,
         fill_byte: int = 0x00,
         path: str = "<memory>",
     ) -> None:
+        """``unreadable`` ranges are recorded *and* overwritten with the fill
+        byte, which is what a real acquisition produces.
+
+        ``recorded_substituted`` ranges are recorded but leave the bytes alone.
+        That models the case the two disagree: substituted ranges travel in the
+        acquisition record, a sidecar the image itself cannot confirm, so a
+        carver may be handed metadata saying "filled" over bytes that still
+        look like content. Suppression has to hold there too, which is the only
+        way to exercise it.
+        """
         self._data = bytes(data)
         substituted = [
             SubstitutedRange(
@@ -352,16 +363,29 @@ class BytesEvidence(_BaseEvidence):
             )
             for start, count in unreadable
         ]
+        recorded = [
+            SubstitutedRange(
+                offset=start,
+                length=count,
+                fill_byte=fill_byte,
+                reason="recorded as substituted by the acquisition record",
+            )
+            for start, count in recorded_substituted
+        ]
         super().__init__(
             EvidenceSource(
                 path=path,
                 fmt="bytes",
                 size_bytes=len(self._data),
                 sector_size=sector_size,
-                substituted_ranges=substituted,
+                substituted_ranges=sorted(
+                    substituted + recorded, key=lambda span: span.offset
+                ),
             ),
             sector_size,
         )
+        # Only the genuinely unreadable ranges are overwritten; recorded
+        # ones keep their bytes so the disagreement can be tested.
         for span in substituted:
             head = self._data[: span.offset]
             tail = self._data[span.offset + span.length :]

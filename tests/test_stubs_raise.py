@@ -15,8 +15,6 @@ from core.carve import (
     classify,
     fsaware,
     score,
-    signature,
-    structure,
     validate,
 )
 from core.erase import files
@@ -36,6 +34,9 @@ IMPLEMENTED = (
     "core.report",
     "core.carve.evidence",
     "core.carve.acquire",
+    "core.carve.signature",
+    "core.carve.structure",
+    "core.carve.fragmentation",
 )
 
 
@@ -46,12 +47,6 @@ def _thunks(
     return {
         "erase.erase_paths": lambda: files.erase_paths(["/tmp/x"], job_id="j"),
         "carve.undelete": lambda: fsaware.undelete(img),  # type: ignore[arg-type]
-        "carve.carve_signatures": lambda: signature.carve_signatures(
-            img  # type: ignore[arg-type]
-        ),
-        "carve.carve_structures": lambda: structure.carve_structures(
-            img  # type: ignore[arg-type]
-        ),
         "carve.validate_candidate": lambda: validate.validate_candidate(
             candidate, img  # type: ignore[arg-type]
         ),
