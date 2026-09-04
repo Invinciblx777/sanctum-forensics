@@ -6,14 +6,14 @@ Attempts a real parse/decode of the candidate's bytes to decide whether it is
 
 from __future__ import annotations
 
-from core.carve.acquire import ReadableImage
+from core.carve.evidence import EvidenceHandle
 from core.models import CarveCandidate
 
 __all__ = ["validate_candidate"]
 
 
 def validate_candidate(
-    candidate: CarveCandidate, image: ReadableImage
+    candidate: CarveCandidate, image: EvidenceHandle
 ) -> CarveCandidate:
     """Return ``candidate`` with ``validation`` set from a real decode attempt."""
     raise NotImplementedError

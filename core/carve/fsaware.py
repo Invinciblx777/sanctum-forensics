@@ -8,12 +8,12 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from core.carve.acquire import ReadableImage
+from core.carve.evidence import EvidenceHandle
 from core.models import CarveCandidate
 
 __all__ = ["undelete"]
 
 
-def undelete(image: ReadableImage) -> Iterator[CarveCandidate]:
+def undelete(image: EvidenceHandle) -> Iterator[CarveCandidate]:
     """Yield a candidate per recoverable entry found in filesystem metadata."""
     raise NotImplementedError

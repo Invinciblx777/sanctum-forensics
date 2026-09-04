@@ -9,12 +9,12 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from core.carve.acquire import ReadableImage
+from core.carve.evidence import EvidenceHandle
 from core.models import CarveCandidate
 
 __all__ = ["carve_structures"]
 
 
-def carve_structures(image: ReadableImage) -> Iterator[CarveCandidate]:
+def carve_structures(image: EvidenceHandle) -> Iterator[CarveCandidate]:
     """Yield a candidate per object located by parsing container structure."""
     raise NotImplementedError

@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 from core.carve import (
-    acquire,
     classify,
     fsaware,
     score,
@@ -35,17 +34,17 @@ IMPLEMENTED = (
     "core.erase.drive",
     "core.ledger",
     "core.report",
+    "core.carve.evidence",
+    "core.carve.acquire",
 )
 
 
 def _thunks(
     device: Device, job: EraseJob, candidate: object, entry: object
 ) -> dict[str, Callable[[], object]]:
-    img = object()  # ReadableImage is a Protocol; a stub never inspects it
+    img = object()  # EvidenceHandle is a Protocol; a stub never inspects it
     return {
         "erase.erase_paths": lambda: files.erase_paths(["/tmp/x"], job_id="j"),
-        "carve.open_readonly": lambda: acquire.open_readonly("/dev/sdz"),
-        "carve.acquire_image": lambda: acquire.acquire_image("/dev/sdz", "/tmp/e.E01"),
         "carve.undelete": lambda: fsaware.undelete(img),  # type: ignore[arg-type]
         "carve.carve_signatures": lambda: signature.carve_signatures(
             img  # type: ignore[arg-type]

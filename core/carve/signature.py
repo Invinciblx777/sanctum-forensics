@@ -8,12 +8,12 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from core.carve.acquire import ReadableImage
+from core.carve.evidence import EvidenceHandle
 from core.models import CarveCandidate
 
 __all__ = ["carve_signatures"]
 
 
-def carve_signatures(image: ReadableImage) -> Iterator[CarveCandidate]:
+def carve_signatures(image: EvidenceHandle) -> Iterator[CarveCandidate]:
     """Yield a candidate per header match, bounded by a footer or a size cap."""
     raise NotImplementedError

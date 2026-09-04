@@ -27,6 +27,11 @@ __all__ = [
     "EraseJob",
     "VerificationResult",
     "CarveCandidate",
+    "SubstitutedRange",
+    "BadSectorRange",
+    "EvidenceSource",
+    "AcquisitionRecord",
+    "IntegrityResult",
     "LedgerEntry",
     "ForensicReport",
     "Progress",
@@ -240,6 +245,111 @@ class CarveCandidate(BaseModel):
     sha256: str
     original_name: str | None
     possibly_fragmented: bool
+
+
+class SubstitutedRange(BaseModel):
+    """Bytes that could not be read and were filled with a known value.
+
+    The whole point of recording these is that a caller must never mistake a
+    substituted byte for one that was actually on the media. A run of zeros
+    that came from a fill and a run of zeros that came from the disk are
+    indistinguishable in the returned buffer; only this record separates them.
+    """
+
+    offset: int
+    length: int
+    #: The byte written in place of the unreadable data, 0-255.
+    fill_byte: int = Field(ge=0, le=255)
+    #: Why the read failed, in the operator's words. Never empty.
+    reason: str
+
+
+class BadSectorRange(BaseModel):
+    """A run of sectors that failed to read, in logical block addresses.
+
+    ``last_lba`` is inclusive: a single bad sector has ``first_lba ==
+    last_lba``. Recorded on the acquisition, in the ledger and in the report,
+    because an image containing silent substitutions and no record of them is
+    not admissible.
+    """
+
+    first_lba: int
+    last_lba: int
+    sector_size: int
+    #: The errno the final attempt returned, so a reader can tell a medium
+    #: error from a device that went away mid-acquisition.
+    errno: int
+    #: How many times the range was retried before being written off.
+    attempts: int
+
+    @property
+    def sector_count(self) -> int:
+        return self.last_lba - self.first_lba + 1
+
+
+class EvidenceSource(BaseModel):
+    """Identity of an evidence source and everything known about its integrity."""
+
+    path: str
+    fmt: Literal["raw", "split_raw", "ewf", "bytes"]
+    size_bytes: int
+    sector_size: int
+    #: Present only once a full pass has hashed the source. ``None`` means not
+    #: computed, never "computed and empty".
+    sha256: str | None = None
+    blake3: str | None = None
+    #: Segment paths, in address order, for a split set. Empty otherwise.
+    segments: list[str] = []
+    substituted_ranges: list[SubstitutedRange] = []
+    #: Guarantees that could not be made. Rendered verbatim in the report.
+    limitations: list[str] = []
+
+
+class AcquisitionRecord(BaseModel):
+    """Chain of custody for one imaging run. Ledgered in full."""
+
+    job_id: str
+    source: EvidenceSource
+    dest_path: str
+    fmt: Literal["raw", "e01"]
+    started_at: datetime
+    finished_at: datetime
+    operator: str
+    tool_version: str
+    #: Identifies the boot the monotonic clock belongs to. A monotonic reading
+    #: is meaningless across a reboot without it.
+    boot_id: str
+    monotonic_ns: int
+    bytes_read: int
+    sha256: str
+    blake3: str
+    #: Size of each chunk in ``chunk_hashes``. A later integrity failure is
+    #: localised to a chunk instead of condemning the whole image.
+    chunk_bytes: int
+    chunk_hashes: list[str] = []
+    bad_sectors: list[BadSectorRange] = []
+    limitations: list[str] = []
+    #: True when this image was completed by resuming an interrupted run.
+    resumed: bool = False
+    #: True only when a software write block was applied AND read back as
+    #: applied. False is honest; there is no third state that implies more.
+    write_blocked: bool = False
+
+
+class IntegrityResult(BaseModel):
+    """Outcome of re-reading an image and comparing it to its record."""
+
+    passed: bool
+    sha256_matches: bool
+    blake3_matches: bool
+    expected_sha256: str
+    actual_sha256: str
+    expected_blake3: str
+    actual_blake3: str
+    #: Indices into ``AcquisitionRecord.chunk_hashes`` that no longer match.
+    #: Empty when the hashes agree, which is what makes a mismatch locatable.
+    mismatched_chunks: list[int] = []
+    bytes_verified: int
 
 
 class LedgerEntry(BaseModel):
