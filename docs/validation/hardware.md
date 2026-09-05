@@ -610,6 +610,102 @@ Every one of them now has a regression test that fails without the fix.
 
 ---
 
+## Phase B pre-flight, run before sourcing a card
+
+Two things Phase B depends on that no synthetic run exercises, checked in
+advance so the first hardware run finds tool defects rather than harness ones.
+
+### FAT name round-trip: no defect
+
+B.2 deletes five files by name and then asks `mark-deleted` to mark those names
+in a manifest built by walking the *mounted* volume. If the kernel reported a
+name differently from the one written, the manifest and the request would
+disagree, `mark-deleted` would mark nothing, and the carve recall denominator
+would be zero — with `deleted_planted: 0` and `recall_bp: 0` for a run that
+worked.
+
+The concern is FAT's 8.3 short names. Checked by building a FAT32 volume the way
+Phase B does and decoding the raw directory entries rather than trusting a
+tool's rendering:
+
+| Name written | Raw 8.3 entry | Case byte | LFN? | What Linux vfat reports |
+|---|---|---|---|---|
+| `img00.jpg` | `IMG00.JPG` | `0x18` | no | `img00.jpg` |
+| `img00.jpeg` | `IMG00~1.JPE` | `0x00` | yes | `img00.jpeg` |
+| `Img02.Jpg` | `IMG02.JPG` | `0x00` | yes | `Img02.Jpg` |
+| `IMG01.JPG` | `IMG01.JPG` | `0x00` | no | `IMG01.JPG` |
+| `a-very-long-name-00.jpg` | `A-VERY~1.JPG` | `0x00` | yes | `a-very-long-name-00.jpg` |
+
+Case byte `0x18` is `LOWER_BASE | LOWER_EXT`: an all-lowercase name that fits 8.3
+is stored uppercase with those bits set and displayed lowercase, which is the
+Windows NT rule the Linux `vfat` driver follows under its default
+`shortname=mixed`. Anything the bits cannot express gets a long-name entry and
+round-trips verbatim. Phase B's `img{NN}.jpg` is the first row.
+
+Corroborated on the real device rather than only in a test image: Phase A's
+`a2-manifest.json`, built by walking a mounted vfat volume on this stick, holds
+`photo00.jpg` (fits 8.3, case bits) and `memo00.docx` (four-character extension,
+so a long-name entry) — both lowercase, in both runs.
+
+End to end, against the five names B.2 actually uses:
+
+```
+mark-deleted --names img00.jpg img02.jpg img04.jpg img06.jpg img08.jpg
+  {"marked": 5, "not_in_manifest": [], "requested": 5}   exit 0
+```
+
+And the failure is loud if it ever does diverge — a manifest built from
+uppercase names against the same request:
+
+```
+  {"marked": 0, "not_in_manifest": ["img00.jpg", "img02.jpg"], "requested": 2}   exit 1
+```
+
+which fails the B.2 phase rather than producing a silent zero recall. That exit
+status is new; before the counting fix, `mark-deleted` marked nothing and exited
+0.
+
+exFAT is not tested here. It stores names in UTF-16 with no short-name
+mechanism and is case-preserving by construction, so the failure mode above
+cannot arise; it stays unverified until the run.
+
+### BLKROSET on a USB bridge: probe written, not yet run
+
+`core/carve/acquire.py:apply_write_block` issues `BLKROSET`, reads it back with
+`BLKROGET`, and records `WRITE_BLOCK_NOT_APPLIED` when the read-back disagrees.
+**It never attempts a write.** A flag that reads back set but does not refuse a
+write would leave the acquisition record claiming a protection that does not
+exist, and everything downstream inherits that claim.
+
+The probe sets the flag, reads it back, attempts a real write to a 1 MiB region
+at the 4 GiB offset, re-reads the region to see whether it actually changed,
+then clears the flag and restores the region either way. It has been smoke
+tested end to end against an image, including the restore path.
+
+| Verdict | Meaning | Consequence |
+|---|---|---|
+| `WRITE_BLOCK_WORKS` | flag set, write refused | Software write block is real on this bridge. No change needed. |
+| `FLAG_COSMETIC` | flag set, write succeeded | `apply_write_block` must not report `applied` on this transport. The read-back is not evidence and the record must say so. |
+| `FLAG_REFUSED` | `BLKROSET` did not take | Already handled; confirm `WRITE_BLOCK_NOT_APPLIED` reaches the record. |
+
+### A third finding, from reading the code while writing the probe
+
+`apply_write_block` sets `BLKROSET 1` and **nothing ever clears it.** For
+evidence handling that is right — the source should stay protected after
+acquisition. For this harness it collides with Phase B being run twice, once per
+filesystem: the second invocation opens with `parted -s "$DEVICE" mklabel` and
+`mkfs`, both of which need a write open, on a device the first invocation left
+read-only. `parted` and `mkfs` are called with output discarded and no exit
+check, so the failure surfaces one step later as
+`could not mount $part for phase B` — loud, but pointing at the wrong thing.
+
+The fix belongs in the harness, not in `acquire`: Phase B is deliberately
+re-purposing an evidence device as a test fixture, and that is exactly when
+clearing the protection should have to be explicit and logged. Phase B should
+clear the flag before `parted`, say that it is doing so, and fail if it cannot.
+
+---
+
 ## Phase B results — NOT YET MEASURED
 
 No SD card is attached to this host, so none of Phase B ran.

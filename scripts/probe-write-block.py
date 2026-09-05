@@ -1,0 +1,240 @@
+"""Does BLKROSET actually block a write on this bridge, or only read back set?
+
+A flag that reads back set but does not refuse a write is worse than no write
+block at all: the acquisition record would claim a protection that does not
+exist, and every downstream statement about the evidence path inherits that.
+
+Sequence, against a region of the device that is deliberately overwritten and
+then restored:
+
+  1. read and hash the probe region, so any change is detectable
+  2. record the device's current read-only flag, so it can be put back
+  3. BLKROSET 1, then BLKROGET to read it back
+  4. attempt to open O_WRONLY, and if that succeeds attempt an actual write
+  5. re-read the region and compare - the only evidence that matters
+  6. clear the flag, restore the region if it changed, verify the restore
+  7. also run core.carve.acquire.apply_write_block so the tool's own verdict
+     is recorded beside the raw one
+
+Destructive only within the probe region, and only if the write block fails -
+which is the finding. Run as root:
+
+  cd /path/to/sanctum-forensics
+  sudo .venv/bin/python <this script> /dev/sdX
+"""
+
+from __future__ import annotations
+
+import errno
+import fcntl
+import hashlib
+import json
+import os
+import struct
+import sys
+from typing import Any
+
+BLKROSET = 0x125D
+BLKROGET = 0x125E
+BLKGETSIZE64 = 0x80081272
+
+#: Far enough in to be nowhere near a partition table or a filesystem
+#: superblock, so a failed restore damages nothing structural.
+PROBE_OFFSET = 4 * 1024**3
+PROBE_BYTES = 1024 * 1024
+#: Written only if the write block fails to stop it. Neither 0x00 nor 0xA5, so
+#: it cannot be confused with a wipe pattern or with this device's fill.
+POISON = 0x5A
+
+
+def get_flag(path: str) -> int | None:
+    """The read-only flag, or ``None`` when the ioctl does not apply."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        raw = fcntl.ioctl(fd, BLKROGET, struct.pack("i", 0))
+        return int(struct.unpack("i", raw)[0])
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def set_flag(path: str, value: int | None) -> str:
+    """Set the read-only flag. A ``None`` value means there was nothing to put back."""
+    if value is None:
+        return "not applicable"
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        fcntl.ioctl(fd, BLKROSET, struct.pack("i", value))
+        return ""
+    except OSError as exc:
+        return errno.errorcode.get(exc.errno or 0, str(exc.errno))
+    finally:
+        os.close(fd)
+
+
+def read_region(path: str, offset: int, span: int) -> bytes:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.lseek(fd, offset, os.SEEK_SET)
+        chunks, got = [], 0
+        while got < span:
+            part = os.read(fd, span - got)
+            if not part:
+                break
+            chunks.append(part)
+            got += len(part)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def try_write(path: str, offset: int, payload: bytes) -> dict[str, Any]:
+    """Attempt a real write. Reports where it was refused, if it was."""
+    try:
+        fd = os.open(path, os.O_WRONLY)
+    except OSError as exc:
+        return {
+            "open_refused": True,
+            "open_errno": errno.errorcode.get(exc.errno or 0, str(exc.errno)),
+            "write_refused": None,
+            "write_errno": None,
+            "bytes_written": 0,
+        }
+    try:
+        os.lseek(fd, offset, os.SEEK_SET)
+        written = os.write(fd, payload)
+        os.fsync(fd)
+        return {
+            "open_refused": False,
+            "open_errno": None,
+            "write_refused": False,
+            "write_errno": None,
+            "bytes_written": written,
+        }
+    except OSError as exc:
+        return {
+            "open_refused": False,
+            "open_errno": None,
+            "write_refused": True,
+            "write_errno": errno.errorcode.get(exc.errno or 0, str(exc.errno)),
+            "bytes_written": 0,
+        }
+    finally:
+        os.close(fd)
+
+
+def main() -> int:
+    path = sys.argv[1] if len(sys.argv) > 1 else "/dev/sda"
+    result: dict[str, Any] = {"step": "write_block_probe", "device": path}
+
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        try:
+            raw = fcntl.ioctl(fd, BLKGETSIZE64, struct.pack("Q", 0))
+            size = int(struct.unpack("Q", raw)[0])
+        except OSError:
+            # Not a block device. The flag ioctls below will report that
+            # honestly; letting the probe run against an image is what makes it
+            # testable without a device attached.
+            size = os.lseek(fd, 0, os.SEEK_END)
+    finally:
+        os.close(fd)
+    result["size_bytes"] = size
+
+    offset = PROBE_OFFSET if size > PROBE_OFFSET + PROBE_BYTES else max(size // 2, 0)
+    offset -= offset % 4096
+    result["probe_offset"] = offset
+    result["probe_bytes"] = PROBE_BYTES
+
+    before = read_region(path, offset, PROBE_BYTES)
+    result["region_sha256_before"] = hashlib.sha256(before).hexdigest()
+    result["region_distinct_bytes_before"] = sorted(set(before))[:4]
+
+    result["flag_at_start"] = get_flag(path)
+
+    set_error = set_flag(path, 1)
+    result["blkroset_error"] = set_error or None
+    result["flag_after_set"] = get_flag(path)
+
+    result["write_attempt"] = try_write(path, offset, bytes([POISON]) * 4096)
+
+    after = read_region(path, offset, PROBE_BYTES)
+    result["region_sha256_after"] = hashlib.sha256(after).hexdigest()
+    result["region_changed"] = after != before
+
+    # -- the verdict -------------------------------------------------------
+    attempt = result["write_attempt"]
+    blocked = bool(attempt["open_refused"] or attempt["write_refused"])
+    if set_error or not result["flag_after_set"]:
+        result["verdict"] = "FLAG_REFUSED"
+        result["verdict_detail"] = (
+            "BLKROSET did not take. The tool already reports this as "
+            "WRITE_BLOCK_NOT_APPLIED; confirm that limitation appears on the "
+            "acquisition record."
+        )
+    elif blocked and not result["region_changed"]:
+        result["verdict"] = "WRITE_BLOCK_WORKS"
+        result["verdict_detail"] = (
+            "The flag read back set and the write was refused. Software write "
+            "block is real on this bridge."
+        )
+    elif result["region_changed"]:
+        result["verdict"] = "FLAG_COSMETIC"
+        result["verdict_detail"] = (
+            "The flag read back set and the device was written anyway. The "
+            "acquisition record must NOT claim a software write block on this "
+            "transport."
+        )
+    else:
+        result["verdict"] = "INCONCLUSIVE"
+        result["verdict_detail"] = (
+            "The write was refused but the region also did not change, and one "
+            "of those should have been decisive. Read the raw fields."
+        )
+
+    # -- restore -----------------------------------------------------------
+    restore: dict[str, Any] = {"flag_restored_to": result["flag_at_start"]}
+    set_flag(path, 0)
+    if result["region_changed"]:
+        fd = os.open(path, os.O_WRONLY)
+        try:
+            os.lseek(fd, offset, os.SEEK_SET)
+            os.write(fd, before)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        recheck = read_region(path, offset, PROBE_BYTES)
+        restore["region_restored"] = recheck == before
+        restore["region_sha256_restored"] = hashlib.sha256(recheck).hexdigest()
+    else:
+        restore["region_restored"] = True
+    if result["flag_at_start"]:
+        set_flag(path, 1)  # put it back exactly as it was found
+    restore["flag_now"] = get_flag(path)
+    result["restore"] = restore
+
+    # -- what the tool itself concludes ------------------------------------
+    # Run this from the repository root so ``core`` is importable.
+    sys.path.insert(0, os.getcwd())
+    try:
+        from core.carve.acquire import apply_write_block
+
+        outcome = apply_write_block(path)
+        result["apply_write_block"] = {
+            "applied": outcome.applied,
+            "limitations": outcome.limitations,
+        }
+        # apply_write_block sets the flag and never clears it.
+        set_flag(path, result["flag_at_start"])
+        result["flag_final"] = get_flag(path)
+    except Exception as exc:  # noqa: BLE001 - a probe reports, it does not raise
+        result["apply_write_block_error"] = f"{type(exc).__name__}: {exc}"
+
+    json.dump(result, sys.stdout, indent=2, sort_keys=True)
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
