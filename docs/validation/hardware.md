@@ -1,16 +1,24 @@
 # Hardware validation — first contact with real removable media
 
-**Status: PHASE A COMPLETE AND CLEAN (2026-09-05). PHASE B NOT PERFORMED.**
+**Status: PHASE A COMPLETE AND CLEAN (2026-09-05). PHASE B RUN, THREE PASSES,
+CLEAN (2026-09-05).**
 
-Everything Sanctum has been measured against so far is a loop device or an
+Everything Sanctum had been measured against before this was a loop device or an
 image file. Both are perfect media: no vendor firmware, no USB bridge, no wear
 levelling, no controller deciding on its own where a write lands. This document
-is where the first run against real hardware gets written up.
+is where the first runs against real hardware get written up.
 
-Phase A has now been run three times against a real USB stick, and the third run
-is clean: every phase passed, no phase was recorded as failed, and the script
-exited 0. Its numbers are below. Phase B still has no target on this host and
-its tables stay empty.
+Phase A has been run three times against a real USB stick, and the third run is
+clean: every phase passed, no phase was recorded as failed, and the script
+exited 0.
+
+Phase B — the recovery half — has now been run three times against the same
+stick: FAT32 with half the files deleted, exFAT with half the files deleted, and
+FAT32 quick-formatted. Every acquisition verified clean with zero bad sectors.
+Recall was 100.00% on both delete passes and 1.10% on the quick-format pass,
+**and the 1.10% is a property of the test population, not of the media and not
+of the carver** — the section on it says why, at length, because the number is
+easy to misread in either direction.
 
 **Nothing in this document is estimated, extrapolated or inferred from the
 synthetic runs.** Every unmeasured table stays empty until a real run fills it,
@@ -21,6 +29,9 @@ and every inference that is not a measurement is labelled as one.
 | `results-20260904T163645Z` | 2026-09-04 | **Invalid.** The erase covered 512 bytes of the 7.76 GB device and the run printed `COMPLETE`. |
 | `results-20260904T212839Z` | 2026-09-04 | Wipe correct, reporting wrong. A.7 failed on a chain check, the elision went undetected, and the flash caveats were missing. |
 | `results-20260905T033655Z` | 2026-09-05 | **Clean.** The numbers in this document are from this run, plus a power-cycle re-verification afterwards. |
+| `results-20260905T081354Z` | 2026-09-05 | **Phase B, FAT32, delete.** Clean. 456 of 456 recovered byte-exact. |
+| `results-20260905T082418Z` | 2026-09-05 | **Phase B, exFAT, delete.** Clean. 460 of 460 recovered byte-exact. |
+| `results-20260905T082656Z` | 2026-09-05 | **Phase B, FAT32, quick format.** Clean. 10 of 912 — which is 10 of the 10 that were recoverable at all. |
 
 Nine defects separate the first run from the third. Every one of them was
 invisible to the synthetic suite; see "The three runs, and the nine defects
@@ -28,17 +39,18 @@ between them" below.
 
 ---
 
-## Why Phase B still has not happened
+## Why Phase B had not happened
 
-Blockers 1, 2 and 4 below were cleared by an operator: PhotoRec was installed,
-a scratch USB stick was supplied, and the script was run under `sudo` directly.
-Blocker 3 remains and blocks all of Phase B.
+All four blockers are now cleared. Blockers 1, 2 and 4 were cleared by an
+operator: PhotoRec was installed, a scratch USB stick was supplied, and the
+script was run under `sudo` directly. Blocker 3 was cleared by moving Phase B
+off SD entirely.
 
 | # | Blocker | Blocks | Status |
 |---|---|---|---|
 | 1 | `sudo` requires a password this session does not have | Raw device access is root-only | **Cleared** — an operator ran the script |
 | 2 | PhotoRec is not installed | Phase A steps 3 and 6 | **Cleared** — `testdisk` installed |
-| 3 | No SD card is attached | **All of Phase B** | **Open** — no card reader on this host |
+| 3 | No SD card is attached | ~~All of Phase B~~ | **Cleared by moving Phase B to USB** — see below |
 | 4 | The only removable device is a Windows installer | Phase A | **Cleared** — a scratch TransMemory stick was supplied |
 
 The original blocker write-ups are kept below, because the conditions that
@@ -80,7 +92,7 @@ the same number. The harness therefore writes
 `{"skipped": "photorec is not installed"}` rather than a zero, so the
 distinction survives into this document.
 
-### 3. No SD card, so Phase B has no target
+### 3. No SD card, so Phase B had no target
 
 ```
 $ ls /dev/mmcblk*
@@ -92,8 +104,15 @@ loop0  nvme0n1  nvme1n1  sda  zram0
 
 `nvme0n1` and `nvme1n1` are the machine's own disks — `/` is on `nvme1n1p1`.
 `sda` is the USB stick discussed below. There is no removable card reader
-device of any kind, so **Phase B cannot run at all**, and the synthetic-versus-
-real comparison that is the entire point of Phase B has no data.
+device of any kind.
+
+**Resolved by running Phase B on `/dev/sda` instead.** The recovery pipeline
+reads an image file and never touches the bus, and FAT32 and exFAT are the same
+on-disk structures on either medium, so the filesystem measurement is unaffected.
+What is lost is any claim about a card reader's *controller*, and that loss is
+stated rather than glossed — see below. Waiting indefinitely for a card reader
+while the recovery half of the project stayed entirely unvalidated against real
+media was the worse trade.
 
 ### 4. The only removable device is Windows installation media
 
@@ -773,23 +792,109 @@ its after-count.
 
 ---
 
-## Phase B results — NOT YET MEASURED
+## Phase B results — MEASURED
 
-No SD card is attached to this host, so none of Phase B ran.
+### Phase B now runs on USB, not on an SD card
+
+The blocker was never the code. It was that this host has no card reader, and
+Phase B was written to target `/dev/mmcblkN`. It now targets whatever removable
+block device it is given, and the intended target is the same USB stick Phase A
+used.
+
+**What that changes: nothing in the filesystem path. What it does not change:
+the media caveat.**
+
+FAT32 and exFAT on USB are the same filesystems as on a card for every
+structure the recovery code reads — the same 32-byte directory entries, the same
+`0xE5` marker in byte 0 of a deleted name, the same cluster chains zeroed on
+delete, the same exFAT stream extension with its `NoFatChain` flag. Neither
+`vfat` nor `exfat` on Linux issues a discard on unlink, on either bus, so a
+deleted file's clusters still hold its data in both cases. The carver reads an
+image file and never talks to the bus; two images of the same FAT32 volume, one
+from a card and one from a stick, are the same bytes.
+
+What is **not** the same is the media and its controller — and controller
+behaviour is precisely where this project has been burned. Every one of the nine
+defects below was bridge or controller behaviour. A card reader is a different
+bridge; SD cards run their own wear-levelling firmware; whether a given reader
+passes discards through is a property of that reader. **So Phase B on USB
+measures the filesystem recovery logic on real removable media, and it does not
+measure an SD card's controller.** Both halves of that go in the write-up.
+
+### How Phase B is shaped, and why
+
+| Choice | Value | Why |
+|---|---|---|
+| Test partition | `--fs-size`, default **256 MiB** | Populating 7.4 GiB at ~4 MiB/s is half an hour per pass and measures nothing the first 256 MiB does not. Recall is a property of deletion mechanics, not of unused space past the last cluster. |
+| Filler files | `--filler-bytes`, default **256 KiB** | Matches `testkit/generate_corpus.py`. The synthetic FAT32 row is 244 fillers out of 246 deleted files; a real run of ten JPEGs would be compared against a population it does not resemble. |
+| Damage model | `--damage delete\|quickformat` | `delete` removes half the fillers and half the named files. `quickformat` writes a fresh FAT and root directory over the whole volume, which destroys every directory entry and leaves signature carving as the only route. |
+| Acquisition scope | `--acquire-scope partition\|device`, default **partition** | The synthetic corpus is volume images, so a volume image is the directly comparable unit — and it is ~30x less to read. `device` images the whole stick, which is what an investigator does and which exercises partition detection. |
+
+#### Cluster geometry: matched to the synthetic corpus, and unrepresentative in the same way
+
+Measured with `mkfs.vfat -F 32` on this host:
+
+| Volume | Sectors/cluster | Cluster size |
+|---|---:|---:|
+| 40 MiB — `FAT_IMAGE_BYTES`, the synthetic corpus | 1 | **512 B** |
+| 128 MiB | 1 | 512 B |
+| **256 MiB — the Phase B default** | **1** | **512 B** |
+| 512 MiB | 8 | 4096 B |
+
+FAT32 needs at least 65,525 clusters, so anything under about 500 MiB lands on
+one-sector clusters. **The 256 MiB default therefore has the same cluster
+geometry as the corpus it is compared against**, which is what makes the
+comparison a comparison.
+
+It also inherits the corpus's limitation: **512-byte clusters are not what real
+media uses.** A retail card or stick is formatted with 4 KiB to 32 KiB clusters,
+and cluster size changes how much slack each file leaves and how coarse the
+allocator's decisions are. Neither the synthetic corpus nor this run describes
+that. `--fs-size 512` buys 4 KiB clusters and costs the direct comparison;
+running both is the honest answer if there is time.
+
+#### One other deliberate difference
+
+`build_fat32` fragments one file by writing it into holes left by deleted
+fillers. The USB run does not fragment anything.
+
+This was written up as making the run "marginally optimistic against the
+synthetic row — by one file in a few hundred". **After the run, that reads as an
+understatement.** Not fragmenting anything does not cost one file: it removes the
+only condition under which FAT walk-forward reconstruction can produce the wrong
+answer, and it is why both delete passes returned 100.00%. See "100% recall is a
+statement about a contiguous population" below.
 
 ### B.3 Acquisition
 
-| Filesystem | Format | Bytes read | On disk | MiB/s | Integrity |
-|---|---|---|---|---|---|
-| FAT32 | raw | | | | |
-| FAT32 | E01 | | | | |
-| exFAT | raw | | | | |
-| exFAT | E01 | | | | |
+Three passes, 2026-09-05, all against the same Toshiba TransMemory USB stick,
+serial `B103B9C19DE1CCC1BD535ACB`, partition scope (`/dev/sda1`, 267,386,880
+bytes). Every acquisition verified itself against its own `AcquisitionRecord`
+inside `cmd_acquire`.
 
-Expect the E01 to be **larger** than the source, not smaller: `pyewf` binds no
-compression setter and libewf's default is no compression. See
-`docs/limitations.md`. Reproduced on this host with the 40 MiB test image:
-41,943,040 bytes in, 41,961,613 bytes out.
+| Filesystem | Damage | Format | Bytes read | On disk | MiB/s | Integrity |
+|---|---|---|---:|---:|---:|---|
+| FAT32 | delete | raw | 267,386,880 | 267,386,880 | 23.44 | pass |
+| FAT32 | delete | E01 | 267,386,880 | 267,488,019 | 23.73 | pass |
+| exFAT | delete | raw | 267,386,880 | 267,386,880 | 24.03 | pass |
+| exFAT | delete | E01 | 267,386,880 | 267,488,017 | 24.08 | pass |
+| FAT32 | quickformat | raw | 267,386,880 | 267,386,880 | 23.65 | pass |
+| FAT32 | quickformat | E01 | 267,386,880 | 267,488,014 | 23.80 | pass |
+
+"Integrity: pass" is the full verdict in each case: `sha256=True`,
+`blake3=True`, `verified=267386880 bytes`, `mismatched_chunks=0`,
+**`bad_sectors=0`**. Six acquisitions of a stick that this validation has
+written end to end twice in Phase A and re-partitioned, re-formatted and
+repopulated three times more in Phase B, and not one unreadable sector.
+
+The E01 came out **larger** than the source every time, by 101,134 to 101,139
+bytes. That is expected and documented: `pyewf` binds no compression setter and
+libewf's default is no compression, so an E01 is the source plus segment
+headers. See `docs/limitations.md`.
+
+Wall clock, whole phase: 192.15 s (FAT32 delete), 86.60 s (exFAT delete),
+130.04 s (FAT32 quickformat). `{"failed_phases": [], "failures": 0}` on all
+three.
 
 ### B.4 Real media versus the synthetic calibration
 
@@ -798,14 +903,314 @@ prints comes from weights calibrated on synthetic images. If real-media recall
 diverges, the calibration describes something other than reality and every
 number inherits the error.
 
-| Filesystem | Real deleted | Real exact | Real recall | Synthetic recall | Δ | Diverges? |
-|---|---:|---:|---:|---:|---:|---|
-| fat32 | | | | 95.53% | | |
-| exfat | | | | 50.00% | | |
+| Filesystem | Damage | Real deleted | Real exact | Real recall | Synthetic recall | Δ | Flagged as run | Flagged now |
+|---|---|---:|---:|---:|---:|---:|---|---|
+| fat32 | delete | 456 | 456 | **100.00%** | 95.53% (n=246) | +4.47 pt | no divergence | `agrees` |
+| exfat | delete | 460 | 460 | **100.00%** | 50.00% (**n=2**) | +50.00 pt | diverges | `baseline_underpowered` |
+| fat32 | quickformat | 912 | 10 | **1.10%** | 95.53% (n=246) | −94.43 pt | diverges | `no_baseline` |
 
 Synthetic figures from `docs/performance/calibration-filesystems.csv`. The
-harness flags a divergence wider than 10 percentage points, which on a corpus
-this size is not noise.
+harness flags a recall gap wider than 10 percentage points.
+
+**Both flagged rows were flagging the harness, not the media.** Neither was a
+real-media divergence. The next three sections say why, and each ends with what
+was changed so the next run cannot repeat it — the "Flagged now" column above is
+what `cmd_compare` reports after those changes, against the same numbers.
+
+One caveat on reproducing that column from the archived JSON: the three
+`b4-carve-*.json` files in `results-20260905T08*` predate `--damage`, so
+`compare` reads them as delete runs and the quick-format row still comes back
+`diverges`. Re-running the pass records the damage model and the row comes back
+`no_baseline`; the behaviour is covered by
+`tests/scripts/test_compare_baseline.py` rather than by re-reading a file
+written before the field existed.
+
+#### The exFAT flag is an under-powered synthetic row
+
+The exFAT calibration row is `n=2`: one file with `NoFatChain` set that came
+back, one that used a chain the deletion destroyed and did not. 460 of 460 on
+real media against "50%" from two files is not a divergence between synthetic
+and real. It is a comparison against a number that was never a rate. The row
+should be excluded from the divergence test until the synthetic exFAT corpus is
+large enough to be one.
+
+**Fixed.** `MIN_BASELINE_N = 30`. Below it the comparison reports
+`baseline_underpowered`, still prints the gap, and does not call it a
+divergence.
+
+#### The quick-format flag compares two different experiments
+
+`cmd_compare` looked the calibration row up by **filesystem name alone**.
+`calibration-filesystems.csv` had no damage-model column, so the quick-format
+pass was scored against the FAT32 **delete** baseline. Those are two different
+experiments with two different recoverable sets, and −94.43 points is the
+distance between them, not an error in the calibration.
+
+**Fixed.** `calibration-filesystems.csv` now carries a `damage` column, `carve`
+takes `--damage` and records it, and the baseline is keyed on
+`(filesystem, damage)`. Nothing in `testkit/` quick-formats a volume, so that
+row now comes back `no_baseline` — a new measurement, which is what it is,
+rather than a comparison against the wrong experiment.
+
+#### The calibration's precision column measures a different pipeline
+
+`testkit/calibrate.py` builds the per-filesystem table by calling
+`undelete_report()` and nothing else — the signature carver never runs. That is
+visible in the CSV itself: the FAT32 row has `candidates == named == 244`, so
+every synthetic candidate came from a directory entry. The real runs carve
+signatures as well as undelete. **`precision_bp` therefore means "undelete
+precision" on the synthetic side and "undelete + signature-carve precision" on
+the real side, under one column name.** Every signature-carve false positive
+below exists only on the real side of the comparison.
+
+**Fixed by comparing like against like rather than by changing the corpus.**
+The CSV now carries a `pipeline` column (`undelete` for every existing row),
+`carve` splits its candidates by `source` into a `by_pipeline` block, and
+`compare` scores the baseline against the slice the baseline actually measured.
+Running the signature carver inside `testkit/calibrate.py` as well would move
+every published calibration figure, which is not a change to make in the week of
+a demo; the slice costs nothing and says which half it is talking about.
+
+On this run the undelete slice is 456 candidates of 470 on FAT32 and 460 of 474
+on exFAT, all of them correct, so the like-for-like precision is **100.00%
+against the baseline's 96.31%**.
+
+### The quick-format collapse: not discard, not a carver defect
+
+1.10% is neither of the two things it looks like. **The data is provably still
+on the media, and the carver recovered every file it was possible to recover.**
+
+#### What the population actually is
+
+`hardware-validation.sh` plants 10 named JPEGs and 902 filler files. The fillers
+are `rng.randbytes(262144)` — 256 KiB of pseudo-random bytes each, deliberately
+never zeros. **They carry no header, no footer and no signature of any kind.**
+No signature carver can find them, on any media, ever. The only route to a
+filler is its directory entry.
+
+A quick format destroys every directory entry. That removes the only route to
+902 of the 912 planted files and leaves signature carving, which can address the
+10 JPEGs and nothing else.
+
+**The ceiling for that pass was 10 files. 10 / 912 = 1.10%.** The carver hit the
+ceiling exactly: 10 of 10 named JPEGs, all byte-identical to the manifest, all
+in HIGH. Recall against the set that was recoverable at all was **100.0%**.
+
+#### Proof the bytes survived the format
+
+Three independent lines, two of them from the run's own output:
+
+* **The 10 JPEGs came back byte-exact from raw signature carving after the
+  `mkfs`**, at offsets 4,130,304 through 4,416,000 — the very start of the data
+  area, the region a discard would take first.
+* **Eight of the nine false positives in the quick-format pass are byte-identical
+  to eight from the FAT32 delete pass, at identical offsets**, and all eight were
+  traced (below) into the *filler payloads*. The furthest is at offset
+  239,764,738, near the end of a 267 MB volume. Filler bytes were still
+  physically present, from 7.8 MB to 239.8 MB, after the quick format.
+* **The device advertises no discard at all.** `lsblk -D` reports `DISC-GRAN 0B`
+  and `DISC-MAX 0B` for `/dev/sda` and `/dev/sda1`, so the kernel will refuse a
+  `BLKDISCARD` and `fstrim` has nothing to issue. Separately, **`mkfs.fat` 4.2
+  has no discard support** — no option, no code path. The warning this document
+  used to carry ("`mkfs` may issue discards") was hypothetical and is wrong for
+  this combination of tool and device.
+
+#### The 2.863 s carve time does not corroborate "data gone"
+
+It corroborates "no metadata candidates". The signature scan in the quick-format
+pass covered **more** ground than in the delete pass — `unallocated_bytes`
+267,386,880 against 148,984,299 — because no filesystem could be opened and the
+whole image became unallocated. What the quick-format pass did not do was read,
+hash and write out 456 reconstructed 256 KiB files: 6.8 MiB of recovered output
+against 120 MiB. That is the 8 seconds.
+
+#### What this pass therefore measures, and what it does not
+
+It measures that the harness's quick-format damage model works and that this
+controller does not discard. **It does not measure quick-format recovery**,
+because 98.9% of its denominator was unfindable by construction the moment the
+directory entries went. A pass that could measure it needs a population of
+signature-bearing files — the same JPEG/PDF/ZIP mix `testkit/generate_corpus.py`
+uses for its format rows — rather than 902 headerless blobs.
+
+#### The finding that does survive, and it is not a small one
+
+A quick format on this media **does not sanitize anything**. Every byte of 225.8
+MiB of planted data was still there afterwards. Sanctum recovered only 10 files
+because 902 of them were random noise with no structure to recognise; a real
+volume holds documents, and a signature carver over that image would return most
+of them. **Quick format is not a Clear, not a Purge, and not any part of NIST SP
+800-88.** If a report is ever asked whether a formatted volume is sanitized, this
+run is the evidence that the answer is no.
+
+### Precision: what the extra candidates are
+
+Precision is **98.09%** and **98.10%** on the delete passes and 52.63% on the
+quick-format pass. The run itself recorded 97.02% and 97.05%, which was a
+scoring error, not a measurement: see below the table. Every candidate in all
+three passes accounted for:
+
+| Pass | Bucket | Candidates | Score | What they are |
+|---|---|---:|---:|---|
+| fat32 delete | HIGH | 5 | 1.0000 | deleted JPEGs, recovered **with their names** from surviving directory entries |
+| | HIGH | 5 | 0.9000 | **live** JPEGs, signature-carved, byte-exact |
+| | MEDIUM | 451 | 0.5500 | deleted fillers, undeleted, byte-exact |
+| | MEDIUM | 5 | 0.5000–0.6000 | **false positives** |
+| | LOW | 4 | 0.3000–0.4500 | **false positives** |
+| exfat delete | HIGH | 5 | 1.0000 | deleted JPEGs, named |
+| | HIGH | 5 | 0.9000 | live JPEGs, signature-carved, byte-exact |
+| | MEDIUM | 455 | 0.5500 | deleted fillers, undeleted, byte-exact |
+| | MEDIUM | 5 | 0.5000–0.6000 | **false positives** |
+| | LOW | 4 | 0.3000–0.4500 | **false positives** |
+| fat32 quickformat | HIGH | 10 | 0.9000 | all 10 JPEGs, signature-carved, byte-exact, unnamed |
+| | MEDIUM | 8 | 0.5000–0.6000 | **false positives** |
+| | LOW | 1 | 0.3500 | **false positive** |
+
+**The 14 "extra" candidates on each delete pass are 5 correct recoveries plus 9
+false positives.**
+
+The 5 are the live JPEGs. They are byte-identical to files that were planted and
+never deleted, and the carver found them by signature over the unallocated map.
+`cmd_carve` counted a candidate as correct only if it matched a **deleted**
+file, so five correct recoveries were scored as misses. **Precision on the
+delete passes is 461/470 and 465/474 — 98.09% and 98.10% — not the 97.02% and
+97.05% the run printed.**
+
+**Fixed.** A candidate is correct when its bytes match any planted file, live or
+deleted. `precision_bp` counts candidates rather than digests and includes live
+hits; `deleted_hit_candidates`, `live_hit_candidates` and
+`false_positive_candidates` are reported separately so the composition is
+visible rather than inferred; and the old figure survives under
+`precision_deleted_only_bp` so nothing already written up becomes
+irreproducible. **Recall is untouched** — a live file is not in its denominator
+and never was, so 100.00% and 1.10% stand exactly as measured.
+
+#### Where the 9 false positives come from, exactly
+
+All nine are manufactured out of the random filler bytes. Regenerating the
+filler stream from its seed (`random.Random(7)`, verified byte-exact against the
+manifest: 10/10 named, 902/902 fillers) and searching it for each false
+positive's content:
+
+| Offset in image | Size | Type | Found inside filler | Filler # |
+|---:|---:|---|---|---:|
+| 7,801,802 | 39,274 | JPEG | yes | 12 |
+| 28,883,523 | 135,766 | JPEG | yes | 93 |
+| 29,848,084 | 26,547 | JPEG | yes | 96 |
+| 72,489,255 | 8,161 | JPEG | yes | 259 |
+| 126,396,441 | 12,998 | JPEG | yes | 465 |
+| 133,023,550 | 15,853 | JPEG | yes | 490 |
+| 138,418,155 | 27,546 | JPEG | yes | 510 |
+| 239,764,738 | 109,706 | JPEG | yes | 897 |
+| 233,389,610 | 6,375,128 | ZIP | starts inside, runs past the end of the stream | ~890 |
+
+The filler stream is 236,453,888 bytes of pseudo-random data. It contains
+**exactly 8 occurrences of `FF D8 FF`** and **exactly 1 of `50 4B 03 04`** — and
+the carver produced exactly 8 JPEG false positives and exactly 1 ZIP false
+positive. Chance alone puts about 14 three-byte JPEG SOI markers in 236 MB of
+random bytes; 8 is that number.
+
+**This is the signature carver working correctly on a corpus designed to defeat
+it.** A 256 KiB block of random data is the worst possible input for signature
+carving, and 902 of them is 236 MB of it. It is not a defect and it is not
+something to tune away.
+
+#### The buckets held, and that is the result that matters
+
+Pooling all three passes — 963 candidates:
+
+| Bucket | Candidates | True | Precision, real media | Precision, synthetic (n=33) |
+|---|---:|---:|---:|---:|
+| HIGH | 30 | 30 | **100.00%** | 100.00% |
+| MEDIUM | 924 | 906 | 98.05% | 100.00% (**n=2**) |
+| LOW | 9 | 0 | **0.00%** | 0.00% |
+
+("True" = byte-identical to a file this run planted, live or deleted.)
+
+**Not one false positive reached HIGH, in any pass.** HIGH is 30 for 30 on real
+media, which is exactly what `docs/performance/calibration.md` measured on the
+synthetic corpus. **The score weights do not need revisiting**, and the
+`fs_metadata` weight that the calibration deliberately held at 1500 is vindicated
+by this run rather than challenged by it.
+
+LOW also behaved as designed: 9 candidates, 0 true, which is the bucket the
+report tells an examiner to skip.
+
+**MEDIUM is the band with a real problem, and the synthetic corpus could never
+have shown it.** Within MEDIUM, confidence does not rank truth: 906 correct
+recoveries scored **0.5500**, and one false positive scored **0.6000** — above
+all of them. The MEDIUM floor is doing its job (nothing false got past 0.8000)
+but the ordering inside MEDIUM carries no information. The synthetic MEDIUM row
+is `n=2` and says 100.0%, so this is the first measurement of that band that
+means anything.
+
+### 100% recall is a statement about a contiguous population
+
+**0 of the 456 and 0 of the 460 recovered files needed multi-extent
+reconstruction, because not one file on either volume was fragmented.**
+
+That is by construction, and the harness says so. `hardware-validation.sh`
+populates a freshly formatted volume in a single sequential pass and only then
+deletes; nothing is ever written into a hole. The script's own comment records
+the deliberate difference from the synthetic corpus:
+
+> `build_fat32` fragments one file by writing it into holes left by deleted
+> fillers. The USB run does not fragment anything. That makes it marginally
+> optimistic against the synthetic row — by one file in a few hundred.
+
+The FAT reconstruction is the code this matters for. FAT deletion zeroes the
+cluster chain; the start cluster and the recorded size survive and the layout
+does not, so `fsaware` walks forward from the start cluster taking clusters the
+FAT shows as free. On a contiguous file the first `size` bytes from the start
+cluster are the file, and the walk cannot go wrong. **The failure mode that
+`contiguity_assumed` exists to warn about — a deleted neighbour's freed clusters
+being pulled in — was never exercised**, even though half the files on the volume
+were deleted, because contiguity made the neighbours' clusters irrelevant.
+
+So the honest claim is **100% recall on a contiguous population**, and every
+candidate on both delete passes is still marked `contiguity_assumed`, correctly.
+What real media does to fragmented files remains unmeasured. That is now the
+single largest untested assumption in the recovery path, and it needs a Phase B
+pass that fragments deliberately: fill the volume, delete alternate fillers,
+then write files sized to span several of the resulting holes.
+
+### Six things this run found in the harness
+
+None of them is in the carver, and none of them changes a recall figure above.
+Four are fixed, with a regression test each in
+`tests/scripts/test_compare_baseline.py`. Two are open and are open deliberately.
+
+**Fixed:**
+
+1. **`cmd_compare` ignored the damage model.** It looked the calibration row up
+   by filesystem name, so a quick-format run was scored against a delete
+   baseline. `calibration-filesystems.csv` now has a `damage` column, `carve`
+   takes `--damage`, and the lookup is keyed on `(filesystem, damage)`.
+2. **`precision_bp` named two different pipelines** — undelete-only on the
+   synthetic side, undelete + signature carve on the real side. The CSV now
+   declares a `pipeline`, `carve` emits a `by_pipeline` split by candidate
+   `source`, and `compare` scores the slice the baseline measured.
+3. **A correctly recovered live file was scored as a false positive.**
+   Correctness is now "matches any planted file", live or deleted; the deleted
+   set is still what recall is measured against.
+4. **The divergence test had no minimum n.** It flagged an `n=2` synthetic row
+   as a real-media divergence. Below `MIN_BASELINE_N = 30` the comparison now
+   reports `baseline_underpowered` and prints the gap without calling it a
+   finding.
+
+**Open, and why:**
+
+5. **The quick-format damage model cannot measure quick-format recovery**
+   against a filler-dominated population. The fix is a signature-bearing corpus,
+   which changes what the pass plants and therefore what every Phase B recall
+   figure is measured over. That is a new experiment, not a repair, and it goes
+   after the demo.
+6. **The harness deletes the image after a successful carve.** The quick-format
+   result was surprising and the image it came from was already gone, so the
+   raw-byte check had to be reconstructed from the recovered candidates instead
+   of read directly. A `--keep-images` flag costs 267 MB and one line. It is not
+   in yet because adding a flag to the Phase B path without a Phase B run to
+   exercise it is how the nine Phase A defects got in.
 
 ---
 
@@ -889,17 +1294,36 @@ entries were resolved by the run:
 ```bash
 sudo dnf install -y testdisk           # PhotoRec, for steps A.3 and A.6
 
+# Phase B formats the device, and a desktop will automount the volume it just
+# made. The harness refuses a mounted device - correctly - so the second and
+# third passes fail at the gate unless it is unmounted first:
+udisksctl unmount -b /dev/sdX1 2>/dev/null || true
+
 # Phase A, against a SCRATCH usb stick - this destroys everything on it
 sudo ./scripts/hardware-validation.sh \
     --device /dev/sdX \
     --i-understand-this-destroys-data \
     --phase a
 
-# Phase B, against an SD card, once per filesystem
-sudo ./scripts/hardware-validation.sh --device /dev/mmcblkN \
-    --i-understand-this-destroys-data --phase b --filesystem fat32
-sudo ./scripts/hardware-validation.sh --device /dev/mmcblkN \
-    --i-understand-this-destroys-data --phase b --filesystem exfat
+# Phase B, against a USB stick, once per filesystem-and-damage combination.
+# Each invocation writes its own docs/validation/results-<timestamp>/ and
+# prompts for the serial. Phase B destroys whatever Phase A left on the device.
+sudo ./scripts/hardware-validation.sh --device /dev/sdX \
+    --i-understand-this-destroys-data --phase b \
+    --filesystem fat32 --damage delete
+sudo ./scripts/hardware-validation.sh --device /dev/sdX \
+    --i-understand-this-destroys-data --phase b \
+    --filesystem exfat --damage delete
+sudo ./scripts/hardware-validation.sh --device /dev/sdX \
+    --i-understand-this-destroys-data --phase b \
+    --filesystem fat32 --damage quickformat
+
+# Optional fourth pass: image the whole stick rather than the test volume, to
+# exercise partition detection and whole-device acquisition. Adds ~10 min of
+# reading plus a much slower carve.
+sudo ./scripts/hardware-validation.sh --device /dev/sdX \
+    --i-understand-this-destroys-data --phase b \
+    --filesystem fat32 --damage delete --acquire-scope device
 ```
 
 The script refuses without the flag, refuses a mounted device, refuses the
@@ -927,6 +1351,90 @@ sudo .venv/bin/python scripts/hardware_validation.py verify \
 
 `verify` exits 0 even when verification fails — a disappointing measurement is a
 finding, not an error — so read `.result.passed` rather than the exit status.
+
+### A hand-run verify after staging fails on purpose, in two places
+
+A verify run by hand against a device that has since been *staged* — partitioned
+and formatted for a demo or a rehearsal — reports a failure that looks alarming
+and is not. It happened on 2026-09-05 against the 7.4 GiB validation stick and
+cost an evening, so it is written down here.
+
+The symptom, from a `full_read` verify expecting the fill the erase wrote:
+
+```
+verification_complete bytes_checked=7759462400 failures=17 passed=False
+  failed_offsets [0, 1048576, 2097152, ... , 15728640, 7759452672]
+```
+
+Seventeen offsets: sixteen at a 1 MiB stride from zero, and one 9,728 bytes
+before the end of the device. Two separate causes, neither of them the eraser.
+
+**Read `failed_offsets` correctly first.** `_read_windows` in
+`core/erase/verify.py` records the *first* bad byte of each read chunk and then
+moves to the next chunk, and `VerifyConfig.read_chunk` is 1 MiB. So sixteen
+consecutive strided offsets do not mean sixteen scattered bad bytes — they mean
+the whole first 16 MiB is not the expected fill. Everything between 16 MiB and
+7,759,452,672 held it.
+
+**The head** is the filesystem. `dmesg` showed `sda: sda1`, so the stick carried
+a partition table again: staging had partitioned and formatted it after the
+erase. A `mkfs.vfat` reserved area plus two FATs lands inside the first 16 MiB.
+Expected by sequence.
+
+**The tail is `parted`.** `parted mklabel msdos` zeroes the last 19 sectors of
+the device — libparted clears the GPT backup area so a stale GPT cannot shadow
+the new msdos label. On this device that is bytes 7,759,452,672 to the end,
+which is exactly where the verify pointed. It reproduces on a plain file, with
+no device and no root:
+
+```bash
+truncate -s 7759462400 img
+python3 -c 'fh=open("img","r+b"); fh.seek(7759462400-(1<<20)); fh.write(b"\xa5"*(1<<20))'
+parted -s img mklabel msdos
+tail -c 65536 img | od -An -tu1 -v | tr ' ' '\n' | grep -v '^$' | sort | uniq -c
+```
+
+| last 64 KiB | `0xa5` | `0x00` |
+|---|---:|---:|
+| `/dev/sda`, after staging | 55808 | 9728 |
+| `img`, after `mklabel msdos` | 55808 | 9728 |
+
+Byte-identical, and the first zero sits at 7,759,452,672 in both. Measured with
+GNU parted 3.6. `mkpart` is not involved — `mklabel` alone does it. `mklabel
+gpt` also writes over the end of the device, but with a backup header and entry
+array rather than zeros. `wipefs -a` leaves the tail untouched.
+
+Staging calls it at `scripts/demo-reset.sh:878`, and again at `:446` and `:513`.
+
+**None of this touches the erase claim.** The staging `parted` runs *before* the
+wipe, and the wipe then covers the whole device including the tail:
+`_overwrite` pads a trailing partial block rather than short-writing it, and for
+a software method `choose_strategy` picks `full_read` at or under
+`VerifyConfig.full_read_max_bytes` (64 GiB), so a 7.4 GiB device is read end to
+end and the last 19 sectors are checked every time — no sampling, nothing to
+miss. Two consecutive recorded runs on this exact stick confirm it:
+
+```
+results-20260904T212839Z/a5-verify.json  passed=true  failed_offsets=[]  bytes_checked=7759462400
+results-20260905T033655Z/a5-verify.json  passed=true  failed_offsets=[]  bytes_checked=7759462400
+```
+
+So: do not stage a smaller partition to avoid the tail, and do not treat this as
+a media defect. The media persists writes there; the two passing full reads
+above are the evidence.
+
+**Telling this apart from a real failure.** A genuine one is a verify run
+directly after an erase, with nothing between them — which is what the harness
+does, A.4 straight into A.5. If a device has been partitioned since the erase,
+re-verifying it against the erase fill measures the staging, not the wipe. Check
+`docs/validation/results-<timestamp>/a5-verify.json` from the run itself before
+believing a hand-run verify.
+
+Read while chasing this and fixed separately: `_overwrite` advanced its offset
+by the length it handed to `os.write` rather than the length that came back, so
+a short write would have left a hole under a run still reporting a complete
+overwrite. It now finishes short writes, and reconciles what it planned against
+what it wrote before returning — see `OverwriteIncomplete` in `core/errors.py`.
 
 Results land in `docs/validation/results-<timestamp>/` as one JSON file per
 step, written as each step finishes, so a crash halfway through still leaves

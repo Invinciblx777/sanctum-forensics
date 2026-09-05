@@ -1,0 +1,106 @@
+/* Design tokens. Defined once, consumed everywhere.
+ *
+ * This is an instrument, and the constraints below are measurements rather
+ * than taste:
+ *
+ * 1. It is read off a projector in a lit room, from ten feet, by someone who
+ *    did not build it. Every foreground/background pair here clears WCAG AA
+ *    (4.5:1) and most clear AAA (7:1). The ratios are recorded beside each
+ *    value so a change that breaks one is visible in the diff.
+ *
+ * 2. Near-black, not black. A projector crushes the bottom of its range, so
+ *    #000 and the first surface above it arrive as the same colour. The base
+ *    is lifted to #0e1216 and carries a slight cool cast, which separates from
+ *    the warm cast of most projector lamps.
+ *
+ * 3. Saturated colour means one thing: state. `--state-destructive` is the
+ *    only strong hue in the interface and it appears only where data is about
+ *    to be lost. Nothing decorative is allowed to borrow it - not links, not
+ *    focus rings, not the selected row. This is why there is no "brand accent"
+ *    token: an instrument that highlights its own navigation in the same
+ *    colour it uses for "this destroys a drive" has spent the signal.
+ *
+ * 4. Colour never carries meaning alone. Every state token has a matching
+ *    glyph and a word; see `.state-mark` below and the confidence column in
+ *    Recovery. Read in greyscale, the interface loses nothing.
+ */
+
+:root {
+  /* ---- surfaces: three levels, no more ------------------------------- */
+  /* Separation comes from borders, never from shadow. A drop shadow on a
+     projector is a grey smear; a 1px rule survives the optics. */
+  --surface-base: #0e1216; /* the page */
+  --surface-raised: #151b21; /* panels, table headers, the row under the cursor */
+  --surface-sunken: #0a0d10; /* inputs and log output: things you type or read into */
+
+  /* ---- rules --------------------------------------------------------- */
+  --rule: #26313b; /* separation between rows and panels: decorative, 1.42:1 */
+  --rule-strong: #566876; /* borders of interactive controls: 3.26:1, clears the
+                             3:1 WCAG minimum for non-text UI */
+
+  /* ---- text: three levels -------------------------------------------- */
+  --text-primary: #e6edf3; /* 15.91:1 on base, 14.68:1 on raised - AAA */
+  --text-secondary: #a9b7c4; /*  9.18:1 on base,  8.47:1 on raised - AAA */
+  --text-muted: #7d8c99; /*  5.45:1 on base,  5.02:1 on raised - AA  */
+
+  /* ---- state: one destructive, one warning, one success -------------- */
+  /* Each pairs with a surface tint dark enough that the foreground still
+     clears AA against it, so a badge is as readable as body text. */
+  --state-destructive: #ff6a58; /* 6.68:1 on base, 6.33:1 on its own surface */
+  --state-destructive-surface: #2a100c;
+  --state-warning: #f0b23f; /* 9.98:1 on base, 9.06:1 on its own surface */
+  --state-warning-surface: #251a09;
+  --state-success: #5fc596; /* 8.88:1 on base, 8.01:1 on its own surface */
+  --state-success-surface: #0d2018;
+
+  /* ---- type: three sizes, and that is the whole scale ---------------- */
+  /* Sized for 1280x720. At that resolution a CSS pixel is roughly twice the
+     angular size it has on the machine this was written on, which is why
+     these look large in a desktop browser and correct on the projector. */
+  --type-sm: 12px; /* column heads, the basis line under a badge, footnotes */
+  --type-md: 14px; /* everything an operator reads as prose or table data */
+  --type-lg: 18px; /* screen titles, and the capability level - the two things
+                      that must carry to the back of the room */
+
+  --weight-normal: 400;
+  --weight-medium: 550;
+  --weight-bold: 680;
+
+  /* Ligatures off, tabular figures on: an operator compares hashes and byte
+     counts character by character, and `fi` fused into one glyph or a
+     proportional `1` makes that harder at exactly the wrong moment. */
+  --font-mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas,
+    "DejaVu Sans Mono", "Liberation Mono", monospace;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+
+  /* ---- space: a 4px grid, named by use ------------------------------- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+
+  /* ---- structure ------------------------------------------------------ */
+  /* The state rail. Every table row carries a gutter of this width; a row with
+     something to say fills it, a row with nothing leaves it empty. State is
+     read down the left edge in one vertical scan rather than hunted for
+     across eight columns. */
+  --rail: 3px;
+  --gutter: 14px;
+
+  color-scheme: dark;
+}
+
+/* Motion answers an action; it never announces a state change.
+ * An SSE progress tick must not animate, or a table of 500 rows spends the
+ * whole run redrawing. The only transitions here are on :hover and :focus,
+ * which are answers to something the operator just did. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

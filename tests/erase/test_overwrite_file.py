@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 from core.erase.verify import VerifyConfig, verify
+from core.errors import OverwriteIncomplete
 from core.models import EraseMethod
 
 from .conftest import make_device
@@ -413,3 +414,216 @@ def test_the_salvage_helper_releases_every_slice_it_takes() -> None:
     view.release()
     buffer.close()
     assert buffer.closed
+
+
+# --------------------------------------------------------------------------
+# Spec test 9: a short write is finished, or the run fails loudly
+#
+# ``os.write`` is allowed to write less than it was handed and report no error.
+# The loop used to advance the offset by the length it *requested* rather than
+# the length that came back, which leaves an unwritten hole behind a run that
+# still reports a complete overwrite. That is the same shape as an erase
+# covering a fraction of a device and calling the medium sanitized: a failure
+# path producing a confident wrong answer.
+# --------------------------------------------------------------------------
+
+
+def test_a_short_write_is_retried_until_the_span_is_whole(
+    backing_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_write = os.write
+    shortened = {"count": 0}
+
+    def short_write(fd: int, data: Any) -> int:
+        # bytes() rather than a memoryview slice: a slice of the caller's view
+        # is another export of the mmap, and one left alive here would fail the
+        # close in the loop's finally block for reasons unrelated to this test.
+        payload = bytes(data)
+        if len(payload) > BLOCK:
+            shortened["count"] += 1
+            return real_write(fd, payload[:BLOCK])
+        return real_write(fd, payload)
+
+    monkeypatch.setattr(os, "write", short_write)
+    outcome, _ = run_overwrite(backing_file, buffer_bytes=1 * MIB)
+
+    assert shortened["count"] > 0, "the short-write injection never fired"
+    size = backing_file.stat().st_size
+    assert outcome.bytes_written == size, (
+        f"wrote {outcome.bytes_written} of {size} bytes"
+    )
+    assert outcome.unwritable == []
+    assert set(backing_file.read_bytes()) == {0}, "a hole survived the wipe"
+
+
+def test_a_write_that_makes_no_progress_fails_loudly(
+    backing_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A write returning zero is neither an error nor progress.
+
+    There is nothing useful to do with it except stop. Reporting a complete
+    overwrite over a span that was never written is the one outcome this module
+    must not produce, so the run raises and the caller cannot record success.
+    """
+    stall_at = 8 * MIB
+    real_write = os.write
+
+    def stalled_write(fd: int, data: Any) -> int:
+        if os.lseek(fd, 0, os.SEEK_CUR) >= stall_at:
+            return 0
+        return real_write(fd, bytes(data))
+
+    monkeypatch.setattr(os, "write", stalled_write)
+    with pytest.raises(OverwriteIncomplete):
+        run_overwrite(backing_file, buffer_bytes=1 * MIB)
+
+
+def test_every_byte_is_either_written_or_recorded_unwritable(
+    backing_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The invariant the completeness check enforces, stated as a test.
+
+    Not ``bytes_written == size``: an EIO block is legitimately skipped and
+    recorded. What must hold is that nothing is skipped *silently*.
+    """
+    bad_offset = 8 * MIB
+    real_write = os.write
+
+    def flaky_write(fd: int, data: Any) -> int:
+        position = os.lseek(fd, 0, os.SEEK_CUR)
+        if position <= bad_offset < position + len(data):
+            raise OSError(errno.EIO, "injected I/O error")
+        return real_write(fd, data)
+
+    monkeypatch.setattr(os, "write", flaky_write)
+    outcome, _ = run_overwrite(backing_file, buffer_bytes=1 * MIB)
+
+    size = backing_file.stat().st_size
+    skipped = sum(item.length for item in outcome.unwritable)
+    assert skipped > 0, "the EIO injection never fired"
+    assert outcome.bytes_written + skipped == size
+
+
+def test_a_short_write_inside_the_salvage_path_is_also_finished(
+    backing_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The block-by-block retry writes one block per call and must not short either.
+
+    It only runs after an EIO, so a wipe over healthy media never reaches it and
+    a hole opened here would survive a green run on good hardware.
+    """
+    bad_offset = 8 * MIB
+    real_write = os.write
+    shortened = {"count": 0}
+
+    def flaky_then_short(fd: int, data: Any) -> int:
+        position = os.lseek(fd, 0, os.SEEK_CUR)
+        payload = bytes(data)
+        if position <= bad_offset < position + len(payload) and len(payload) > BLOCK:
+            raise OSError(errno.EIO, "injected I/O error")
+        if position == bad_offset:
+            raise OSError(errno.EIO, "injected I/O error")
+        if len(payload) > 512:
+            shortened["count"] += 1
+            return real_write(fd, payload[:512])
+        return real_write(fd, payload)
+
+    monkeypatch.setattr(os, "write", flaky_then_short)
+    outcome, _ = run_overwrite(backing_file, buffer_bytes=1 * MIB)
+
+    assert shortened["count"] > 0, "the short-write injection never fired"
+    size = backing_file.stat().st_size
+    skipped = sum(item.length for item in outcome.unwritable)
+    assert skipped == BLOCK
+    assert outcome.bytes_written + skipped == size
+
+    data = backing_file.read_bytes()
+    assert data[bad_offset : bad_offset + BLOCK] == b"\xaa" * BLOCK
+    assert set(data[:bad_offset]) == {0}
+    assert set(data[bad_offset + BLOCK :]) == {0}
+
+
+def test_three_passes_account_for_three_whole_devices(backing_file: Path) -> None:
+    outcome, _ = run_overwrite(
+        backing_file, EraseMethod.DOD_5220_22_M_3PASS, buffer_bytes=1 * MIB
+    )
+    assert outcome.bytes_written == 3 * backing_file.stat().st_size
+
+
+def test_a_resumed_run_accounts_only_for_the_bytes_it_wrote(
+    backing_file: Path,
+) -> None:
+    """The completeness check has to be right about a partial run too.
+
+    A resume writes from the checkpoint to the end, so measuring it against a
+    whole device would make every correct resume look like a failed one.
+    """
+    ledger = RecordingLedger()
+    device = make_device(
+        path=str(backing_file), size_bytes=backing_file.stat().st_size
+    )
+    generator = _overwrite(
+        device,
+        geometry_for(backing_file),
+        EraseMethod.SINGLE_PASS_OVERWRITE,
+        job_id="job-0001",
+        ledger=ledger,
+        buffer_bytes=1 * MIB,
+        checkpoint_bytes=4 * MIB,
+    )
+    for _ in range(12):
+        next(generator)
+    generator.close()
+
+    checkpoint = ledger.last_checkpoint("job-0001")
+    assert checkpoint is not None
+
+    outcome = drain(
+        _overwrite(
+            device,
+            geometry_for(backing_file),
+            EraseMethod.SINGLE_PASS_OVERWRITE,
+            job_id="job-0001",
+            ledger=ledger,
+            buffer_bytes=1 * MIB,
+            checkpoint_bytes=4 * MIB,
+            start_offset=checkpoint.offset,
+            start_pass=checkpoint.pass_index,
+        )
+    )
+    size = backing_file.stat().st_size
+    assert outcome.bytes_written == size - checkpoint.offset
+    assert set(backing_file.read_bytes()) == {0}
+
+
+def test_the_final_reconciliation_catches_a_write_path_that_under_reports(
+    backing_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard behind the guard, exercised on its own.
+
+    ``_write_span`` already accounts for every byte, so nothing reaching the
+    reconciliation should ever fail it. That is exactly why it is worth a test:
+    an untested net is one nobody notices has rotted, and this one is the last
+    thing between a hole and a report saying the medium was sanitized.
+    """
+    from core.erase import drive as drive_mod
+
+    real_span = drive_mod._write_span
+    lied = {"count": 0}
+
+    def under_reporting_span(
+        fd: int, buffer: memoryview, offset: int, block: int
+    ) -> Any:
+        written, bad = real_span(fd, buffer, offset, block)
+        if offset == 0:
+            lied["count"] += 1
+            return written - BLOCK, bad
+        return written, bad
+
+    monkeypatch.setattr(drive_mod, "_write_span", under_reporting_span)
+    with pytest.raises(OverwriteIncomplete) as raised:
+        run_overwrite(backing_file, buffer_bytes=1 * MIB)
+
+    assert lied["count"] == 1
+    assert "unaccounted for" in str(raised.value)
+    assert str(BLOCK) in str(raised.value)

@@ -236,8 +236,13 @@ def measure(
 def write_csv(rows: Iterable[BucketRow], path: Path) -> Path:
     """Write the measured table. One file, every dimension, no summarising."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    # newline="" is the csv module's requirement; lineterminator is what stops
+    # it writing CRLF into a repository that is eol=lf everywhere else, which
+    # rewrites every line of the file on every regeneration.
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(CSV_COLUMNS))
+        writer = csv.DictWriter(
+            handle, fieldnames=list(CSV_COLUMNS), lineterminator="\n"
+        )
         writer.writeheader()
         for row in rows:
             writer.writerow(row.as_row())
@@ -412,6 +417,8 @@ FS_WEIGHT_SWEEP = (0, 500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 5000)
 
 FS_CSV_COLUMNS = (
     "filesystem",
+    "damage",
+    "pipeline",
     "deleted",
     "candidates",
     "named",
@@ -420,12 +427,30 @@ FS_CSV_COLUMNS = (
     "precision_bp",
 )
 
+#: How the files in the corpus were made unreachable. The corpus deletes them;
+#: nothing in ``testkit/`` quick-formats a volume. Recorded in the CSV because
+#: a baseline row is only a baseline for the damage model that produced it, and
+#: scoring a quick-format run against a delete row compares two experiments.
+FS_DAMAGE = "delete"
+
+#: Which halves of the recovery pipeline produced the numbers in the row.
+#: :func:`score_filesystem_candidates` calls ``undelete_report()`` and nothing
+#: else, so the signature carver contributes no candidate here and no false
+#: positive either. A real run that carves signatures as well is measuring a
+#: different pipeline, and its precision is not comparable to this one under
+#: the same column name.
+FS_PIPELINE = "undelete"
+
 
 @dataclass(frozen=True)
 class FilesystemRow:
     """What recovery achieved on one filesystem, measured against the manifest."""
 
     filesystem: str
+    #: Damage model that made the files unreachable. See :data:`FS_DAMAGE`.
+    damage: str
+    #: Pipeline halves that produced the row. See :data:`FS_PIPELINE`.
+    pipeline: str
     #: Deleted files planted, counted by distinct SHA-256.
     deleted: int
     #: ``source="fs_metadata"`` candidates the pass emitted.
@@ -445,6 +470,8 @@ class FilesystemRow:
     def as_row(self) -> dict[str, str | int]:
         return {
             "filesystem": self.filesystem,
+            "damage": self.damage,
+            "pipeline": self.pipeline,
             "deleted": self.deleted,
             "candidates": self.candidates,
             "named": self.named,
@@ -574,6 +601,8 @@ def measure_filesystems(
     return [
         FilesystemRow(
             filesystem=filesystem,
+            damage=FS_DAMAGE,
+            pipeline=FS_PIPELINE,
             deleted=want,
             candidates=candidates,
             named=with_names,
@@ -668,7 +697,9 @@ def calibrate_filesystems(
     path = Path(out_dir) / "calibration-filesystems.csv"
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(FS_CSV_COLUMNS))
+        writer = csv.DictWriter(
+            handle, fieldnames=list(FS_CSV_COLUMNS), lineterminator="\n"
+        )
         writer.writeheader()
         for row in rows:
             writer.writerow(row.as_row())

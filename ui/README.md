@@ -1,32 +1,52 @@
-# React + TypeScript + Vite
+# Sanctum Forensics — control surface
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React + TypeScript + Vite. Five screens, one design system, no network beyond
+the API it is served from.
 
-Currently, two official plugins are available:
-
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```
+npm install
+npm run dev      # 127.0.0.1:5173, proxying the API on 127.0.0.1:8787
+npm run build    # tsc -b && vite build -> dist/, served by the API
+npm run lint     # oxlint
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+## The design system
+
+`src/tokens.css` holds every value; `src/index.css` builds the primitives out of
+them and records why each one is shaped the way it is. Screens use the tokens
+directly and hardcode neither a colour nor a pixel size.
+
+The pieces a screen reaches for, all exported from `src/components/widgets.tsx`:
+
+| Piece | What it is for |
+|---|---|
+| `Verdict` | A judgement the tool has made: the word at `--type-lg`, the thing it was derived from underneath. Capability level, PASS/FAIL, confidence bucket. |
+| `Railed` | The instrument table's left-edge state gutter, for panels and lists rather than rows. |
+| `Evidence` | Label/value pairs. `stacked` in a side panel or a dialog. |
+| `FilePath` | A path in a fixed-width cell: the directory elides, the filename never does. |
+| `.itable` | The one table. `.irow` is 52px and two-line, `.irow.is-compact` is 30px, and neither height depends on content. |
+
+A colour never carries meaning on its own. Every state has a word beside it, so
+the interface reads in greyscale and survives a projector that has crushed the
+reds into the background.
+
+## Design preview
+
+`preview.html` renders the real screens against fixture data at the projector's
+1280x720, with the server replaced at the `fetch` and `EventSource` boundary and
+the interesting state reached by driving the real controls. It is a dev-only
+entry: `vite build` takes `index.html` as its single input, so nothing under
+`src/preview/` reaches `dist/`.
+
+```
+npm run dev
+# then, per screen:
+#   http://127.0.0.1:5173/preview.html?screen=devices
+#   http://127.0.0.1:5173/preview.html?screen=sanitize
+#   http://127.0.0.1:5173/preview.html?screen=files
+#   http://127.0.0.1:5173/preview.html?screen=recovery
+#   http://127.0.0.1:5173/preview.html?screen=audit
+```
+
+The page sets `data-preview-ready` on `<html>` once it has finished driving, so
+a screenshot tool can poll for that instead of guessing at a sleep.

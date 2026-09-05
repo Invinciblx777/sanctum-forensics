@@ -129,6 +129,14 @@ def test_the_harness_writes_a_table_a_reader_can_check(
     result = calibrate_filesystems(corpus_dir, tmp_path, regenerate=False)
     assert result.csv_path is not None
     text = result.csv_path.read_text(encoding="utf-8")
-    assert "filesystem,deleted,candidates,named,exact,recall_bp,precision_bp" in text
+    assert (
+        "filesystem,damage,pipeline,deleted,candidates,named,exact,"
+        "recall_bp,precision_bp"
+    ) in text
     assert "ext4" in text and "ntfs" in text
+    # A baseline row is a baseline only for the damage model and the pipeline
+    # that produced it. Scoring a quick-format run against a delete row, or an
+    # undelete+signature run against an undelete-only precision, compares two
+    # experiments; the reader needs both stated in the table.
+    assert "delete,undelete" in text
     assert result.candidates, "the run produced no scored candidates"

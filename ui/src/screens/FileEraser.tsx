@@ -1,8 +1,18 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { api, RequestFailed, streamJob } from '../lib/api'
 import type { FileEraseRecord, JobStatus, Progress, ResidualFinding } from '../lib/api'
 import { bytes } from '../lib/format'
-import { Chip, Empty, ErrorNotice, Notice, Panel, ProgressView } from '../components/widgets'
+import {
+  Empty,
+  ErrorNotice,
+  FilePath,
+  Notice,
+  Panel,
+  ProgressView,
+  Railed,
+  Verdict,
+} from '../components/widgets'
+import type { Tone } from '../components/widgets'
 
 function worstSeverity(findings: ResidualFinding[]): string | null {
   const order = ['HIGH', 'MEDIUM', 'LOW']
@@ -10,6 +20,19 @@ function worstSeverity(findings: ResidualFinding[]): string | null {
     if (findings.some((item) => item.severity === level)) return level
   }
   return null
+}
+
+/**
+ * Severity to tone.
+ *
+ * Three severities and three colours do not line up, so the word carries the
+ * difference between LOW and MEDIUM and the colour only separates "something
+ * survived" from "the worst kind of thing survived". Read in greyscale nothing
+ * is lost, because the word was always the payload.
+ */
+function severityTone(severity: string | null): Tone {
+  if (severity === null) return 'success'
+  return severity === 'HIGH' ? 'destructive' : 'warning'
 }
 
 export default function FileEraser() {
@@ -94,7 +117,7 @@ export default function FileEraser() {
         <div className="split">
           <div className="col">
             <Panel title="Queue">
-              <div className="col" style={{ gap: 10 }}>
+              <div className="col">
                 <div
                   className={over ? 'dropzone over' : 'dropzone'}
                   onDragOver={(event) => {
@@ -116,7 +139,7 @@ export default function FileEraser() {
                   }}
                 >
                   Drop files to queue their names, then complete each path below.
-                  <div style={{ marginTop: 5, fontSize: 11, color: 'var(--fg-faint)' }}>
+                  <div className="note-faint" style={{ marginTop: 'var(--space-1)' }}>
                     A browser is not told where a dropped file lives; only its
                     name crosses into the page.
                   </div>
@@ -156,7 +179,7 @@ export default function FileEraser() {
                   >
                     {paths.map((path) => (
                       <li key={path} className="row spread">
-                        <span className="path">{path}</span>
+                        <FilePath value={path} />
                         <button
                           className="btn"
                           style={{ padding: '1px 7px' }}
@@ -176,10 +199,22 @@ export default function FileEraser() {
             </Panel>
 
             {records.length > 0 && (
-              <Panel title={`Results (${records.length})`} tight>
-                <table>
+              <Panel
+                title={`Results (${records.length})`}
+                subtitle="What survived is the finding. Click a row for the detail."
+                tight
+              >
+                <table className="itable">
+                  <colgroup>
+                    <col style={{ width: 'var(--gutter)' }} />
+                    <col />
+                    <col style={{ width: 112 }} />
+                    <col style={{ width: 142 }} />
+                    <col style={{ width: 196 }} />
+                  </colgroup>
                   <thead>
                     <tr>
+                      <th className="rail" />
                       <th>Path</th>
                       <th>Status</th>
                       <th>Overwritten</th>
@@ -188,122 +223,142 @@ export default function FileEraser() {
                   </thead>
                   <tbody>
                     {records.map((record) => {
+                      // The rail carries the worst finding on the row, so a
+                      // file that kept a HIGH residual is picked out in one
+                      // vertical scan rather than by reading every cell.
                       const worst = worstSeverity(record.findings)
-                      // A file carrying a HIGH finding is styled unlike a clean
-                      // one: the row is tinted and rule-marked, so it is
-                      // distinguishable at a glance rather than on inspection.
-                      const rowClass = worst
-                        ? `clickable severity-${worst.toLowerCase()}`
-                        : 'clickable'
-                      return [
-                        <tr
-                          key={record.path}
-                          className={rowClass}
-                          onClick={() =>
-                            setExpanded(
-                              expanded === record.path ? null : record.path,
-                            )
-                          }
-                        >
-                          <td className="path">{record.path}</td>
-                          <td>
-                            {record.ok ? (
-                              <Chip tone={record.dry_run ? 'muted' : 'low'}>
-                                {record.dry_run ? 'simulated' : 'erased'}
-                              </Chip>
-                            ) : (
-                              <Chip tone="high" title={record.error ?? ''}>
-                                {record.error_kind ?? 'failed'}
-                              </Chip>
-                            )}
-                          </td>
-                          <td>{bytes(record.bytes_overwritten)}</td>
-                          <td>
-                            <span className="row wrap" style={{ gap: 4 }}>
-                              {record.findings.length === 0 ? (
-                                <Chip tone="low">none</Chip>
+                      // A refused path has no findings because nothing ran.
+                      // Rendering that as NONE in success green would report
+                      // the absence of an attempt as a clean result.
+                      const tone = record.ok ? severityTone(worst) : 'unknown'
+                      const open = expanded === record.path
+                      return (
+                        <Fragment key={record.path}>
+                          <tr
+                            className={
+                              worst === 'HIGH'
+                                ? 'irow is-compact is-openable is-bad'
+                                : 'irow is-compact is-openable'
+                            }
+                            onClick={() => setExpanded(open ? null : record.path)}
+                          >
+                            <td className={`rail is-${tone}`} aria-hidden>
+                              <i />
+                            </td>
+                            <td>
+                              <FilePath value={record.path} />
+                            </td>
+                            <td>
+                              {record.ok ? (
+                                <span
+                                  className={
+                                    record.dry_run
+                                      ? 'state-mark is-muted'
+                                      : 'state-mark is-success'
+                                  }
+                                >
+                                  {record.dry_run ? 'simulated' : 'erased'}
+                                </span>
                               ) : (
-                                record.findings.map((finding) => (
-                                  <Chip
-                                    key={finding.kind}
-                                    tone={
-                                      finding.severity.toLowerCase() as
-                                        | 'high'
-                                        | 'medium'
-                                        | 'low'
-                                    }
-                                    title={finding.explanation}
-                                  >
-                                    {finding.kind}
-                                  </Chip>
-                                ))
+                                <span
+                                  className="state-mark is-destructive"
+                                  title={record.error ?? ''}
+                                >
+                                  {record.error_kind ?? 'failed'}
+                                </span>
                               )}
-                            </span>
-                          </td>
-                        </tr>,
-                        expanded === record.path && (
-                          <tr key={`${record.path}-detail`}>
-                            <td colSpan={4} style={{ background: 'var(--bg-input)' }}>
-                              <div className="col" style={{ gap: 9 }}>
-                                {record.findings.map((finding) => (
-                                  <div key={finding.kind} className="col" style={{ gap: 2 }}>
-                                    <span className="row" style={{ gap: 7 }}>
-                                      <Chip
-                                        tone={
-                                          finding.severity.toLowerCase() as
-                                            | 'high'
-                                            | 'medium'
-                                            | 'low'
-                                        }
-                                      >
-                                        {finding.severity}
-                                      </Chip>
-                                      <strong style={{ fontSize: 12 }}>
-                                        {finding.kind}
-                                      </strong>
-                                      <Chip tone={finding.addressable ? 'accent' : 'muted'}>
-                                        {finding.addressable
-                                          ? 'you can address this'
-                                          : 'not addressable'}
-                                      </Chip>
-                                    </span>
-                                    <span style={{ color: 'var(--fg-dim)', fontSize: 11 }}>
-                                      {finding.explanation}
-                                    </span>
-                                  </div>
-                                ))}
-                                {record.verification && (
-                                  <Notice
-                                    tone={
-                                      record.verification.passed === true
-                                        ? 'ok'
-                                        : 'warn'
-                                    }
-                                  >
-                                    Verification:{' '}
-                                    <strong>
-                                      {record.verification.passed === null
-                                        ? 'nothing claimed'
-                                        : record.verification.passed
-                                          ? 'confirmed by physical read'
-                                          : 'FAILED'}
-                                    </strong>{' '}
-                                    ({record.verification.strategy}) —{' '}
-                                    {record.verification.reason}
-                                  </Notice>
-                                )}
-                                {record.limitations.length > 0 && (
-                                  <ul className="limitations">
-                                    {record.limitations.map((item, index) => (
-                                      <li key={index}>{item}</li>
-                                    ))}
-                                  </ul>
-                                )}
-                              </div>
+                            </td>
+                            <td className="mono">{bytes(record.bytes_overwritten)}</td>
+                            <td>
+                              <Verdict
+                                tight
+                                level={record.ok ? (worst ?? 'NONE') : 'NOT RUN'}
+                                basis={
+                                  record.ok
+                                    ? `${record.findings.length} finding${record.findings.length === 1 ? '' : 's'}`
+                                    : 'not attempted'
+                                }
+                                tone={tone}
+                              />
                             </td>
                           </tr>
-                        ),
-                      ]
+                          {open && (
+                            <tr className="subrow">
+                              <td className={`rail is-${tone}`} aria-hidden>
+                                <i />
+                              </td>
+                              <td colSpan={4}>
+                                <div className="col">
+                                  {record.ok && record.findings.length === 0 && (
+                                    <span className="note">
+                                      No residual finding was raised for this
+                                      path. That is the absence of a known
+                                      survivor, not a guarantee that nothing
+                                      survived.
+                                    </span>
+                                  )}
+                                  {!record.ok && (
+                                    <Railed tone="destructive">
+                                      <span className="state-mark is-destructive">
+                                        {record.error_kind ?? 'failed'}
+                                      </span>
+                                      <span className="note">{record.error}</span>
+                                    </Railed>
+                                  )}
+                                  {record.findings.map((finding) => (
+                                    <Railed
+                                      key={finding.kind}
+                                      tone={severityTone(finding.severity)}
+                                    >
+                                      <span className="row" style={{ gap: 'var(--space-2)' }}>
+                                        <span
+                                          className={`state-mark is-${severityTone(finding.severity)}`}
+                                        >
+                                          {finding.severity}
+                                        </span>
+                                        <strong className="mono">{finding.kind}</strong>
+                                        <span className="note-faint">
+                                          {finding.addressable
+                                            ? 'you can address this'
+                                            : 'not addressable'}
+                                        </span>
+                                      </span>
+                                      <span className="note">{finding.explanation}</span>
+                                    </Railed>
+                                  ))}
+                                  {record.verification && (
+                                    <Notice
+                                      tone={
+                                        record.verification.passed === true
+                                          ? 'ok'
+                                          : 'warn'
+                                      }
+                                    >
+                                      Verification:{' '}
+                                      <strong>
+                                        {record.verification.passed === null
+                                          ? 'nothing claimed'
+                                          : record.verification.passed
+                                            ? 'confirmed by physical read'
+                                            : 'FAILED'}
+                                      </strong>{' '}
+                                      ({record.verification.strategy}) —{' '}
+                                      {record.verification.reason}
+                                    </Notice>
+                                  )}
+                                  {record.limitations.length > 0 && (
+                                    <ul className="limitations">
+                                      {record.limitations.map((item, index) => (
+                                        <li key={index}>{item}</li>
+                                      ))}
+                                    </ul>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      )
                     })}
                   </tbody>
                 </table>
@@ -318,7 +373,7 @@ export default function FileEraser() {
           </div>
 
           <Panel title="Options">
-            <div className="col" style={{ gap: 11 }}>
+            <div className="col">
               <label className="inline">
                 <input
                   type="checkbox"
@@ -334,9 +389,7 @@ export default function FileEraser() {
                   disabled={dryRun}
                   onChange={(event) => setConfirm(event.target.checked)}
                 />
-                <span>
-                  Confirm — the second gate, required when dry run is off
-                </span>
+                <span>Confirm — the second gate, required when dry run is off</span>
               </label>
               <label className="inline">
                 <input
@@ -370,7 +423,9 @@ export default function FileEraser() {
                 disabled={paths.length === 0 || (!dryRun && !confirm)}
                 onClick={() => void start()}
               >
-                {dryRun ? `Simulate ${paths.length} path(s)` : `Erase ${paths.length} path(s)`}
+                {dryRun
+                  ? `Simulate ${paths.length} path(s)`
+                  : `Erase ${paths.length} path(s)`}
               </button>
 
               {paths.length === 0 && <Empty>Queue is empty.</Empty>}

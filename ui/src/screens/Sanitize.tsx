@@ -5,12 +5,28 @@ import { bytes, duration, exactBytes } from '../lib/format'
 import {
   Chip,
   ErrorNotice,
+  Evidence,
   Limitations,
   Notice,
   Panel,
   ProgressView,
-  Stat,
+  Railed,
+  Verdict,
 } from '../components/widgets'
+import type { Tone } from '../components/widgets'
+
+/**
+ * The tone of a NIST level.
+ *
+ * Purge is the strongest result the vocabulary has, so it is the only one that
+ * reads as success. Clear is not a failure and is not coloured like one - it
+ * is a warning, because it is a real erasure with a real limit, and an
+ * operator who reads it as equivalent to Purge has been misled by the
+ * interface rather than by the drive.
+ */
+function levelTone(level: 'CLEAR' | 'PURGE'): Tone {
+  return level === 'PURGE' ? 'success' : 'warning'
+}
 
 interface MethodOption {
   id: string
@@ -212,7 +228,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
         <h1>Sanitize</h1>
         <p className="path">{device.path}</p>
         <Chip tone="muted">{device.model}</Chip>
-        <span className="serial" style={{ color: 'var(--fg-faint)' }}>
+        <span className="serial" style={{ color: 'var(--text-muted)' }}>
           {device.serial}
         </span>
       </div>
@@ -235,7 +251,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
         <div className="split">
           <div className="col">
             <Panel title="Method">
-              <div className="col" style={{ gap: 9 }}>
+              <div className="col">
                 {options.map((item) => (
                   <label
                     key={item.id}
@@ -255,14 +271,19 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
                       onChange={() => setChosen(item.id)}
                       style={{ marginTop: 3 }}
                     />
-                    <span className="col" style={{ gap: 3 }}>
-                      <span className="row" style={{ gap: 7 }}>
-                        <strong style={{ color: 'var(--fg)', fontSize: 12 }}>
+                    <span className="col tight">
+                      <span className="row" style={{ gap: 'var(--space-2)' }}>
+                        <strong style={{ color: 'var(--text-primary)' }}>
                           {item.label}
                         </strong>
-                        <Chip tone={item.level === 'PURGE' ? 'low' : 'medium'}>
+                        {/* The level is state, so it is a word in a state
+                            colour rather than a chip: the same mark the
+                            Devices screen uses for hidden areas. */}
+                        <span
+                          className={`state-mark is-${levelTone(item.level)}`}
+                        >
                           {item.level}
-                        </Chip>
+                        </span>
                         {item.legacy && (
                           <Chip tone="high" title="Superseded by NIST SP 800-88 Rev.1">
                             LEGACY
@@ -273,9 +294,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
                         )}
                       </span>
                       {/* The evidence, not the conclusion. */}
-                      <span style={{ color: 'var(--fg-dim)', fontSize: 11 }}>
-                        {item.evidence}
-                      </span>
+                      <span className="note">{item.evidence}</span>
                     </span>
                   </label>
                 ))}
@@ -283,7 +302,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
             </Panel>
 
             <Panel title="Run">
-              <div className="col" style={{ gap: 11 }}>
+              <div className="col">
                 <label className="inline">
                   <input
                     type="checkbox"
@@ -322,7 +341,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
                     </button>
                   )}
                   {jobId && (
-                    <span className="mono" style={{ color: 'var(--fg-faint)' }}>
+                    <span className="mono" style={{ color: 'var(--text-muted)' }}>
                       {jobId}
                     </span>
                   )}
@@ -334,13 +353,13 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
               <Panel title="Progress">
                 <ProgressView progress={progress} destructive={!dryRun} />
                 {status && (
-                  <div style={{ marginTop: 11 }}>
+                  <div style={{ marginTop: 'var(--space-3)' }}>
                     <Notice tone={status.state === 'complete' ? 'ok' : 'warn'}>
                       Job {status.state}
                       {status.error ? `: ${status.error}` : ''}
                     </Notice>
                     {status.remediation && (
-                      <p style={{ color: 'var(--fg-dim)', fontSize: 11 }}>
+                      <p className="note" style={{ marginTop: 'var(--space-2)' }}>
                         {status.remediation}
                       </p>
                     )}
@@ -353,23 +372,43 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
           {/* Residual risk is shown during the run, not only after it. An
               operator deciding whether to let a wipe finish needs to know what
               it will not have covered while there is still a decision to make. */}
-          <Panel title="Residual risk">
-            <div className="col" style={{ gap: 10 }}>
-              <Stat
-                label="target level"
-                value={option.level}
-              />
-              <Stat
-                label="capacity"
-                value={
-                  <span title={exactBytes(device.size_bytes)}>
-                    {bytes(device.size_bytes)}
-                  </span>
-                }
-              />
-              <Stat
-                label="estimated"
-                value={duration(selected?.capabilities?.est_erase_seconds ?? 0)}
+          <Panel
+            title="Residual risk"
+            subtitle="What this run can claim, and what it cannot."
+          >
+            <div className="col">
+              {/* The claim first, at the size the room can read, with the
+                  method it rests on printed under it. Everything below is the
+                  qualification - and a qualification only means something once
+                  the reader knows what is being qualified. */}
+              <Railed tone={levelTone(option.level)}>
+                <Verdict
+                  level={option.level}
+                  basis={option.label}
+                  tone={levelTone(option.level)}
+                />
+              </Railed>
+
+              <Evidence
+                stacked
+                rows={[
+                  {
+                    label: 'Capacity',
+                    value: bytes(device.size_bytes),
+                    title: exactBytes(device.size_bytes),
+                  },
+                  {
+                    label: 'Estimated',
+                    value: duration(selected?.capabilities?.est_erase_seconds ?? 0),
+                  },
+                  {
+                    label: 'Hidden areas',
+                    value:
+                      hidden && hidden.hidden_bytes > 0
+                        ? `${bytes(hidden.hidden_bytes)} behind ${hidden.hpa_present ? 'an HPA' : 'a DCO'}`
+                        : 'none measured',
+                  },
+                ]}
               />
 
               {option.level === 'CLEAR' && !device.rotational && (
@@ -404,22 +443,47 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
 
       {confirming && (
         <div className="modal-backdrop" onClick={() => setConfirming(false)}>
-          <div className="modal" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-head">Confirm irreversible erasure</div>
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="confirm-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-head" id="confirm-title">
+              Confirm irreversible erasure
+            </div>
             <div className="modal-body">
-              <p style={{ margin: 0 }}>
-                Every byte on <span className="path">{device.path}</span> will be
-                destroyed using <strong>{option.label}</strong>. This cannot be
-                undone.
+              {/* The dialog leads with the act and the target, at a size a
+                  second person standing behind the operator can read. The
+                  prose that used to carry this was a paragraph, and a
+                  paragraph is what an operator skips. */}
+              <p className="modal-lead">
+                Destroy every byte on{' '}
+                <span className="path">{device.path}</span>
               </p>
-              <dl className="kv">
-                <dt>model</dt>
-                <dd>{device.model}</dd>
-                <dt>capacity</dt>
-                <dd>{exactBytes(device.size_bytes)}</dd>
-                <dt>serial</dt>
-                <dd>{device.serial}</dd>
-              </dl>
+
+              {/* The level the method delivers, rendered exactly as the
+                  Devices screen renders a capability and the residual panel
+                  renders its claim. This is the last screen on which it can
+                  still be wrong for free. */}
+              <Railed tone={levelTone(option.level)}>
+                <Verdict
+                  level={option.level}
+                  basis={option.label}
+                  tone={levelTone(option.level)}
+                />
+              </Railed>
+
+              <Evidence
+                stacked
+                rows={[
+                  { label: 'Model', value: device.model },
+                  { label: 'Capacity', value: exactBytes(device.size_bytes) },
+                  { label: 'Serial', value: device.serial, kind: 'serial' },
+                ]}
+              />
+
               <label>
                 Type the device serial to confirm
                 <input
@@ -431,11 +495,31 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
                   onChange={(event) => setTyped(event.target.value)}
                 />
               </label>
-              {typed && typed !== device.serial && (
-                <span style={{ color: 'var(--high)', fontSize: 11 }}>
-                  Does not match. The server re-reads the serial from the device
-                  itself and will refuse regardless of what is typed here.
-                </span>
+
+              {/* Match state is a word in a state colour, not a red sentence.
+                  The sentence stays underneath, because what it says - that
+                  the server checks the device itself - is the reason this gate
+                  is not security theatre. */}
+              {typed && (
+                <div className="col tight">
+                  <span
+                    className={
+                      typed === device.serial
+                        ? 'state-mark is-success'
+                        : 'state-mark is-destructive'
+                    }
+                  >
+                    {typed === device.serial
+                      ? 'serial matches'
+                      : 'serial does not match'}
+                  </span>
+                  {typed !== device.serial && (
+                    <span className="note">
+                      The server re-reads the serial from the device itself and
+                      will refuse regardless of what is typed here.
+                    </span>
+                  )}
+                </div>
               )}
             </div>
             <div className="modal-foot">

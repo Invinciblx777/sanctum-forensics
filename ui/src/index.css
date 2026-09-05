@@ -1,7 +1,9 @@
+@import './tokens.css';
+
 /* Instrument, not landing page.
  *
- * Three decisions worth stating, because each one is a constraint rather than
- * a taste:
+ * Every value here comes from src/tokens.css. Four decisions worth stating,
+ * because each one is a constraint rather than a taste:
  *
  * 1. Every font is a system stack. A webfont means a network request, and this
  *    has to render identically with the ethernet unplugged.
@@ -10,43 +12,44 @@
  *    makes 0/O and 1/l/I ambiguous at exactly the moment that matters.
  * 3. Destructive controls are visually unlike every other control - square,
  *    high-contrast, red-bordered - and nothing else in the interface is
- *    allowed to look like them.
+ *    allowed to look like them, including the navigation and the focus ring.
+ * 4. Separation is a 1px rule, never a shadow. A drop shadow is a grey smear
+ *    on a projector; a hairline survives the optics.
+ *
+ * The aliases below map the token names onto the short names the screens were
+ * written against. New work uses the tokens directly.
  */
 
 :root {
-  --bg: #0b0e11;
-  --bg-panel: #11161b;
-  --bg-raised: #161c23;
-  --bg-input: #0d1216;
-  --line: #232c35;
-  --line-bright: #33404d;
+  --bg: var(--surface-base);
+  --bg-panel: var(--surface-raised);
+  --bg-raised: var(--surface-raised);
+  --bg-input: var(--surface-sunken);
+  --line: var(--rule);
+  --line-bright: var(--rule-strong);
 
-  --fg: #d6dee6;
-  --fg-dim: #8b98a6;
-  --fg-faint: #5d6b79;
+  --fg: var(--text-primary);
+  --fg-dim: var(--text-secondary);
+  --fg-faint: var(--text-muted);
 
-  --accent: #4ea1ff;
-  --accent-dim: #2b5f96;
+  /* There is no brand accent. Neutral bright stands in wherever the old
+     stylesheet reached for one, so the single saturated hue in the interface
+     stays reserved for destruction. */
+  --accent: var(--text-primary);
+  --accent-dim: var(--rule-strong);
 
-  /* Severity and confidence. Deliberately not a rainbow: three levels, each
-     distinguishable from the others by lightness as well as hue, so the table
-     is still readable in monochrome or to a red-green colourblind reader. */
-  --high: #ff5f56;
-  --high-bg: #2a1114;
-  --medium: #e0a33a;
-  --medium-bg: #241c0e;
-  --low: #4c9f70;
-  --low-bg: #0f1d16;
+  --high: var(--state-destructive);
+  --high-bg: var(--state-destructive-surface);
+  --medium: var(--state-warning);
+  --medium-bg: var(--state-warning-surface);
+  --low: var(--state-success);
+  --low-bg: var(--state-success-surface);
 
-  --danger: #ff4438;
-  --danger-bg: #2b0f0d;
+  --danger: var(--state-destructive);
+  --danger-bg: var(--state-destructive-surface);
 
-  --mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas,
-    "DejaVu Sans Mono", "Liberation Mono", monospace;
-  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
-
-  color-scheme: dark;
+  --mono: var(--font-mono);
+  --sans: var(--font-sans);
 }
 
 * { box-sizing: border-box; }
@@ -58,8 +61,8 @@ body {
   background: var(--bg);
   color: var(--fg);
   font-family: var(--sans);
-  font-size: 13px;
-  line-height: 1.45;
+  font-size: var(--type-md);
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -67,16 +70,26 @@ body {
 .mono, code, pre, .hash, .serial, .path, .offset {
   font-family: var(--mono);
   font-variant-ligatures: none;
-  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-size: var(--type-sm);
 }
 
 .hash { letter-spacing: 0.01em; word-break: break-all; }
 
+/* See `FilePath` in components/widgets.tsx: the directory gives way, the
+   filename does not. */
+.filepath { display: flex; align-items: baseline; min-width: 0;
+            font-family: var(--mono); font-variant-ligatures: none;
+            font-size: var(--type-sm); }
+.filepath-dir { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                color: var(--text-muted); }
+.filepath-base { flex: none; color: var(--text-primary); }
+
 h1, h2, h3 { font-weight: 600; margin: 0; letter-spacing: 0.01em; }
-h1 { font-size: 15px; }
-h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em;
-     color: var(--fg-dim); }
-h3 { font-size: 12px; color: var(--fg-dim); }
+h1 { font-size: var(--type-lg); }
+/* Panel titles are titles, not tracked-out eyebrow labels. */
+h2 { font-size: var(--type-md); color: var(--text-secondary); }
+h3 { font-size: var(--type-sm); color: var(--text-secondary); }
 
 a { color: var(--accent); }
 
@@ -99,9 +112,9 @@ a { color: var(--accent); }
   align-items: center;
   gap: 8px;
 }
-.brand-name { font-weight: 600; letter-spacing: 0.06em; font-size: 12px;
-              text-transform: uppercase; }
-.brand-sub { color: var(--fg-faint); font-size: 10px;
+.brand-name { font-weight: var(--weight-bold); letter-spacing: 0.04em;
+              font-size: var(--type-md); }
+.brand-sub { color: var(--text-muted); font-size: var(--type-sm);
              font-family: var(--mono); }
 
 .nav { padding: 6px 0; flex: 1; }
@@ -109,7 +122,7 @@ a { color: var(--accent); }
   display: flex; align-items: center; gap: 9px;
   width: 100%; padding: 7px 14px;
   background: none; border: 0; border-left: 2px solid transparent;
-  color: var(--fg-dim); font-family: var(--sans); font-size: 12px;
+  color: var(--text-secondary); font-family: var(--sans); font-size: var(--type-md);
   text-align: left; cursor: pointer;
 }
 .nav-item:hover { background: var(--bg-raised); color: var(--fg); }
@@ -117,12 +130,12 @@ a { color: var(--accent); }
   background: var(--bg-raised); color: var(--fg);
   border-left-color: var(--accent);
 }
-.nav-index { font-family: var(--mono); font-size: 10px; color: var(--fg-faint); }
+.nav-index { font-family: var(--mono); font-size: var(--type-sm); color: var(--text-muted); }
 
 .sidebar-foot {
   border-top: 1px solid var(--line);
   padding: 9px 14px;
-  font-family: var(--mono); font-size: 10px; color: var(--fg-faint);
+  font-family: var(--mono); font-size: var(--type-sm); color: var(--text-muted);
   display: flex; flex-direction: column; gap: 3px;
 }
 
@@ -134,7 +147,7 @@ a { color: var(--accent); }
   display: flex; align-items: baseline; gap: 12px;
   position: sticky; top: 0; background: var(--bg); z-index: 5;
 }
-.screen-head p { margin: 0; color: var(--fg-dim); font-size: 12px; }
+.screen-head p { margin: 0; color: var(--text-secondary); font-size: var(--type-md); }
 
 .screen-body { padding: 16px 18px 40px; display: flex;
                flex-direction: column; gap: 16px; }
@@ -145,14 +158,20 @@ a { color: var(--accent); }
 }
 .panel-head {
   padding: 8px 12px; border-bottom: 1px solid var(--line);
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  display: flex; align-items: center; justify-content: space-between;
+  /* Wraps rather than squeezing. In the 340px side column a title and its
+     subtitle do not fit on one line, and a title broken mid-word to make room
+     for a subtitle is worse than a subtitle on its own line. */
+  flex-wrap: wrap; gap: var(--space-1) var(--space-3);
 }
 .panel-body { padding: 12px; }
 .panel-body.tight { padding: 0; }
 
-.row { display: flex; gap: 10px; align-items: center; }
+.row { display: flex; gap: var(--space-3); align-items: center; }
 .row.wrap { flex-wrap: wrap; }
-.col { display: flex; flex-direction: column; gap: 10px; }
+.col { display: flex; flex-direction: column; gap: var(--space-3); }
+.col.tight { gap: var(--space-2); }
+.col.loose { gap: var(--space-4); }
 .spread { justify-content: space-between; }
 .grow { flex: 1; min-width: 0; }
 .split { display: grid; grid-template-columns: 1fr 340px; gap: 14px;
@@ -161,7 +180,7 @@ a { color: var(--accent); }
 /* ---- controls ---- */
 
 button, input, select, textarea {
-  font-family: var(--sans); font-size: 12px; color: var(--fg);
+  font-family: var(--sans); font-size: var(--type-md); color: var(--fg);
 }
 
 .btn {
@@ -188,15 +207,15 @@ button, input, select, textarea {
 .btn.destructive:hover:not(:disabled) { background: #3d1512; color: #fff; }
 
 input[type="text"], input[type="number"], select, textarea {
-  background: var(--bg-input);
-  border: 1px solid var(--line);
+  background: var(--surface-sunken);
+  border: 1px solid var(--rule-strong);
   padding: 5px 8px;
-  font-family: var(--mono); font-size: 12px;
+  font-family: var(--mono); font-size: var(--type-md);
 }
 input:focus, select:focus, textarea:focus {
   outline: 1px solid var(--accent-dim); outline-offset: -1px;
 }
-label { color: var(--fg-dim); font-size: 11px; display: flex;
+label { color: var(--text-secondary); font-size: var(--type-sm); display: flex;
         flex-direction: column; gap: 3px; }
 label.inline { flex-direction: row; align-items: center; gap: 6px; }
 
@@ -206,8 +225,8 @@ label.inline { flex-direction: row; align-items: center; gap: 6px; }
   display: inline-flex; align-items: center; gap: 5px;
   padding: 1px 7px;
   border: 1px solid var(--line-bright);
-  font-family: var(--mono); font-size: 10px;
-  letter-spacing: 0.04em; white-space: nowrap;
+  font-family: var(--mono); font-size: var(--type-sm);
+  letter-spacing: 0.02em; white-space: nowrap;
 }
 .chip.high   { color: var(--high);   border-color: var(--high);   background: var(--high-bg); }
 .chip.medium { color: var(--medium); border-color: var(--medium); background: var(--medium-bg); }
@@ -217,26 +236,11 @@ label.inline { flex-direction: row; align-items: center; gap: 6px; }
 
 /* ---- tables ---- */
 
+/* There is one table in this interface and it is `.itable`, defined at the
+   bottom of this file. The rules here are the two properties every table needs
+   before any of that applies. A screen that renders a bare <table> is a screen
+   that has opted out of the state gutter, and none of them do. */
 table { width: 100%; border-collapse: collapse; }
-th {
-  text-align: left; padding: 6px 10px;
-  border-bottom: 1px solid var(--line);
-  color: var(--fg-faint); font-size: 10px; font-weight: 600;
-  text-transform: uppercase; letter-spacing: 0.07em;
-  position: sticky; top: 0; background: var(--bg-panel);
-}
-td { padding: 5px 10px; border-bottom: 1px solid var(--line);
-     vertical-align: top; }
-tr.clickable { cursor: pointer; }
-tr.clickable:hover td { background: var(--bg-raised); }
-tr.selected td { background: var(--bg-raised);
-                 box-shadow: inset 2px 0 0 var(--accent); }
-
-/* A file or candidate carrying a HIGH residual finding must be visually
-   distinct from a clean one at a glance, not only on inspection. */
-tr.severity-high td { background: var(--high-bg); }
-tr.severity-high td:first-child { box-shadow: inset 2px 0 0 var(--high); }
-tr.severity-medium td:first-child { box-shadow: inset 2px 0 0 var(--medium); }
 
 /* ---- progress ---- */
 
@@ -246,26 +250,33 @@ tr.severity-medium td:first-child { box-shadow: inset 2px 0 0 var(--medium); }
 .meter.destructive > span { background: var(--danger); }
 
 .stat { display: flex; flex-direction: column; gap: 1px; }
-.stat-label { font-size: 10px; color: var(--fg-faint);
-              text-transform: uppercase; letter-spacing: 0.07em; }
-.stat-value { font-family: var(--mono); font-size: 13px; }
+.stat-label { font-size: var(--type-sm); color: var(--text-muted); }
+.stat-value { font-family: var(--mono); font-size: var(--type-md);
+               font-variant-numeric: tabular-nums; }
 
 /* ---- notices ---- */
 
-.notice { border: 1px solid var(--line-bright); padding: 8px 10px;
-          font-size: 12px; }
+.notice { border: 1px solid var(--rule-strong); padding: var(--space-2) var(--space-3);
+          font-size: var(--type-md); }
 .notice.warn   { border-color: var(--medium); background: var(--medium-bg);
                  color: #f0d6a2; }
 .notice.danger { border-color: var(--danger); background: var(--danger-bg);
                  color: #ffb3ad; }
 .notice.ok     { border-color: var(--low); background: var(--low-bg);
                  color: #b6e0c6; }
-.notice.info   { border-color: var(--accent-dim); background: #0e1720;
-                 color: #b9d5f2; }
+.notice.info   { border-color: var(--rule-strong); background: var(--surface-raised);
+                 color: var(--text-primary); }
 
-.limitations { margin: 0; padding-left: 16px; color: var(--fg-dim);
-               font-size: 11px; }
+.limitations { margin: 0; padding-left: 16px; color: var(--text-secondary);
+               font-size: var(--type-sm); }
 .limitations li { margin: 3px 0; }
+
+/* The two prose weights every screen needs under a heading or a verdict.
+   They exist so no screen reaches for an inline `fontSize: 11`, which is how
+   four screens ended up with four different ideas of "small". */
+.note       { font-size: var(--type-sm); color: var(--text-secondary); margin: 0; }
+.note-faint { font-size: var(--type-sm); color: var(--text-muted); margin: 0; }
+.note strong, .note-faint strong { color: var(--text-primary); }
 
 /* ---- modal ---- */
 
@@ -281,36 +292,331 @@ tr.severity-medium td:first-child { box-shadow: inset 2px 0 0 var(--medium); }
               color: var(--danger); font-weight: 600;
               text-transform: uppercase; letter-spacing: 0.07em;
               font-size: 12px; }
-.modal-body { padding: 14px; display: flex; flex-direction: column; gap: 11px; }
+.modal-body { padding: 14px; display: flex; flex-direction: column;
+              gap: var(--space-3); }
+/* The one line in the dialog that has to read from across the room: what is
+   about to be destroyed, and by what method. The device path stays monospace
+   and takes the lead's size with it - shrinking it back to the 12px every
+   other path uses is exactly the half of the sentence that must not shrink. */
+.modal-lead { font-size: var(--type-lg); font-weight: var(--weight-bold);
+              line-height: 1.2; margin: 0; color: var(--text-primary); }
+.modal-lead .path { font-size: var(--type-lg); }
 .modal-foot { padding: 10px 14px; border-top: 1px solid var(--line);
               display: flex; justify-content: flex-end; gap: 8px; }
 
 /* ---- misc ---- */
 
-.kv { display: grid; grid-template-columns: 140px 1fr; gap: 3px 10px;
-      font-size: 12px; }
-.kv dt { color: var(--fg-faint); }
-.kv dd { margin: 0; font-family: var(--mono); font-size: 11px;
-         word-break: break-all; }
-
-.empty { padding: 26px; text-align: center; color: var(--fg-faint);
-         font-size: 12px; }
+.empty { padding: var(--space-6); color: var(--text-muted);
+         font-size: var(--type-md); }
 
 .scroll-y { overflow-y: auto; }
 
 pre.log {
   margin: 0; padding: 9px; background: var(--bg-input);
   border: 1px solid var(--line); max-height: 220px; overflow: auto;
-  font-family: var(--mono); font-size: 11px; color: var(--fg-dim);
+  font-family: var(--mono); font-size: var(--type-sm); color: var(--text-secondary);
   white-space: pre-wrap; word-break: break-all;
 }
 
-.dropzone {
-  border: 1px dashed var(--line-bright); padding: 22px;
-  text-align: center; color: var(--fg-dim); font-size: 12px;
+/* The candidate preview. A frame that says what it would show rather than a
+   broken image icon: the recovered bytes only exist on disk when the carve was
+   run with an output directory, and nothing here is ever fetched off-host. */
+.preview-pane {
+  border: 1px solid var(--rule);
+  background: var(--surface-sunken);
+  min-height: 130px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: var(--type-sm);
+  padding: var(--space-3);
+  text-align: center;
 }
-.dropzone.over { border-color: var(--accent); color: var(--accent);
-                 background: #0e1720; }
 
-.bar-breakdown { display: flex; height: 10px; border: 1px solid var(--line); }
+.dropzone {
+  border: 1px dashed var(--rule-strong); padding: 22px;
+  text-align: center; color: var(--text-secondary); font-size: var(--type-md);
+}
+.dropzone.over { border-color: var(--text-primary); color: var(--text-primary);
+                 background: var(--surface-raised); }
+
+/* The score bar. A segment that was established is filled; one that was
+   checked and did not hold keeps its width and stays empty, because a
+   component that scored zero is a measurement and not an absence. */
+.bar-breakdown { display: flex; height: 10px; border: 1px solid var(--rule);
+                 background: var(--surface-sunken); }
 .bar-breakdown > span { display: block; }
+.bar-breakdown > span.is-on { background: var(--text-primary);
+                              border-right: 1px solid var(--surface-raised); }
+.bar-breakdown > span.is-off { background: transparent; }
+
+/* ==================================================================== *
+ * Keyboard focus
+ *
+ * A neutral bright ring, never the destructive hue. If the focus ring and
+ * "this erases a drive" were the same colour, tabbing across the screen would
+ * light up the one signal the interface cannot afford to dilute.
+ * ==================================================================== */
+
+:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: -2px;
+}
+.btn.destructive:focus-visible { outline-color: var(--state-destructive); }
+
+/* ==================================================================== *
+ * Instrument table
+ *
+ * A logic analyser puts state in a fixed gutter down the left edge, so it is
+ * read in one vertical scan rather than hunted for across eight columns. That
+ * is the structural device here: `.rail` is the gutter, and a row fills it
+ * only when it has something to say.
+ *
+ * Device rows are a fixed height and never wrap. A table whose rows change
+ * height with their content reads as broken rather than as informative, and
+ * the eye loses the horizontal scan that a table exists to provide. Anything
+ * too long for its cell is truncated here and printed in full on the sub-row
+ * below, which is the only thing allowed to change the table's height.
+ * ==================================================================== */
+
+.itable { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.itable th {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--rule);
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  font-size: var(--type-sm);
+  font-weight: var(--weight-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  /* A header longer than its column ellipsises like a cell. Without this it
+     spills past the table's right edge, because `table-layout: fixed` holds
+     the column width but nothing clips the text. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.itable td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+  /* No font-size here on purpose. The cell inherits the body's `--type-md`,
+     which leaves `.mono`, `.path`, `.hash` and `.serial` free to set their own
+     `--type-sm` - a rule on `.itable td` outranks them and silently rendered
+     every hash and timestamp two points too large, which is how the ledger's
+     columns came to truncate values that should have fitted. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Two densities, both fixed. `.irow` holds a two-line verdict cell and is
+   what a screen with a handful of rows uses. `.is-compact` is one line, for
+   the tables that run to hundreds of rows - the Recovery candidate list, the
+   ledger - where a 52px row would turn a scan into a scroll. Neither height
+   depends on content, so arriving state never reflows the table. */
+.itable tbody tr.irow { height: 52px; }
+.itable tbody tr.irow.is-compact { height: 30px; }
+.itable tbody tr.irow:hover > td { background: var(--surface-raised); }
+/* Selection fills the gutter rather than recolouring it. Painting the rail
+   neutral would have cost the row the one thing the rail is there to say - a
+   selected LOW-confidence candidate must still read as low confidence. */
+.itable tbody tr.irow.is-selected > td { background: var(--surface-raised); }
+.itable tbody tr.irow.is-selected > td.rail > i { width: var(--gutter); }
+
+/* A row whose own state is a failure is tinted as well as railed and worded.
+   Three channels, so it survives greyscale and a projector that has crushed
+   the reds into the background. */
+.itable tbody tr.irow.is-bad > td { background: var(--state-destructive-surface); }
+
+/* These tables scroll inside a panel, so the head has to stay put. */
+.itable th { position: sticky; top: 0; z-index: 1; }
+
+/* The gutter. Fixed width, and the rail inside it is the only thing that
+   changes - so rows never shift when state arrives. */
+.itable th.rail, .itable td.rail {
+  width: var(--gutter);
+  padding: 0;
+  border-bottom: 1px solid var(--rule);
+}
+.itable td.rail > i {
+  display: block;
+  width: var(--rail);
+  height: 100%;
+  min-height: 1px;
+  background: transparent;
+}
+.itable td.rail.is-destructive > i { background: var(--state-destructive); }
+.itable td.rail.is-warning > i     { background: var(--state-warning); }
+.itable td.rail.is-success > i     { background: var(--state-success); }
+
+.itable tr.is-openable { cursor: pointer; }
+.itable tr.is-barred { cursor: not-allowed; }
+
+/* ==================================================================== *
+ * Verdict
+ *
+ * The one component this interface repeats. A verdict is a judgement the tool
+ * has made - the capability level of a drive, PASS or FAIL on a report check,
+ * the confidence bucket of a carved candidate - and it is always rendered the
+ * same way: the judgement in one word at `--type-lg`, and directly under it,
+ * in mono, the thing it was derived from.
+ *
+ * The word is the payload and the colour only reinforces it, so the component
+ * reads in greyscale. It is a cell, not a widget dropped into one: no box, no
+ * fill, no border, sitting on the same baseline as the rest of the row.
+ *
+ * Two decisions worth keeping:
+ *
+ * - The size is not negotiable downward. This is the half of the screen that
+ *   has to be legible from ten feet, and a denser table bought by shrinking it
+ *   is a bad trade at four rows. `.is-tight` exists only for the tables that
+ *   genuinely run to hundreds of rows, and it keeps the word - it drops the
+ *   line break, not the basis.
+ * - A `title` tooltip would put the evidence behind a hover, invisible on a
+ *   projector and to everyone not holding the mouse. Where there is more to
+ *   say, the verdict is a button and the rest opens on the sub-row below.
+ * ==================================================================== */
+
+.verdict {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  font-family: var(--font-sans);
+  color: inherit;
+}
+button.verdict { cursor: pointer; }
+
+.verdict-level {
+  display: block;
+  font-size: var(--type-lg);
+  font-weight: var(--weight-bold);
+  line-height: 1.1;
+  letter-spacing: 0.01em;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.verdict-basis {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--type-sm);
+  line-height: 1.4;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.verdict.is-destructive .verdict-level { color: var(--state-destructive); }
+.verdict.is-warning     .verdict-level { color: var(--state-warning); }
+.verdict.is-success     .verdict-level { color: var(--state-success); }
+.verdict.is-unknown     .verdict-level { color: var(--text-muted); }
+button.verdict:hover .verdict-basis { color: var(--text-primary); }
+
+/* One line: the word first, its basis beside it. For the candidate table and
+   nothing else. */
+.verdict.is-tight { display: flex; align-items: baseline; gap: var(--space-2); }
+.verdict.is-tight .verdict-level { font-size: var(--type-md); }
+
+/* ==================================================================== *
+ * Railed block
+ *
+ * The same left-edge state gutter the instrument table uses, for the things
+ * that are not tables: a report check, the residual-risk panel, a confirm
+ * dialog. State is read down one vertical line whether it is carried by a row
+ * or by a panel, which is the whole point of putting it in a fixed gutter.
+ * ==================================================================== */
+
+.railed {
+  display: grid;
+  grid-template-columns: var(--rail) 1fr;
+  gap: var(--space-3);
+  align-items: stretch;
+}
+.railed > i { display: block; width: var(--rail); background: var(--rule); }
+.railed.is-destructive > i { background: var(--state-destructive); }
+.railed.is-warning     > i { background: var(--state-warning); }
+.railed.is-success     > i { background: var(--state-success); }
+.railed.is-unknown     > i { background: var(--rule-strong); }
+.railed > .railed-body { min-width: 0; display: flex; flex-direction: column;
+                         gap: var(--space-1); }
+
+/* ==================================================================== *
+ * Sub-rows
+ *
+ * The only rows allowed to break the fixed height. Two kinds: a refusal,
+ * which is always shown because an operator must not have to go looking for
+ * why a row is barred, and the evidence behind a verdict, which opens on
+ * demand.
+ * ==================================================================== */
+
+.subrow > td {
+  background: var(--surface-sunken);
+  white-space: normal;
+  overflow: visible;
+}
+.subrow.is-locked > td { background: var(--state-destructive-surface); }
+
+.lock-reason {
+  display: block;
+  color: var(--text-primary);
+  font-size: var(--type-md);
+  max-width: 110ch;
+}
+
+.evidence {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-3);
+  padding: var(--space-1) 0;
+  font-size: var(--type-md);
+  max-width: 110ch;
+}
+.evidence dt {
+  color: var(--text-muted);
+  font-size: var(--type-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding-top: 2px;
+}
+.evidence dd { margin: 0; color: var(--text-primary); }
+.evidence dd.mono { color: var(--text-secondary); }
+/* In a 340px side panel or a 520px dialog there is no room for two columns,
+   and a label ellipsised to "SANI..." is worse than a label on its own line. */
+.evidence.stacked { grid-template-columns: 1fr; gap: 0; }
+.evidence.stacked dt { padding-top: var(--space-2); }
+
+/* ==================================================================== *
+ * State mark
+ *
+ * The word carries the state; the colour reinforces it. No glyph: "none" and
+ * "HPA 1.05 GB" are already textually distinct, and a bare "=" or "!" beside
+ * them was decoration pretending to be redundancy.
+ * ==================================================================== */
+
+.state-mark { font-size: var(--type-md); white-space: nowrap; }
+.state-mark.is-destructive { color: var(--state-destructive); }
+.state-mark.is-warning     { color: var(--state-warning); }
+.state-mark.is-success     { color: var(--state-success); }
+.state-mark.is-muted       { color: var(--text-muted); }
+
+/* ==================================================================== *
+ * Mechanical lock
+ *
+ * A device the tool refuses is not greyed out. Greying says "not loaded yet";
+ * this device is present, enumerated and fully legible - what is barred is the
+ * interaction, and a shackle says that where 40% opacity does not. The Path
+ * cell holds a shackle and a path and nothing else; the reason goes on the
+ * sub-row, where it has the width to be a sentence.
+ * ==================================================================== */
+
+.lockup { display: inline-flex; align-items: center; gap: var(--space-2);
+          color: var(--state-destructive); }
+.lockup svg { flex: none; }
+.lockup > .path { color: var(--text-primary); }
+
+.panel-sub { color: var(--text-muted); font-size: var(--type-sm); }

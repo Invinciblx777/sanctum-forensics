@@ -242,8 +242,10 @@ export interface LedgerVerification {
   status: string
   entry_count: number
   explanation: string
-  first_broken_seq: number | null
-  root: string
+  /** Absent, not null, when the ledger could not be read at all. */
+  first_broken_seq?: number | null
+  /** The ledger store directory. Not a Merkle root, and not a hash. */
+  root?: string
   entries: LedgerEntry[]
 }
 
@@ -258,6 +260,14 @@ export interface ReportResult {
 export interface ReportCheck {
   name: string
   passed: boolean
+  /**
+   * False when the check could not run at all - no ledger store to compare
+   * against, no excerpt to walk. An inapplicable check is not a passing one,
+   * and the server sets `passed` true for these so that `passed` on the
+   * verification means "nothing that could be checked failed". The screen has
+   * to render the difference or it overstates what was confirmed.
+   */
+  applicable: boolean
   detail: string
 }
 
@@ -265,6 +275,8 @@ export interface ReportVerification {
   report: string
   passed: boolean
   fingerprint: string
+  /** The identity caveat, written by core and passed through verbatim. */
+  caveat: string
   checks: ReportCheck[]
 }
 

@@ -3,22 +3,29 @@ import { api, RequestFailed, streamJob } from '../lib/api'
 import type { CarveCandidate, JobStatus, Progress } from '../lib/api'
 import { bytes, hex, percent } from '../lib/format'
 import {
-  Chip,
   Empty,
   ErrorNotice,
+  Evidence,
   Notice,
   Panel,
   ProgressView,
+  Railed,
   Stat,
+  Verdict,
 } from '../components/widgets'
+import type { Tone } from '../components/widgets'
 
-const BUCKET_TONE: Record<string, 'high' | 'medium' | 'low' | 'muted'> = {
-  // Green is the trustworthy bucket. Deliberately inverted from the residual
-  // findings palette, where red is the alarming one: here HIGH means high
-  // confidence, and using red for it would read as a warning.
-  HIGH: 'low',
-  MEDIUM: 'medium',
-  LOW: 'high',
+/**
+ * Confidence bucket to tone.
+ *
+ * Deliberately inverted from the residual-findings palette. There, red is the
+ * alarming outcome; here HIGH means high confidence, and colouring it red
+ * would read as a warning about the candidate an examiner should trust most.
+ */
+const BUCKET_TONE: Record<string, Tone> = {
+  HIGH: 'success',
+  MEDIUM: 'warning',
+  LOW: 'destructive',
 }
 
 /** What each score component establishes. Shown beside its basis points. */
@@ -34,74 +41,67 @@ const COMPONENT_MEANING: Record<string, string> = {
 
 function ScoreBreakdown({ candidate }: { candidate: CarveCandidate }) {
   const entries = Object.entries(candidate.score_components)
-  const total = entries.reduce((sum, [, value]) => sum + value, 0)
+  const total = Math.min(
+    entries.reduce((sum, [, value]) => sum + value, 0),
+    10000,
+  )
+  const tone = BUCKET_TONE[candidate.bucket] ?? 'unknown'
+
   return (
-    <div className="col" style={{ gap: 9 }}>
-      <div className="row spread">
-        <h3>How this number was produced</h3>
-        <Chip tone={BUCKET_TONE[candidate.bucket] ?? 'muted'}>
-          {percent(candidate.confidence_bp, 2)} · {candidate.bucket}
-        </Chip>
-      </div>
+    <div className="col">
+      {/* The number first, at the size the room can read, with the arithmetic
+          under it. Every line below is how it was reached. */}
+      <Railed tone={tone}>
+        <Verdict
+          level={candidate.bucket}
+          basis={`${percent(candidate.confidence_bp, 2)} · ${total} of 10000 basis points`}
+          tone={tone}
+        />
+        <span className="note-faint">
+          HIGH at 8000, MEDIUM at 5000. The total is clamped, never scaled.
+        </span>
+      </Railed>
 
       <div className="bar-breakdown">
         {entries.map(([name, value]) => (
           <span
             key={name}
+            className={value > 0 ? 'is-on' : 'is-off'}
             title={`${name}: ${value} bp`}
-            style={{
-              width: `${(value / 10000) * 100}%`,
-              background: value > 0 ? 'var(--accent)' : 'transparent',
-              borderRight: value > 0 ? '1px solid var(--bg-panel)' : 'none',
-            }}
+            style={{ width: `${(value / 10000) * 100}%` }}
           />
         ))}
       </div>
 
-      <table>
-        <thead>
-          <tr>
-            <th>Component</th>
-            <th style={{ width: 70 }}>Basis pts</th>
-            <th>What it establishes</th>
-          </tr>
-        </thead>
-        <tbody>
-          {entries.map(([name, value]) => (
-            <tr key={name}>
-              <td className="mono">{name}</td>
-              <td
-                className="mono"
-                style={{ color: value > 0 ? 'var(--accent)' : 'var(--fg-faint)' }}
-              >
-                {value}
-              </td>
-              <td style={{ color: 'var(--fg-dim)', fontSize: 11 }}>
-                {value > 0
-                  ? COMPONENT_MEANING[name]
-                  : /* Zero is a measurement, not an absence: the check ran and
-                       did not hold. Rendering it as blank would let a reader
-                       assume it was never attempted. */
-                    `not established — ${COMPONENT_MEANING[name]}`}
-              </td>
-            </tr>
-          ))}
-          <tr>
-            <td className="mono">
-              <strong>total</strong>
-            </td>
-            <td className="mono">
-              <strong>{Math.min(total, 10000)}</strong>
-            </td>
-            <td style={{ color: 'var(--fg-dim)', fontSize: 11 }}>
-              clamped to 10000; HIGH at 8000, MEDIUM at 5000
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <h3>How this number was produced</h3>
+
+      {/* Six components, each with its own rail. A component that scored zero
+          keeps its row and its sentence: zero is a measurement - the check ran
+          and did not hold - and rendering it blank would let a reader assume it
+          was never attempted. */}
+      {entries.map(([name, value]) => (
+        <Railed key={name} tone={value > 0 ? 'success' : 'unknown'}>
+          <span className="row spread">
+            <span className="mono">{name}</span>
+            <span
+              className="mono"
+              style={{
+                color: value > 0 ? 'var(--text-primary)' : 'var(--text-muted)',
+              }}
+            >
+              {value}
+            </span>
+          </span>
+          <span className="note">
+            {value > 0
+              ? COMPONENT_MEANING[name]
+              : `not established — ${COMPONENT_MEANING[name]}`}
+          </span>
+        </Railed>
+      ))}
 
       {candidate.entropy_millibits_per_byte !== null && (
-        <div className="row wrap" style={{ gap: 20 }}>
+        <div className="row wrap" style={{ gap: 'var(--space-6)' }}>
           <Stat
             label="entropy"
             value={`${(candidate.entropy_millibits_per_byte / 1000).toFixed(2)} bits/byte`}
@@ -116,7 +116,7 @@ function ScoreBreakdown({ candidate }: { candidate: CarveCandidate }) {
       )}
 
       {candidate.validation_detail && (
-        <div className="col" style={{ gap: 3 }}>
+        <div className="col tight">
           <span className="stat-label">decoder said</span>
           <pre className="log">{candidate.validation_detail}</pre>
         </div>
@@ -125,8 +125,7 @@ function ScoreBreakdown({ candidate }: { candidate: CarveCandidate }) {
       {candidate.overlapped && (
         <Notice tone="warn">
           A higher-scoring candidate covers overlapping bytes
-          {candidate.overlaps_with !== null &&
-            ` (at ${hex(candidate.overlaps_with)})`}
+          {candidate.overlaps_with !== null && ` (at ${hex(candidate.overlaps_with)})`}
           . This candidate is kept and marked rather than dropped: a suppressed
           candidate that turns out to matter must remain visible.
         </Notice>
@@ -146,22 +145,9 @@ function PreviewPane({ candidate }: { candidate: CarveCandidate }) {
   const isPdf = candidate.ext.toLowerCase() === 'pdf'
 
   return (
-    <div className="col" style={{ gap: 7 }}>
+    <div className="col tight">
       <span className="stat-label">preview</span>
-      <div
-        style={{
-          border: '1px solid var(--line)',
-          background: 'var(--bg-input)',
-          minHeight: 130,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          color: 'var(--fg-faint)',
-          fontSize: 11,
-          padding: 12,
-          textAlign: 'center',
-        }}
-      >
+      <div className="preview-pane">
         {isImage || isPdf
           ? `${isPdf ? 'PDF' : 'Image'} preview renders from the recovered file once the carve is run with an output directory. Nothing is fetched from the network.`
           : `No preview for .${candidate.ext}. ${bytes(candidate.length)} at ${hex(candidate.offset)}.`}
@@ -245,16 +231,14 @@ export default function Recovery() {
     <>
       <div className="screen-head">
         <h1>Recovery</h1>
-        <p>
-          Read-only. Nothing in the carving path opens the evidence for writing.
-        </p>
+        <p>Read-only. Nothing in the carving path opens the evidence for writing.</p>
       </div>
 
       <div className="screen-body">
         <ErrorNotice error={error} />
 
         <Panel title="Evidence and scan configuration">
-          <div className="row wrap" style={{ gap: 12, alignItems: 'flex-end' }}>
+          <div className="row wrap" style={{ alignItems: 'flex-end' }}>
             <label className="grow">
               Evidence image
               <input
@@ -309,23 +293,33 @@ export default function Recovery() {
               title={`Candidates (${filtered.length} of ${candidates.length})`}
               tight
               actions={
-                <div className="row" style={{ gap: 6 }}>
+                <div className="row" style={{ gap: 'var(--space-2)' }}>
                   <select value={filterType} onChange={(e) => setFilterType(e.target.value)}>
                     <option value="">all types</option>
                     {types.map((item) => (
-                      <option key={item} value={item}>{item}</option>
+                      <option key={item} value={item}>
+                        {item}
+                      </option>
                     ))}
                   </select>
-                  <select value={filterBucket} onChange={(e) => setFilterBucket(e.target.value)}>
+                  <select
+                    value={filterBucket}
+                    onChange={(e) => setFilterBucket(e.target.value)}
+                  >
                     <option value="">all confidence</option>
                     <option value="HIGH">HIGH</option>
                     <option value="MEDIUM">MEDIUM</option>
                     <option value="LOW">LOW</option>
                   </select>
-                  <select value={filterSource} onChange={(e) => setFilterSource(e.target.value)}>
+                  <select
+                    value={filterSource}
+                    onChange={(e) => setFilterSource(e.target.value)}
+                  >
                     <option value="">all sources</option>
                     {sources.map((item) => (
-                      <option key={item} value={item}>{item}</option>
+                      <option key={item} value={item}>
+                        {item}
+                      </option>
                     ))}
                   </select>
                   <select value={filterFlag} onChange={(e) => setFilterFlag(e.target.value)}>
@@ -340,10 +334,25 @@ export default function Recovery() {
                 </div>
               }
             >
+              {/* This table runs to hundreds of rows on a real image, which is
+                  the one place the two-line verdict is the wrong trade. Rows
+                  are one line and a fixed 30px, the layout is fixed, and the
+                  confidence cell keeps the word and its percentage on a single
+                  baseline. Nothing here reflows as the list is filtered. */}
               <div className="scroll-y" style={{ maxHeight: '58vh' }}>
-                <table>
+                <table className="itable">
+                  <colgroup>
+                    <col style={{ width: 'var(--gutter)' }} />
+                    <col style={{ width: 96 }} />
+                    <col />
+                    <col style={{ width: 72 }} />
+                    <col style={{ width: 92 }} />
+                    <col style={{ width: 100 }} />
+                    <col style={{ width: 140 }} />
+                  </colgroup>
                   <thead>
                     <tr>
+                      <th className="rail" />
                       <th>Offset</th>
                       <th>Name</th>
                       <th>Type</th>
@@ -353,54 +362,78 @@ export default function Recovery() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filtered.map((item) => (
-                      <tr
-                        key={`${item.offset}-${item.ext}`}
-                        className={
-                          selected?.offset === item.offset
-                            ? 'clickable selected'
-                            : 'clickable'
-                        }
-                        onClick={() => setSelected(item)}
-                      >
-                        <td className="offset">{hex(item.offset)}</td>
-                        <td>{item.original_name ?? <span style={{ color: 'var(--fg-faint)' }}>—</span>}</td>
-                        <td className="mono">{item.ext}</td>
-                        <td>{bytes(item.length)}</td>
-                        <td className="mono" style={{ fontSize: 11 }}>{item.source}</td>
-                        <td>
-                          <Chip tone={BUCKET_TONE[item.bucket] ?? 'muted'}>
-                            {percent(item.confidence_bp)} {item.bucket}
-                          </Chip>
-                        </td>
-                      </tr>
-                    ))}
+                    {filtered.map((item) => {
+                      const tone = BUCKET_TONE[item.bucket] ?? 'unknown'
+                      const isSelected = selected?.offset === item.offset
+                      return (
+                        <tr
+                          key={`${item.offset}-${item.ext}`}
+                          className={
+                            isSelected
+                              ? 'irow is-compact is-openable is-selected'
+                              : 'irow is-compact is-openable'
+                          }
+                          onClick={() => setSelected(item)}
+                        >
+                          <td className={`rail is-${tone}`} aria-hidden>
+                            <i />
+                          </td>
+                          <td className="offset">{hex(item.offset)}</td>
+                          <td title={item.original_name ?? undefined}>
+                            {item.original_name ?? (
+                              <span style={{ color: 'var(--text-muted)' }}>—</span>
+                            )}
+                          </td>
+                          <td className="mono">{item.ext}</td>
+                          <td className="mono">{bytes(item.length)}</td>
+                          <td className="mono">{item.source}</td>
+                          <td>
+                            <Verdict
+                              tight
+                              level={item.bucket}
+                              basis={percent(item.confidence_bp)}
+                              tone={tone}
+                            />
+                          </td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
             </Panel>
 
-            <Panel title={selected ? 'Score breakdown' : 'Select a candidate'}>
+            <Panel
+              title={selected ? 'Score breakdown' : 'Select a candidate'}
+              subtitle={selected ? 'Six components, each with its basis points.' : undefined}
+            >
               {selected ? (
-                <div className="col" style={{ gap: 13 }}>
-                  <dl className="kv">
-                    <dt>offset</dt>
-                    <dd>{hex(selected.offset)} ({selected.offset})</dd>
-                    <dt>length</dt>
-                    <dd>{selected.length.toLocaleString('en-US')} bytes</dd>
-                    <dt>sha-256</dt>
-                    <dd>{selected.sha256}</dd>
-                    <dt>mime</dt>
-                    <dd>{selected.mime}</dd>
-                    <dt>validation</dt>
-                    <dd>{selected.validation}</dd>
-                    {selected.fs_type && (
-                      <>
-                        <dt>filesystem</dt>
-                        <dd>{selected.fs_type}</dd>
-                      </>
-                    )}
-                  </dl>
+                <div className="col loose">
+                  <Evidence
+                    stacked
+                    rows={[
+                      {
+                        label: 'Offset',
+                        value: `${hex(selected.offset)} (${selected.offset})`,
+                        kind: 'mono',
+                      },
+                      {
+                        label: 'Length',
+                        value: `${selected.length.toLocaleString('en-US')} bytes`,
+                        kind: 'mono',
+                      },
+                      { label: 'SHA-256', value: selected.sha256, kind: 'hash' },
+                      { label: 'MIME', value: selected.mime, kind: 'mono' },
+                      {
+                        label: 'Validation',
+                        value: selected.validation,
+                        kind: 'mono',
+                      },
+                      ...(selected.fs_type
+                        ? [{ label: 'Filesystem', value: selected.fs_type }]
+                        : []),
+                    ]}
+                  />
 
                   {selected.contiguity_assumed && (
                     <Notice tone="warn">
@@ -416,8 +449,8 @@ export default function Recovery() {
                 </div>
               ) : (
                 <Empty>
-                  Click a candidate to see the six score components and their
-                  basis points.
+                  Click a candidate to see the six score components and their basis
+                  points.
                 </Empty>
               )}
             </Panel>

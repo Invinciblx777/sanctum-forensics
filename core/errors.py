@@ -15,6 +15,7 @@ __all__ = [
     "MountedRefused",
     "ConfirmationMismatch",
     "GeometryRefused",
+    "OverwriteIncomplete",
     "UnsupportedCapability",
     "EvidenceIntegrityError",
     "LedgerChainBroken",
@@ -91,6 +92,27 @@ class GeometryRefused(SanctumError):
         "Re-run enumeration and HPA/DCO detection for the device. If the hidden "
         "area probe cannot produce a trustworthy native max, erase using the "
         "kernel-reported size and record that hidden sectors were not covered."
+    )
+
+
+class OverwriteIncomplete(SanctumError):
+    """The overwrite did not account for every byte it set out to write.
+
+    Sibling of :class:`GeometryRefused`, and raised for the same reason. That
+    one catches an erase planned over the wrong extent; this one catches an
+    erase that planned the right extent and then did not cover it - a short
+    ``os.write`` the loop failed to finish, or a write that stopped making
+    progress without raising.
+
+    Every byte in the plan must end up either written or recorded in
+    ``unwritable``. A byte that is neither is a hole, and a run that reports
+    success over a hole is the one result this tool must never produce.
+    """
+
+    default_remediation = (
+        "Do not treat the medium as sanitized. Re-run the erase; if it stops at "
+        "the same offset again, the device is failing writes without reporting "
+        "an error and should be physically destroyed rather than reused."
     )
 
 

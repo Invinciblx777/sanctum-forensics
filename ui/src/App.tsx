@@ -46,13 +46,12 @@ export default function App() {
         </div>
 
         <div className="nav">
-          {SCREENS.map((item, index) => (
+          {SCREENS.map((item) => (
             <button
               key={item.id}
               className={screen === item.id ? 'nav-item active' : 'nav-item'}
               onClick={() => setScreen(item.id)}
             >
-              <span className="nav-index">{index + 1}</span>
               {item.label}
             </button>
           ))}

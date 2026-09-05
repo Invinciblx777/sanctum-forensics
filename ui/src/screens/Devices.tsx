@@ -1,26 +1,34 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { api, RequestFailed } from '../lib/api'
 import type { Capabilities, DeviceRow, HiddenAreaReport } from '../lib/api'
 import { bytes, exactBytes } from '../lib/format'
-import { Chip, Empty, ErrorNotice, Limitations, Panel } from '../components/widgets'
+import { Empty, ErrorNotice, Limitations, Panel, Verdict } from '../components/widgets'
+import type { Tone } from '../components/widgets'
 
 /**
- * The capability badge.
+ * The capability verdict.
  *
  * It states what the drive can actually deliver, derived from what was probed
  * rather than from what was requested. "Clear only" is not a downgrade the UI
  * chose - it is what the hardware reported, and saying "Purge" over a device
  * that cannot purge is the single most dangerous thing this screen could do.
+ *
+ * Three strings, not one: the word, the probe result it was derived from, and
+ * the full sentence the operator opens when a judge asks. `Verdict` renders
+ * the first two and the sub-row carries the third; see the component's note in
+ * components/widgets.tsx for why none of it lives behind a hover.
  */
 export function capabilityBadge(caps: Capabilities | null): {
   label: string
-  tone: 'high' | 'medium' | 'low' | 'accent' | 'muted'
+  tone: Tone
+  basis: string
   why: string
 } {
   if (!caps) {
     return {
       label: 'Not probed',
-      tone: 'muted',
+      tone: 'unknown',
+      basis: 'probe did not complete',
       why: 'The capability probe did not complete, so nothing is claimed.',
     }
   }
@@ -33,28 +41,33 @@ export function capabilityBadge(caps: Capabilities | null): {
       caps.ata_sanitize_ops.includes('CRYPTO_SCRAMBLE_EXT')
     return cryptoCapable
       ? {
-          label: 'SED (Opal)',
-          tone: 'low',
+          label: 'SED · OPAL',
+          tone: 'success',
+          basis: 'crypto erase available',
           why: 'Self-encrypting drive with a usable cryptographic erase.',
         }
       : {
-          label: 'SED (Pyrite — no crypto erase)',
-          tone: 'medium',
+          label: 'SED · PYRITE',
+          tone: 'warning',
+          basis: 'no crypto erase',
           why:
             'Pyrite implements the Opal command set without media encryption, ' +
             'so there is no key to destroy and a crypto erase would erase nothing.',
         }
   }
   if (caps.achievable_levels.includes('PURGE')) {
+    const ops = caps.ata_sanitize_ops.join(', ') || 'NVMe SANICAP'
     return {
-      label: 'Purge available',
-      tone: 'low',
-      why: `Firmware sanitize reported: ${caps.ata_sanitize_ops.join(', ') || 'NVMe SANICAP'}.`,
+      label: 'PURGE AVAILABLE',
+      tone: 'success',
+      basis: ops,
+      why: `Firmware sanitize reported: ${ops}.`,
     }
   }
   return {
-    label: 'Clear only',
-    tone: 'medium',
+    label: 'CLEAR ONLY',
+    tone: 'warning',
+    basis: 'no firmware sanitize reported',
     why:
       'No firmware sanitize or cryptographic erase was reported, so a host ' +
       'overwrite is the strongest available result. On flash media that ' +
@@ -62,22 +75,46 @@ export function capabilityBadge(caps: Capabilities | null): {
   }
 }
 
-function HiddenAreaChip({ report }: { report: HiddenAreaReport | null }) {
-  if (!report) return <Chip tone="muted">HPA/DCO not probed</Chip>
+/**
+ * Hidden areas.
+ *
+ * The word carries the state and the colour reinforces it. "none", "not
+ * probed" and "HPA 1.05 GB" are already distinct read as text alone, so this
+ * column loses nothing in greyscale and needs no glyph beside it.
+ */
+function HiddenAreas({ report }: { report: HiddenAreaReport | null }) {
+  if (!report) return <span className="state-mark is-muted">not probed</span>
   if (report.hidden_bytes <= 0) {
-    return <Chip tone="muted">no hidden areas</Chip>
+    return <span className="state-mark is-success">none</span>
   }
   return (
-    <Chip
-      tone="high"
-      title={
-        `${exactBytes(report.hidden_bytes)} lie beyond the accessible max ` +
-        `(${report.accessible_sectors} of ${report.native_max_sectors} sectors). ` +
-        'An overwrite does not reach them unless the native max is unlocked first.'
-      }
-    >
-      {report.hpa_present ? 'HPA' : 'DCO'} hides {bytes(report.hidden_bytes)}
-    </Chip>
+    <span className="state-mark is-destructive">
+      {report.hpa_present ? 'HPA' : 'DCO'} {bytes(report.hidden_bytes)}
+    </span>
+  )
+}
+
+/** A shackle. Drawn inline: no icon font, no sprite fetched from anywhere. */
+function Shackle() {
+  return (
+    <svg width="13" height="15" viewBox="0 0 13 15" aria-hidden>
+      <rect
+        x="0.75"
+        y="6.25"
+        width="11.5"
+        height="8"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      />
+      <path
+        d="M3 6.25 V4 a3.5 3.5 0 0 1 7 0 V6.25"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      />
+      <rect x="5.75" y="9" width="1.5" height="3" fill="currentColor" />
+    </svg>
   )
 }
 
@@ -88,6 +125,7 @@ export default function Devices({
 }) {
   const [rows, setRows] = useState<DeviceRow[]>([])
   const [limitations, setLimitations] = useState<string[]>([])
+  const [openPath, setOpenPath] = useState<string | null>(null)
   const [error, setError] = useState<{
     message: string
     kind?: string
@@ -132,7 +170,11 @@ export default function Devices({
         <ErrorNotice error={error} />
         <Limitations items={limitations} />
 
-        <Panel title={`Block devices (${rows.length})`} tight>
+        <Panel
+          title={`Block devices (${rows.length})`}
+          subtitle="Capability is what the probe reported, not what was requested."
+          tight
+        >
           {rows.length === 0 ? (
             <Empty>
               {loading
@@ -140,15 +182,36 @@ export default function Devices({
                 : 'No block devices were reported. The privileged helper may not be running.'}
             </Empty>
           ) : (
-            <table>
+            <table className="itable">
+              {/* Fixed widths so the columns line up down the table and the
+                  header never truncates mid-word. Capability takes what is
+                  left, and its basis line ellipsises rather than wrapping -
+                  the full sentence is one click away on the sub-row. */}
+              {/* Widths are sized to the longest real value each column
+                  holds, not divided evenly. A serial is typed character by
+                  character into the confirm dialog, so it gets the 24
+                  monospace characters it needs and never ellipsises; so do
+                  size and bus, which are short by nature. Model is the only
+                  column that can lose its tail without costing anything, so
+                  Model is the one that flexes. */}
+              <colgroup>
+                <col style={{ width: 'var(--gutter)' }} />
+                <col style={{ width: 140 }} />
+                <col />
+                <col style={{ width: 186 }} />
+                <col style={{ width: 92 }} />
+                <col style={{ width: 104 }} />
+                <col style={{ width: 238 }} />
+                <col style={{ width: 140 }} />
+              </colgroup>
               <thead>
                 <tr>
-                  <th style={{ width: 26 }} />
+                  <th className="rail" />
                   <th>Path</th>
                   <th>Model</th>
                   <th>Serial</th>
                   <th>Size</th>
-                  <th>Transport</th>
+                  <th>Bus</th>
                   <th>Capability</th>
                   <th>Hidden areas</th>
                 </tr>
@@ -156,66 +219,115 @@ export default function Devices({
               <tbody>
                 {rows.map((row) => {
                   const badge = capabilityBadge(row.capabilities)
-                  const locked =
+                  const barred =
                     row.device.is_system_disk || row.device.mounted_at.length > 0
                   const reason = row.device.is_system_disk
-                    ? 'Refused: this device hosts the running root filesystem. ' +
+                    ? 'Locked: this device hosts the running root filesystem. ' +
                       'Boot from separate media and run the erase against it as ' +
                       'a non-system disk.'
-                    : `Refused: mounted at ${row.device.mounted_at.join(', ')}. ` +
+                    : `Locked: mounted at ${row.device.mounted_at.join(', ')}. ` +
                       'Unmount every filesystem on the device and retry.'
+                  const open = openPath === row.device.path
                   return (
-                    <tr
-                      key={row.device.path}
-                      className={locked ? '' : 'clickable'}
-                      onClick={() => !locked && onSelect(row)}
-                    >
-                      <td>
-                        {locked ? (
-                          <span
-                            title={reason}
-                            style={{ color: 'var(--high)', cursor: 'help' }}
-                            aria-label="locked"
-                          >
-                            {/* A padlock drawn inline: no icon font, no sprite
-                                fetched from anywhere. */}
-                            <svg width="11" height="13" viewBox="0 0 11 13">
-                              <rect
-                                x="0.5"
-                                y="5.5"
-                                width="10"
-                                height="7"
-                                fill="none"
-                                stroke="currentColor"
-                              />
-                              <path
-                                d="M2.5 5.5 V3.5 a3 3 0 0 1 6 0 V5.5"
-                                fill="none"
-                                stroke="currentColor"
-                              />
-                            </svg>
-                          </span>
-                        ) : null}
-                      </td>
-                      <td className="path">{row.device.path}</td>
-                      <td>{row.device.model}</td>
-                      <td className="serial">{row.device.serial}</td>
-                      <td title={exactBytes(row.device.size_bytes)}>
-                        {bytes(row.device.size_bytes)}
-                      </td>
-                      <td>
-                        {row.device.transport}
-                        {row.device.rotational ? '' : ' · flash'}
-                      </td>
-                      <td>
-                        <Chip tone={badge.tone} title={badge.why}>
-                          {badge.label}
-                        </Chip>
-                      </td>
-                      <td>
-                        <HiddenAreaChip report={row.hidden_areas} />
-                      </td>
-                    </tr>
+                    <Fragment key={row.device.path}>
+                      <tr
+                        className={
+                          barred ? 'irow is-barred' : 'irow is-openable'
+                        }
+                        onClick={() => !barred && onSelect(row)}
+                      >
+                        <td
+                          className={barred ? 'rail is-destructive' : 'rail'}
+                          aria-hidden
+                        >
+                          <i />
+                        </td>
+                        {/* Path and a shackle. Nothing else: the refusal is a
+                            sentence and belongs on a row wide enough to hold
+                            one. */}
+                        <td className="path">
+                          {barred ? (
+                            <span className="lockup">
+                              <Shackle />
+                              <span className="path">{row.device.path}</span>
+                            </span>
+                          ) : (
+                            row.device.path
+                          )}
+                        </td>
+                        <td title={row.device.model}>{row.device.model}</td>
+                        <td className="serial">{row.device.serial}</td>
+                        <td className="mono" title={exactBytes(row.device.size_bytes)}>
+                          {bytes(row.device.size_bytes)}
+                        </td>
+                        <td className="mono">
+                          {row.device.transport}
+                          {row.device.rotational ? '' : ' flash'}
+                        </td>
+                        <td>
+                          <Verdict
+                            level={badge.label}
+                            basis={badge.basis}
+                            tone={badge.tone}
+                            open={open}
+                            onToggle={() =>
+                              setOpenPath(open ? null : row.device.path)
+                            }
+                          />
+                        </td>
+                        <td>
+                          <HiddenAreas report={row.hidden_areas} />
+                        </td>
+                      </tr>
+                      {barred && (
+                        <tr className="subrow is-locked">
+                          <td className="rail is-destructive" aria-hidden>
+                            <i />
+                          </td>
+                          <td colSpan={7}>
+                            <span className="lock-reason">{reason}</span>
+                          </td>
+                        </tr>
+                      )}
+                      {open && (
+                        <tr className="subrow">
+                          <td className="rail" aria-hidden>
+                            <i />
+                          </td>
+                          <td colSpan={7}>
+                            <dl className="evidence">
+                              <dt>Claim</dt>
+                              <dd>{badge.label}</dd>
+                              <dt>Because</dt>
+                              <dd>{badge.why}</dd>
+                              <dt>Levels</dt>
+                              <dd className="mono">
+                                {row.capabilities?.achievable_levels.join(', ') ||
+                                  'none reported'}
+                              </dd>
+                              <dt>Sanitize ops</dt>
+                              <dd className="mono">
+                                {row.capabilities?.ata_sanitize_ops.join(', ') ||
+                                  'none reported'}
+                              </dd>
+                              {row.hidden_areas && row.hidden_areas.hidden_bytes > 0 && (
+                                <>
+                                  <dt>Hidden</dt>
+                                  <dd>
+                                    {exactBytes(row.hidden_areas.hidden_bytes)} lie beyond
+                                    the accessible max (
+                                    {row.hidden_areas.accessible_sectors} of{' '}
+                                    {row.hidden_areas.native_max_sectors} sectors). An
+                                    overwrite does not reach them unless the native max is
+                                    unlocked first.
+                                  </dd>
+                                </>
+                              )}
+                            </dl>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   )
                 })}
               </tbody>

@@ -643,52 +643,102 @@ def cmd_carve(args: argparse.Namespace) -> int:
     candidates = outcome["candidates"]
     found = {item["sha256"] for item in candidates}
 
-    by_fs: dict[str, dict[str, Any]] = {}
-    for item in candidates:
-        key = item.get("fs_type") or args.filesystem
-        row = by_fs.setdefault(
-            key, {"candidates": 0, "exact": set(), "named": 0}
-        )
-        row["candidates"] += 1
-        if item.get("original_name"):
-            row["named"] += 1
-        if item["sha256"] in deleted:
-            row["exact"].add(item["sha256"])
-
     def files_recovered(files: list[dict[str, Any]], found_digests: set[str]) -> int:
         """Planted *files* whose content came back, duplicates counted each."""
         return sum(1 for item in files if item["sha256"] in found_digests)
 
-    per_fs = {
-        name: {
-            "candidates": row["candidates"],
-            "named": row["named"],
-            "exact": len(row["exact"]),
+    def score(items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Recall and precision over one slice of the candidate list.
+
+        Precision counts *candidates*, not digests, and a candidate is correct
+        when its bytes are byte-identical to any file that was planted -
+        deleted or live. Scoring correctness against the deleted set alone made
+        a correctly recovered live file a false positive: the FAT32 delete pass
+        carved five live JPEGs byte-exact out of the unallocated map and was
+        docked five candidates of precision for it. That is a real recovery
+        being counted as an error, so it is counted separately here and
+        ``precision_bp`` includes it.
+
+        ``exact`` stays the deleted-only figure, because recall is a question
+        about deleted files and a live file is not in its denominator.
+        """
+        hit_deleted = [item for item in items if item["sha256"] in deleted]
+        hit_live = [item for item in items if item["sha256"] in live]
+        exact = {item["sha256"] for item in hit_deleted}
+        return {
+            "candidates": len(items),
+            "named": sum(1 for item in items if item.get("original_name")),
+            "exact": len(exact),
+            "deleted_hit_candidates": len(hit_deleted),
+            "live_hit_candidates": len(hit_live),
+            "false_positive_candidates": (
+                len(items) - len(hit_deleted) - len(hit_live)
+            ),
             "deleted_planted": len(deleted_files),
             "deleted_planted_unique": len(deleted),
             "recall_bp": (
                 int(round(
-                    files_recovered(deleted_files, row["exact"])
-                    * 10_000
+                    files_recovered(deleted_files, exact) * 10_000
                     / len(deleted_files)
                 ))
                 if deleted_files
                 else 0
             ),
+            # Correct candidates over all candidates. A live-file recovery is
+            # correct.
             "precision_bp": (
-                int(round(len(row["exact"]) * 10_000 / row["candidates"]))
-                if row["candidates"]
+                int(round(
+                    (len(hit_deleted) + len(hit_live)) * 10_000 / len(items)
+                ))
+                if items
+                else 0
+            ),
+            # The old definition, kept under a name that says what it is, so
+            # the figures already written up stay reproducible.
+            "precision_deleted_only_bp": (
+                int(round(len(hit_deleted) * 10_000 / len(items)))
+                if items
                 else 0
             ),
         }
-        for name, row in by_fs.items()
-    }
+
+    by_fs: dict[str, list[dict[str, Any]]] = {}
+    for item in candidates:
+        by_fs.setdefault(item.get("fs_type") or args.filesystem, []).append(item)
+
+    # The undelete-only slice, so a real run can be compared against a baseline
+    # measured with the signature carver switched off. ``testkit/calibrate.py``
+    # calls ``undelete_report()`` and nothing else, so its precision counts no
+    # signature-carve candidate and no signature-carve false positive. Under
+    # one column name those are two different measurements; sliced by source
+    # they are one.
+    per_fs: dict[str, dict[str, Any]] = {}
+    for name, items in by_fs.items():
+        row = score(items)
+        # Two slices, named for the pipeline halves rather than for the three
+        # ``source`` values: "signature" here is source="signature" and
+        # source="structure" together, because a structure candidate is a
+        # signature candidate a parser then resolved, and both come from the
+        # carver rather than from a directory entry.
+        row["by_pipeline"] = {
+            "undelete": score(
+                [item for item in items if item.get("source") == "fs_metadata"]
+            ),
+            "signature": score(
+                [item for item in items if item.get("source") != "fs_metadata"]
+            ),
+        }
+        per_fs[name] = row
 
     emit(
         {
             "step": "carve",
             "image": args.image,
             "filesystem": args.filesystem,
+            "damage": args.damage,
+            # Both halves ran. The baseline this is compared against may not
+            # have run both, which is why "compare" slices before it subtracts.
+            "pipeline": "undelete+signature",
             "elapsed_seconds": round(elapsed, 3),
             "candidates": len(candidates),
             "planted_files": len(manifest),
@@ -721,6 +771,20 @@ def cmd_carve(args: argparse.Namespace) -> int:
     return 0
 
 
+#: Below this many deleted files a baseline row is a demonstration that a
+#: mechanism applies, not a rate. The exFAT row is n=2 - one file with
+#: ``NoFatChain`` set that came back and one that used a chain the deletion
+#: destroyed - and real media returning 460 of 460 against its "50%" was
+#: flagged as a divergence. It is not one. Nothing about 460 measurements
+#: disagrees with two.
+MIN_BASELINE_N = 30
+
+#: A recall gap wider than this is not noise on a corpus of the size Phase B
+#: plants, and means the calibration is describing synthetic media rather than
+#: real media.
+DIVERGENCE_BP = 1000
+
+
 def cmd_compare(args: argparse.Namespace) -> int:
     """Real-media recall beside what the synthetic corpus predicted.
 
@@ -728,49 +792,152 @@ def cmd_compare(args: argparse.Namespace) -> int:
     derived from weights calibrated on synthetic images; if real media recalls
     differently, the calibration is describing something other than reality and
     the numbers inherit the error.
+
+    Three things have to line up before a difference between the two sides is
+    a finding rather than an artefact of how they were measured, and the first
+    real run got all three wrong:
+
+    * **The damage model.** The baseline was looked up by filesystem name
+      alone, so a quick-format run - where every directory entry is gone and
+      undelete has nothing to work from - was scored against a delete baseline
+      and came out 94 points low. Those are two experiments, not one
+      measurement and its prediction.
+    * **The sample size.** A row of two files was flagged as diverging from a
+      row of 460. See :data:`MIN_BASELINE_N`.
+    * **The pipeline.** ``testkit/calibrate.py`` measures undelete only; a real
+      run carves signatures as well, and every signature-carve false positive
+      exists on one side of that subtraction and not the other. The comparison
+      now slices the real run by candidate source and compares the slice the
+      baseline actually measured.
     """
-    synthetic: dict[str, dict[str, int]] = {}
+    synthetic: dict[tuple[str, str], dict[str, Any]] = {}
     csv_path = Path(args.calibration_csv)
     if csv_path.exists():
         with csv_path.open(encoding="utf-8") as handle:
             for row in csv.DictReader(handle):
-                synthetic[row["filesystem"]] = {
+                # Rows written before the columns existed are delete-damage,
+                # undelete-pipeline rows; that is what the corpus did.
+                damage = row.get("damage") or "delete"
+                synthetic[(row["filesystem"], damage)] = {
                     "deleted": int(row["deleted"]),
                     "recall_bp": int(row["recall_bp"]),
                     "precision_bp": int(row["precision_bp"]),
+                    "pipeline": row.get("pipeline") or "undelete",
                 }
 
     rows: list[dict[str, Any]] = []
     for path in args.carve_json:
         measured = json.loads(Path(path).read_text())
+        damage = measured.get("damage", "delete")
         for name, row in measured["per_filesystem"].items():
-            predicted = synthetic.get(name, {})
-            recall_delta = (
-                row["recall_bp"] - predicted["recall_bp"]
-                if "recall_bp" in predicted
-                else None
-            )
-            rows.append(
-                {
-                    "filesystem": name,
-                    "real_deleted": row["deleted_planted"],
-                    "real_exact": row["exact"],
-                    "real_recall_bp": row["recall_bp"],
-                    "real_precision_bp": row["precision_bp"],
-                    "synthetic_deleted": predicted.get("deleted"),
-                    "synthetic_recall_bp": predicted.get("recall_bp"),
-                    "synthetic_precision_bp": predicted.get("precision_bp"),
-                    "recall_delta_bp": recall_delta,
-                    # A divergence wider than 10 points is not noise on a
-                    # corpus this size and means the calibration table is
-                    # describing synthetic media rather than real media.
-                    "diverges": (
-                        abs(recall_delta) > 1000 if recall_delta is not None else None
+            predicted = synthetic.get((name, damage))
+            entry: dict[str, Any] = {
+                "filesystem": name,
+                "damage": damage,
+                "real_deleted": row["deleted_planted"],
+                "real_exact": row["exact"],
+                "real_recall_bp": row["recall_bp"],
+                "real_precision_bp": row["precision_bp"],
+                "real_pipeline": measured.get("pipeline", "undelete+signature"),
+            }
+
+            if predicted is None:
+                # Not a divergence and not a match: nothing in the corpus did
+                # this to a volume, so there is nothing to compare against.
+                entry.update(
+                    synthetic_deleted=None,
+                    synthetic_recall_bp=None,
+                    synthetic_precision_bp=None,
+                    synthetic_pipeline=None,
+                    compared_pipeline=None,
+                    recall_delta_bp=None,
+                    precision_delta_bp=None,
+                    status="no_baseline",
+                    note=(
+                        f"no calibration row for {name}/{damage}: this is a new"
+                        " measurement, not a comparison"
                     ),
-                }
+                    diverges=None,
+                )
+                rows.append(entry)
+                continue
+
+            # Compare the half of the real run the baseline measured. When the
+            # baseline ran both halves this is the whole run and the slice is a
+            # no-op.
+            pipeline = predicted["pipeline"]
+            slice_ = row.get("by_pipeline", {}).get(pipeline, row)
+            recall_delta = slice_["recall_bp"] - predicted["recall_bp"]
+            precision_delta = slice_["precision_bp"] - predicted["precision_bp"]
+            underpowered = predicted["deleted"] < MIN_BASELINE_N
+
+            entry.update(
+                synthetic_deleted=predicted["deleted"],
+                synthetic_recall_bp=predicted["recall_bp"],
+                synthetic_precision_bp=predicted["precision_bp"],
+                synthetic_pipeline=pipeline,
+                compared_pipeline=pipeline,
+                compared_recall_bp=slice_["recall_bp"],
+                compared_precision_bp=slice_["precision_bp"],
+                compared_candidates=slice_["candidates"],
+                recall_delta_bp=recall_delta,
+                precision_delta_bp=precision_delta,
             )
 
-    emit({"step": "compare", "rows": rows})
+            if underpowered:
+                entry.update(
+                    status="baseline_underpowered",
+                    note=(
+                        f"baseline is n={predicted['deleted']}, below the"
+                        f" minimum of {MIN_BASELINE_N}: it shows which"
+                        " mechanism applies, not a rate, and a gap against it"
+                        " is not a divergence"
+                    ),
+                    diverges=False,
+                )
+            elif abs(recall_delta) > DIVERGENCE_BP:
+                entry.update(
+                    status="diverges",
+                    note=(
+                        f"real {pipeline} recall differs from the calibration"
+                        f" by {recall_delta / 100:+.2f} points"
+                    ),
+                    diverges=True,
+                )
+            else:
+                entry.update(status="agrees", note="", diverges=False)
+
+            rows.append(entry)
+
+    emit({"step": "compare", "min_baseline_n": MIN_BASELINE_N, "rows": rows})
+    return 0
+
+
+def cmd_keygen(args: argparse.Namespace) -> int:
+    """Create the signing key, and report its fingerprint.
+
+    A subcommand rather than a heredoc in the caller, because a bare
+    ``python - <<EOF`` snippet never calls :func:`configure_logging` and
+    structlog's default writes to **stdout**. demo-reset.sh captured that
+    stdout into ``key.json``::
+
+        2026-09-05 15:12:08 [info  ] signing_key_created  path=.../key.pem
+        {"fingerprint": "27:9F:14:..."}
+
+    ``json.loads`` refuses that, ``harness_json_field`` returned "", and the
+    console printed an empty fingerprint over a key that had been created
+    perfectly well. Routing it through this file puts the log line on stderr
+    where it belongs and leaves stdout to the JSON alone.
+
+    Genesis is unaffected either way: the ledger reads the fingerprint from the
+    key file with ``fingerprint_of_existing_key``, never from this JSON. What
+    was broken was the report of the value, not the value.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from core.report.sign import fingerprint, load_or_create_key, public_key_of
+
+    key = load_or_create_key(Path(args.key_dir))
+    emit({"step": "keygen", "fingerprint": fingerprint(public_key_of(key))})
     return 0
 
 
@@ -912,6 +1079,15 @@ def main() -> int:
     carve_parser.add_argument("--image", required=True)
     carve_parser.add_argument("--manifest", required=True)
     carve_parser.add_argument("--filesystem", required=True)
+    carve_parser.add_argument(
+        "--damage",
+        default="delete",
+        help=(
+            "Damage model that made the files unreachable. Recorded in the "
+            "output and used to pick the calibration baseline: a quick-format "
+            "run scored against a delete baseline compares two experiments."
+        ),
+    )
     carve_parser.add_argument("--out-dir")
     carve_parser.set_defaults(handler=cmd_carve)
 
@@ -922,6 +1098,10 @@ def main() -> int:
         default="docs/performance/calibration-filesystems.csv",
     )
     compare_parser.set_defaults(handler=cmd_compare)
+
+    keygen_parser = sub.add_parser("keygen")
+    keygen_parser.add_argument("--key-dir", required=True)
+    keygen_parser.set_defaults(handler=cmd_keygen)
 
     hash_parser = sub.add_parser("hash-tree")
     hash_parser.add_argument("--root", required=True)

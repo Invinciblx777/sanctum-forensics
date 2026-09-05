@@ -52,6 +52,7 @@ from core.errors import (
     DeviceFrozen,
     DeviceVanished,
     GeometryRefused,
+    OverwriteIncomplete,
     PlatformUnsupported,
     UnsupportedCapability,
 )
@@ -331,6 +332,80 @@ def _open_for_write(
     return os.open(path, os.O_WRONLY | getattr(os, "O_DSYNC", os.O_SYNC)), False
 
 
+def _stalled(offset: int, remaining: int, count: int) -> OverwriteIncomplete:
+    """The exception for a write that returned without writing anything."""
+    return OverwriteIncomplete(
+        f"the write at offset {offset} returned {count} and made no progress, "
+        f"leaving {remaining} byte(s) there unwritten. The run stops rather "
+        f"than reporting a complete overwrite over a span it never wrote."
+    )
+
+
+def _write_all(fd: int, buffer: memoryview, offset: int) -> int:
+    """Issue ``buffer`` at ``offset`` until every byte of it is written.
+
+    ``os.write`` is allowed to return a short count and no error - a large
+    request split by the kernel, a signal, a device that takes part of what it
+    was handed. Advancing by the length requested rather than the length
+    returned leaves an unwritten hole behind a run that still reports success,
+    so the remainder is re-issued from where the count says it stopped.
+
+    Raises:
+        OSError: the write failed. What ``EIO`` means is the caller's to decide.
+        OverwriteIncomplete: a write returned zero and made no progress. There
+            is nothing useful to do with that except stop.
+    """
+    written = 0
+    span = len(buffer)
+    while written < span:
+        with buffer[written:] as chunk:
+            os.lseek(fd, offset + written, os.SEEK_SET)
+            count = os.write(fd, chunk)
+        if count <= 0:
+            raise _stalled(offset + written, span - written, count)
+        written += count
+    return written
+
+
+def _write_span(
+    fd: int, buffer: memoryview, offset: int, block: int
+) -> tuple[int, list[UnwritableRange]]:
+    """Write one whole span, and account for every byte of it.
+
+    Returns ``(written, unwritable)``, where ``written`` plus the lengths of the
+    unwritable ranges always equals ``len(buffer)``. Nothing is skipped
+    silently: a byte is either written or named.
+
+    A short write is finished rather than stepped over. An ``EIO`` hands the
+    rest of the span to :func:`_write_block_by_block`, which localises the bad
+    sectors so a single one does not cost a four-terabyte wipe.
+
+    A short write on a block device comes back block-aligned, so the salvage
+    below starts on a block boundary. If some device ever returns an unaligned
+    count, O_DIRECT rejects the next write with ``EINVAL`` and it is raised -
+    loudly wrong beats quietly holed.
+    """
+    span = len(buffer)
+    written = 0
+    while written < span:
+        try:
+            with buffer[written:] as chunk:
+                os.lseek(fd, offset + written, os.SEEK_SET)
+                count = os.write(fd, chunk)
+        except OSError as exc:
+            if exc.errno != errno.EIO:
+                raise
+            with buffer[written:] as rest:
+                salvaged, bad = _write_block_by_block(
+                    fd, rest, offset + written, block
+                )
+            return written + salvaged, bad
+        if count <= 0:
+            raise _stalled(offset + written, span - written, count)
+        written += count
+    return written, []
+
+
 def _write_block_by_block(
     fd: int, buffer: memoryview, offset: int, block: int
 ) -> tuple[int, list[UnwritableRange]]:
@@ -344,9 +419,11 @@ def _write_block_by_block(
         # "BufferError: cannot close exported pointers exist" from the finally
         # block that releases the buffer.
         with buffer[start : start + block] as chunk:
-            os.lseek(fd, offset + start, os.SEEK_SET)
             try:
-                os.write(fd, chunk)
+                # Every byte of the block, not one call and a hope: this path
+                # runs on media that is already misbehaving, which is where a
+                # short write is least surprising and most costly.
+                count = _write_all(fd, chunk, offset + start)
             except OSError as exc:
                 if exc.errno != errno.EIO:
                     raise
@@ -356,7 +433,7 @@ def _write_block_by_block(
                     )
                 )
             else:
-                written += len(chunk)
+                written += count
     return written, bad
 
 
@@ -388,6 +465,11 @@ def _overwrite(
     :func:`mmap.mmap` (page aligned) and every length is a block multiple. A
     trailing partial block is padded rather than short-written.
 
+    A short ``os.write`` is finished rather than stepped over, and the run
+    reconciles what it planned against what it wrote before returning. Both
+    exist for the same reason: an overwrite that leaves a hole and still
+    reports success is worse than one that fails.
+
     An ``EIO`` does not abort the job: the failing span is retried block by
     block to localise it, the bad blocks are recorded, and the wipe continues. A
     single bad sector must not cost a four-terabyte wipe.
@@ -400,6 +482,7 @@ def _overwrite(
     fd, direct = _open_for_write(device.path, limitations)
     unwritable: list[UnwritableRange] = []
     total_written = 0
+    planned = 0
     throughput = _Throughput()
     pass_total = len(fills) if fills is not None else pattern_mod.pass_count(method)
     all_patterns = list(
@@ -429,19 +512,15 @@ def _overwrite(
                 # view and ``buffer.close()`` raises BufferError at the end of
                 # an otherwise complete wipe.
                 with memoryview(buffer)[:span] as view:
-                    try:
-                        os.lseek(fd, offset, os.SEEK_SET)
-                        written = os.write(fd, view)
-                    except OSError as exc:
-                        if exc.errno != errno.EIO:
-                            raise
-                        written, bad = _write_block_by_block(fd, view, offset, block)
-                        unwritable.extend(bad)
+                    written, bad = _write_span(fd, view, offset, block)
+                    unwritable.extend(bad)
 
-                advanced = span
+                # What the loop set out to cover, counted separately from what
+                # it managed. The two are reconciled once, at the end.
+                planned += span
                 total_written += written
                 throughput.add(written)
-                offset += advanced
+                offset += span
 
                 if offset >= next_checkpoint or offset >= size:
                     point = EraseCheckpoint(
@@ -476,6 +555,25 @@ def _overwrite(
     finally:
         buffer.close()
         os.close(fd)
+
+    # Every byte the loop set out to write is either written or named in
+    # ``unwritable``. A byte that is neither is a hole, and a hole under a
+    # report that says the medium was sanitized is the one result this module
+    # must never produce - so this is a raise, not a limitation.
+    #
+    # Note what is deliberately *not* checked: ``total_written == passes *
+    # size``. An EIO block is legitimately skipped and recorded, and measuring
+    # against a whole device would fail every run that salvaged one. What has
+    # to hold is that nothing is skipped silently.
+    skipped = sum(item.length for item in unwritable)
+    if total_written + skipped != planned:
+        raise OverwriteIncomplete(
+            f"the overwrite planned {planned} byte(s) over {pass_total - start_pass} "
+            f"pass(es) of {device.path} but accounts for only "
+            f"{total_written + skipped}: {total_written} written and {skipped} "
+            f"recorded unwritable. {planned - total_written - skipped} byte(s) "
+            f"are unaccounted for and the medium is not erased."
+        )
 
     return _OverwriteOutcome(
         bytes_written=total_written,

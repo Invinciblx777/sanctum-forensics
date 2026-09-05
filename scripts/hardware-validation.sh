@@ -34,6 +34,13 @@ ALLOW_LARGE=0
 MAX_SANE_BYTES=$((137438953472))   # 128 GiB. A larger "USB stick" is probably a disk.
 OUT_ROOT="$REPO/docs/validation"
 FS_KIND="fat32"
+# Phase B knobs. Defaults chosen so one pass finishes in minutes rather than
+# hours on a 4 MiB/s controller, and so the deleted-file denominator lands in
+# the same order of magnitude as the synthetic corpus it is compared against.
+FS_SIZE_MIB=256
+FILLER_KIB=256
+DAMAGE="delete"
+ACQUIRE_SCOPE="partition"
 
 usage() {
     sed -n '3,19p' "${BASH_SOURCE[0]}" | sed -n 's/^#\( \|$\)//p'
@@ -47,6 +54,28 @@ Options:
   --allow-fixed                        Permit a non-removable device.
   --allow-large                        Permit a device over 128 GiB.
   --out DIR                            Results directory root.
+
+Phase B only:
+  --fs-size MIB                        Test partition size. Default: 256.
+                                       The whole device is not used: populating
+                                       7 GiB at 4 MiB/s is half an hour per pass
+                                       and buys no extra measurement.
+  --filler-bytes KIB                   Filler file size. Default: 256, matching
+                                       testkit/generate_corpus.py so the recall
+                                       denominators are comparable.
+  --damage delete|quickformat          What happens to the data before it is
+                                       recovered. delete: remove half the
+                                       fillers and half the named files.
+                                       quickformat: mkfs over the whole volume,
+                                       which destroys every directory entry and
+                                       leaves signature carving as the only
+                                       route. Default: delete.
+  --acquire-scope partition|device     What to image. partition (default) reads
+                                       only the test volume - fast, and directly
+                                       comparable to the synthetic corpus, which
+                                       is volume images. device reads the whole
+                                       stick, which is what an investigator does
+                                       and which exercises partition detection.
 USAGE
 }
 
@@ -56,6 +85,10 @@ while [[ $# -gt 0 ]]; do
         --i-understand-this-destroys-data) CONFIRMED=1; shift ;;
         --phase) PHASE="$2"; shift 2 ;;
         --filesystem) FS_KIND="$2"; shift 2 ;;
+        --fs-size) FS_SIZE_MIB="$2"; shift 2 ;;
+        --filler-bytes) FILLER_KIB="$2"; shift 2 ;;
+        --damage) DAMAGE="$2"; shift 2 ;;
+        --acquire-scope) ACQUIRE_SCOPE="$2"; shift 2 ;;
         --allow-fixed) ALLOW_FIXED=1; shift ;;
         --allow-large) ALLOW_LARGE=1; shift ;;
         --out) OUT_ROOT="$2"; shift 2 ;;
@@ -183,11 +216,13 @@ if [[ -n "$CONTENT_WARN" ]]; then
     warn "This looks like OS installation media. Erasing it destroys the installer."
 fi
 
-echo
-read -r -p "   Type the serial (${SERIAL:-<unknown>}) to proceed: " TYPED
-if [[ "$TYPED" != "$SERIAL" ]]; then
-    die "typed serial does not match. Nothing was written."
-fi
+# The same gate demo-reset.sh runs, from the same file, so there is one
+# implementation and it is the tested one. It refuses an empty serial: this
+# read compared "$TYPED" against "$SERIAL" and nothing else, so on a device the
+# kernel could not identify both sides were "" and the Enter key passed a gate
+# whose whole purpose is that a serial gets typed.
+. "$REPO/scripts/device-gate.sh"
+confirm_serial "$SERIAL" "target" "$DEVICE"
 
 mkdir -p "$RUN_DIR"
 LOG="$RUN_DIR/run.log"
@@ -455,16 +490,22 @@ PLANT
 # ==========================================================================
 
 phase_b() {
-    say "PHASE B.1 - populate a $FS_KIND filesystem with known files"
+    local tag="$FS_KIND-$DAMAGE"
+    say "PHASE B.1 - build a $FS_KIND volume of ${FS_SIZE_MIB} MiB and populate it"
+    note "damage model: $DAMAGE   acquire scope: $ACQUIRE_SCOPE"
+
     # An earlier phase-B invocation acquires from this device, and acquisition
     # sets BLKROSET and leaves it set. parted and mkfs below both need a write
     # open, so clear it first, loudly, and stop if it will not clear.
     harness_clear_write_block "$DEVICE" "B.1 write block" || return 1
 
+    # NOT the whole device. Populating 7 GiB at this controller's ~4 MiB/s is
+    # half an hour per pass and measures nothing the first 256 MiB does not:
+    # recall is a property of the filesystem's deletion mechanics, not of how
+    # much unused space sits beyond the last cluster.
     local part="${DEVICE}1"
-    # Checked, not discarded. These used to fail silently and surface one step
-    # later as "could not mount", which points at the wrong thing.
-    if ! parted -s "$DEVICE" mklabel msdos mkpart primary fat32 1MiB 100% \
+    if ! parted -s "$DEVICE" mklabel msdos \
+            mkpart primary fat32 1MiB "${FS_SIZE_MIB}MiB" \
             > "$RUN_DIR/b1-parted.out" 2>&1; then
         harness_fail "B.1 parted" "partitioning $DEVICE failed"
         harness_dump_err "$RUN_DIR/b1-parted.out"
@@ -490,65 +531,289 @@ phase_b() {
         harness_dump_err "$RUN_DIR/b1-mount.out"
         return 1
     fi
-    "$PY" - "$mnt" <<'PLANTB'
-import sys, io, random
-from pathlib import Path
-from PIL import Image
-out = Path(sys.argv[1]); rng = random.Random(7)
-def noisy(n):
-    im = Image.new("RGB", (n, n))
-    im.putdata([(rng.randrange(256), rng.randrange(256), rng.randrange(256))
-                for _ in range(n * n)])
-    return im
-for i in range(10):
-    b = io.BytesIO(); noisy(128 + i * 8).save(b, "JPEG", quality=95)
-    (out / f"img{i:02d}.jpg").write_bytes(b.getvalue())
-PLANTB
-    sync
-    harness_step "B.1 hash-tree" \
-        "$RUN_DIR/b1-plant-$FS_KIND.json" "$RUN_DIR/b1-plant.err" \
-        "$PY" "$REPO/scripts/hardware_validation.py" hash-tree \
-        --root "$mnt" --out "$RUN_DIR/b1-manifest-$FS_KIND.json"
 
-    say "PHASE B.2 - delete a subset"
-    local deleted=(img00.jpg img02.jpg img04.jpg img06.jpg img08.jpg)
-    for name in "${deleted[@]}"; do rm -f "$mnt/$name"; done
-    sync; umount "$mnt"
+    # Composition mirrors testkit/generate_corpus.py's FAT32 corpus, because
+    # that corpus is what these numbers are compared against and a comparison
+    # between differently-shaped populations is not a comparison. There, 244 of
+    # 246 deleted files are 256 KiB fillers; here the same, at whatever count
+    # fits --fs-size.
+    #
+    # One deliberate difference, stated rather than hidden: the synthetic
+    # corpus fragments one file by writing it into holes left by deleted
+    # fillers. This run does not. That makes this run marginally optimistic
+    # against the synthetic row - by one file in a few hundred.
+    local populate_start; populate_start="$(now)"
+    "$PY" - "$mnt" "$FILLER_KIB" > "$RUN_DIR/b1-populate.json" 2>"$RUN_DIR/b1-populate.err" <<'PLANTB'
+import io
+import json
+import os
+import random
+import sys
+from pathlib import Path
+
+from PIL import Image
+
+out = Path(sys.argv[1])
+filler_bytes = int(sys.argv[2]) * 1024
+rng = random.Random(7)
+
+# Ten named documents of the kinds the carver has signatures for. Small, so
+# the fillers dominate the denominator exactly as they do in the synthetic
+# corpus.
+named = []
+for index in range(10):
+    side = 128 + index * 8
+    image = Image.new("RGB", (side, side))
+    image.putdata([
+        (rng.randrange(256), rng.randrange(256), rng.randrange(256))
+        for _ in range(side * side)
+    ])
+    buffer = io.BytesIO()
+    image.save(buffer, "JPEG", quality=95)
+    name = f"img{index:02d}.jpg"
+    (out / name).write_bytes(buffer.getvalue())
+    named.append(name)
+
+# Fill to ~90% of free space. Not 100%: a full FAT volume behaves differently
+# on write and the last file would be truncated, which would put a file in the
+# manifest that was never fully written.
+statvfs = os.statvfs(out)
+budget = int(statvfs.f_bavail * statvfs.f_frsize * 0.90)
+fillers = []
+written = 0
+index = 0
+# Pseudo-random, never zeros: a zero-filled filler is trivially "recovered"
+# from any zeroed region and would inflate recall for a reason that has
+# nothing to do with the filesystem.
+while written + filler_bytes <= budget:
+    name = f"fill{index:05d}.bin"
+    (out / name).write_bytes(rng.randbytes(filler_bytes))
+    fillers.append(name)
+    written += filler_bytes
+    index += 1
+
+os.sync()
+print(json.dumps({
+    "named": named,
+    "fillers": fillers,
+    "filler_bytes": filler_bytes,
+    "bytes_written": written + sum((out / n).stat().st_size for n in named),
+}))
+PLANTB
+    local populate_rc=$?
+    sync
+    local populate_elapsed; populate_elapsed="$(since "$populate_start")"
+    if [[ $populate_rc -ne 0 || ! -s "$RUN_DIR/b1-populate.json" ]]; then
+        harness_fail "B.1 populate" "exit $populate_rc"
+        harness_dump_err "$RUN_DIR/b1-populate.err"
+        umount "$mnt" 2>/dev/null
+        return 1
+    fi
+    note "populated in ${populate_elapsed}s: $("$PY" - "$RUN_DIR/b1-populate.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+mib = d["bytes_written"] / 1048576
+print(f'{len(d["named"])} named + {len(d["fillers"])} fillers, {mib:.1f} MiB')
+PY
+)"
+    note "small-file write rate is NOT the sequential rate and was not predicted;"
+    note "  this elapsed time is the measurement, not a check against one."
+
+    harness_step "B.1 hash-tree" \
+        "$RUN_DIR/b1-plant-$tag.json" "$RUN_DIR/b1-plant.err" \
+        "$PY" "$REPO/scripts/hardware_validation.py" hash-tree \
+        --root "$mnt" --out "$RUN_DIR/b1-manifest-$tag.json"
+
+    say "PHASE B.2 - damage the volume ($DAMAGE)"
+    local deleted_names=()
+    if [[ "$DAMAGE" == "quickformat" ]]; then
+        # Every file is gone from the directory tree, so every file is the
+        # denominator. A quick format writes a fresh FAT and a fresh root
+        # directory; the data clusters are untouched, so signature carving is
+        # the only route left and undelete-from-metadata should recover
+        # nothing. That contrast is the point of this pass.
+        mapfile -t deleted_names < <("$PY" - "$RUN_DIR/b1-populate.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for name in d["named"] + d["fillers"]:
+    print(name)
+PY
+)
+        sync; umount "$mnt"
+        local qf_rc=0
+        if [[ "$FS_KIND" == "exfat" ]]; then
+            mkfs.exfat -L SANCTUMVAL "$part" > "$RUN_DIR/b2-quickformat.out" 2>&1 || qf_rc=$?
+        else
+            mkfs.vfat -F 32 -n SANCTUMVAL "$part" > "$RUN_DIR/b2-quickformat.out" 2>&1 || qf_rc=$?
+        fi
+        if [[ $qf_rc -ne 0 ]]; then
+            harness_fail "B.2 quickformat" "mkfs over the populated volume failed"
+            harness_dump_err "$RUN_DIR/b2-quickformat.out"
+            return 1
+        fi
+        note "quick-formatted: ${#deleted_names[@]} files gone from the directory tree"
+        note "mkfs may issue discards. If this controller honours them the data is"
+        note "  gone at the FTL and recall collapses - which is a finding, not a bug."
+    else
+        # Half the fillers and half the named files, so the deleted set is
+        # dominated by fillers exactly as the synthetic corpus's is.
+        mapfile -t deleted_names < <("$PY" - "$RUN_DIR/b1-populate.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for name in d["named"][::2]:
+    print(name)
+for name in d["fillers"][::2]:
+    print(name)
+PY
+)
+        local name
+        for name in "${deleted_names[@]}"; do rm -f "$mnt/$name"; done
+        sync; umount "$mnt"
+        note "deleted ${#deleted_names[@]} files"
+    fi
+
+    if [[ ${#deleted_names[@]} -eq 0 ]]; then
+        harness_fail "B.2 damage" "nothing was marked deleted; recall would have a zero denominator"
+        return 1
+    fi
     harness_step "B.2 mark-deleted" \
-        "$RUN_DIR/b2-deleted-$FS_KIND.json" "$RUN_DIR/b2-deleted.err" \
+        "$RUN_DIR/b2-deleted-$tag.json" "$RUN_DIR/b2-deleted.err" \
         "$PY" "$REPO/scripts/hardware_validation.py" mark-deleted \
-        --manifest "$RUN_DIR/b1-manifest-$FS_KIND.json" --names "${deleted[@]}"
-    note "deleted ${#deleted[@]} of 10"
+        --manifest "$RUN_DIR/b1-manifest-$tag.json" --names "${deleted_names[@]}"
 
     say "PHASE B.3 - acquire to raw and to E01, verify both"
+    # partition: only the test volume, which is what the synthetic corpus is
+    # and is 30x less to read. device: the whole stick, which is what an
+    # investigator images and which exercises partition detection.
+    local acquire_target="$part"
+    [[ "$ACQUIRE_SCOPE" == "device" ]] && acquire_target="$DEVICE"
+    note "imaging $acquire_target ($ACQUIRE_SCOPE scope)"
     harness_step "B.3 acquire raw" \
-        "$RUN_DIR/b3-acquire-raw-$FS_KIND.json" "$RUN_DIR/b3-acquire-raw.err" \
-        "$PY" "$REPO/scripts/hardware_validation.py" acquire --device "$DEVICE" \
-        --dest "$WORK/card-$FS_KIND.dd" --fmt raw --ledger-root "$LEDGER" \
+        "$RUN_DIR/b3-acquire-raw-$tag.json" "$RUN_DIR/b3-acquire-raw.err" \
+        "$PY" "$REPO/scripts/hardware_validation.py" acquire --device "$acquire_target" \
+        --dest "$WORK/vol-$tag.dd" --fmt raw --ledger-root "$LEDGER" \
         --key-dir "$KEYS" \
-        --job-id "hwval-acq-raw-$FS_KIND"
+        --job-id "hwval-acq-raw-$tag"
     harness_step "B.3 acquire e01" \
-        "$RUN_DIR/b3-acquire-e01-$FS_KIND.json" "$RUN_DIR/b3-acquire-e01.err" \
-        "$PY" "$REPO/scripts/hardware_validation.py" acquire --device "$DEVICE" \
-        --dest "$WORK/card-$FS_KIND" --fmt e01 --ledger-root "$LEDGER" \
+        "$RUN_DIR/b3-acquire-e01-$tag.json" "$RUN_DIR/b3-acquire-e01.err" \
+        "$PY" "$REPO/scripts/hardware_validation.py" acquire --device "$acquire_target" \
+        --dest "$WORK/vol-$tag" --fmt e01 --ledger-root "$LEDGER" \
         --key-dir "$KEYS" \
-        --job-id "hwval-acq-e01-$FS_KIND"
+        --job-id "hwval-acq-e01-$tag"
+
+    # Both acquisitions verify themselves against their own AcquisitionRecord
+    # inside cmd_acquire. Print the verdict rather than leaving it in a file:
+    # an integrity check nobody read is an integrity check nobody ran.
+    local fmt
+    for fmt in raw e01; do
+        local verdict rc=0
+        verdict="$("$PY" - "$RUN_DIR/b3-acquire-$fmt-$tag.json" <<'PY'
+import json
+import sys
+
+try:
+    document = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    print("NO OUTPUT")
+    raise SystemExit(2)
+integrity = document.get("integrity") or {}
+print(
+    f'{document.get("bytes_read")} bytes read, '
+    f'{document.get("on_disk_bytes")} on disk, '
+    f'{document.get("throughput_mib_per_sec")} MiB/s, '
+    f'integrity passed={integrity.get("passed")} '
+    f'sha256={integrity.get("sha256_matches")} '
+    f'blake3={integrity.get("blake3_matches")} '
+    f'verified={integrity.get("bytes_verified")} bytes, '
+    f'mismatched_chunks={len(integrity.get("mismatched_chunks") or [])}, '
+    f'bad_sectors={document.get("bad_sectors")}'
+)
+raise SystemExit(0 if integrity.get("passed") else 1)
+PY
+)" || rc=$?
+        note "$fmt: $verdict"
+        # An image that does not match its own acquisition record is not
+        # evidence, and carving it would produce numbers about a corrupt file.
+        [[ $rc -ne 0 ]] && harness_fail "B.3 acquire $fmt" "integrity check did not pass"
+    done
 
     say "PHASE B.4 - carve, and compare against the synthetic calibration"
+    note "THIS is the number Phase B exists for. Every confidence figure the"
+    note "  report prints is calibrated on synthetic images; if real-media recall"
+    note "  diverges, the calibration describes something other than reality."
     harness_step "B.4 carve" \
-        "$RUN_DIR/b4-carve-$FS_KIND.json" "$RUN_DIR/b4-carve.err" \
+        "$RUN_DIR/b4-carve-$tag.json" "$RUN_DIR/b4-carve.err" \
         "$PY" "$REPO/scripts/hardware_validation.py" carve \
-        --image "$WORK/card-$FS_KIND.dd" \
-        --manifest "$RUN_DIR/b1-manifest-$FS_KIND.json" \
-        --filesystem "$FS_KIND" --out-dir "$WORK/recovered-$FS_KIND"
+        --image "$WORK/vol-$tag.dd" \
+        --manifest "$RUN_DIR/b1-manifest-$tag.json" \
+        --filesystem "$FS_KIND" --damage "$DAMAGE" \
+        --out-dir "$WORK/recovered-$tag"
 
     harness_step "B.4 compare" \
-        "$RUN_DIR/b4-compare-$FS_KIND.json" "$RUN_DIR/b4-compare.err" \
+        "$RUN_DIR/b4-compare-$tag.json" "$RUN_DIR/b4-compare.err" \
         "$PY" "$REPO/scripts/hardware_validation.py" compare \
-        --carve-json "$RUN_DIR/b4-carve-$FS_KIND.json" \
+        --carve-json "$RUN_DIR/b4-carve-$tag.json" \
         --calibration-csv "$REPO/docs/performance/calibration-filesystems.csv"
 
-    say "PHASE B - done"
+    note "$("$PY" - "$RUN_DIR/b4-carve-$tag.json" <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    print("carve produced no output")
+    raise SystemExit(0)
+print(
+    f'deleted planted {d.get("planted_deleted")}, '
+    f'recovered exactly {d.get("recovered_deleted_exact")}, '
+    f'recall {d.get("overall_recall_bp", 0) / 100:.2f}%, '
+    f'candidates {d.get("candidates")}, carve {d.get("elapsed_seconds")}s'
+)
+# A correctly recovered live file is not a false positive. Printed apart
+# from recall because it is not in recall's denominator and never was.
+for name, row in sorted(d.get("per_filesystem", {}).items()):
+    print(
+        f'  {name}: precision {row.get("precision_bp", 0) / 100:.2f}% '
+        f'({row.get("deleted_hit_candidates")} deleted + '
+        f'{row.get("live_hit_candidates")} live correct, '
+        f'{row.get("false_positive_candidates")} false positive '
+        f'of {row.get("candidates")} candidates)'
+    )
+PY
+)"
+
+    note "$("$PY" - "$RUN_DIR/b4-compare-$tag.json" <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    print("compare produced no output")
+    raise SystemExit(0)
+for row in d.get("rows", []):
+    line = f'{row["filesystem"]}/{row["damage"]}: {row.get("status", "?")}'
+    if row.get("compared_pipeline"):
+        line += (
+            f' (compared on the {row["compared_pipeline"]} pipeline: real '
+            f'{row.get("compared_recall_bp", 0) / 100:.2f}% against '
+            f'{row.get("synthetic_recall_bp", 0) / 100:.2f}%, '
+            f'n={row.get("synthetic_deleted")})'
+        )
+    print(line)
+    if row.get("note"):
+        print(f'  {row["note"]}')
+PY
+)"
+
+    # The images are the bulk of a run's disk footprint and the next pass needs
+    # the space. Kept only if the carve failed, because then they are the
+    # evidence for why.
+    if [[ -s "$RUN_DIR/b4-carve-$tag.json" ]]; then
+        rm -f "$WORK/vol-$tag.dd" "$WORK/vol-$tag".E* 2>/dev/null
+        note "images removed; re-acquire if you need them"
+    else
+        warn "carve produced nothing: keeping $WORK/vol-$tag.* for diagnosis"
+    fi
+
+    say "PHASE B - done ($tag)"
 }
 
 TOTAL_START="$(now)"

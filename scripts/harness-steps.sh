@@ -49,7 +49,39 @@ harness_check() {
         harness_dump_err "$err"
         return 1
     fi
+    # Non-empty is not the same as usable. A step that writes a log line to
+    # stdout ahead of its JSON exits 0 and produces a non-empty file that
+    # json.loads refuses, and every reader downstream then reports an empty
+    # field over a value that was computed correctly. The KEY step did exactly
+    # that for 33 minutes of a --full stage:
+    #
+    #   2026-09-05 15:12:08 [info  ] signing_key_created  path=.../key.pem
+    #   {"fingerprint": "27:9F:14:..."}
+    #
+    # A step whose output cannot be parsed has not succeeded, whatever its exit
+    # status said. Checked here so it stops the run at the step that produced
+    # it rather than surfacing as an empty string somewhere later.
+    if [[ "$out" == *.json ]] && ! harness_json_parses "$out"; then
+        harness_fail "$label" "exit 0 but $out is not parsable JSON"
+        note "     first line: $(head -c 200 "$out" | head -1)"
+        harness_dump_err "$err"
+        return 1
+    fi
     return 0
+}
+
+# True when the file holds one JSON document and nothing else.
+harness_json_parses() {
+    "$PY" - "$1" <<'PYTHON' 2>/dev/null
+import json
+import sys
+
+try:
+    json.loads(open(sys.argv[1]).read())
+except (OSError, ValueError):
+    raise SystemExit(1)
+raise SystemExit(0)
+PYTHON
 }
 
 # Run one command, capture stdout/stderr to files, and judge it.
@@ -251,15 +283,26 @@ PYTHON
 # manifest was keyed by digest and two pairs of identical files collapsed.
 harness_json_field() {
     local json="$1" field="$2"
+    # An unreadable or unparsable file still yields "" - callers interpolate
+    # this into console lines and must not die mid-sentence - but it says so on
+    # stderr. Returning "" in silence is how an empty fingerprint got printed
+    # over a key that had been created correctly.
     "$PY" - "$json" "$field" <<'PYTHON'
 import json
 import sys
 
+path, field = sys.argv[1], sys.argv[2]
 try:
-    document = json.loads(open(sys.argv[1]).read() or "{}")
-except (OSError, ValueError):
+    document = json.loads(open(path).read() or "{}")
+except OSError as error:
+    print(f"harness_json_field: cannot read {path}: {error}", file=sys.stderr)
     document = {}
-value = document.get(sys.argv[2])
+except ValueError as error:
+    print(f"harness_json_field: {path} is not JSON: {error}", file=sys.stderr)
+    document = {}
+value = document.get(field)
+if value is None:
+    print(f"harness_json_field: {path} has no field {field!r}", file=sys.stderr)
 print("" if value is None else value)
 PYTHON
 }
@@ -334,4 +377,94 @@ PYTHON
     fi
     harness_fail "$label" "BLKROSET could not be cleared on $device (read back $after)"
     return 1
+}
+
+# ==========================================================================
+# Resumable multi-step runs
+# ==========================================================================
+#
+# demo-reset.sh --full is a ninety-five-minute job whose steps write to a real
+# device. It crashed thirty-three minutes in, at step 3 of 7, and the only way
+# to retry was to start again from the thirty-minute pattern write. A run
+# declares its steps in order, records each one as it completes, and can be
+# told where to pick up.
+#
+# Resume is explicit, never automatic. A checkpoint file says what finished; it
+# cannot say whether the device still holds what that step left behind, and a
+# reset that silently assumed so would be staging a demo on a guess.
+
+HARNESS_STEPS=()
+HARNESS_RESUME_INDEX=0
+HARNESS_RESUME_FROM=""
+HARNESS_STEP_FILE=""
+
+#: Declare the ordered steps of a run, and where to record progress.
+harness_steps_define() {
+    HARNESS_STEPS=("$@")
+    HARNESS_RESUME_INDEX=0
+    HARNESS_RESUME_FROM=""
+}
+
+harness_step_file() { HARNESS_STEP_FILE="$1"; }
+
+harness_steps_list() {
+    local name
+    for name in ${HARNESS_STEPS[@]+"${HARNESS_STEPS[@]}"}; do printf '%s\n' "$name"; done
+}
+
+#: Position of a step in the declared order, or non-zero if it is not one.
+harness_step_index() {
+    local want="$1" index=0 name
+    for name in ${HARNESS_STEPS[@]+"${HARNESS_STEPS[@]}"}; do
+        if [[ "$name" == "$want" ]]; then
+            printf '%s' "$index"
+            return 0
+        fi
+        index=$((index + 1))
+    done
+    return 1
+}
+
+#: Start at this step. Non-zero when the name is not a declared step, so the
+#: caller can print the list rather than running a job the operator did not ask
+#: for.
+harness_resume_from() {
+    local want="$1" index
+    index="$(harness_step_index "$want")" || return 1
+    HARNESS_RESUME_FROM="$want"
+    HARNESS_RESUME_INDEX="$index"
+    return 0
+}
+
+#: True when this step is at or after the resume point. A step name that was
+#: never declared is a programming error, not a step to skip: skipping it
+#: silently would drop work from a destructive run.
+harness_should_run() {
+    local index
+    index="$(harness_step_index "$1")" || {
+        harness_fail "steps" "undeclared step '$1'"
+        return 1
+    }
+    (( index >= HARNESS_RESUME_INDEX ))
+}
+
+harness_checkpoint() {
+    [[ -n "$HARNESS_STEP_FILE" ]] || return 0
+    printf '%s\n' "$1" > "$HARNESS_STEP_FILE"
+}
+
+#: The step a retry should start from: the one after the last that completed.
+#: Empty when every step finished.
+harness_next_step() {
+    local last="" index
+    [[ -n "$HARNESS_STEP_FILE" && -s "$HARNESS_STEP_FILE" ]] && last="$(cat "$HARNESS_STEP_FILE")"
+    if [[ -z "$last" ]]; then
+        printf '%s' "${HARNESS_STEPS[0]:-}"
+        return 0
+    fi
+    index="$(harness_step_index "$last")" || {
+        printf '%s' "${HARNESS_STEPS[0]:-}"
+        return 0
+    }
+    printf '%s' "${HARNESS_STEPS[$((index + 1))]:-}"
 }

@@ -33,3 +33,8 @@ evidence/
 # One run is 7.3 GB of PhotoRec output, and its ledger and signing key are
 # root-owned 0600 by design.
 docs/validation/results-*/
+
+# Demo fallback media: large recordings, plus a report and ledger from a
+# scratch state directory. docs/demo/fallback/README.md says how to make them.
+docs/demo/fallback/*
+!docs/demo/fallback/README.md

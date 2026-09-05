@@ -6,7 +6,7 @@ The two endpoints answer different questions and must not be conflated.
 it is, which is a claim a third party checks on their own machine with only the
 file in front of them.
 
-The report verification runs the four checks independently and reports each
+The report verification runs the five checks independently and reports each
 one, rather than reducing them to a single pass/fail. They fail for different
 reasons and a reader needs to know which: a broken signature means the bytes
 changed, while an unverifiable fingerprint means only that the key was not
@@ -212,7 +212,7 @@ def _section(result: dict[str, Any], key: str) -> dict[str, Any]:
 def verify_report_endpoint(
     job_id: str, services: AppServices = Depends(get_services)
 ) -> dict[str, Any]:
-    """Run the four report checks against this host's ledger, independently.
+    """Run the five report checks against this host's ledger, independently.
 
     Each check is reported on its own. Reducing them to one boolean would hide
     the difference between "the bytes changed" and "the key was never published
