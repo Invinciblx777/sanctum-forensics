@@ -79,23 +79,33 @@ reader to infer it from a passing verification.
 
 ## Some controllers do not program a zero fill at all
 
-Measured on a Toshiba TransMemory USB stick during hardware validation. All five
-writes used `O_DIRECT` with the same 4 MiB buffer, on the same device:
+Measured on a Toshiba TransMemory USB stick across three hardware-validation
+runs. Every write used `O_DIRECT` with the same 4 MiB buffer, on the same
+device:
 
 | Write | Bytes | Seconds | MiB/s |
 |---|---:|---:|---:|
 | `0x00`, whole device | 7,759,462,400 | 521.5 | **14.19** |
-| `0xA5`, whole device | 7,759,462,400 | 1886.75 | 3.92 |
+| `0x00`, 64 MiB calibration | 67,108,864 | 4.60 | **13.92** |
+| `0xA5`, whole device (×3) | 7,759,462,400 | 1886.3-1910.8 | 3.87-3.92 |
+| `0xA5`, 64 MiB calibration | 67,108,864 | 14.96 | 4.28 |
 | `0xFF`, 1 GiB, via pipe | 1,073,741,824 | 242.2 | 4.23 |
 | `0xFF`, 1 GiB, via `cat` | 1,073,741,824 | 266.2 | 3.85 |
-| read-back, whole device | 7,759,462,400 | 189.12 | 39.13 |
 
-Non-zero fills span 3.85–4.23 MiB/s — a 10% spread across two fill bytes, two
-tools and two transfer sizes. Zeros run 3.6x faster than the fastest of them. A
-write that completes faster than the medium can be programmed was not
-performed: the controller mapped the addresses to a zero token, or compressed
-the all-zero buffer away. Which of the two is not distinguishable from the host
-and does not matter — either way the cells still hold what they held before.
+Every byte the controller actually programs lands between 3.85 and 4.28 MiB/s,
+across three fill values, two tools, three transfer sizes and three runs. Zeros
+run 3.25-3.62x faster than any of them. A write that completes faster than the
+medium can be programmed was not performed: the controller mapped the addresses
+to a zero token, or compressed the all-zero buffer away. Which of the two is not
+distinguishable from the host and does not matter — either way the cells still
+hold what they held before.
+
+Reads show the same asymmetry. The same device reads `0x00` at 39.13 MiB/s and
+`0xA5` at 23.89-23.93 MiB/s, two independent reads of the `0xA5` medium agreeing
+to 0.2%. Consistent with the FTL answering a zero-mapped block without touching
+NAND on the read path too; recorded as an inference from timing rather than a
+proven mechanism. **Published throughput for this class of device: ~4.0 MiB/s
+write, ~23.9 MiB/s read.**
 
 This is worse than the general flash caveat above, and for a different reason.
 There, the write happened and could not reach everything. Here the write did not
@@ -136,7 +146,13 @@ number came from. An operator must not discover a 3.6x mid-run.
 
 **14.19 MiB/s is not a write throughput** and must not be quoted as one. It is
 the rate this controller acknowledges zeros. The device's real write rate is
-~4.0 MiB/s.
+~4.0 MiB/s. The same applies to the 39.13 MiB/s read: that is the rate it
+answers zero-mapped blocks, and the real read rate is ~23.9 MiB/s.
+
+The substitution was exercised end to end on 2026-09-05: the erase wrote
+`0xA5` over the whole device at 3.92 MiB/s, verification passed against `0xA5`
+with 0 failed offsets, and a full re-verification after an unplug/replug cycle
+passed again. See `docs/validation/hardware.md`.
 
 ## `queue/rotational` is not a flash test
 
