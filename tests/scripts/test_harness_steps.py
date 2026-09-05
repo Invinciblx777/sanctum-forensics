@@ -392,3 +392,52 @@ def test_json_field_on_unparsable_json_does_not_crash(tmp_path: Path) -> None:
 
     assert result.returncode == 0
     assert result.stdout.strip() == ""
+
+
+# --------------------------------------------------------------------------
+# A.5 must verify the byte the erase wrote, not the method's default
+# --------------------------------------------------------------------------
+
+
+def test_the_erase_fill_is_read_from_the_plan(tmp_path: Path) -> None:
+    (tmp_path / "a4.json").write_text(
+        json.dumps({"result": {"plan": {"fill_bytes": ["0xA5"]}}})
+    )
+
+    result = run_bash("harness_erase_fill a4.json", tmp_path)
+
+    assert result.stdout.strip() == "0xA5"
+
+
+def test_the_last_fill_wins_for_a_multi_pass_method(tmp_path: Path) -> None:
+    """Verification checks what the medium holds at the end."""
+    (tmp_path / "a4.json").write_text(
+        json.dumps({"result": {"plan": {"fill_bytes": ["0xA5", "0xFF", "0xA5"]}}})
+    )
+
+    result = run_bash("harness_erase_fill a4.json", tmp_path)
+
+    assert result.stdout.strip() == "0xA5"
+
+
+def test_a_plan_without_fills_reports_empty(tmp_path: Path) -> None:
+    (tmp_path / "a4.json").write_text(json.dumps({"result": {"plan": {}}}))
+
+    result = run_bash("harness_erase_fill a4.json", tmp_path)
+
+    assert result.stdout.strip() == ""
+
+
+def test_an_unreadable_erase_json_reports_empty(tmp_path: Path) -> None:
+    result = run_bash("harness_erase_fill nope.json", tmp_path)
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == ""
+
+
+def test_the_driver_passes_the_recorded_fill_to_a5() -> None:
+    """Without this, a correct 0xA5 wipe is reported as a failed verification."""
+    text = DRIVER.read_text()
+
+    assert 'harness_erase_fill "$RUN_DIR/a4-erase.json"' in text
+    assert '--expect-fill "$expect_fill"' in text

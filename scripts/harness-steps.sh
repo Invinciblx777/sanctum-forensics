@@ -263,3 +263,23 @@ value = document.get(sys.argv[2])
 print("" if value is None else value)
 PYTHON
 }
+
+# The fill byte the erase actually wrote, from its own plan, or empty when the
+# plan does not name one. Without this the standalone A.5 verify compares the
+# medium against the method's default 0x00, and an erase that correctly wrote
+# 0xA5 to a zero-eliding controller would be reported as a failed wipe.
+harness_erase_fill() {
+    local json="$1"
+    "$PY" - "$json" <<'PYTHON'
+import json
+import sys
+
+try:
+    document = json.loads(open(sys.argv[1]).read() or "{}")
+except (OSError, ValueError):
+    document = {}
+plan = ((document.get("result") or {}).get("plan")) or {}
+fills = plan.get("fill_bytes") or []
+print(fills[-1] if fills else "")
+PYTHON
+}

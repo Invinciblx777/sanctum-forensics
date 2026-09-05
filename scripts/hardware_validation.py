@@ -356,25 +356,69 @@ def cmd_erase(args: argparse.Namespace) -> int:
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
-    """Read the medium back and report what verification actually established."""
+    """Read the medium back and report what verification actually established.
+
+    ``--expect-fill`` names the byte the medium should hold, which is the only
+    way to check a device the erase left holding something other than its
+    method's default. On a controller that does not program zeros the erase
+    writes 0xA5, so verifying the default 0x00 would fail a good wipe - and on
+    such a controller 0x00 is also the one value the flash translation layer can
+    answer for free, so it is the worst thing to check against.
+
+    It is also what makes a power-cycle check possible without re-running a
+    whole phase: unplug, replug, and verify the medium still holds the pattern
+    the erase wrote. A deallocate-to-zero mapping that does not survive a power
+    cycle would show up here and nowhere else.
+    """
     from core.device.enumerate import get_device
+    from core.erase.patterns import SOFTWARE_METHODS, final_pattern
     from core.erase.verify import VerifyConfig, verify
     from core.models import EraseMethod
 
+    fills: tuple[int, ...] | None = None
+    if args.expect_fill is not None:
+        value = int(args.expect_fill, 0)
+        if not 0 <= value <= 0xFF:
+            raise ValueError(
+                f"--expect-fill must be a single byte value, got {args.expect_fill}"
+            )
+        fills = (value,)
+
     device = get_device(args.device)
+    method = EraseMethod(args.method)
     started = time.monotonic()
     outcome = verify(
         device,
-        EraseMethod(args.method),
+        method,
         config=VerifyConfig(full_read_max_bytes=args.full_read_max),
+        fills=fills,
     )
     emit(
         {
             "step": "verify",
             "elapsed_seconds": round(time.monotonic() - started, 3),
+            # Stated, not implied: a result that does not say what it compared
+            # against cannot be read without knowing which fill the erase chose.
+            "expected_fill": (
+                f"0x{fills[-1]:02X}"
+                if fills
+                else (
+                    f"0x{final_pattern(method, block_size=1)[0]:02X}"
+                    if method in SOFTWARE_METHODS
+                    else "firmware-attested"
+                )
+            ),
+            "expected_fill_source": (
+                "--expect-fill" if fills else "the method's default"
+            ),
+            "method": method.value,
             "result": outcome.model_dump(mode="json"),
         }
     )
+    # Exit 0 even when verification failed. A failed verification is a
+    # measurement, and this script's contract is that a disappointing result is
+    # a finding rather than an error - see the module docstring. Read
+    # `.result.passed` from the JSON, or let the harness reporter fail the phase.
     return 0
 
 
@@ -831,6 +875,15 @@ def main() -> int:
     verify_parser.add_argument("--method", default="SINGLE_PASS_OVERWRITE")
     verify_parser.add_argument(
         "--full-read-max", type=int, default=64 * 1024 * MIB
+    )
+    verify_parser.add_argument(
+        "--expect-fill",
+        default=None,
+        help=(
+            "Byte the medium should hold, e.g. 0xA5. Overrides the method's "
+            "default pattern. Use it when the erase chose a non-zero fill, and "
+            "to re-check a device after a power cycle."
+        ),
     )
     verify_parser.set_defaults(handler=cmd_verify)
 

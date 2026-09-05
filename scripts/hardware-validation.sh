@@ -405,8 +405,21 @@ PLANT
     harness_report_erase "A.4 erase" "$RUN_DIR/a4-erase.json" "$SIZE_BYTES" || true
 
     say "PHASE A.5 - verify"
-    harness_step "A.5 verify" "$RUN_DIR/a5-verify.json" "$RUN_DIR/a5-verify.err" \
-        "$PY" "$REPO/scripts/hardware_validation.py" verify --device "$DEVICE"
+    # Against the byte the erase actually wrote, not the method's default. On a
+    # controller that does not program zeros the erase writes 0xA5, and checking
+    # 0x00 would fail a good wipe - while on such a controller 0x00 is also the
+    # one value the flash translation layer answers for free.
+    local expect_fill; expect_fill="$(harness_erase_fill "$RUN_DIR/a4-erase.json")"
+    if [[ -n "$expect_fill" ]]; then
+        note "verifying against $expect_fill, the fill the erase plan recorded"
+        harness_step "A.5 verify" "$RUN_DIR/a5-verify.json" "$RUN_DIR/a5-verify.err" \
+            "$PY" "$REPO/scripts/hardware_validation.py" verify --device "$DEVICE" \
+            --expect-fill "$expect_fill"
+    else
+        warn "the erase plan named no fill byte; verifying against the method default"
+        harness_step "A.5 verify" "$RUN_DIR/a5-verify.json" "$RUN_DIR/a5-verify.err" \
+            "$PY" "$REPO/scripts/hardware_validation.py" verify --device "$DEVICE"
+    fi
     harness_report_verification "A.5 verify" "$RUN_DIR/a5-verify.json" || true
 
     say "PHASE A.6 - PhotoRec AFTER (expect zero)"
