@@ -614,6 +614,9 @@ Every one of them now has a regression test that fails without the fix.
 
 Two things Phase B depends on that no synthetic run exercises, checked in
 advance so the first hardware run finds tool defects rather than harness ones.
+Both are settled: the FAT name round-trip has no defect, and the software write
+block is verified on this hardware. A third defect turned up while checking
+them and is fixed below.
 
 ### FAT name round-trip: no defect
 
@@ -669,40 +672,104 @@ exFAT is not tested here. It stores names in UTF-16 with no short-name
 mechanism and is case-preserving by construction, so the failure mode above
 cannot arise; it stays unverified until the run.
 
-### BLKROSET on a USB bridge: probe written, not yet run
+### Software write block: verified on this bridge
 
-`core/carve/acquire.py:apply_write_block` issues `BLKROSET`, reads it back with
-`BLKROGET`, and records `WRITE_BLOCK_NOT_APPLIED` when the read-back disagrees.
-**It never attempts a write.** A flag that reads back set but does not refuse a
-write would leave the acquisition record claiming a protection that does not
-exist, and everything downstream inherits that claim.
+`scripts/probe-write-block.py`, run against the wiped stick as scratch media:
 
-The probe sets the flag, reads it back, attempts a real write to a 1 MiB region
-at the 4 GiB offset, re-reads the region to see whether it actually changed,
-then clears the flag and restores the region either way. It has been smoke
-tested end to end against an image, including the restore path.
+```
+verdict            WRITE_BLOCK_WORKS
+flag_at_start 0 -> flag_after_set 1 -> flag_final 0 (restored)
+region_distinct_bytes_before [165]   region_changed false
+region_sha256 identical before and after
+write_attempt      open_refused false, open_errno null,
+                   write_refused true, write_errno EPERM, bytes_written 0
+apply_write_block  applied true
+```
 
-| Verdict | Meaning | Consequence |
+**The write block holds on this hardware.** BLKROSET was honoured, the write was
+refused, and the probe region was byte-identical afterwards.
+
+#### The refusal arrives at `write()`, not at `open()`
+
+`open(O_WRONLY)` **succeeded**; `write()` returned `EPERM`. Anything that
+verified by opening for write and stopping there would have reported a working
+block on a device where the flag was cosmetic. **Test the write, not the open.**
+
+This is a property of the kernel's block layer, not of the bridge: `BLKROSET`
+sets `bd_read_only` on the kernel's block device, and the kernel is what refuses
+the write. The bridge is not consulted. What the probe establishes about *this
+bridge* is that nothing in this stack let the write through.
+
+#### This is a per-interface property, not a Linux guarantee
+
+Do not generalise `WRITE_BLOCK_WORKS` from one bridge to all of them, and do not
+read it as "BLKROSET protects a device". Two paths bypass the flag entirely and
+are not covered by this result:
+
+- **SG_IO and ATA pass-through.** They address the device below the block layer,
+  where `bd_read_only` is never consulted. `hdparm --write-sector` and `sg_dd`
+  write straight through a set flag.
+- **A partition node whose own flag was never set.** `BLKROSET` is applied to
+  the path the acquisition was given. Setting it on `/dev/sda` is not obviously
+  the same as setting it on `/dev/sda1`, and an automount writing through the
+  partition is exactly the accident a write block exists to stop. Untested here,
+  because the stick has no partition table after a wipe. Settle it by running
+  the probe against a partition node while the whole-disk flag is set.
+
+Which is why the verification changed from a read-back to an attempted write —
+and why the attempted write does not live on the evidence path.
+
+### Why `apply_write_block` still does not attempt a write
+
+The obvious response to the finding above is to make `apply_write_block` verify
+by writing. It does not, deliberately.
+
+A write test fails safe **only when the write block works**. It is precisely
+when the block does *not* work — the case the test exists to detect — that the
+test writes to the device it was protecting. On evidence that is spoliation, and
+"we wrote to the exhibit and put it back" is not a position worth defending: the
+restore is itself another write, on flash it programs a new page and may remap,
+and the honest answer to "did your tool write to the exhibit?" becomes yes, by
+design, every time. CLAUDE.md's non-negotiable is unambiguous — the evidence
+path is read-only.
+
+So the claim was made honest instead of the test made dangerous:
+
+| | Before | Now |
 |---|---|---|
-| `WRITE_BLOCK_WORKS` | flag set, write refused | Software write block is real on this bridge. No change needed. |
-| `FLAG_COSMETIC` | flag set, write succeeded | `apply_write_block` must not report `applied` on this transport. The read-back is not evidence and the record must say so. |
-| `FLAG_REFUSED` | `BLKROSET` did not take | Already handled; confirm `WRITE_BLOCK_NOT_APPLIED` reaches the record. |
+| `applied` | `True` on the read-back | `True` on the read-back — unchanged, and it always only meant "the flag is set" |
+| `verified_by` | — | `flag_read_back` |
+| Record limitation | none | `WRITE_BLOCK_NOT_VERIFIED`, stating that the refusal was not tested, why, and what does not fall under the flag |
 
-### A third finding, from reading the code while writing the probe
+`AcquisitionRecord` gained `write_block_verified_by`, so a reader can tell "the
+kernel holds this device read-only" from "a write was attempted and refused".
+Verification by attempted write lives in `scripts/probe-write-block.py`, gated
+behind `--i-understand-this-may-write-to-the-device`, run once against scratch
+media to qualify an interface. That is how write blockers are qualified in
+practice: you qualify the equipment, then you trust the qualification, and you
+re-qualify when the equipment changes.
+
+### The harness collision, fixed
 
 `apply_write_block` sets `BLKROSET 1` and **nothing ever clears it.** For
-evidence handling that is right — the source should stay protected after
-acquisition. For this harness it collides with Phase B being run twice, once per
-filesystem: the second invocation opens with `parted -s "$DEVICE" mklabel` and
-`mkfs`, both of which need a write open, on a device the first invocation left
-read-only. `parted` and `mkfs` are called with output discarded and no exit
-check, so the failure surfaces one step later as
-`could not mount $part for phase B` — loud, but pointing at the wrong thing.
+evidence handling that is right — the source stays protected after acquisition.
+It collides with Phase B being run twice, once per filesystem: the second
+invocation opens with `parted` and `mkfs`, both of which need a write open, on a
+device the first invocation left read-only.
 
-The fix belongs in the harness, not in `acquire`: Phase B is deliberately
-re-purposing an evidence device as a test fixture, and that is exactly when
-clearing the protection should have to be explicit and logged. Phase B should
-clear the flag before `parted`, say that it is doing so, and fail if it cannot.
+Both phases now call `harness_clear_write_block` before partitioning. It reads
+the flag, and if it is set, says so, says *why* it is being cleared — Phase B
+re-purposes an evidence device as a test fixture — clears it, confirms the
+clear, and fails the phase if it does not take. Clearing evidence protection is
+an explicit logged action, never a side effect.
+
+`parted`, `mkfs` and `mount` in both phases had their output discarded and no
+exit check, so a failure surfaced one step later as `could not mount`, pointing
+at the wrong thing. All of them are now checked, with their output captured and
+printed on failure. In Phase A a failed mount used to `warn` and continue; it
+now fails the phase, because A.3's before-count is meaningless without the
+planted files, and a run whose before-count is meaningless proves nothing about
+its after-count.
 
 ---
 

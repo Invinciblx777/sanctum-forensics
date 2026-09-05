@@ -441,3 +441,97 @@ def test_the_driver_passes_the_recorded_fill_to_a5() -> None:
 
     assert 'harness_erase_fill "$RUN_DIR/a4-erase.json"' in text
     assert '--expect-fill "$expect_fill"' in text
+
+
+# --------------------------------------------------------------------------
+# Clearing the write block is an explicit, logged, checked action
+# --------------------------------------------------------------------------
+
+
+def fake_device(tmp_path: Path, flag_script: str) -> Path:
+    """A stand-in for $PY whose BLKROGET/BLKROSET answers are scripted."""
+    stub = tmp_path / "fakepy"
+    stub.write_text(f"#!/bin/sh\n{flag_script}\n")
+    stub.chmod(0o755)
+    return stub
+
+
+def run_clear(tmp_path: Path, flag_script: str) -> subprocess.CompletedProcess[str]:
+    stub = fake_device(tmp_path, flag_script)
+    body = (
+        f'set -uo pipefail\nPY="{stub}"\n. "{STEPS}"\n'
+        'harness_clear_write_block /dev/fake "B.1 write block"; echo "rc=$?"\n'
+        "harness_summary\n"
+    )
+    return subprocess.run(
+        ["bash", "-c", body], capture_output=True, text=True, cwd=tmp_path, check=False
+    )
+
+
+def test_an_already_writable_device_needs_no_clearing(tmp_path: Path) -> None:
+    result = run_clear(tmp_path, "echo 0")
+
+    assert "already writable" in result.stdout
+    assert "rc=0" in result.stdout
+    assert "FAILED" not in result.stdout
+
+
+def test_a_read_only_device_is_cleared_and_the_reason_is_logged(
+    tmp_path: Path,
+) -> None:
+    """Phase B re-purposes an evidence device, so the clear is deliberate."""
+    # First call reads 1, second reads back 0 after the clear.
+    result = run_clear(
+        tmp_path,
+        'if [ -f seen ]; then echo 0; else touch seen; echo 1; fi',
+    )
+
+    assert "reads read-only (1)" in result.stdout
+    assert "re-purposes this device as a test fixture" in result.stdout
+    assert "cleared" in result.stdout
+    assert "rc=0" in result.stdout
+    assert result.returncode == 0
+
+
+def test_a_clear_that_does_not_take_fails_the_phase(tmp_path: Path) -> None:
+    """Silently proceeding would run parted against a read-only device."""
+    result = run_clear(tmp_path, "echo 1")
+
+    assert "B.1 write block FAILED" in result.stdout
+    assert "could not be cleared" in result.stdout
+    assert "rc=1" in result.stdout
+    assert result.returncode != 0
+
+
+# --------------------------------------------------------------------------
+# parted and mkfs are checked, in both phases
+# --------------------------------------------------------------------------
+
+
+def test_neither_phase_discards_parted_or_mkfs_output() -> None:
+    """They used to fail silently and surface later as "could not mount"."""
+    lines = DRIVER.read_text().splitlines()
+    discarded = [
+        (number, line)
+        for number, line in enumerate(lines, 1)
+        if ("parted " in line or "mkfs." in line)
+        and ">/dev/null" in line
+        and "command -v" not in line
+    ]
+
+    assert discarded == [], f"unchecked partition or filesystem call: {discarded}"
+
+
+def test_both_phases_clear_the_write_block_before_writing() -> None:
+    text = DRIVER.read_text()
+
+    assert 'harness_clear_write_block "$DEVICE" "A.2 write block"' in text
+    assert 'harness_clear_write_block "$DEVICE" "B.1 write block"' in text
+
+
+def test_a_failed_plant_fails_the_phase_rather_than_warning() -> None:
+    """A.3's before-count is meaningless without the planted files."""
+    text = DRIVER.read_text()
+
+    assert 'harness_fail "A.2 mount"' in text
+    assert "no files were planted" in text

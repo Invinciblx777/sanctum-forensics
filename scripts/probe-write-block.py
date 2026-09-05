@@ -1,8 +1,24 @@
-"""Does BLKROSET actually block a write on this bridge, or only read back set?
+"""Qualify an interface's software write block by trying to defeat it.
+
+**Scratch media only. This writes to the device if the write block fails**, which
+is exactly the case you are testing for. Never point it at evidence: a write
+test is safe only when the block works, and it is precisely when the block does
+not work that the test writes to the thing it was protecting.
+
+That asymmetry is why ``core.carve.acquire.apply_write_block`` does not do this
+itself. The acquisition path sets BLKROSET, reads it back, and says on the
+record that the refusal was not verified. Verification lives here, run once
+against scratch media to qualify a bridge, which is how write blockers are
+qualified in practice.
 
 A flag that reads back set but does not refuse a write is worse than no write
 block at all: the acquisition record would claim a protection that does not
 exist, and every downstream statement about the evidence path inherits that.
+
+Measured on a Toshiba TransMemory behind a USB bridge, 2026-09-05:
+``WRITE_BLOCK_WORKS``, with the refusal arriving at ``write()`` with ``EPERM``
+while ``open(O_WRONLY)`` **succeeded**. A check that stopped at the open would
+have reported a working block on a cosmetic flag. Test the write, not the open.
 
 Sequence, against a region of the device that is deliberately overwritten and
 then restored:
@@ -20,7 +36,8 @@ Destructive only within the probe region, and only if the write block fails -
 which is the finding. Run as root:
 
   cd /path/to/sanctum-forensics
-  sudo .venv/bin/python <this script> /dev/sdX
+  sudo .venv/bin/python scripts/probe-write-block.py /dev/sdX \\
+      --i-understand-this-may-write-to-the-device
 """
 
 from __future__ import annotations
@@ -124,8 +141,25 @@ def try_write(path: str, offset: int, payload: bytes) -> dict[str, Any]:
         os.close(fd)
 
 
+CONFIRM_FLAG = "--i-understand-this-may-write-to-the-device"
+
+
 def main() -> int:
-    path = sys.argv[1] if len(sys.argv) > 1 else "/dev/sda"
+    argv = [item for item in sys.argv[1:] if item != CONFIRM_FLAG]
+    confirmed = CONFIRM_FLAG in sys.argv[1:]
+    path = argv[0] if argv else "/dev/sda"
+
+    if not confirmed:
+        # The same two-gate shape the erase path uses. This probe writes to the
+        # target when the write block fails, and that is not something to
+        # discover afterwards.
+        sys.stderr.write(
+            f"REFUSED: this probe writes to {path} if the write block does not "
+            f"hold, which is the case it exists to detect. Point it at scratch "
+            f"media, never at evidence, and pass {CONFIRM_FLAG}.\n"
+        )
+        return 2
+
     result: dict[str, Any] = {"step": "write_block_probe", "device": path}
 
     fd = os.open(path, os.O_RDONLY)

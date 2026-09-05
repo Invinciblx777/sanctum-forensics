@@ -556,6 +556,12 @@ class AcquisitionRecord(BaseModel):
     #: True only when a software write block was applied AND read back as
     #: applied. False is honest; there is no third state that implies more.
     write_blocked: bool = False
+    #: How strongly ``write_blocked`` was established. ``flag_read_back`` means
+    #: the kernel reports the device read-only and nothing tried to write;
+    #: ``attempted_write`` means a write was issued and refused. The acquisition
+    #: path never writes to an evidence device, so it only ever produces the
+    #: first - a reader is entitled to know which claim is being made.
+    write_block_verified_by: str = ""
 
 
 class IntegrityResult(BaseModel):

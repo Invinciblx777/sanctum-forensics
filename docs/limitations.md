@@ -175,6 +175,44 @@ fails and neither SANITIZE nor SECURITY ERASE can be issued or even confirmed to
 exist. Those devices are limited to overwrite-based CLEAR. Attach the drive to a
 native SATA port to do better.
 
+## A software write block is a claim about a flag, not about a refusal
+
+`core/carve/acquire.py:apply_write_block` sets `BLKROSET`, reads it back with
+`BLKROGET`, and reports `applied` from the read-back. That establishes that the
+kernel holds the device read-only. It does **not** establish that a write would
+be refused, and the record says so with `WRITE_BLOCK_NOT_VERIFIED`.
+
+Proving the refusal means attempting a write, and the acquisition path never
+writes to a device. The asymmetry is the reason: a write test fails safe only
+when the block works, and it is precisely when the block does not work — the
+case the test exists to detect — that the test writes to the evidence it was
+protecting. The restore is another write, and on flash it programs a new page.
+
+Verification by attempted write lives in `scripts/probe-write-block.py`, gated
+behind `--i-understand-this-may-write-to-the-device`, run once against **scratch
+media** to qualify an interface. `AcquisitionRecord.write_block_verified_by`
+records which claim is being made: `flag_read_back` from the acquisition path,
+`attempted_write` only from a qualification.
+
+Measured on a Toshiba TransMemory behind a USB bridge, 2026-09-05:
+`WRITE_BLOCK_WORKS`. The refusal arrived at `write()` with `EPERM` while
+`open(O_WRONLY)` **succeeded** — a check that stopped at the open would report a
+working block on a cosmetic flag. That refusal point is a kernel property, not a
+bridge one; `BLKROSET` sets `bd_read_only` on the kernel's block device and the
+kernel is what refuses.
+
+Two paths are not covered by the flag at all, on any bridge:
+
+- **SG_IO and ATA pass-through**, which address the device below the block layer
+  where `bd_read_only` is never consulted. `hdparm --write-sector` and `sg_dd`
+  write straight through a set flag.
+- **A partition node whose own flag was never set.** The flag is applied to the
+  path given to the acquisition; an automount writing through `/dev/sdX1` while
+  only `/dev/sdX` was set is exactly the accident a write block exists to stop.
+  Untested.
+
+Use a hardware write blocker for evidence that will be presented.
+
 ## Verification above 64 GiB is sampled, not exhaustive
 
 At or below 64 GiB every block is read. Above it, verification reads the first

@@ -475,3 +475,77 @@ def test_source_reader_protocol_accepts_the_file_backed_reader(
         assert reader.size == 4 * MIB
     finally:
         reader.close()
+
+
+# --------------------------------------------------------------------------
+# What a write block claim is allowed to assert
+# --------------------------------------------------------------------------
+
+
+def test_a_read_back_flag_is_not_reported_as_a_verified_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The read-back establishes the flag, not that a write would be refused.
+
+    Verifying the refusal means attempting a write, and the evidence path never
+    writes to a device. A write test is safe only when the block works, and it
+    is precisely when the block does not work that the test writes to evidence.
+    """
+    from core.carve import acquire as acquire_mod
+
+    device = tmp_path / "fake-block"
+    device.write_bytes(b"\x00" * 4096)
+
+    monkeypatch.setattr(acquire_mod.sys, "platform", "linux")
+    monkeypatch.setattr(Path, "is_block_device", lambda self: True)
+
+    import fcntl
+    import struct
+
+    def fake_ioctl(fd: int, request: int, arg: bytes) -> bytes:
+        if request == acquire_mod.BLKROSET:
+            return b""
+        return struct.pack("i", 1)  # BLKROGET: reads back read-only
+
+    monkeypatch.setattr(fcntl, "ioctl", fake_ioctl)
+
+    outcome = acquire_mod.apply_write_block(device)
+
+    assert outcome.applied is True
+    assert outcome.verified_by == "flag_read_back"
+    assert outcome.limitations == [acquire_mod.WRITE_BLOCK_NOT_VERIFIED]
+    assert "attempting one" in outcome.limitations[0]
+    assert "never writes to an evidence device" in outcome.limitations[0]
+
+
+def test_the_not_verified_limitation_names_what_blkroset_does_not_cover() -> None:
+    """SG_IO and an unset partition flag both bypass the block layer."""
+    from core.carve.acquire import WRITE_BLOCK_NOT_VERIFIED
+
+    assert "SG_IO" in WRITE_BLOCK_NOT_VERIFIED
+    assert "partition node" in WRITE_BLOCK_NOT_VERIFIED
+    assert "probe-write-block.py" in WRITE_BLOCK_NOT_VERIFIED
+
+
+def test_a_flag_that_does_not_read_back_claims_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from core.carve import acquire as acquire_mod
+
+    device = tmp_path / "fake-block"
+    device.write_bytes(b"\x00" * 4096)
+    monkeypatch.setattr(acquire_mod.sys, "platform", "linux")
+    monkeypatch.setattr(Path, "is_block_device", lambda self: True)
+
+    import fcntl
+    import struct
+
+    monkeypatch.setattr(
+        fcntl, "ioctl", lambda fd, request, arg: struct.pack("i", 0)
+    )
+
+    outcome = acquire_mod.apply_write_block(device)
+
+    assert outcome.applied is False
+    assert outcome.verified_by == ""
+    assert "WRITE_BLOCK_NOT_APPLIED" in outcome.limitations[0]

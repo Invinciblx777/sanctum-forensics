@@ -64,6 +64,7 @@ __all__ = [
     "e01_write_supported",
     "apply_write_block",
     "NO_SOFTWARE_WRITE_BLOCK",
+    "WRITE_BLOCK_NOT_VERIFIED",
     "TOOL_VERSION",
 ]
 
@@ -90,6 +91,17 @@ WRITE_BLOCK_REFUSED = (
     "WRITE_BLOCK_NOT_APPLIED: BLKROSET was issued but BLKROGET read back "
     "writable. The kernel did not honour the request, so no write block is in "
     "force despite one having been asked for."
+)
+
+WRITE_BLOCK_NOT_VERIFIED = (
+    "WRITE_BLOCK_NOT_VERIFIED: BLKROSET was set and BLKROGET read it back as "
+    "applied, which establishes that the kernel holds this device read-only. It "
+    "does not establish that a write would be refused - proving that requires "
+    "attempting one, and this tool never writes to an evidence device. Qualify "
+    "the interface once against scratch media with scripts/probe-write-block.py "
+    "and keep the result. Note also that BLKROSET governs the block layer only: "
+    "SG_IO and ATA pass-through writes bypass it entirely, as does a partition "
+    "node whose own flag was never set."
 )
 
 E01_WRITE_UNSUPPORTED = (
@@ -254,6 +266,9 @@ DEFAULT_OPTIONS = AcquireOptions()
 class WriteBlockOutcome:
     applied: bool
     limitations: list[str] = field(default_factory=list)
+    #: ``flag_read_back``, ``attempted_write``, or ``""`` when no block is in
+    #: force. See :class:`core.models.AcquisitionRecord.write_block_verified_by`.
+    verified_by: str = ""
 
 
 def apply_write_block(path: Path | str) -> WriteBlockOutcome:
@@ -263,11 +278,30 @@ def apply_write_block(path: Path | str) -> WriteBlockOutcome:
     that is not a block device, or by a caller without the privilege to make it
     stick, and in both cases the operator would otherwise believe a protection
     that does not exist.
+
+    **The read-back is also not proof that a write would be refused, and this
+    function deliberately does not go looking for that proof.** The only way to
+    establish it is to attempt a write, and the evidence path never writes to a
+    device (CLAUDE.md). The asymmetry is the reason: a write test is safe only
+    when the block works, and it is precisely when the block does *not* work
+    that the test writes to evidence. A parachute is not tested by jumping.
+
+    So the outcome says how strongly it was established. ``verified_by`` is
+    ``flag_read_back`` here, always, and :data:`WRITE_BLOCK_NOT_VERIFIED` says
+    so on the record. Verification by attempted write belongs to
+    ``scripts/probe-write-block.py``, run once against scratch media to qualify
+    an interface, which is how write blockers are qualified in practice.
+
+    Measured on a Toshiba TransMemory behind a USB bridge, 2026-09-05: the flag
+    was honoured, and the refusal arrived at ``write()`` with ``EPERM`` while
+    ``open(O_WRONLY)`` succeeded. Anything checking only whether the open
+    succeeds would have reported a working block on a cosmetic flag.
     """
     if sys.platform != "linux":
         return WriteBlockOutcome(
             applied=False,
             limitations=[NO_SOFTWARE_WRITE_BLOCK.format(platform=platform.system())],
+            verified_by="",
         )
 
     import fcntl
@@ -277,7 +311,7 @@ def apply_write_block(path: Path | str) -> WriteBlockOutcome:
     if not target.is_block_device():
         # A file-backed image needs no block-layer flag; opening it O_RDONLY is
         # the whole guarantee available, and claiming more would be false.
-        return WriteBlockOutcome(applied=False, limitations=[])
+        return WriteBlockOutcome(applied=False, limitations=[], verified_by="")
 
     fd = os.open(target, os.O_RDONLY)
     try:
@@ -291,13 +325,20 @@ def apply_write_block(path: Path | str) -> WriteBlockOutcome:
                 f"{WRITE_BLOCK_REFUSED} "
                 f"({errno.errorcode.get(exc.errno or 0, exc.errno)})"
             ],
+            verified_by="",
         )
     finally:
         os.close(fd)
 
     if not read_only:
-        return WriteBlockOutcome(applied=False, limitations=[WRITE_BLOCK_REFUSED])
-    return WriteBlockOutcome(applied=True, limitations=[])
+        return WriteBlockOutcome(
+            applied=False, limitations=[WRITE_BLOCK_REFUSED], verified_by=""
+        )
+    return WriteBlockOutcome(
+        applied=True,
+        limitations=[WRITE_BLOCK_NOT_VERIFIED],
+        verified_by="flag_read_back",
+    )
 
 
 # --------------------------------------------------------------------------
@@ -737,6 +778,7 @@ def acquire(
             started_at=started_at,
             source_path=source_path,
             write_blocked=block.applied,
+            write_block_verified_by=block.verified_by,
             limitations=limitations,
             ledger=ledger,
         )
@@ -766,6 +808,7 @@ def _read_pass(
     started_at: datetime,
     source_path: Path | None,
     write_blocked: bool,
+    write_block_verified_by: str,
     limitations: list[str],
     ledger: Ledger | None,
 ) -> Generator[Progress, None, AcquisitionRecord]:
@@ -937,6 +980,7 @@ def _read_pass(
         # more than one run, not how much of it the second run skipped.
         resumed=resume and prior_bytes > 0,
         write_blocked=write_blocked,
+        write_block_verified_by=write_block_verified_by,
     )
 
 

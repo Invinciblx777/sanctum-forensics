@@ -314,14 +314,28 @@ phase_a() {
     note "pattern written in $(since "$start")s"
     note "pattern: $(harness_json_field "$RUN_DIR/a2-pattern.json" bytes_written) bytes at $(harness_json_field "$RUN_DIR/a2-pattern.json" throughput_mib_per_sec) MiB/s, buffer $(harness_json_field "$RUN_DIR/a2-pattern.json" buffer_bytes) bytes, O_DIRECT=$(harness_json_field "$RUN_DIR/a2-pattern.json" o_direct)"
 
-    parted -s "$DEVICE" mklabel msdos mkpart primary fat32 1MiB 100% >/dev/null 2>&1
+    # Checked, not discarded: without the planted files A.3's before-count is
+    # meaningless, and a run whose before-count is meaningless proves nothing
+    # about its after-count.
+    harness_clear_write_block "$DEVICE" "A.2 write block" || return 1
+    if ! parted -s "$DEVICE" mklabel msdos mkpart primary fat32 1MiB 100% \
+            > "$RUN_DIR/a2-parted.out" 2>&1; then
+        harness_fail "A.2 parted" "partitioning $DEVICE failed"
+        harness_dump_err "$RUN_DIR/a2-parted.out"
+    fi
     sleep 1
     local part="${DEVICE}1"
     [[ -b "$part" ]] || part="$DEVICE"
-    mkfs.vfat -F 32 -n SANCTUMVAL "$part" >/dev/null 2>&1
+    if ! mkfs.vfat -F 32 -n SANCTUMVAL "$part" > "$RUN_DIR/a2-mkfs.out" 2>&1; then
+        harness_fail "A.2 mkfs" "mkfs.vfat on $part failed"
+        harness_dump_err "$RUN_DIR/a2-mkfs.out"
+    fi
 
     local mnt="$WORK/mnt"; mkdir -p "$mnt"
-    mount "$part" "$mnt" 2>/dev/null || warn "could not mount $part; files were not planted"
+    if ! mount "$part" "$mnt" > "$RUN_DIR/a2-mount.out" 2>&1; then
+        harness_fail "A.2 mount" "could not mount $part; no files were planted"
+        harness_dump_err "$RUN_DIR/a2-mount.out"
+    fi
     if mountpoint -q "$mnt"; then
         "$PY" - "$mnt" > "$RUN_DIR/a2-plant-count.txt" <<'PLANT'
 import sys, io, zipfile, random
@@ -442,18 +456,40 @@ PLANT
 
 phase_b() {
     say "PHASE B.1 - populate a $FS_KIND filesystem with known files"
+    # An earlier phase-B invocation acquires from this device, and acquisition
+    # sets BLKROSET and leaves it set. parted and mkfs below both need a write
+    # open, so clear it first, loudly, and stop if it will not clear.
+    harness_clear_write_block "$DEVICE" "B.1 write block" || return 1
+
     local part="${DEVICE}1"
-    parted -s "$DEVICE" mklabel msdos mkpart primary fat32 1MiB 100% >/dev/null 2>&1
+    # Checked, not discarded. These used to fail silently and surface one step
+    # later as "could not mount", which points at the wrong thing.
+    if ! parted -s "$DEVICE" mklabel msdos mkpart primary fat32 1MiB 100% \
+            > "$RUN_DIR/b1-parted.out" 2>&1; then
+        harness_fail "B.1 parted" "partitioning $DEVICE failed"
+        harness_dump_err "$RUN_DIR/b1-parted.out"
+        return 1
+    fi
     sleep 1
     [[ -b "$part" ]] || part="$DEVICE"
+    local mkfs_rc=0
     if [[ "$FS_KIND" == "exfat" ]]; then
-        mkfs.exfat -L SANCTUMVAL "$part" >/dev/null 2>&1
+        mkfs.exfat -L SANCTUMVAL "$part" > "$RUN_DIR/b1-mkfs.out" 2>&1 || mkfs_rc=$?
     else
-        mkfs.vfat -F 32 -n SANCTUMVAL "$part" >/dev/null 2>&1
+        mkfs.vfat -F 32 -n SANCTUMVAL "$part" > "$RUN_DIR/b1-mkfs.out" 2>&1 || mkfs_rc=$?
+    fi
+    if [[ $mkfs_rc -ne 0 ]]; then
+        harness_fail "B.1 mkfs" "mkfs for $FS_KIND on $part failed"
+        harness_dump_err "$RUN_DIR/b1-mkfs.out"
+        return 1
     fi
 
     local mnt="$WORK/mnt-b"; mkdir -p "$mnt"
-    mount "$part" "$mnt" 2>/dev/null || die "could not mount $part for phase B"
+    if ! mount "$part" "$mnt" > "$RUN_DIR/b1-mount.out" 2>&1; then
+        harness_fail "B.1 mount" "could not mount $part for phase B"
+        harness_dump_err "$RUN_DIR/b1-mount.out"
+        return 1
+    fi
     "$PY" - "$mnt" <<'PLANTB'
 import sys, io, random
 from pathlib import Path

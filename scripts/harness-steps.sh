@@ -283,3 +283,55 @@ fills = plan.get("fill_bytes") or []
 print(fills[-1] if fills else "")
 PYTHON
 }
+
+# Clear the block layer's read-only flag, and confirm it cleared.
+#
+# core.carve.acquire.apply_write_block sets BLKROSET and deliberately never
+# clears it: after an acquisition the source should stay protected. Phase B is
+# the case that inverts the assumption - it re-purposes an evidence device as a
+# test fixture, and a second invocation (once per filesystem) opens with parted
+# and mkfs on a device the first invocation left read-only. Clearing it is
+# therefore an explicit, logged step rather than a side effect, and the phase
+# fails if it does not take.
+harness_clear_write_block() {
+    local device="$1" label="$2" before after
+    before="$("$PY" - "$device" <<'PYTHON'
+import fcntl, os, struct, sys
+try:
+    fd = os.open(sys.argv[1], os.O_RDONLY)
+except OSError as exc:
+    print(f"unreadable:{exc.errno}")
+    raise SystemExit(0)
+try:
+    print(struct.unpack("i", fcntl.ioctl(fd, 0x125E, struct.pack("i", 0)))[0])
+except OSError as exc:
+    print(f"unsupported:{exc.errno}")
+finally:
+    os.close(fd)
+PYTHON
+)"
+    if [[ "$before" == "0" ]]; then
+        note "write block: $device is already writable, nothing to clear"
+        return 0
+    fi
+    note "write block: $device reads read-only ($before); clearing it because"
+    note "  phase B re-purposes this device as a test fixture and must write to it"
+    after="$("$PY" - "$device" <<'PYTHON'
+import fcntl, os, struct, sys
+fd = os.open(sys.argv[1], os.O_RDONLY)
+try:
+    fcntl.ioctl(fd, 0x125D, struct.pack("i", 0))
+    print(struct.unpack("i", fcntl.ioctl(fd, 0x125E, struct.pack("i", 0)))[0])
+except OSError as exc:
+    print(f"failed:{exc.errno}")
+finally:
+    os.close(fd)
+PYTHON
+)"
+    if [[ "$after" == "0" ]]; then
+        note "write block: cleared, $device now reads writable"
+        return 0
+    fi
+    harness_fail "$label" "BLKROSET could not be cleared on $device (read back $after)"
+    return 1
+}
