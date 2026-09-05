@@ -38,6 +38,21 @@ __all__ = ["router"]
 router = APIRouter(tags=["jobs"])
 
 
+def _signing_fingerprint(services: AppServices) -> str:
+    """This deployment's signing-key fingerprint, or ``""`` if it has none yet.
+
+    Recorded in the ledger's genesis entry so a report signed later can be
+    checked against the key the chain was started with. The lookup never
+    creates a key: accepting a job must not have the side effect of minting one,
+    and a deployment with no key still has to be able to start a chain.
+    """
+    from core.report.sign import fingerprint_of_existing_key
+
+    return fingerprint_of_existing_key(
+        services.key_dir or (services.state_dir / "keys")
+    )
+
+
 def _accepted(job_id: str, kind: str, dry_run: bool) -> JobAccepted:
     return JobAccepted(
         job_id=job_id,
@@ -190,7 +205,11 @@ def erase_files(
     ledger = Ledger(
         services.ledger_root,
         tool_version=services.tool_version,
-        pubkey_fingerprint="",
+        # The key this deployment signs reports with, when it has one. A chain
+        # whose genesis records no fingerprint can never satisfy the report
+        # check that compares the two. Looked up rather than created: starting a
+        # job must not mint a signing key as a side effect.
+        pubkey_fingerprint=_signing_fingerprint(services),
     )
 
     def factory() -> Any:
@@ -241,7 +260,11 @@ def acquire_image(
     ledger = Ledger(
         services.ledger_root,
         tool_version=services.tool_version,
-        pubkey_fingerprint="",
+        # The key this deployment signs reports with, when it has one. A chain
+        # whose genesis records no fingerprint can never satisfy the report
+        # check that compares the two. Looked up rather than created: starting a
+        # job must not mint a signing key as a side effect.
+        pubkey_fingerprint=_signing_fingerprint(services),
     )
 
     job_id = f"acquire-{uuid.uuid4().hex[:12]}"
@@ -345,7 +368,7 @@ def _ledger_entries_for(services: AppServices, job_id: str) -> list[dict[str, An
         ledger = Ledger(
             services.ledger_root,
             tool_version=services.tool_version,
-            pubkey_fingerprint="",
+            pubkey_fingerprint="",  # read-only: this never appends
         )
         found: list[dict[str, Any]] = []
         for entry in ledger.entries():

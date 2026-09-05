@@ -32,6 +32,7 @@ from typing import Literal
 import structlog
 
 from core.device._sysio import SystemProbe
+from core.device.media import is_flash
 from core.erase.patterns import SOFTWARE_METHODS, final_pattern
 from core.models import (
     Device,
@@ -41,6 +42,7 @@ from core.models import (
     FileInspection,
     FileVerificationResult,
     HiddenAreaReport,
+    ResidualFinding,
     ResidualRiskAssessment,
     SanitizationLevel,
     UnwritableRange,
@@ -157,10 +159,18 @@ def choose_strategy(
     return "sampled"
 
 
-def _expected_bytes(method: EraseMethod) -> frozenset[int]:
-    """Byte values the medium may legitimately hold after ``method``."""
+def _expected_bytes(
+    method: EraseMethod, fills: tuple[int, ...] | None = None
+) -> frozenset[int]:
+    """Byte values the medium may legitimately hold after ``method``.
+
+    ``fills`` must be the fills the erase actually used. Verification compares
+    against the pattern that was written, not against the method's default: on
+    a zero-eliding controller the default is 0x00, which is exactly the value
+    the flash translation layer answers with for free.
+    """
     if method in SOFTWARE_METHODS:
-        return frozenset({final_pattern(method, block_size=1)[0]})
+        return frozenset({final_pattern(method, block_size=1, fills=fills)[0]})
     return _FIRMWARE_EXPECTED
 
 
@@ -290,6 +300,7 @@ def verify(
     source_path: Path | str | None = None,
     config: VerifyConfig = DEFAULT_CONFIG,
     io: SystemProbe | None = None,
+    fills: tuple[int, ...] | None = None,
 ) -> VerificationResult:
     """Read the medium back and report whether it looks sanitized.
 
@@ -300,6 +311,10 @@ def verify(
             and by callers verifying an image rather than a live device.
         config: Verification tunables.
         io: Host access seam for reading the drive's sanitize log.
+        fills: The fill bytes the erase actually wrote, when they differ from
+            the method's defaults. Verification must check the pattern that was
+            written; checking 0x00 by default would pass against a controller
+            that synthesizes zeros without programming anything.
 
     Returns:
         A :class:`VerificationResult`. ``passed`` is false if any block holds
@@ -307,7 +322,7 @@ def verify(
     """
     path = Path(source_path) if source_path is not None else Path(device.path)
     strategy = choose_strategy(device.size_bytes, method, config)
-    allowed = _expected_bytes(method)
+    allowed = _expected_bytes(method, fills)
 
     attested = _attestation(device, method, io) if strategy == "hw_attested" else None
 
@@ -385,6 +400,8 @@ def assess_residual_risk(
     hidden_covered: bool = True,
     unwritable_ranges: list[UnwritableRange] | None = None,
     limitations: list[str] | None = None,
+    elision_detected: bool | None = None,
+    findings: list[ResidualFinding] | None = None,
 ) -> ResidualRiskAssessment:
     """State plainly what this erase could not guarantee.
 
@@ -394,7 +411,11 @@ def assess_residual_risk(
     unwritable = unwritable_ranges or []
     factors: list[str] = list(limitations or [])
     overwrite_only = method in SOFTWARE_METHODS
-    flash = not device.rotational
+    # Positive determination, not a negated kernel flag. `not device.rotational`
+    # was False for the USB flash stick used in hardware validation, because the
+    # bridge never cleared queue/rotational, and every flash caveat below was
+    # silently skipped for exactly the class of device that needs them.
+    flash, flash_reason = is_flash(device, elision_detected=elision_detected)
 
     if device.transport in {"usb", "mmc"}:
         factors.append(
@@ -405,7 +426,9 @@ def assess_residual_risk(
         factors.append(
             "Flash media erased by overwrite only. Remapped bad blocks and "
             "over-provisioned capacity are not host-addressable and cannot be "
-            "reached by any host write pattern."
+            "reached by any host write pattern. No host-side read can establish "
+            "physical removal on flash: every read is answered by the flash "
+            f"translation layer. Determined to be flash because {flash_reason}."
         )
     if unwritable:
         total = sum(item.length for item in unwritable)
@@ -457,11 +480,25 @@ def assess_residual_risk(
     ):
         level = "high"
         notes = "Part of the medium was not erased. See factors."
+    elif overwrite_only and elision_detected:
+        # Worse than the generic flash caveat below, and for a different reason:
+        # there, the write happened and could not reach everything. Here the
+        # controller did not perform the write at all, so it created none of the
+        # free-block pressure that makes a flash overwrite worth anything.
+        level = "high"
+        notes = (
+            "The controller acknowledged the zero fill far faster than it can "
+            "program this medium, so the cells were not written. Every block "
+            "reads as zero through the device's own interface, which is all a "
+            "host-side read can establish on flash. Use a firmware sanitize or "
+            "crypto-erase where available; otherwise destroy the media."
+        )
     elif overwrite_only and flash:
         level = "medium"
         notes = (
             "Overwrite on flash cannot reach remapped or over-provisioned "
-            "blocks. Use a firmware sanitize or crypto-erase where available."
+            "blocks, and no host-side read can establish physical removal. Use "
+            "a firmware sanitize or crypto-erase where available."
         )
     elif purge_achieved and verification.hw_attested and verification.passed:
         level = "low"
@@ -475,6 +512,7 @@ def assess_residual_risk(
         factors=factors,
         purge_achieved=purge_achieved,
         notes=notes,
+        findings=list(findings or []),
     )
 
 

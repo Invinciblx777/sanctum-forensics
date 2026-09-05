@@ -165,15 +165,129 @@ def cmd_enumerate(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------
+# Phase A.2 - lay down a known pattern
+# --------------------------------------------------------------------------
+
+
+def cmd_pattern(args: argparse.Namespace) -> int:
+    """Fill the device with one byte, at the same block size the erase path uses.
+
+    This replaces ``tr '\\0' '\\245' < /dev/zero | dd of=$DEVICE bs=4M``. dd
+    reading from a *pipe* issues one ``read()`` per block and takes whatever the
+    pipe has buffered, so with no ``iflag=fullblock`` not one full 4 MiB block
+    was ever assembled: measured on the validation host, 200 reads produced 200
+    partial records averaging 7414 bytes. Against a 7.76 GB stick that is about
+    a million short, unaligned writes, and it took 1899.76s - 4.08 MB/s against
+    the 26.7 MB/s the same device sustains on a read.
+
+    The number mattered because it went into the performance report next to the
+    erase throughput. It was measuring the pipeline, not the medium. Using the
+    erase path's own geometry and buffer size makes the two comparable.
+    """
+    import mmap
+    import os
+
+    from core.erase.drive import DEFAULT_BUFFER_BYTES, device_geometry
+
+    geometry = device_geometry(args.device)
+    size = geometry.size_bytes
+    block = geometry.logical_block_size
+    buf_size = max(block, (DEFAULT_BUFFER_BYTES // block) * block)
+    value = int(args.byte, 0)
+    if not 0 <= value <= 0xFF:
+        raise ValueError(f"--byte must be a single byte value, got {args.byte}")
+
+    # Same preference as core.erase.drive._overwrite: O_DIRECT so the timing
+    # describes the medium rather than the page cache, O_DSYNC when the device
+    # refuses it.
+    direct_flag = getattr(os, "O_DIRECT", 0)
+    direct = False
+    fd = -1
+    if direct_flag:
+        try:
+            fd = os.open(args.device, os.O_WRONLY | os.O_SYNC | direct_flag)
+            direct = True
+        except OSError:
+            fd = -1
+    if fd == -1:
+        fd = os.open(args.device, os.O_WRONLY | getattr(os, "O_DSYNC", os.O_SYNC))
+
+    buffer = mmap.mmap(-1, buf_size)  # page-aligned, which O_DIRECT requires
+    buffer.write(bytes([value]) * buf_size)
+    view = memoryview(buffer)
+
+    started = time.monotonic()
+    written = 0
+    try:
+        while written < size:
+            span = min(buf_size, size - written)
+            position = 0
+            while position < span:
+                # A fresh slice each round, released immediately: an mmap cannot
+                # be closed while any memoryview over it is still exported.
+                chunk = view[position:span]
+                try:
+                    count = os.write(fd, chunk)
+                finally:
+                    chunk.release()
+                if count <= 0:
+                    break
+                position += count
+                written += count
+            if position < span:
+                break
+        os.fsync(fd)
+    finally:
+        view.release()
+        buffer.close()
+        os.close(fd)
+    elapsed = time.monotonic() - started
+
+    emit(
+        {
+            "step": "pattern",
+            "device": args.device,
+            "byte": f"0x{value:02x}",
+            "size_bytes": size,
+            "bytes_written": written,
+            "complete": written == size,
+            "buffer_bytes": buf_size,
+            "block_size": block,
+            "o_direct": direct,
+            "elapsed_seconds": round(elapsed, 3),
+            "throughput_mib_per_sec": (
+                round(written / MIB / elapsed, 2) if elapsed > 0 and written else 0
+            ),
+        }
+    )
+    return 0 if written == size else 1
+
+
+# --------------------------------------------------------------------------
 # Phase A.4 / A.5 - erase and verify
 # --------------------------------------------------------------------------
 
 
-def _ledger(root: Path) -> Any:
+def _ledger(root: Path, key_dir: str | None = None) -> Any:
+    """The run's ledger, with the signing key's fingerprint recorded at genesis.
+
+    Genesis is written on the first append, which happens during A.4; the key
+    used to be created in A.7, so genesis recorded an empty fingerprint and the
+    report's fingerprint check could never do its job. Loading (or creating) the
+    key here puts it in place before the first append.
+
+    ``key_dir`` may be ``None`` for read-only uses, which never append and so
+    never write genesis.
+    """
     from core.ledger.chain import Ledger
+    from core.report.sign import fingerprint, load_or_create_key, public_key_of
+
+    finger = ""
+    if key_dir is not None:
+        finger = fingerprint(public_key_of(load_or_create_key(Path(key_dir))))
 
     return Ledger(
-        root, tool_version="sanctum-forensics/0.0.0", pubkey_fingerprint=""
+        root, tool_version="sanctum-forensics/0.0.0", pubkey_fingerprint=finger
     )
 
 
@@ -211,7 +325,7 @@ def cmd_erase(args: argparse.Namespace) -> int:
         generator = execute(
             job,
             capabilities.probe(device),
-            ledger=ChainLedgerSink(_ledger(Path(args.ledger_root))),
+            ledger=ChainLedgerSink(_ledger(Path(args.ledger_root), args.key_dir)),
         )
         while True:
             try:
@@ -283,7 +397,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     from core.report.verify_report import verify_report_file
 
     ledger_root = Path(args.ledger_root)
-    ledger = _ledger(ledger_root)
+    ledger = _ledger(ledger_root, args.key_dir)
     erase = json.loads(Path(args.erase_json).read_text()) if args.erase_json else {}
     verification = (
         json.loads(Path(args.verify_json).read_text()) if args.verify_json else {}
@@ -340,6 +454,10 @@ def cmd_report(args: argparse.Namespace) -> int:
                     "name": item.name.value,
                     "passed": item.passed,
                     "applicable": item.applicable,
+                    # COMPLETE / PARTIAL / BROKEN for the chain, and which of
+                    # the five genesis situations produced the fingerprint
+                    # outcome. Pass/fail alone lost both distinctions.
+                    "status": item.status,
                     "detail": item.detail,
                 }
                 for item in outcome.checks
@@ -390,7 +508,11 @@ def cmd_acquire(args: argparse.Namespace) -> int:
         Path(args.dest),
         fmt=args.fmt,
         options=AcquireOptions(compression=args.compression, operator="validation"),
-        ledger=_ledger(Path(args.ledger_root)) if args.ledger_root else None,
+        ledger=(
+            _ledger(Path(args.ledger_root), args.key_dir)
+            if args.ledger_root
+            else None
+        ),
         job_id=args.job_id,
     )
     records = 0
@@ -434,19 +556,30 @@ def cmd_acquire(args: argparse.Namespace) -> int:
 def cmd_carve(args: argparse.Namespace) -> int:
     """Run the whole recovery pipeline and score it against known hashes.
 
-    The manifest is ``{"sha256": {"name": ..., "deleted": bool}}`` for every
-    file that was written to the card, recorded before anything was deleted.
-    Recall counts deleted files reproduced byte for byte; nothing softer, for
-    the same reason ``testkit/calibrate.py`` counts nothing softer.
+    The manifest is ``{"path": {"sha256": ..., "name": ..., "deleted": bool}}``
+    for every file that was written to the card, recorded before anything was
+    deleted. Recall counts deleted files reproduced byte for byte; nothing
+    softer, for the same reason ``testkit/calibrate.py`` counts nothing softer.
+
+    Denominators are file counts, taken from the path-keyed manifest. Two
+    planted files with identical content are two planted files - keying the
+    manifest by digest lost one of them and shrank the denominator, which
+    inflates every recall figure computed from it. Files sharing a digest
+    cannot be told apart in a recovery result, so ``duplicate_content_files``
+    is reported alongside: when it is non-zero, recovering one copy counts
+    every copy, and the reader needs to know that.
     """
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from api.carve_job import carve_generator
 
     manifest = json.loads(Path(args.manifest).read_text())
-    deleted = {
-        digest for digest, item in manifest.items() if item.get("deleted")
-    }
-    live = {digest for digest, item in manifest.items() if not item.get("deleted")}
+    deleted_files = [item for item in manifest.values() if item.get("deleted")]
+    live_files = [item for item in manifest.values() if not item.get("deleted")]
+    deleted = {item["sha256"] for item in deleted_files}
+    live = {item["sha256"] for item in live_files}
+    duplicate_content = len(manifest) - len({
+        item["sha256"] for item in manifest.values()
+    })
 
     started = time.monotonic()
     generator = carve_generator(
@@ -478,15 +611,24 @@ def cmd_carve(args: argparse.Namespace) -> int:
         if item["sha256"] in deleted:
             row["exact"].add(item["sha256"])
 
+    def files_recovered(files: list[dict[str, Any]], found_digests: set[str]) -> int:
+        """Planted *files* whose content came back, duplicates counted each."""
+        return sum(1 for item in files if item["sha256"] in found_digests)
+
     per_fs = {
         name: {
             "candidates": row["candidates"],
             "named": row["named"],
             "exact": len(row["exact"]),
-            "deleted_planted": len(deleted),
+            "deleted_planted": len(deleted_files),
+            "deleted_planted_unique": len(deleted),
             "recall_bp": (
-                int(round(len(row["exact"]) * 10_000 / len(deleted)))
-                if deleted
+                int(round(
+                    files_recovered(deleted_files, row["exact"])
+                    * 10_000
+                    / len(deleted_files)
+                ))
+                if deleted_files
                 else 0
             ),
             "precision_bp": (
@@ -505,13 +647,19 @@ def cmd_carve(args: argparse.Namespace) -> int:
             "filesystem": args.filesystem,
             "elapsed_seconds": round(elapsed, 3),
             "candidates": len(candidates),
-            "planted_deleted": len(deleted),
-            "planted_live": len(live),
-            "recovered_deleted_exact": len(deleted & found),
-            "recovered_live_exact": len(live & found),
+            "planted_files": len(manifest),
+            "planted_deleted": len(deleted_files),
+            "planted_live": len(live_files),
+            "planted_deleted_unique": len(deleted),
+            "planted_live_unique": len(live),
+            "duplicate_content_files": duplicate_content,
+            "recovered_deleted_exact": files_recovered(deleted_files, found),
+            "recovered_live_exact": files_recovered(live_files, found),
             "overall_recall_bp": (
-                int(round(len(deleted & found) * 10_000 / len(deleted)))
-                if deleted
+                int(round(
+                    files_recovered(deleted_files, found) * 10_000 / len(deleted_files)
+                ))
+                if deleted_files
                 else 0
             ),
             "per_filesystem": per_fs,
@@ -583,20 +731,41 @@ def cmd_compare(args: argparse.Namespace) -> int:
 
 
 def cmd_hash_tree(args: argparse.Namespace) -> int:
-    """Record the SHA-256 of every file under a directory, before deletion."""
+    """Record the SHA-256 of every file under a directory, before deletion.
+
+    Keyed by path, not by digest. Keyed by digest, files with identical content
+    collapsed into one entry: the 14 files planted in Phase A.2 - three
+    byte-identical PDFs and two byte-identical docx among them - were recorded
+    as 11, and 11 is what the console reported as "planted". A recall
+    denominator taken from that count is wrong by a quarter.
+    """
     manifest: dict[str, dict[str, Any]] = {}
     root = Path(args.root)
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        manifest[digest] = {
-            "name": str(path.relative_to(root)),
+        name = str(path.relative_to(root))
+        manifest[name] = {
+            "name": name,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             "size": path.stat().st_size,
             "deleted": False,
         }
     Path(args.out).write_text(json.dumps(manifest, indent=2, sort_keys=True))
-    emit({"step": "hash_tree", "root": str(root), "files": len(manifest)})
+    digests = {item["sha256"] for item in manifest.values()}
+    emit(
+        {
+            "step": "hash_tree",
+            "root": str(root),
+            "files": len(manifest),
+            # Reported beside the file count rather than instead of it: carving
+            # recovers content, so files sharing a digest cannot be told apart
+            # in a recovery result, and a reader needs both numbers to read a
+            # recall figure correctly.
+            "unique_digests": len(digests),
+            "duplicate_content_files": len(manifest) - len(digests),
+        }
+    )
     return 0
 
 
@@ -611,8 +780,16 @@ def cmd_mark_deleted(args: argparse.Namespace) -> int:
             item["deleted"] = True
             marked += 1
     path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
-    emit({"step": "mark_deleted", "marked": marked, "requested": len(names)})
-    return 0
+    missing = sorted(names - {item["name"] for item in manifest.values()})
+    emit(
+        {
+            "step": "mark_deleted",
+            "marked": marked,
+            "requested": len(names),
+            "not_in_manifest": missing,
+        }
+    )
+    return 0 if not missing else 1
 
 
 # --------------------------------------------------------------------------
@@ -627,12 +804,27 @@ def main() -> int:
     enumerate_parser.set_defaults(handler=cmd_enumerate)
 
     erase_parser = sub.add_parser("erase")
+    erase_parser.add_argument(
+        "--key-dir",
+        required=True,
+        help=(
+            "Directory holding the signing key. Loaded or created before the "
+            "first ledger append so genesis records its fingerprint."
+        ),
+    )
     erase_parser.add_argument("--device", required=True)
     erase_parser.add_argument("--job-id", required=True)
     erase_parser.add_argument("--ledger-root", required=True)
     erase_parser.add_argument("--level", default="CLEAR")
     erase_parser.add_argument("--dry-run", action="store_true")
     erase_parser.set_defaults(handler=cmd_erase)
+
+    pattern_parser = sub.add_parser("pattern")
+    pattern_parser.add_argument("--device", required=True)
+    pattern_parser.add_argument(
+        "--byte", default="0xA5", help="Fill byte, e.g. 0xA5. Default: 0xA5."
+    )
+    pattern_parser.set_defaults(handler=cmd_pattern)
 
     verify_parser = sub.add_parser("verify")
     verify_parser.add_argument("--device", required=True)
@@ -659,6 +851,7 @@ def main() -> int:
     acquire_parser.add_argument("--fmt", default="raw", choices=["raw", "e01"])
     acquire_parser.add_argument("--compression", default="fast")
     acquire_parser.add_argument("--ledger-root")
+    acquire_parser.add_argument("--key-dir")
     acquire_parser.add_argument("--job-id", default="acquire")
     acquire_parser.set_defaults(handler=cmd_acquire)
 

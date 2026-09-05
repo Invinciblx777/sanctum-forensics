@@ -11,11 +11,14 @@ from typing import Any
 
 import pytest
 from core.report.sign import (
+    KEY_FILENAME,
     PASSPHRASE_ENV,
     SIGNATURE_ALG,
     KeyPassphraseMissing,
+    KeyPathUnusable,
     KeyPermissionsUnsafe,
     fingerprint,
+    key_file_for,
     load_or_create_key,
     public_key_of,
     sign_report,
@@ -294,3 +297,99 @@ def test_tampering_is_still_caught_inside_a_section(key_path: Path) -> None:
 
     signed["sections"]["device_identity"]["serial"] = "SOMEONE-ELSES-DISK"
     assert verify_signature(signed, signature) is False
+
+
+# --------------------------------------------------------------------------
+# A directory is a legal thing to be handed
+# --------------------------------------------------------------------------
+
+
+def test_a_key_directory_holds_the_key_file_inside_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What both real callers pass. Taking it literally killed the A.7 step.
+
+    The API's ``key_dir`` and the hardware harness's ``--key-dir`` are both
+    directories created by whoever runs the tool - 0755 under any normal umask.
+    ``load_or_create_key`` stat-ed that directory looking for 0600 and raised
+    ``KeyPermissionsUnsafe``; past that check it would have called
+    ``read_bytes()`` on a directory and raised ``IsADirectoryError``.
+    """
+    monkeypatch.setenv(PASSPHRASE_ENV, PASSPHRASE)
+    key_dir = tmp_path / "keys"
+    key_dir.mkdir(mode=0o755)
+
+    load_or_create_key(key_dir)
+
+    key_file = key_dir / KEY_FILENAME
+    assert key_file.is_file()
+    assert stat.S_IMODE(key_file.stat().st_mode) == 0o600
+    assert stat.S_IMODE(key_dir.stat().st_mode) == 0o755, (
+        "the directory's own mode is not the key's mode and must not be touched"
+    )
+
+
+def test_a_0755_key_directory_is_not_a_permissions_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exact failure from results-20260904T163645Z/a7-report.err."""
+    monkeypatch.setenv(PASSPHRASE_ENV, PASSPHRASE)
+    key_dir = tmp_path / "keys"
+    key_dir.mkdir(mode=0o755)
+
+    first = load_or_create_key(key_dir)
+    second = load_or_create_key(key_dir)
+
+    assert fingerprint(public_key_of(first)) == fingerprint(public_key_of(second)), (
+        "the second call must reload the same key, not mint a new one"
+    )
+
+
+def test_a_directory_that_does_not_exist_yet_is_still_a_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A suffix-less path is a directory even before anything creates it."""
+    monkeypatch.setenv(PASSPHRASE_ENV, PASSPHRASE)
+    key_dir = tmp_path / "state" / "keys"
+
+    load_or_create_key(key_dir)
+
+    assert (key_dir / KEY_FILENAME).is_file()
+
+
+def test_a_file_path_is_still_used_verbatim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(PASSPHRASE_ENV, PASSPHRASE)
+    explicit = tmp_path / "sanctum.key.pem"
+
+    load_or_create_key(explicit)
+
+    assert explicit.is_file()
+    assert not (tmp_path / KEY_FILENAME).exists()
+
+
+def test_a_key_path_occupied_by_a_directory_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A clear error, not IsADirectoryError from deep inside a PEM parser."""
+    monkeypatch.setenv(PASSPHRASE_ENV, PASSPHRASE)
+    key_dir = tmp_path / "keys"
+    (key_dir / KEY_FILENAME).mkdir(parents=True)
+
+    with pytest.raises(KeyPathUnusable) as caught:
+        load_or_create_key(key_dir)
+
+    assert "not a regular file" in caught.value.message
+    assert caught.value.remediation
+
+
+def test_key_file_for_resolves_both_shapes(tmp_path: Path) -> None:
+    existing = tmp_path / "keys"
+    existing.mkdir()
+
+    assert key_file_for(existing) == existing / KEY_FILENAME
+    assert key_file_for(tmp_path / "missing-dir") == (
+        tmp_path / "missing-dir" / KEY_FILENAME
+    )
+    assert key_file_for(tmp_path / "k.pem") == tmp_path / "k.pem"

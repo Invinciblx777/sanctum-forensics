@@ -48,6 +48,7 @@ __all__ = [
     "ChainVerification",
     "Ledger",
     "GENESIS_OPERATION",
+    "NO_SIGNING_KEY",
     "GENESIS_PREV_HASH",
     "boot_id",
     "entry_hash_of",
@@ -56,6 +57,12 @@ __all__ = [
 logger = structlog.get_logger(__name__)
 
 GENESIS_OPERATION = "GENESIS"
+#: Recorded as the genesis ``pubkey_fingerprint`` when a chain is created before
+#: any signing key exists. An empty string was indistinguishable from "the field
+#: was never populated", and a verifier reading it reported a *missing genesis
+#: entry* for a chain whose genesis was right there. Callers that have a key
+#: should load it before the first append and pass its fingerprint.
+NO_SIGNING_KEY = "NO_SIGNING_KEY_AT_CHAIN_CREATION"
 GENESIS_PREV_HASH = "0" * 64
 GENESIS_ACTOR = "sanctum"
 
@@ -249,7 +256,12 @@ class Ledger:
                 params={
                     "tool_version": self.tool_version,
                     "canon_version": CANON_VERSION,
-                    "pubkey_fingerprint": self.pubkey_fingerprint,
+                    # Never an empty string: the absence is stated, so a reader
+                    # can tell "no key existed yet" from "this field was not
+                    # written". See NO_SIGNING_KEY.
+                    "pubkey_fingerprint": (
+                        self.pubkey_fingerprint or NO_SIGNING_KEY
+                    ),
                 },
                 result={},
                 prev_entry_hash=GENESIS_PREV_HASH,

@@ -44,6 +44,11 @@ third pass is therefore a fixed zero character, keeping the
 character/complement/character shape and leaving a result
 `core/erase/verify.py` can actually verify.
 
+On a device whose controller does not program zeros, both zero passes become
+`0xA5` — see "Some controllers do not program a zero fill at all" below. That
+loses the character/complement/character shape, which is worth less than passes
+that actually reach the medium. The plan records the fill bytes and the reason.
+
 The method is offered only because operators are sometimes contractually
 required to name it. It is superseded by NIST SP 800-88 Rev.1, provides no
 measurable benefit over a single pass on any drive made after 2001, and on
@@ -57,10 +62,95 @@ flash, these are unreachable by any write pattern:
 
 - blocks the FTL has remapped after wear or failure,
 - over-provisioned capacity never exposed to the host,
-- data still live in the write cache or in an unmapped erase block.
+- data still live in the write cache or in an unmapped erase block,
+- cells the controller never programmed because it elided the write — see the
+  next section.
 
 Only a firmware sanitize or a cryptographic erase covers those. Where neither is
 available, the result is a **Clear**, not a **Purge**, and the report says so.
+
+**No host-side read can establish physical removal on flash.** Every read is
+answered by the flash translation layer, which decides what a logical block
+returns. A full read-back proves that the device now reports the expected
+pattern for every addressable block. It cannot prove that the cells holding the
+prior contents were erased, and no verification strategy — full, sampled,
+seeded, repeated — changes that. The report states this rather than leaving a
+reader to infer it from a passing verification.
+
+## Some controllers do not program a zero fill at all
+
+Measured on a Toshiba TransMemory USB stick during hardware validation. All five
+writes used `O_DIRECT` with the same 4 MiB buffer, on the same device:
+
+| Write | Bytes | Seconds | MiB/s |
+|---|---:|---:|---:|
+| `0x00`, whole device | 7,759,462,400 | 521.5 | **14.19** |
+| `0xA5`, whole device | 7,759,462,400 | 1886.75 | 3.92 |
+| `0xFF`, 1 GiB, via pipe | 1,073,741,824 | 242.2 | 4.23 |
+| `0xFF`, 1 GiB, via `cat` | 1,073,741,824 | 266.2 | 3.85 |
+| read-back, whole device | 7,759,462,400 | 189.12 | 39.13 |
+
+Non-zero fills span 3.85–4.23 MiB/s — a 10% spread across two fill bytes, two
+tools and two transfer sizes. Zeros run 3.6x faster than the fastest of them. A
+write that completes faster than the medium can be programmed was not
+performed: the controller mapped the addresses to a zero token, or compressed
+the all-zero buffer away. Which of the two is not distinguishable from the host
+and does not matter — either way the cells still hold what they held before.
+
+This is worse than the general flash caveat above, and for a different reason.
+There, the write happened and could not reach everything. Here the write did not
+happen, so it created none of the free-block pressure that forces garbage
+collection to erase the old blocks — which is the only mechanism by which a
+host-side overwrite improves anything on flash.
+
+`core/erase/calibrate.py` measures this before every software overwrite: one
+64 MiB non-zero fill and one 64 MiB zero fill over the same region, timed. A
+ratio at or above 2.0 records `CONTROLLER_WRITE_ELISION` at HIGH severity with
+the measurement attached, and `core/erase/patterns.py` substitutes `0xA5` for
+every `0x00` pass so the write is actually performed and the verification checks
+a pattern the controller had to store. **A device wiped this way holds `0xA5`
+afterwards, not zeros.** The plan states the fill bytes before the run starts.
+
+The substitution is a truthfulness fix before it is a security one: the report
+names `SINGLE_PASS_OVERWRITE`, and a controller that elides performed a
+deallocate. NIST SP 800-88 Rev.1 does not recognise a deallocate as a
+sanitization method. The Clear *outcome* still holds — every block reads as zero
+through the device's own interface, which is what Clear is defined to protect
+against — but the method statement would have been false.
+
+### What this does to a three-pass estimate
+
+`DOD_5220_22_M_3PASS` writes `(0x00, 0xFF, 0x00)`, or `(0xA5, 0xFF, 0xA5)` after
+substitution. Costing every pass at the zero rate is what makes a naive estimate
+wrong by a factor of two:
+
+| Estimate | Arithmetic | Total |
+|---|---|---|
+| Naive, all passes at the zero rate | 3 × 521.5 | 1564.5s = **26.1 min** |
+| Measured, zero passes elided | 521.5 + 1886.75 + 521.5 | 2929.8s = **48.8 min** |
+| Upper bound, every pass programmed | 3 × 1886.75 | 5660.3s = **94.3 min** |
+
+`core/erase/calibrate.py:estimate_seconds` costs each pass at the rate measured
+for the byte that pass writes, and `ErasePlan.est_basis` records where the
+number came from. An operator must not discover a 3.6x mid-run.
+
+**14.19 MiB/s is not a write throughput** and must not be quoted as one. It is
+the rate this controller acknowledges zeros. The device's real write rate is
+~4.0 MiB/s.
+
+## `queue/rotational` is not a flash test
+
+A USB bridge does not clear the kernel's `queue/rotational` flag. The validation
+stick reports `rotational: True` and `lsblk` agrees, so it is not even a
+disagreement to report. Every flash caveat in the erase path was gated on
+`not device.rotational`, so none of them reached the report for a USB flash
+stick — the media that needs them most.
+
+`core/device/media.py:is_flash` makes a positive determination instead, from the
+transport, the flag, the model string, or the write calibration, and returns the
+signal that decided it so the report can say how it knew. Transport wins over
+the flag: there are no rotating USB sticks or SD cards, and the flag being wrong
+is the documented failure mode.
 
 ## USB and MMC bridges block ATA pass-through
 

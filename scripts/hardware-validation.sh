@@ -80,6 +80,11 @@ die()  { printf '\033[31m\nREFUSED: %s\033[0m\n' "$*" >&2; exit 1; }
 now() { date +%s.%N; }
 since() { awk -v a="$1" -v b="$(now)" 'BEGIN{printf "%.2f", b-a}'; }
 
+# Step bookkeeping: exit-status checks, the failure list, and the reporters that
+# print what a step actually concluded. Sourced rather than inlined so it can be
+# tested without a device; see tests/scripts/test_harness_steps.py.
+. "$REPO/scripts/harness-steps.sh"
+
 # --------------------------------------------------------------------------
 # Safety gates. Every one of these exists because getting it wrong destroys
 # something that is not a test fixture.
@@ -249,11 +254,21 @@ run_photorec() {
         /cmd "$DEVICE" partition_none,fileopt,everything,enable,search \
         >"$outdir/photorec.out" 2>&1
     local rc=$? elapsed; elapsed="$(since "$start")"
+    if [[ $rc -ne 0 ]]; then
+        # A non-zero PhotoRec is "nobody looked", not "nothing was recoverable",
+        # and the two support opposite conclusions about the wipe.
+        harness_fail "A.$([[ "$label" == before ]] && echo 3 || echo 6) photorec $label" "exit $rc"
+        harness_dump_err "$outdir/photorec.out"
+    fi
     # PhotoRec writes report.xml and its own log beside the recovered files;
     # neither is a recovered file and counting them would inflate both numbers
-    # by the same amount and the "after" number by infinitely more.
+    # by the same amount and the "after" number by infinitely more. The search
+    # is confined to the recup directories for the same reason: the previous
+    # count swept up this function's own photorec.out and reported 199 where
+    # PhotoRec had recovered 198.
     local count
-    count="$(find "$outdir" -type f ! -name 'report.xml' ! -name '*.log' 2>/dev/null | wc -l)"
+    count="$(find "$outdir" -path "$outdir/recup*" -type f \
+        ! -name 'report.xml' ! -name '*.log' 2>/dev/null | wc -l)"
     {
         printf '{"label": "%s", "returncode": %d, "elapsed_seconds": %s, ' "$label" "$rc" "$elapsed"
         printf '"files_recovered": %d, "command": "photorec /log /d %s/recup /cmd %s partition_none,fileopt,everything,enable,search"}\n' \
@@ -274,9 +289,10 @@ hash_device() {
 
 phase_a() {
     say "PHASE A.1 - enumerate and cross-check"
-    "$PY" "$REPO/scripts/hardware_validation.py" enumerate --device "$DEVICE" \
-        > "$RUN_DIR/a1-enumerate.json" 2> "$RUN_DIR/a1-enumerate.err"
-    note "exit $?; $(grep -c '"field"' "$RUN_DIR/a1-enumerate.json" 2>/dev/null || echo 0) disagreement(s) with lsblk/udev"
+    harness_step "A.1 enumerate" \
+        "$RUN_DIR/a1-enumerate.json" "$RUN_DIR/a1-enumerate.err" \
+        "$PY" "$REPO/scripts/hardware_validation.py" enumerate --device "$DEVICE"
+    note "$(count_matches '"field"' "$RUN_DIR/a1-enumerate.json") disagreement(s) with lsblk/udev"
     lsblk -O "$DEVICE" > "$RUN_DIR/a1-lsblk-O.txt" 2>&1
     hdparm -I "$DEVICE" > "$RUN_DIR/a1-hdparm-I.txt" 2>&1
 
@@ -285,9 +301,18 @@ phase_a() {
     # 0xA5 across the whole device first: a byte that is neither 0x00 nor 0xFF,
     # so "the wipe left zeros" cannot be confused with "the wipe did nothing to
     # a device that was already zeroed".
-    tr '\0' '\245' < /dev/zero | dd of="$DEVICE" bs=4M status=none 2>/dev/null || true
+    #
+    # Written by the harness rather than by `tr | dd`, which never assembled a
+    # full block: dd reading a pipe takes whatever is buffered, so bs=4M bought
+    # nothing and 7.76 GB took 1899.76s at 4.08 MB/s. The pattern writer uses
+    # the erase path's own geometry and buffer, so this throughput and the
+    # erase throughput describe the same device rather than two pipelines.
+    harness_step "A.2 pattern" "$RUN_DIR/a2-pattern.json" "$RUN_DIR/a2-pattern.err" \
+        "$PY" "$REPO/scripts/hardware_validation.py" pattern --device "$DEVICE" \
+        --byte 0xA5
     sync
     note "pattern written in $(since "$start")s"
+    note "pattern: $(harness_json_field "$RUN_DIR/a2-pattern.json" bytes_written) bytes at $(harness_json_field "$RUN_DIR/a2-pattern.json" throughput_mib_per_sec) MiB/s, buffer $(harness_json_field "$RUN_DIR/a2-pattern.json" buffer_bytes) bytes, O_DIRECT=$(harness_json_field "$RUN_DIR/a2-pattern.json" o_direct)"
 
     parted -s "$DEVICE" mklabel msdos mkpart primary fat32 1MiB 100% >/dev/null 2>&1
     sleep 1
@@ -298,7 +323,7 @@ phase_a() {
     local mnt="$WORK/mnt"; mkdir -p "$mnt"
     mount "$part" "$mnt" 2>/dev/null || warn "could not mount $part; files were not planted"
     if mountpoint -q "$mnt"; then
-        "$PY" - "$mnt" <<'PLANT'
+        "$PY" - "$mnt" > "$RUN_DIR/a2-plant-count.txt" <<'PLANT'
 import sys, io, zipfile, random
 from pathlib import Path
 from PIL import Image
@@ -335,10 +360,13 @@ for i in range(2):
     (out / f"memo{i:02d}.docx").write_bytes(b.getvalue())
 print(len(list(out.glob("*"))))
 PLANT
-        "$PY" "$REPO/scripts/hardware_validation.py" hash-tree \
-            --root "$mnt" --out "$RUN_DIR/a2-manifest.json" > "$RUN_DIR/a2-plant.json"
+        harness_step "A.2 hash-tree" \
+            "$RUN_DIR/a2-plant.json" "$RUN_DIR/a2-plant.err" \
+            "$PY" "$REPO/scripts/hardware_validation.py" hash-tree \
+            --root "$mnt" --out "$RUN_DIR/a2-manifest.json"
         sync; umount "$mnt"
-        note "planted $(grep -c '"name"' "$RUN_DIR/a2-manifest.json" 2>/dev/null || echo 0) files"
+        note "planted $(harness_json_field "$RUN_DIR/a2-plant.json" files) files"
+        note "  $(harness_json_field "$RUN_DIR/a2-plant.json" unique_digests) distinct digests, $(harness_json_field "$RUN_DIR/a2-plant.json" duplicate_content_files) file(s) duplicating another's content"
     fi
 
     say "PHASE A.3 - PhotoRec BEFORE (the number without which 'after' proves nothing)"
@@ -348,9 +376,10 @@ PLANT
     local before_hash; before_hash="$(hash_device)"
     note "device sha256 before dry run: $before_hash"
 
-    "$PY" "$REPO/scripts/hardware_validation.py" erase --device "$DEVICE" \
-        --job-id "hwval-dry" --ledger-root "$LEDGER" --dry-run \
-        > "$RUN_DIR/a4-dryrun.json" 2> "$RUN_DIR/a4-dryrun.err"
+    harness_step "A.4 dry run" "$RUN_DIR/a4-dryrun.json" "$RUN_DIR/a4-dryrun.err" \
+        "$PY" "$REPO/scripts/hardware_validation.py" erase --device "$DEVICE" \
+        --job-id "hwval-dry" --ledger-root "$LEDGER" --key-dir "$KEYS" \
+        --dry-run
 
     local after_dry_hash; after_dry_hash="$(hash_device)"
     note "device sha256 after dry run:  $after_dry_hash"
@@ -359,30 +388,37 @@ PLANT
             "$before_hash" "$after_dry_hash" \
             "$([[ "$before_hash" == "$after_dry_hash" ]] && echo true || echo false)"
     } > "$RUN_DIR/a4-dryrun-hashes.json"
-    [[ "$before_hash" == "$after_dry_hash" ]] \
-        && note "dry run wrote zero bytes: CONFIRMED" \
-        || warn "DRY RUN MODIFIED THE DEVICE - this is a defect, record it"
+    if [[ "$before_hash" == "$after_dry_hash" ]]; then
+        note "dry run wrote zero bytes: CONFIRMED"
+    else
+        harness_fail "A.4 dry run" "the dry run modified the device"
+    fi
 
     local start; start="$(now)"
-    "$PY" "$REPO/scripts/hardware_validation.py" erase --device "$DEVICE" \
-        --job-id "hwval-real" --ledger-root "$LEDGER" \
-        > "$RUN_DIR/a4-erase.json" 2> "$RUN_DIR/a4-erase.err"
+    harness_step "A.4 erase" "$RUN_DIR/a4-erase.json" "$RUN_DIR/a4-erase.err" \
+        "$PY" "$REPO/scripts/hardware_validation.py" erase --device "$DEVICE" \
+        --job-id "hwval-real" --ledger-root "$LEDGER" --key-dir "$KEYS"
     note "real wipe finished in $(since "$start")s"
+    # What the engine concluded, not just that it returned. It had already
+    # written "purge_achieved": false and 512 bytes written when the console
+    # said "wipe finished" and the run went on to print COMPLETE.
+    harness_report_erase "A.4 erase" "$RUN_DIR/a4-erase.json" "$SIZE_BYTES" || true
 
     say "PHASE A.5 - verify"
-    "$PY" "$REPO/scripts/hardware_validation.py" verify --device "$DEVICE" \
-        > "$RUN_DIR/a5-verify.json" 2> "$RUN_DIR/a5-verify.err"
-    note "$(sed -n 's/.*"strategy": "\([^"]*\)".*/strategy=\1/p' "$RUN_DIR/a5-verify.json" | head -1)"
+    harness_step "A.5 verify" "$RUN_DIR/a5-verify.json" "$RUN_DIR/a5-verify.err" \
+        "$PY" "$REPO/scripts/hardware_validation.py" verify --device "$DEVICE"
+    harness_report_verification "A.5 verify" "$RUN_DIR/a5-verify.json" || true
 
     say "PHASE A.6 - PhotoRec AFTER (expect zero)"
     run_photorec after
 
     say "PHASE A.7 - report, tamper one byte, verify, restore"
-    "$PY" "$REPO/scripts/hardware_validation.py" report \
+    harness_step "A.7 report" "$RUN_DIR/a7-report.json" "$RUN_DIR/a7-report.err" \
+        "$PY" "$REPO/scripts/hardware_validation.py" report \
         --job-id "hwval-real" --ledger-root "$LEDGER" --key-dir "$KEYS" \
         --out-dir "$REPORTS" --erase-json "$RUN_DIR/a4-erase.json" \
         --verify-json "$RUN_DIR/a5-verify.json" \
-        > "$RUN_DIR/a7-report.json" 2> "$RUN_DIR/a7-report.err"
+        && report_tamper_table "$RUN_DIR/a7-report.json"
 
     say "PHASE A - done"
 }
@@ -420,40 +456,48 @@ for i in range(10):
     (out / f"img{i:02d}.jpg").write_bytes(b.getvalue())
 PLANTB
     sync
-    "$PY" "$REPO/scripts/hardware_validation.py" hash-tree \
-        --root "$mnt" --out "$RUN_DIR/b1-manifest-$FS_KIND.json" \
-        > "$RUN_DIR/b1-plant-$FS_KIND.json"
+    harness_step "B.1 hash-tree" \
+        "$RUN_DIR/b1-plant-$FS_KIND.json" "$RUN_DIR/b1-plant.err" \
+        "$PY" "$REPO/scripts/hardware_validation.py" hash-tree \
+        --root "$mnt" --out "$RUN_DIR/b1-manifest-$FS_KIND.json"
 
     say "PHASE B.2 - delete a subset"
     local deleted=(img00.jpg img02.jpg img04.jpg img06.jpg img08.jpg)
     for name in "${deleted[@]}"; do rm -f "$mnt/$name"; done
     sync; umount "$mnt"
-    "$PY" "$REPO/scripts/hardware_validation.py" mark-deleted \
-        --manifest "$RUN_DIR/b1-manifest-$FS_KIND.json" --names "${deleted[@]}" \
-        > "$RUN_DIR/b2-deleted-$FS_KIND.json"
+    harness_step "B.2 mark-deleted" \
+        "$RUN_DIR/b2-deleted-$FS_KIND.json" "$RUN_DIR/b2-deleted.err" \
+        "$PY" "$REPO/scripts/hardware_validation.py" mark-deleted \
+        --manifest "$RUN_DIR/b1-manifest-$FS_KIND.json" --names "${deleted[@]}"
     note "deleted ${#deleted[@]} of 10"
 
     say "PHASE B.3 - acquire to raw and to E01, verify both"
-    "$PY" "$REPO/scripts/hardware_validation.py" acquire --device "$DEVICE" \
+    harness_step "B.3 acquire raw" \
+        "$RUN_DIR/b3-acquire-raw-$FS_KIND.json" "$RUN_DIR/b3-acquire-raw.err" \
+        "$PY" "$REPO/scripts/hardware_validation.py" acquire --device "$DEVICE" \
         --dest "$WORK/card-$FS_KIND.dd" --fmt raw --ledger-root "$LEDGER" \
-        --job-id "hwval-acq-raw-$FS_KIND" \
-        > "$RUN_DIR/b3-acquire-raw-$FS_KIND.json" 2> "$RUN_DIR/b3-acquire-raw.err"
-    "$PY" "$REPO/scripts/hardware_validation.py" acquire --device "$DEVICE" \
+        --key-dir "$KEYS" \
+        --job-id "hwval-acq-raw-$FS_KIND"
+    harness_step "B.3 acquire e01" \
+        "$RUN_DIR/b3-acquire-e01-$FS_KIND.json" "$RUN_DIR/b3-acquire-e01.err" \
+        "$PY" "$REPO/scripts/hardware_validation.py" acquire --device "$DEVICE" \
         --dest "$WORK/card-$FS_KIND" --fmt e01 --ledger-root "$LEDGER" \
-        --job-id "hwval-acq-e01-$FS_KIND" \
-        > "$RUN_DIR/b3-acquire-e01-$FS_KIND.json" 2> "$RUN_DIR/b3-acquire-e01.err"
+        --key-dir "$KEYS" \
+        --job-id "hwval-acq-e01-$FS_KIND"
 
     say "PHASE B.4 - carve, and compare against the synthetic calibration"
-    "$PY" "$REPO/scripts/hardware_validation.py" carve \
+    harness_step "B.4 carve" \
+        "$RUN_DIR/b4-carve-$FS_KIND.json" "$RUN_DIR/b4-carve.err" \
+        "$PY" "$REPO/scripts/hardware_validation.py" carve \
         --image "$WORK/card-$FS_KIND.dd" \
         --manifest "$RUN_DIR/b1-manifest-$FS_KIND.json" \
-        --filesystem "$FS_KIND" --out-dir "$WORK/recovered-$FS_KIND" \
-        > "$RUN_DIR/b4-carve-$FS_KIND.json" 2> "$RUN_DIR/b4-carve.err"
+        --filesystem "$FS_KIND" --out-dir "$WORK/recovered-$FS_KIND"
 
-    "$PY" "$REPO/scripts/hardware_validation.py" compare \
+    harness_step "B.4 compare" \
+        "$RUN_DIR/b4-compare-$FS_KIND.json" "$RUN_DIR/b4-compare.err" \
+        "$PY" "$REPO/scripts/hardware_validation.py" compare \
         --carve-json "$RUN_DIR/b4-carve-$FS_KIND.json" \
-        --calibration-csv "$REPO/docs/performance/calibration-filesystems.csv" \
-        > "$RUN_DIR/b4-compare-$FS_KIND.json"
+        --calibration-csv "$REPO/docs/performance/calibration-filesystems.csv"
 
     say "PHASE B - done"
 }
@@ -469,6 +513,19 @@ esac
 printf '{"total_seconds": %s, "phase": "%s"}\n' "$(since "$TOTAL_START")" "$PHASE" \
     > "$RUN_DIR/zz-timing.json"
 
-say "COMPLETE"
+harness_write_failures "$RUN_DIR/zz-failures.json"
+
+# The exit status carries the findings. The previous run printed COMPLETE over a
+# wipe that covered 512 bytes and a report step that crashed, and exited 0.
+if harness_summary; then
+    say "COMPLETE"
+    note "results: $RUN_DIR"
+    note "write them up in docs/validation/hardware.md"
+    exit 0
+fi
+
+say "COMPLETE WITH FAILURES"
 note "results: $RUN_DIR"
+note "failures: $RUN_DIR/zz-failures.json"
 note "write them up in docs/validation/hardware.md"
+exit 1

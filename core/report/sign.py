@@ -50,8 +50,12 @@ __all__ = [
     "PASSPHRASE_ENV",
     "SIGNATURE_ALG",
     "SIGNATURE_FIELD",
+    "KEY_FILENAME",
     "KeyPassphraseMissing",
     "KeyPermissionsUnsafe",
+    "KeyPathUnusable",
+    "key_file_for",
+    "fingerprint_of_existing_key",
     "load_or_create_key",
     "public_key_of",
     "fingerprint",
@@ -66,6 +70,21 @@ SIGNATURE_ALG = "Ed25519"
 SIGNATURE_FIELD = "signature"
 
 _UNSAFE_MODE_BITS = stat.S_IRWXG | stat.S_IRWXO
+
+#: The key file's name inside a key *directory*. Callers that manage a directory
+#: rather than a file - the API's ``key_dir`` and the hardware harness's
+#: ``--key-dir`` - both land here.
+KEY_FILENAME = "sanctum-signing.key.pem"
+
+
+class KeyPathUnusable(SanctumError):
+    """The path given for the signing key cannot hold a key."""
+
+    default_remediation = (
+        "Pass either a key file path or a directory to hold one. If a directory "
+        "was intended, remove whatever occupies "
+        f"<directory>/{KEY_FILENAME} and retry."
+    )
 
 
 class KeyPassphraseMissing(SanctumError):
@@ -117,15 +136,45 @@ def _assert_safe_permissions(path: Path) -> None:
         )
 
 
+def key_file_for(path: Path | str) -> Path:
+    """Resolve ``path`` to the key *file*, whether a file or a directory was given.
+
+    Both callers in this repository hand over a directory - the API's
+    ``key_dir`` and the hardware harness's ``--key-dir`` - while the tests hand
+    over a file. Taking the argument literally meant stat-ing a directory for
+    0600 permissions, which no directory has: the harness's Phase A report step
+    died on ``.../keys has mode 0755``, and past that check it would have died
+    again reading a directory as PEM.
+
+    The rule, so that neither side has to guess:
+
+    * an existing directory, or a path with no filename suffix, is a directory
+      and the key lives at ``<directory>/sanctum-signing.key.pem``;
+    * anything else is the key file itself.
+    """
+    candidate = Path(path)
+    if candidate.is_dir() or not candidate.suffix:
+        return candidate / KEY_FILENAME
+    return candidate
+
+
 def load_or_create_key(path: Path | str) -> Ed25519PrivateKey:
     """Load the Ed25519 private key at ``path``, generating it on first use.
 
+    Args:
+        path: The key file, or a directory to hold it. See :func:`key_file_for`.
+
     Raises:
+        KeyPathUnusable: The resolved key path is not a regular file.
         KeyPassphraseMissing: No passphrase was available.
         KeyPermissionsUnsafe: The existing key file is group- or world-readable.
         ValueError: The passphrase does not decrypt the key.
     """
-    key_path = Path(path)
+    key_path = key_file_for(path)
+    if key_path.exists() and not key_path.is_file():
+        raise KeyPathUnusable(
+            f"{key_path} is not a regular file, so it cannot hold a signing key."
+        )
     passphrase = _passphrase(key_path)
 
     if key_path.exists():
@@ -152,6 +201,26 @@ def load_or_create_key(path: Path | str) -> Ed25519PrivateKey:
         os.close(fd)
     logger.info("signing_key_created", path=str(key_path))
     return private
+
+
+def fingerprint_of_existing_key(path: Path | str) -> str:
+    """The fingerprint of the key at ``path``, or ``""`` if there is not one.
+
+    Never creates a key. A ledger's genesis entry should record the fingerprint
+    of the key its reports will be signed with, which means the key has to exist
+    before the first append - but a caller that has no key yet, or no passphrase
+    to unlock one, must still be able to start a chain. It gets ``""``, and
+    :data:`core.ledger.chain.NO_SIGNING_KEY` is recorded in genesis so the
+    absence is stated rather than left as an empty field.
+    """
+    key_path = key_file_for(path)
+    if not key_path.is_file():
+        return ""
+    try:
+        private = load_or_create_key(key_path)
+    except (SanctumError, ValueError, OSError):
+        return ""
+    return fingerprint(public_key_of(private))
 
 
 def public_key_of(private: Ed25519PrivateKey) -> Ed25519PublicKey:

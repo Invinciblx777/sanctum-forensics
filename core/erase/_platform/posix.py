@@ -460,7 +460,15 @@ class PosixBackend(PortableBackend):
                 f"sysfs queue attributes for {name} could not be read ({exc}), "
                 "so whether this device issues TRIM is unknown."
             ]
-        return rotational == "0" and int(granularity or 0) > 0, []
+        # `rotational == "0"` used to be required here, and a USB bridge does not
+        # clear that flag: a flash stick reporting rotational=1 answered False,
+        # so ResidualKind.TRIM_REMAP never fired for files on removable flash -
+        # the media where an overwrite is least likely to land on the original
+        # page. Discard support and a flash device node are each positive
+        # evidence on their own; the flag only ever adds to them.
+        discards = int(granularity or 0) > 0
+        flash_node = name.startswith(("nvme", "mmcblk"))
+        return discards or rotational == "0" or flash_node, []
 
     def block_device_for(self, path: Path) -> tuple[str | None, list[str]]:
         """The block device backing ``path``, from ``/proc/mounts``."""

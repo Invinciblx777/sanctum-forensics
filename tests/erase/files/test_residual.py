@@ -12,6 +12,7 @@ from pathlib import Path
 
 from core.erase.residual import IMPLEMENTED_KINDS, scan
 from core.models import (
+    FILE_PATH_KINDS,
     FileEraseRecord,
     FileInspection,
     ResidualKind,
@@ -337,7 +338,7 @@ def test_every_kind_is_reachable_from_some_inspection() -> None:
             path="x", size_bytes=10, fs_type="NTFS"
         ),
     }
-    assert set(cases) == set(ResidualKind), "a kind has no reachability case"
+    assert set(cases) == FILE_PATH_KINDS, "a file-path kind has no reachability case"
     for kind, inspection in cases.items():
         assert kind in _kinds(inspection), f"{kind.value} was never produced"
 

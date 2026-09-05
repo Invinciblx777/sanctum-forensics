@@ -42,6 +42,7 @@ __all__ = [
     "NONE_RECORDED",
     "PDF_DISCLAIMER",
     "build_report",
+    "excerpt_gaps",
     "render_json",
     "render_pdf",
     "write_report",
@@ -102,6 +103,40 @@ _MONOSPACE_KEYS = frozenset(
 
 def _or_none_recorded(items: list[str]) -> list[str]:
     return list(items) if items else [NONE_RECORDED]
+
+
+def excerpt_gaps(entries: list[dict[str, Any]]) -> list[dict[str, int]]:
+    """The ``seq`` ranges an excerpt omits, as inclusive ``from_seq``/``to_seq``.
+
+    A report's excerpt is a *filtered* view: it carries the entries for one job
+    plus genesis, and leaves out whatever belonged to other jobs on the same
+    ledger. That is deliberate - a report for one case must not have to disclose
+    another case's entries to prove its own integrity - but it means the excerpt
+    cannot link end to end, and a verifier that assumed it could reported the
+    first entry after a gap as a broken chain.
+
+    The omissions are therefore declared here rather than left to be inferred
+    from seq arithmetic by whoever reads the report. Declaring them puts them
+    under the signature and lets a verifier cross-check what the excerpt says it
+    left out against what it actually left out, so an excerpt that was trimmed
+    after the fact and did not update this field is detectable.
+    """
+    seqs = sorted(
+        int(entry["seq"])
+        for entry in entries
+        if isinstance(entry.get("seq"), int)
+    )
+    gaps: list[dict[str, int]] = []
+    for earlier, later in zip(seqs, seqs[1:], strict=False):
+        if later > earlier + 1:
+            gaps.append(
+                {
+                    "from_seq": earlier + 1,
+                    "to_seq": later - 1,
+                    "count": later - earlier - 1,
+                }
+            )
+    return gaps
 
 
 def build_report(
@@ -192,6 +227,8 @@ def build_report(
             "merkle_root": merkle_root or "",
             "anchor": anchor or {},
             "entries": list(ledger_excerpt),
+            #: Declared, not inferred. See :func:`excerpt_gaps`.
+            "excerpt_gaps": excerpt_gaps(list(ledger_excerpt)),
         },
         "signature": signature.model_dump() if signature else {},
     }

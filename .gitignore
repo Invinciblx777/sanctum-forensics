@@ -27,3 +27,9 @@ ui/.vite/
 *.raw
 corpus/
 evidence/
+
+# Hardware validation runs. The numbers are written up in
+# docs/validation/hardware.md; the raw output is local evidence, not source.
+# One run is 7.3 GB of PhotoRec output, and its ledger and signing key are
+# root-owned 0600 by design.
+docs/validation/results-*/

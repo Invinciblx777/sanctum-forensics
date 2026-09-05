@@ -1,16 +1,23 @@
 """Independent verification of a signed report.
 
-Four checks, each reported on its own line so a reader can see exactly which
+Five checks, each reported on its own line so a reader can see exactly which
 property holds:
 
 1. **Signature** - the detached signature is valid for these exact bytes under
    the public key embedded in the report.
 2. **Fingerprint matches genesis** - that public key's fingerprint is the one
    recorded in the ledger's genesis entry, so the report was signed by the key
-   the chain was started with.
-3. **Chain integrity** - the ledger excerpt carried inside the report links and
-   hashes correctly on its own terms.
-4. **Blob availability** - the params and result blobs the excerpt references
+   the chain was started with. Not applicable when genesis records no
+   fingerprint, with the reason named rather than guessed.
+3. **Chain integrity** - the ledger excerpt carried inside the report hashes
+   and links correctly *on its own terms*. An excerpt is a filtered view of one
+   job's entries, so it is expected to have gaps; the result is COMPLETE,
+   PARTIAL (gaps named) or BROKEN, and the gaps the report declares are
+   cross-checked against the gaps it has.
+4. **Chain store** - the whole chain re-verified from the store, independently
+   of the excerpt and of the ``chain_status`` the report prints. Not applicable
+   when the store is unreachable or unreadable.
+5. **Blob availability** - the params and result blobs the excerpt references
    are present, when the store is reachable. Not applicable otherwise.
 
 What this does not prove
@@ -29,6 +36,7 @@ is printed with every result rather than left for the reader to infer.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -36,13 +44,21 @@ from typing import Any
 
 import structlog
 
-from core.ledger.chain import GENESIS_OPERATION, GENESIS_PREV_HASH, entry_hash_of
+from core.ledger.chain import (
+    GENESIS_OPERATION,
+    GENESIS_PREV_HASH,
+    NO_SIGNING_KEY,
+    ChainStatus,
+    entry_hash_of,
+)
 from core.ledger.store import BlobStore, LedgerStore
 from core.models import LedgerEntry, Signature
 from core.report.sign import verify_signature
 
 __all__ = [
     "CheckName",
+    "ChainExcerptStatus",
+    "GenesisFingerprintReason",
     "ReportCheck",
     "ReportVerification",
     "verify_report_file",
@@ -61,22 +77,90 @@ IDENTITY_CAVEAT = (
 
 
 class CheckName(StrEnum):
-    """The four independently reported checks."""
+    """The five independently reported checks."""
 
     SIGNATURE = "signature"
     FINGERPRINT_MATCHES_GENESIS = "fingerprint_matches_genesis"
     CHAIN_INTEGRITY = "chain_integrity"
+    CHAIN_STORE = "chain_store"
     BLOBS_AVAILABLE = "blobs_available"
+
+
+class ChainExcerptStatus(StrEnum):
+    """What the excerpt alone established about the chain.
+
+    Two outcomes were not enough. A filtered excerpt cannot link end to end, so
+    a pass/fail check had to call an honest omission a break - which is what it
+    did, reporting "entry 7 does not link to the entry before it" for a report
+    whose store verified all 42 entries. These three separate "the excerpt
+    proves the whole span", "the excerpt proves what it carries and names what
+    it does not", and "the excerpt contradicts itself".
+    """
+
+    #: Contiguous excerpt: every entry present from first seq to last, every
+    #: link checked.
+    VERIFIED_COMPLETE = "VERIFIED_COMPLETE"
+    #: Gapped excerpt: every adjacent pair links, and the gaps are named. The
+    #: spans inside the gaps are not evidenced by the excerpt at all.
+    VERIFIED_PARTIAL = "VERIFIED_PARTIAL"
+    #: An adjacent pair does not link, an entry does not hash to its recorded
+    #: entry_hash, or the declared gaps do not match the observed ones.
+    BROKEN = "BROKEN"
+
+
+class GenesisFingerprintReason(StrEnum):
+    """Why the genesis fingerprint could or could not be read.
+
+    Five situations used to return ``None`` and print one sentence naming only
+    the first of them. The hardware run hit the fifth and was told the first:
+    "no genesis entry was available to compare against", about a report whose
+    excerpt carried genesis at seq 0.
+    """
+
+    OK = "OK"
+    GENESIS_ABSENT = "GENESIS_ABSENT"
+    NO_LEDGER_ROOT = "NO_LEDGER_ROOT"
+    BLOB_MISSING = "BLOB_MISSING"
+    BLOB_UNPARSABLE = "BLOB_UNPARSABLE"
+    FINGERPRINT_EMPTY = "FINGERPRINT_EMPTY"
+
+
+_GENESIS_REASON_DETAIL = {
+    GenesisFingerprintReason.GENESIS_ABSENT: (
+        "the excerpt carries no genesis entry, so there is nothing to compare "
+        "the signing key against"
+    ),
+    GenesisFingerprintReason.NO_LEDGER_ROOT: (
+        "no ledger store was reachable, so the genesis entry's parameters "
+        "could not be read"
+    ),
+    GenesisFingerprintReason.BLOB_MISSING: (
+        "the genesis entry's parameter blob is not in the store"
+    ),
+    GenesisFingerprintReason.BLOB_UNPARSABLE: (
+        "the genesis entry's parameter blob is not valid JSON"
+    ),
+    GenesisFingerprintReason.FINGERPRINT_EMPTY: (
+        "the chain was created before any signing key existed, so genesis "
+        "records no fingerprint to compare against"
+    ),
+}
 
 
 @dataclass(frozen=True)
 class ReportCheck:
-    """One check, its outcome, and a one-line reason."""
+    """One check, its outcome, and a one-line reason.
+
+    ``status`` carries a check-specific verdict where pass/fail is too coarse -
+    today the three :class:`ChainExcerptStatus` values and the
+    :class:`GenesisFingerprintReason` that produced the outcome.
+    """
 
     name: CheckName
     passed: bool
     detail: str
     applicable: bool = True
+    status: str = ""
 
 
 @dataclass
@@ -133,47 +217,63 @@ def _check_fingerprint(
             "no fingerprint in the signature block to compare",
         )
 
-    genesis_fingerprint = _genesis_fingerprint(report, ledger_root)
+    genesis_fingerprint, reason = _genesis_fingerprint(report, ledger_root)
     if genesis_fingerprint is None:
         return ReportCheck(
             CheckName.FINGERPRINT_MATCHES_GENESIS,
             True,
-            "no genesis entry was available to compare against",
+            _GENESIS_REASON_DETAIL[reason],
             applicable=False,
+            status=reason.value,
         )
     if genesis_fingerprint == claimed:
         return ReportCheck(
             CheckName.FINGERPRINT_MATCHES_GENESIS,
             True,
             f"signing key {claimed} is the key recorded in the ledger genesis",
+            status=GenesisFingerprintReason.OK.value,
         )
     return ReportCheck(
         CheckName.FINGERPRINT_MATCHES_GENESIS,
         False,
         f"report was signed by {claimed}, but the ledger genesis records "
         f"{genesis_fingerprint}",
+        status=GenesisFingerprintReason.OK.value,
     )
 
 
 def _genesis_fingerprint(
     report: dict[str, Any], ledger_root: Path | None
-) -> str | None:
-    """Fingerprint from the genesis entry, from the store or the excerpt."""
+) -> tuple[str | None, GenesisFingerprintReason]:
+    """Fingerprint from the genesis entry, with the reason when there is none.
+
+    Every ``None`` return here used to be rendered as "no genesis entry was
+    available", which named one of five possible causes and was the wrong one
+    for the case that actually happened. The reason travels with the result so
+    the check can say which situation it is in.
+    """
     entries = _excerpt(report)
     genesis = next(
         (e for e in entries if e.get("operation") == GENESIS_OPERATION), None
     )
-    if genesis is None or ledger_root is None:
-        return None
+    if genesis is None:
+        return None, GenesisFingerprintReason.GENESIS_ABSENT
+    if ledger_root is None:
+        return None, GenesisFingerprintReason.NO_LEDGER_ROOT
     blob = BlobStore(ledger_root).get(str(genesis.get("params_hash") or ""))
     if blob is None:
-        return None
+        return None, GenesisFingerprintReason.BLOB_MISSING
     try:
         params: dict[str, Any] = json.loads(blob)
     except ValueError:
-        return None
+        return None, GenesisFingerprintReason.BLOB_UNPARSABLE
     value = params.get("pubkey_fingerprint")
-    return str(value) if value else None
+    if not value or value == NO_SIGNING_KEY:
+        # A chain started before any signing key existed. Genesis records the
+        # absence explicitly (see core.ledger.chain.NO_SIGNING_KEY); either way
+        # there is no fingerprint to compare, and that is not a missing genesis.
+        return None, GenesisFingerprintReason.FINGERPRINT_EMPTY
+    return str(value), GenesisFingerprintReason.OK
 
 
 def _excerpt(report: dict[str, Any]) -> list[dict[str, Any]]:
@@ -183,7 +283,51 @@ def _excerpt(report: dict[str, Any]) -> list[dict[str, Any]]:
     return [entry for entry in entries if isinstance(entry, dict)]
 
 
+def _declared_gaps(report: dict[str, Any]) -> list[dict[str, int]] | None:
+    """The gaps the report says its excerpt has, or ``None`` if it declares none.
+
+    ``None`` means the field is absent - a report written before the field
+    existed - which is different from a report declaring an empty list.
+    """
+    audit = (report.get("sections") or {}).get("audit_trail") or {}
+    declared = audit.get("excerpt_gaps")
+    if not isinstance(declared, list):
+        return None
+    return [item for item in declared if isinstance(item, dict)]
+
+
+def _normalise_gaps(gaps: list[dict[str, Any]]) -> list[tuple[int, int]]:
+    pairs: list[tuple[int, int]] = []
+    for gap in gaps:
+        try:
+            pairs.append((int(gap["from_seq"]), int(gap["to_seq"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return sorted(pairs)
+
+
+def _describe_gaps(gaps: list[tuple[int, int]]) -> str:
+    return ", ".join(
+        f"{low}" if low == high else f"{low}-{high}" for low, high in gaps
+    )
+
+
 def _check_chain(report: dict[str, Any]) -> ReportCheck:
+    """Verify the excerpt on its own terms, which are not a whole chain's terms.
+
+    The excerpt is a filtered view: one job's entries plus genesis, with other
+    jobs' entries left out on purpose. Walking it as though every entry were
+    adjacent to the next made an honest omission indistinguishable from a
+    broken link, and reported a 42-entry chain that verified in the store as
+    broken at its first excerpted entry.
+
+    So: every entry's own hash is recomputed, links are checked only between
+    entries whose ``seq`` differ by exactly one, and each gap is named rather
+    than treated as a failure. The gaps the excerpt declares are cross-checked
+    against the gaps it actually has, which is what makes a silently trimmed
+    excerpt detectable - without the cross-check, removing an entry and leaving
+    the declaration alone looks exactly like an honest filter.
+    """
     raw_entries = _excerpt(report)
     if not raw_entries:
         return ReportCheck(
@@ -193,17 +337,9 @@ def _check_chain(report: dict[str, Any]) -> ReportCheck:
             applicable=False,
         )
 
-    declared = str(
-        (report.get("sections") or {}).get("audit_trail", {}).get("chain_status") or ""
-    )
-    if declared and declared != "VALID":
-        return ReportCheck(
-            CheckName.CHAIN_INTEGRITY,
-            False,
-            f"the report itself records the chain as {declared}",
-        )
-
     previous: LedgerEntry | None = None
+    observed: list[tuple[int, int]] = []
+    linked = 0
     for index, raw in enumerate(raw_entries):
         try:
             entry = LedgerEntry.model_validate(raw)
@@ -212,6 +348,7 @@ def _check_chain(report: dict[str, Any]) -> ReportCheck:
                 CheckName.CHAIN_INTEGRITY,
                 False,
                 f"excerpt entry {index} does not parse: {exc}",
+                status=ChainExcerptStatus.BROKEN.value,
             )
         record = raw | {"ts_utc": entry.ts_utc}
         if entry_hash_of(record) != entry.entry_hash:
@@ -220,24 +357,146 @@ def _check_chain(report: dict[str, Any]) -> ReportCheck:
                 False,
                 f"entry {entry.seq} does not hash to its recorded entry_hash; "
                 "its contents were altered",
+                status=ChainExcerptStatus.BROKEN.value,
             )
-        expected_prev = (
-            GENESIS_PREV_HASH if previous is None else previous.entry_hash
-        )
-        if previous is not None or entry.seq == 0:
-            if entry.prev_entry_hash != expected_prev:
+
+        if previous is None:
+            if entry.seq == 0 and entry.prev_entry_hash != GENESIS_PREV_HASH:
                 return ReportCheck(
                     CheckName.CHAIN_INTEGRITY,
                     False,
-                    f"entry {entry.seq} does not link to the entry before it",
+                    "the genesis entry does not carry the genesis prev hash",
+                    status=ChainExcerptStatus.BROKEN.value,
                 )
+        elif entry.seq == previous.seq + 1:
+            if entry.prev_entry_hash != previous.entry_hash:
+                return ReportCheck(
+                    CheckName.CHAIN_INTEGRITY,
+                    False,
+                    f"entry {entry.seq} does not link to entry {previous.seq}, "
+                    "which immediately precedes it",
+                    status=ChainExcerptStatus.BROKEN.value,
+                )
+            linked += 1
+        elif entry.seq > previous.seq + 1:
+            # Not a break. The excerpt never claimed to carry this span, and
+            # nothing in it can speak for the entries inside the gap.
+            observed.append((previous.seq + 1, entry.seq - 1))
+        else:
+            return ReportCheck(
+                CheckName.CHAIN_INTEGRITY,
+                False,
+                f"entry {entry.seq} does not follow entry {previous.seq}; the "
+                "excerpt is out of order or repeats a seq",
+                status=ChainExcerptStatus.BROKEN.value,
+            )
         previous = entry
 
+    declared_raw = _declared_gaps(report)
     span = f"{raw_entries[0].get('seq')}..{raw_entries[-1].get('seq')}"
+
+    if declared_raw is not None:
+        declared = _normalise_gaps(declared_raw)
+        if declared != observed:
+            return ReportCheck(
+                CheckName.CHAIN_INTEGRITY,
+                False,
+                "the excerpt declares gaps "
+                f"[{_describe_gaps(declared) or 'none'}] but has "
+                f"[{_describe_gaps(observed) or 'none'}]; entries were removed "
+                "or added after the declaration was written",
+                status=ChainExcerptStatus.BROKEN.value,
+            )
+
+    if not observed:
+        return ReportCheck(
+            CheckName.CHAIN_INTEGRITY,
+            True,
+            f"all {len(raw_entries)} excerpt entries link and hash correctly "
+            f"({span})",
+            status=ChainExcerptStatus.VERIFIED_COMPLETE.value,
+        )
+
+    missing = sum(high - low + 1 for low, high in observed)
+    undeclared = " (gaps not declared by the report)" if declared_raw is None else ""
     return ReportCheck(
         CheckName.CHAIN_INTEGRITY,
         True,
-        f"all {len(raw_entries)} excerpt entries link and hash correctly ({span})",
+        f"{len(raw_entries)} excerpt entries hash correctly and all {linked} "
+        f"adjacent pair(s) link ({span}); {missing} entr(y/ies) are not carried "
+        f"by this excerpt at seq {_describe_gaps(observed)} and are not "
+        f"evidenced by it{undeclared}",
+        status=ChainExcerptStatus.VERIFIED_PARTIAL.value,
+    )
+
+
+def _check_store_chain(
+    report: dict[str, Any], ledger_root: Path | None
+) -> ReportCheck:
+    """Verify the whole chain from the store, independently of the excerpt.
+
+    The excerpt can only ever speak for what it carries. The report also prints
+    a ``chain_status`` that the *writer* computed over the whole store, and a
+    reader who trusted that field would be taking the report's word for the one
+    property the report exists to evidence. When the store is reachable this
+    recomputes it and compares.
+    """
+    if ledger_root is None:
+        return ReportCheck(
+            CheckName.CHAIN_STORE,
+            True,
+            "no ledger store was given, so the full chain was not re-verified",
+            applicable=False,
+        )
+    store = LedgerStore(ledger_root)
+    if not store.path.exists():
+        return ReportCheck(
+            CheckName.CHAIN_STORE,
+            True,
+            f"no chain file at {store.path}, so the full chain was not "
+            "re-verified",
+            applicable=False,
+        )
+    if not os.access(store.path, os.R_OK):
+        # LedgerStore.read() turns an unreadable file into an empty chain, and
+        # an empty chain verifies. Saying "not applicable" is the honest answer;
+        # saying VALID would be a verification that never happened.
+        return ReportCheck(
+            CheckName.CHAIN_STORE,
+            True,
+            f"{store.path} is not readable by this process, so the full chain "
+            "was not re-verified",
+            applicable=False,
+        )
+
+    from core.ledger.chain import Ledger
+
+    outcome = Ledger(
+        ledger_root, tool_version="", pubkey_fingerprint=""
+    ).verify()
+    declared = str(
+        (report.get("sections") or {}).get("audit_trail", {}).get("chain_status") or ""
+    )
+    if outcome.status is not ChainStatus.VALID:
+        return ReportCheck(
+            CheckName.CHAIN_STORE,
+            False,
+            f"the ledger store does not verify: {outcome.explanation}",
+            status=outcome.status.value,
+        )
+    if declared and declared != outcome.status.value:
+        return ReportCheck(
+            CheckName.CHAIN_STORE,
+            False,
+            f"the report records the chain as {declared}, but the store "
+            f"verifies as {outcome.status.value}",
+            status=outcome.status.value,
+        )
+    return ReportCheck(
+        CheckName.CHAIN_STORE,
+        True,
+        f"the ledger store verifies independently: {outcome.explanation}",
+        status=outcome.status.value,
     )
 
 
@@ -281,7 +540,7 @@ def _check_blobs(report: dict[str, Any], ledger_root: Path | None) -> ReportChec
 def verify_report(
     report: dict[str, Any], *, ledger_root: Path | str | None = None
 ) -> ReportVerification:
-    """Run all four checks over an already-loaded report."""
+    """Run every check over an already-loaded report."""
     root = Path(ledger_root) if ledger_root is not None else None
     signature = report.get("signature") or {}
     return ReportVerification(
@@ -289,6 +548,7 @@ def verify_report(
             _check_signature(report),
             _check_fingerprint(report, root),
             _check_chain(report),
+            _check_store_chain(report, root),
             _check_blobs(report, root),
         ],
         fingerprint=str(signature.get("pubkey_fingerprint") or ""),

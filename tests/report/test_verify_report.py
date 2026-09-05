@@ -88,13 +88,14 @@ def test_a_good_report_passes_every_check(case: dict[str, Any]) -> None:
         CheckName.SIGNATURE,
         CheckName.FINGERPRINT_MATCHES_GENESIS,
         CheckName.CHAIN_INTEGRITY,
+        CheckName.CHAIN_STORE,
         CheckName.BLOBS_AVAILABLE,
     }
 
 
 def test_each_check_is_reported_independently(case: dict[str, Any]) -> None:
     result = verify_report_file(case["path"], ledger_root=case["ledger_root"])
-    assert len(result.checks) == 4
+    assert len(result.checks) == len(CheckName)
     for check in result.checks:
         assert check.detail
 
@@ -247,3 +248,356 @@ def test_cli_reports_a_missing_file_clearly(tmp_path: Path) -> None:
     done = run_cli("verify-report", str(tmp_path / "nope.json"))
     assert done.returncode != 0
     assert "not found" in (done.stdout + done.stderr).lower()
+
+
+# --------------------------------------------------------------------------
+# A filtered excerpt is not a broken chain
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def filtered_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """A report whose excerpt carries genesis plus one job, skipping another.
+
+    The shape the hardware run produced: a dry-run job wrote seqs 1..6, the real
+    job wrote 7..41, and the report for the real job embedded genesis plus
+    7..41. The store verified all 42 entries; the report's own chain check
+    called it broken at entry 7.
+    """
+    monkeypatch.setenv(PASSPHRASE_ENV, PASSPHRASE)
+    key = load_or_create_key(tmp_path / "sanctum.key.pem")
+    print_fingerprint = fingerprint(public_key_of(key))
+
+    ledger = Ledger(
+        tmp_path / "store", tool_version="0.1.0", pubkey_fingerprint=print_fingerprint
+    )
+    for job in ("first-job", "second-job"):
+        for index in range(3):
+            ledger.append(
+                actor="tester",
+                operation=f"erase.phase.{index}",
+                params={"job_id": job, "index": index},
+                result={"ok": True},
+            )
+
+    entries = list(ledger.entries())
+    excerpt = [
+        json.loads(entry.model_dump_json())
+        for entry in entries
+        if ledger.params_of(entry).get("job_id") == "second-job"
+        or entry.operation == "GENESIS"
+    ]
+
+    report = build_report(
+        case_id="CASE-FILTERED",
+        operator="A. Operator",
+        generated_at=datetime(2026, 3, 1, tzinfo=UTC),
+        tool_version="0.1.0",
+        device={"model": "M", "serial": "S", "size_bytes": 1},
+        method={"method": "SINGLE_PASS_OVERWRITE"},
+        hidden_areas={},
+        verification={"strategy": "full_read", "passed": True},
+        residual_risk={"level": "low", "factors": [], "purge_achieved": False},
+        limitations=[],
+        ledger_excerpt=excerpt,
+        chain_verification=ledger.verify(),
+        pubkey_fingerprint=print_fingerprint,
+    )
+    report["signature"] = sign_report(report, key).model_dump()
+    json_path, _ = write_report(report, tmp_path / "out")
+    return {
+        "path": json_path,
+        "ledger_root": tmp_path / "store",
+        "fingerprint": print_fingerprint,
+        "excerpt_seqs": [entry["seq"] for entry in excerpt],
+    }
+
+
+def chain_check(result: Any) -> Any:
+    return next(c for c in result.checks if c.name == CheckName.CHAIN_INTEGRITY)
+
+
+def store_check(result: Any) -> Any:
+    return next(c for c in result.checks if c.name == CheckName.CHAIN_STORE)
+
+
+def test_an_honestly_filtered_excerpt_verifies_partial(
+    filtered_case: dict[str, Any],
+) -> None:
+    """The case that used to report "entry 4 does not link to the entry before it"."""
+    assert filtered_case["excerpt_seqs"] == [0, 4, 5, 6]
+
+    result = verify_report_file(
+        filtered_case["path"], ledger_root=filtered_case["ledger_root"]
+    )
+    check = chain_check(result)
+
+    assert check.passed is True
+    assert check.status == "VERIFIED_PARTIAL"
+    assert "1-3" in check.detail, check.detail
+    assert result.ok is True
+
+
+def test_the_declared_gaps_name_what_the_excerpt_left_out(
+    filtered_case: dict[str, Any],
+) -> None:
+    """Declared under the signature, not left to seq arithmetic by the reader."""
+    document = json.loads(Path(filtered_case["path"]).read_bytes())
+
+    assert document["sections"]["audit_trail"]["excerpt_gaps"] == [
+        {"from_seq": 1, "to_seq": 3, "count": 3}
+    ]
+
+
+def test_a_contiguous_excerpt_verifies_complete(case: dict[str, Any]) -> None:
+    result = verify_report_file(case["path"], ledger_root=case["ledger_root"])
+    check = chain_check(result)
+
+    assert check.passed is True
+    assert check.status == "VERIFIED_COMPLETE"
+
+
+def test_an_entry_removed_without_updating_the_gaps_is_broken(
+    filtered_case: dict[str, Any],
+) -> None:
+    """The trim the cross-check exists to catch.
+
+    Silently dropping an entry produces an excerpt that looks exactly like an
+    honest filter. It is the mismatch against the declaration the excerpt
+    carries that gives it away.
+    """
+    tamper(
+        Path(filtered_case["path"]),
+        lambda d: d["sections"]["audit_trail"]["entries"].pop(2),
+    )
+
+    result = verify_report_file(
+        filtered_case["path"], ledger_root=filtered_case["ledger_root"]
+    )
+    check = chain_check(result)
+
+    assert check.passed is False
+    assert check.status == "BROKEN"
+    assert "declares gaps" in check.detail, check.detail
+
+
+def test_an_altered_entry_is_broken_not_partial(
+    filtered_case: dict[str, Any],
+) -> None:
+    def alter(document: dict[str, Any]) -> None:
+        document["sections"]["audit_trail"]["entries"][1]["actor"] = "somebody else"
+
+    tamper(Path(filtered_case["path"]), alter)
+
+    check = chain_check(
+        verify_report_file(
+            filtered_case["path"], ledger_root=filtered_case["ledger_root"]
+        )
+    )
+
+    assert check.passed is False
+    assert check.status == "BROKEN"
+    assert "does not hash" in check.detail
+
+
+def test_a_relinked_excerpt_is_broken(filtered_case: dict[str, Any]) -> None:
+    """Adjacent entries must still link; PARTIAL is not a licence to skip that."""
+
+    def alter(document: dict[str, Any]) -> None:
+        entries = document["sections"]["audit_trail"]["entries"]
+        entries[2]["prev_entry_hash"] = "0" * 64
+        # Re-hash so the per-entry check passes and the link check is what fails.
+        from core.ledger.chain import entry_hash_of
+
+        entries[2]["entry_hash"] = entry_hash_of(entries[2])
+
+    tamper(Path(filtered_case["path"]), alter)
+
+    check = chain_check(
+        verify_report_file(
+            filtered_case["path"], ledger_root=filtered_case["ledger_root"]
+        )
+    )
+
+    assert check.passed is False
+    assert check.status == "BROKEN"
+    assert "does not link to entry" in check.detail
+
+
+# --------------------------------------------------------------------------
+# The store is re-verified independently of what the report claims
+# --------------------------------------------------------------------------
+
+
+def test_the_store_is_verified_independently(case: dict[str, Any]) -> None:
+    check = store_check(
+        verify_report_file(case["path"], ledger_root=case["ledger_root"])
+    )
+
+    assert check.applicable is True
+    assert check.passed is True
+    assert check.status == ChainStatus.VALID.value
+
+
+def test_the_store_check_is_not_applicable_without_a_store(
+    case: dict[str, Any],
+) -> None:
+    check = store_check(verify_report_file(case["path"]))
+
+    assert check.applicable is False
+    assert "not re-verified" in check.detail
+
+
+def test_a_report_claiming_a_status_the_store_contradicts_fails(
+    case: dict[str, Any], tmp_path: Path
+) -> None:
+    """The report's own chain_status is a claim, and claims get checked."""
+    tamper(
+        Path(case["path"]),
+        lambda d: d["sections"]["audit_trail"].update({"chain_status": "BROKEN"}),
+    )
+
+    check = store_check(
+        verify_report_file(case["path"], ledger_root=case["ledger_root"])
+    )
+
+    assert check.passed is False
+    assert "records the chain as BROKEN" in check.detail
+
+
+# --------------------------------------------------------------------------
+# The fingerprint check must name the situation it is actually in
+# --------------------------------------------------------------------------
+
+
+def fingerprint_check(result: Any) -> Any:
+    return next(
+        c for c in result.checks if c.name == CheckName.FINGERPRINT_MATCHES_GENESIS
+    )
+
+
+def test_a_matching_fingerprint_reports_ok(case: dict[str, Any]) -> None:
+    check = fingerprint_check(
+        verify_report_file(case["path"], ledger_root=case["ledger_root"])
+    )
+
+    assert check.passed is True
+    assert check.applicable is True
+    assert check.status == "OK"
+
+
+def test_a_chain_started_without_a_key_reports_fingerprint_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hardware run's case, and the one it was told the wrong reason for.
+
+    The ledger was created before the signing key existed, so genesis carried no
+    fingerprint. The check reported "no genesis entry was available to compare
+    against" about a report whose excerpt carried genesis at seq 0.
+    """
+    monkeypatch.setenv(PASSPHRASE_ENV, PASSPHRASE)
+    key = load_or_create_key(tmp_path / "sanctum.key.pem")
+    print_fingerprint = fingerprint(public_key_of(key))
+
+    ledger = Ledger(tmp_path / "store", tool_version="0.1.0", pubkey_fingerprint="")
+    ledger.append(actor="t", operation="erase.phase.0", params={}, result={})
+    entries = [json.loads(e.model_dump_json()) for e in ledger.entries()]
+
+    report = build_report(
+        case_id="CASE-NOKEY",
+        operator="A. Operator",
+        generated_at=datetime(2026, 3, 1, tzinfo=UTC),
+        tool_version="0.1.0",
+        device={},
+        method={},
+        hidden_areas={},
+        verification={},
+        residual_risk={"level": "low", "factors": [], "purge_achieved": False},
+        limitations=[],
+        ledger_excerpt=entries,
+        chain_verification=ledger.verify(),
+        pubkey_fingerprint=print_fingerprint,
+    )
+    report["signature"] = sign_report(report, key).model_dump()
+    json_path, _ = write_report(report, tmp_path / "out")
+
+    check = fingerprint_check(
+        verify_report_file(json_path, ledger_root=tmp_path / "store")
+    )
+
+    assert check.applicable is False
+    assert check.status == "FINGERPRINT_EMPTY"
+    assert "before any signing key existed" in check.detail
+    assert "no genesis entry" not in check.detail
+
+
+def test_genesis_records_the_absence_rather_than_an_empty_string(
+    tmp_path: Path,
+) -> None:
+    """An empty field and "there was no key" are different claims."""
+    from core.ledger.chain import NO_SIGNING_KEY
+
+    ledger = Ledger(tmp_path / "store", tool_version="0.1.0", pubkey_fingerprint="")
+    ledger.append(actor="t", operation="erase.phase.0", params={}, result={})
+    genesis = next(iter(ledger.entries()))
+
+    assert ledger.params_of(genesis)["pubkey_fingerprint"] == NO_SIGNING_KEY
+
+
+def test_an_excerpt_without_genesis_reports_genesis_absent(
+    case: dict[str, Any],
+) -> None:
+    tamper(
+        Path(case["path"]),
+        lambda d: d["sections"]["audit_trail"]["entries"].pop(0),
+    )
+
+    check = fingerprint_check(
+        verify_report_file(case["path"], ledger_root=case["ledger_root"])
+    )
+
+    assert check.applicable is False
+    assert check.status == "GENESIS_ABSENT"
+    assert "carries no genesis entry" in check.detail
+
+
+def test_no_ledger_root_reports_no_ledger_root(case: dict[str, Any]) -> None:
+    check = fingerprint_check(verify_report_file(case["path"]))
+
+    assert check.applicable is False
+    assert check.status == "NO_LEDGER_ROOT"
+    assert "no ledger store was reachable" in check.detail
+
+
+def test_a_missing_genesis_blob_reports_blob_missing(
+    case: dict[str, Any],
+) -> None:
+    document = json.loads(Path(case["path"]).read_bytes())
+    genesis = document["sections"]["audit_trail"]["entries"][0]
+    digest = genesis["params_hash"]
+    (case["ledger_root"] / "blobs" / digest[:2] / digest).unlink()
+
+    check = fingerprint_check(
+        verify_report_file(case["path"], ledger_root=case["ledger_root"])
+    )
+
+    assert check.applicable is False
+    assert check.status == "BLOB_MISSING"
+    assert "not in the store" in check.detail
+
+
+def test_an_unparsable_genesis_blob_reports_blob_unparsable(
+    case: dict[str, Any],
+) -> None:
+    document = json.loads(Path(case["path"]).read_bytes())
+    genesis = document["sections"]["audit_trail"]["entries"][0]
+    digest = genesis["params_hash"]
+    (case["ledger_root"] / "blobs" / digest[:2] / digest).write_bytes(b"{not json")
+
+    check = fingerprint_check(
+        verify_report_file(case["path"], ledger_root=case["ledger_root"])
+    )
+
+    assert check.applicable is False
+    assert check.status == "BLOB_UNPARSABLE"
+    assert "not valid JSON" in check.detail

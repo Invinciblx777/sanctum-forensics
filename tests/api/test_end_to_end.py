@@ -6,7 +6,7 @@ neither can the UI, and neither can an operator at the venue.
 
 This is the test that would have caught a stub left behind anywhere along that
 chain, which is why it exercises the real acquisition, the real ledger, the
-real signing key and the real four-check verification rather than any of them
+real signing key and the real report verification rather than any of them
 in fixture form.
 """
 
@@ -96,17 +96,20 @@ def test_acquire_stream_report_and_verify_through_the_api_only(
     document = json.loads(json_path.read_bytes())
     assert document["signature"]["pubkey_fingerprint"] == report["pubkey_fingerprint"]
 
-    # -- verify it, all four checks independently -------------------------
+    # -- verify it, every check independently -----------------------------
     verified = client.get(f"/reports/{job_id}/verify")
     assert verified.status_code == 200, verified.text
     result = verified.json()
 
     names = {check["name"] for check in result["checks"]}
-    assert len(result["checks"]) == 4, result["checks"]
+    assert len(result["checks"]) == 5, result["checks"]
     assert names == {
         "signature",
         "fingerprint_matches_genesis",
         "chain_integrity",
+        # The store re-verified independently of the excerpt, and of the
+        # chain_status the report prints about itself.
+        "chain_store",
         "blobs_available",
     }, names
     # Each reported independently: they fail for different reasons and a reader

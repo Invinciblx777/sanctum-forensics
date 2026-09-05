@@ -14,6 +14,7 @@ __all__ = [
     "SystemDiskRefused",
     "MountedRefused",
     "ConfirmationMismatch",
+    "GeometryRefused",
     "UnsupportedCapability",
     "EvidenceIntegrityError",
     "LedgerChainBroken",
@@ -75,6 +76,21 @@ class ConfirmationMismatch(SanctumError):
 
     default_remediation = (
         "Re-read the device serial from the capability report and type it exactly."
+    )
+
+
+class GeometryRefused(SanctumError):
+    """The erase geometry does not cover the whole medium the kernel reports.
+
+    Raised rather than wiping what the smaller number describes. An erase that
+    silently covers a fraction of a device is the one failure this tool must
+    never produce: it ends with a report saying the medium was sanitized.
+    """
+
+    default_remediation = (
+        "Re-run enumeration and HPA/DCO detection for the device. If the hidden "
+        "area probe cannot produce a trustworthy native max, erase using the "
+        "kernel-reported size and record that hidden sectors were not covered."
     )
 
 

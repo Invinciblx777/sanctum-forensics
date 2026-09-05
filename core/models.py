@@ -43,6 +43,8 @@ __all__ = [
     "Extent",
     "FileInspection",
     "ResidualKind",
+    "DRIVE_PATH_KINDS",
+    "FILE_PATH_KINDS",
     "Severity",
     "ResidualFinding",
     "MetadataField",
@@ -131,22 +133,110 @@ class DeviceCapabilities(BaseModel):
 
 
 class HiddenAreaReport(BaseModel):
-    """Result of HPA/DCO probing for a device."""
+    """Result of HPA/DCO probing for a device.
+
+    ``probe_failed`` separates "there is no hidden area" from "we could not find
+    out", which are different claims with different consequences. When it is
+    set, the sector counts fall back to the kernel-reported size and carry no
+    information about hidden sectors: nothing downstream may treat them as a
+    measurement, and in particular nothing may shrink an erase to fit them.
+    """
 
     hpa_present: bool
     dco_present: bool
     native_max_sectors: int
     accessible_sectors: int
     hidden_bytes: int
+    #: True when the probe did not produce a trustworthy reading, for any
+    #: reason: the tool failed, the transport cannot carry the command, or the
+    #: values it returned did not survive the sanity checks.
+    probe_failed: bool = False
+    #: Why the probe could not be trusted, in the operator's words. Flows into
+    #: the erase limitations and the report, so an unprobed drive says so.
+    limitations: list[str] = Field(default_factory=list)
+
+
+class ResidualKind(StrEnum):
+    """What kind of thing survived. One member per detection this tool makes.
+
+    Shared by both erase paths. The file path (:mod:`core.erase.residual`)
+    reports what a filesystem left behind; the drive path reports what a
+    controller left behind. A string in a list of factors cannot carry a
+    measurement, and the drive-path findings are measurements.
+    """
+
+    RESIDENT_MFT_DATA = "RESIDENT_MFT_DATA"
+    ALT_DATA_STREAM = "ALT_DATA_STREAM"
+    FS_JOURNAL = "FS_JOURNAL"
+    USN_JOURNAL = "USN_JOURNAL"
+    MFT_SLACK = "MFT_SLACK"
+    INDEX_SLACK = "INDEX_SLACK"
+    COW_SNAPSHOT = "COW_SNAPSHOT"
+    VSS_SHADOW_COPY = "VSS_SHADOW_COPY"
+    FILE_SLACK = "FILE_SLACK"
+    TRIM_REMAP = "TRIM_REMAP"
+    COMPRESSED_REALLOC = "COMPRESSED_REALLOC"
+    ENCRYPTED_EFS = "ENCRYPTED_EFS"
+    HARDLINK_SURVIVES = "HARDLINK_SURVIVES"
+    SPARSE_UNWRITTEN = "SPARSE_UNWRITTEN"
+    BACKUP_COPY_LIKELY = "BACKUP_COPY_LIKELY"
+    #: Drive path. The controller acknowledged a zero fill far faster than it
+    #: can program the medium, so the cells were never written.
+    CONTROLLER_WRITE_ELISION = "CONTROLLER_WRITE_ELISION"
+
+
+#: Kinds the drive path produces. Everything else belongs to the file path.
+#: Split explicitly so a kind cannot be added to one path and silently expected
+#: of the other: the coverage tests read this rather than assuming the enum is
+#: wholly owned by :mod:`core.erase.residual`.
+DRIVE_PATH_KINDS: frozenset[ResidualKind] = frozenset(
+    {ResidualKind.CONTROLLER_WRITE_ELISION}
+)
+
+#: Kinds the file path produces. Together with DRIVE_PATH_KINDS this partitions
+#: ResidualKind; a test asserts the partition is total and disjoint.
+FILE_PATH_KINDS: frozenset[ResidualKind] = frozenset(ResidualKind) - DRIVE_PATH_KINDS
+
+
+class Severity(StrEnum):
+    """Derived from what survives, never guessed.
+
+    HIGH: the full content plausibly survives.
+    MEDIUM: fragments or metadata survive.
+    LOW: only filenames survive.
+    """
+
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+
+
+class ResidualFinding(BaseModel):
+    """One thing this erase could not guarantee, in words an operator can act on."""
+
+    kind: ResidualKind
+    severity: Severity
+    explanation: str
+    #: True when the operator can do something about it (delete the snapshots,
+    #: erase the other hardlink). False when only the filesystem or firmware can.
+    addressable: bool
+    detail: dict[str, Any] = {}
 
 
 class ResidualRiskAssessment(BaseModel):
-    """Honest statement of what could not be guaranteed after an erase."""
+    """Honest statement of what could not be guaranteed after an erase.
+
+    ``factors`` are sentences for a reader. ``findings`` are the same claims in
+    a form a machine can check, carrying the measurement that produced them.
+    Both are populated: the strings stay for every consumer that already reads
+    them, and a finding is added wherever there is evidence behind the sentence.
+    """
 
     level: Literal["low", "medium", "high"]
     factors: list[str]
     purge_achieved: bool
     notes: str
+    findings: list[ResidualFinding] = []
 
 
 class EraseJob(BaseModel):
@@ -225,6 +315,19 @@ class ErasePlan(BaseModel):
     est_seconds: int
     limitations: list[str] = []
     hidden_bytes: int = 0
+    #: Fill byte per overwrite pass, as ``["0xA5"]``. Empty for firmware
+    #: methods, which stream no host pattern. Stated in the plan because the
+    #: operator is entitled to know what will be on the medium afterwards, and
+    #: because a device left holding 0xA5 rather than zeros looks unwiped to
+    #: anyone who was not told.
+    fill_bytes: list[str] = []
+    #: Why those fills and not the method's defaults. Recorded whenever the
+    #: selection was driven by a measurement rather than by the method.
+    fill_reason: str = ""
+    #: Where est_seconds came from: the drive's own estimate, or a rate measured
+    #: on this device before the run started. A reader should not have to guess
+    #: whether an ETA is a manufacturer's number or an observation.
+    est_basis: str = ""
 
 
 class EraseResult(BaseModel):
@@ -616,51 +719,6 @@ class FileInspection(BaseModel):
             return 0
         remainder = self.size_bytes % self.cluster_bytes
         return 0 if remainder == 0 else self.cluster_bytes - remainder
-
-
-class ResidualKind(StrEnum):
-    """What kind of thing survived. One member per detection this tool makes."""
-
-    RESIDENT_MFT_DATA = "RESIDENT_MFT_DATA"
-    ALT_DATA_STREAM = "ALT_DATA_STREAM"
-    FS_JOURNAL = "FS_JOURNAL"
-    USN_JOURNAL = "USN_JOURNAL"
-    MFT_SLACK = "MFT_SLACK"
-    INDEX_SLACK = "INDEX_SLACK"
-    COW_SNAPSHOT = "COW_SNAPSHOT"
-    VSS_SHADOW_COPY = "VSS_SHADOW_COPY"
-    FILE_SLACK = "FILE_SLACK"
-    TRIM_REMAP = "TRIM_REMAP"
-    COMPRESSED_REALLOC = "COMPRESSED_REALLOC"
-    ENCRYPTED_EFS = "ENCRYPTED_EFS"
-    HARDLINK_SURVIVES = "HARDLINK_SURVIVES"
-    SPARSE_UNWRITTEN = "SPARSE_UNWRITTEN"
-    BACKUP_COPY_LIKELY = "BACKUP_COPY_LIKELY"
-
-
-class Severity(StrEnum):
-    """Derived from what survives, never guessed.
-
-    HIGH: the full content plausibly survives.
-    MEDIUM: fragments or metadata survive.
-    LOW: only filenames survive.
-    """
-
-    HIGH = "HIGH"
-    MEDIUM = "MEDIUM"
-    LOW = "LOW"
-
-
-class ResidualFinding(BaseModel):
-    """One thing this erase could not guarantee, in words an operator can act on."""
-
-    kind: ResidualKind
-    severity: Severity
-    explanation: str
-    #: True when the operator can do something about it (delete the snapshots,
-    #: erase the other hardlink). False when only the filesystem or firmware can.
-    addressable: bool
-    detail: dict[str, Any] = {}
 
 
 class MetadataField(BaseModel):

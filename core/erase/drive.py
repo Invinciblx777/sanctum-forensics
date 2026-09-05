@@ -40,16 +40,18 @@ from typing import Any
 
 import structlog
 
-from core.device import guard, hidden_areas
+from core.device import guard, hidden_areas, media
 from core.device._sysio import SystemProbe
 from core.device.capabilities import recommend_method
 from core.device.enumerate import get_device
+from core.erase import calibrate as calibrate_mod
 from core.erase import patterns as pattern_mod
 from core.erase import verify as verify_mod
 from core.erase.sink import ChainLedgerSink, LedgerSink
 from core.errors import (
     DeviceFrozen,
     DeviceVanished,
+    GeometryRefused,
     PlatformUnsupported,
     UnsupportedCapability,
 )
@@ -64,6 +66,7 @@ from core.models import (
     EraseResult,
     HiddenAreaReport,
     Progress,
+    ResidualFinding,
     SanitizationLevel,
     UnwritableRange,
     VerificationResult,
@@ -240,10 +243,16 @@ def select_method(
             )
         if requested is EraseMethod.DOD_5220_22_M_3PASS:
             limitations.append(_LEGACY_DOD_WARNING)
-            if not device.rotational:
+            # Not `not device.rotational`: a USB bridge does not clear the
+            # kernel's rotational flag, so that test was False for every USB
+            # flash stick and this warning never reached the operator holding
+            # one. See core.device.media.is_flash.
+            flash, flash_reason = media.is_flash(device)
+            if flash:
                 limitations.append(
                     "Target is flash media; the extra DoD passes consume "
-                    "program/erase cycles for no security benefit."
+                    "program/erase cycles for no security benefit. "
+                    f"Determined to be flash because {flash_reason}."
                 )
         logger.info(
             "method_override", requested=requested.value, path=device.path
@@ -370,6 +379,7 @@ def _overwrite(
     checkpoint_bytes: int = CHECKPOINT_INTERVAL_BYTES,
     start_offset: int = 0,
     start_pass: int = 0,
+    fills: tuple[int, ...] | None = None,
 ) -> Generator[Progress, None, _OverwriteOutcome]:
     """Overwrite the whole device, yielding progress. The path we fully control.
 
@@ -391,8 +401,10 @@ def _overwrite(
     unwritable: list[UnwritableRange] = []
     total_written = 0
     throughput = _Throughput()
-    pass_total = pattern_mod.pass_count(method)
-    all_patterns = list(pattern_mod.pattern_passes(method, block_size=block))
+    pass_total = len(fills) if fills is not None else pattern_mod.pass_count(method)
+    all_patterns = list(
+        pattern_mod.pattern_passes(method, block_size=block, fills=fills)
+    )
 
     buffer = mmap.mmap(-1, buf_size)
     try:
@@ -949,19 +961,99 @@ def execute(
     _reread_serial(device, io)
 
     geometry = device_geometry(device.path, io)
+    # The floor for everything below. BLKGETSIZE64 is the size the kernel
+    # will let this process write, so an erase covering less than it has
+    # left addressable data behind whatever any probe claims.
+    kernel_size_bytes = geometry.size_bytes
     method, method_limits = select_method(
         device, capabilities, job.level, requested=job.method
     )
     limitations.extend(method_limits)
 
     hidden: HiddenAreaReport | None = hidden_areas.detect_hidden_areas(device, io)
+
+    # ---- write calibration -------------------------------------------------
+    # Destructive: it writes twice over the first 64 MiB. It runs here and not
+    # earlier because every confirmation gate above has already passed, and not
+    # at all in a dry run, on a firmware method that streams no host pattern, or
+    # on a resume - a resumed job would leave the calibration's own bytes at
+    # offset 0 in a region the erase has already covered.
+    calibration: calibrate_mod.CalibrationResult | None = None
+    software = method in pattern_mod.SOFTWARE_METHODS
+    if software and not job.dry_run and resume_from is None:
+        calibration = calibrate_mod.calibrate_write(
+            device.path,
+            size_bytes=geometry.size_bytes,
+            block_size=geometry.logical_block_size,
+        )
+        sink.record(
+            ErasePhase.PREFLIGHT,
+            "write_calibration",
+            {"job_id": job.job_id, "path": device.path, **calibration.as_detail()},
+        )
+        yield _progress(
+            job.job_id,
+            ErasePhase.PREFLIGHT,
+            0,
+            (
+                f"write calibration: zero fill {calibration.zero_mib_per_sec} "
+                f"MiB/s against non-zero {calibration.nonzero_mib_per_sec} "
+                f"MiB/s; elision_detected={calibration.elision_detected}"
+            ),
+        )
+        if calibration.unavailable_reason:
+            limitations.append(
+                "The write calibration could not be taken: "
+                f"{calibration.unavailable_reason} Whether this controller "
+                "programs a zero fill is therefore unknown."
+            )
+
+    elision = calibration.elision_detected if calibration else None
+    flash, flash_reason = media.is_flash(device, elision_detected=elision)
+    fills: tuple[int, ...] | None = None
+    fill_reason = ""
+    if software:
+        fills, fill_reason = pattern_mod.select_fills(
+            method, elision_detected=elision, flash=flash
+        )
+        if fills != pattern_mod.pattern_defaults(method):
+            limitations.append(
+                "The overwrite pattern was changed from this method's default "
+                f"because {fill_reason}. The medium will hold "
+                f"0x{fills[-1]:02X} afterwards, not zeros."
+            )
+        if job.dry_run:
+            # A dry run writes nothing, so it cannot calibrate, so its fill
+            # falls back to the transport. Saying which fill would be used
+            # without saying it is provisional would make the dry run a promise
+            # the real run might not keep.
+            limitations.append(
+                "This is a dry run, so no write calibration was taken. The fill "
+                "bytes in this plan are provisional: a real run measures the "
+                "device first and may choose differently."
+            )
+
+    est_seconds, est_basis = (
+        calibrate_mod.estimate_seconds(fills, geometry.size_bytes, calibration)
+        if software and fills is not None
+        else (capabilities.est_erase_seconds, "the drive's own estimate")
+    )
+    if est_seconds == 0 and software:
+        est_seconds, est_basis = (
+            capabilities.est_erase_seconds,
+            "the drive's own estimate; no rate was measured on this device",
+        )
+
     plan = ErasePlan(
         method=method,
         level=job.level,
         justification=_justify(method, job.level, device),
-        est_seconds=capabilities.est_erase_seconds,
+        est_seconds=est_seconds,
         limitations=list(limitations),
         hidden_bytes=hidden.hidden_bytes if hidden else 0,
+        fill_bytes=[f"0x{fill:02X}" for fill in (fills or ())],
+        fill_reason=fill_reason,
+        est_basis=est_basis,
     )
     sink.record(
         ErasePhase.PREFLIGHT,
@@ -991,7 +1083,15 @@ def execute(
     firmware = method in _FIRMWARE_METHODS
     hidden_covered = True
     restore_to = hidden.accessible_sectors if hidden else 0
-    unlock_needed = bool(hidden and hidden.hidden_bytes > 0 and not firmware)
+    # A probe that did not work reports no hidden bytes and knows nothing. Its
+    # sector counts are the kernel's own, so unlocking to them would be a no-op
+    # at best; the limitation it carries is what the operator needs instead.
+    probe_failed = bool(hidden and hidden.probe_failed)
+    if hidden is not None and hidden.limitations:
+        limitations.extend(hidden.limitations)
+    unlock_needed = bool(
+        hidden and hidden.hidden_bytes > 0 and not firmware and not probe_failed
+    )
 
     if firmware and hidden and hidden.hidden_bytes > 0:
         reason = (
@@ -1028,12 +1128,37 @@ def execute(
                     "HPA/DCO; that region was not erased."
                 )
             else:
-                geometry = Geometry(
-                    size_bytes=hidden.native_max_sectors
-                    * geometry.logical_block_size,
-                    logical_block_size=geometry.logical_block_size,
-                    physical_block_size=geometry.physical_block_size,
-                )
+                # Widen only. BLKGETSIZE64 is what the kernel will let us write;
+                # an HPA can only mean the medium is *larger* than that, never
+                # smaller. A native max at or below it is a bridge's invention,
+                # and acting on it once turned a 7.76 GB wipe into 512 bytes.
+                widened = hidden.native_max_sectors * geometry.logical_block_size
+                if widened > geometry.size_bytes:
+                    geometry = Geometry(
+                        size_bytes=widened,
+                        logical_block_size=geometry.logical_block_size,
+                        physical_block_size=geometry.physical_block_size,
+                    )
+                else:
+                    reason = (
+                        f"HPA unlock reported a native max of "
+                        f"{hidden.native_max_sectors} sectors "
+                        f"({widened} bytes), which does not exceed the "
+                        f"{geometry.size_bytes} bytes the kernel reports; the "
+                        "kernel geometry was kept and the erase still covers "
+                        "the whole addressable medium."
+                    )
+                    limitations.append(reason)
+                    sink.record(
+                        ErasePhase.HIDDEN_AREA_UNLOCK,
+                        "geometry_unchanged",
+                        {
+                            "job_id": job.job_id,
+                            "kernel_size_bytes": geometry.size_bytes,
+                            "reported_native_bytes": widened,
+                            "reason": reason,
+                        },
+                    )
         yield _progress(
             job.job_id,
             ErasePhase.HIDDEN_AREA_UNLOCK,
@@ -1068,6 +1193,17 @@ def execute(
         )
 
     # ---------------- ERASE ----------------
+    if geometry.size_bytes < kernel_size_bytes:
+        # Unreachable by design: only the unlock branch touches geometry and it
+        # widens or leaves it alone. Checked anyway, because the failure this
+        # guards against is silent - a wipe that covers a fraction of a device
+        # and still ends in a report saying the medium was sanitized.
+        raise GeometryRefused(
+            f"The erase geometry for {device.path} is {geometry.size_bytes} "
+            f"bytes, smaller than the {kernel_size_bytes} bytes the kernel "
+            "reports. Refusing to erase part of a device and call it done."
+        )
+
     bytes_written = 0
     passes = 0
     unwritable: list[UnwritableRange] = []
@@ -1099,6 +1235,7 @@ def execute(
             buffer_bytes=buffer_bytes,
             checkpoint_bytes=checkpoint_bytes,
             resume_from=resume_from,
+            fills=fills,
         )
         bytes_written = outcome[0]
         passes = outcome[1]
@@ -1141,6 +1278,7 @@ def execute(
         )
 
     # ---------------- VERIFY ----------------
+    verify_seconds = 0.0
     if job.dry_run:
         verification = VerificationResult(
             passed=True,
@@ -1154,9 +1292,14 @@ def execute(
             probability_note="Dry run: nothing was written, so nothing was verified.",
         )
     else:
+        # `fills` matters: on a zero-eliding controller the medium holds 0xA5,
+        # and verifying the method's default 0x00 would fail a good erase - or,
+        # worse, pass a bad one on a device where the FTL answers zero for free.
+        verify_started = time.monotonic()
         verification = verify_mod.verify(
-            device, method, config=verify_config, io=io
+            device, method, config=verify_config, io=io, fills=fills
         )
+        verify_seconds = time.monotonic() - verify_started
     sink.record(
         ErasePhase.VERIFY,
         "result",
@@ -1175,6 +1318,18 @@ def execute(
         achieved = job.level
     else:
         achieved = SanitizationLevel.CLEAR
+    findings: list[ResidualFinding] = []
+    if calibration is not None and calibration.elision_detected:
+        findings.append(
+            calibrate_mod.elision_finding(
+                calibration,
+                read_back_bytes_per_sec=(
+                    int(verification.bytes_checked / verify_seconds)
+                    if verify_seconds > 0 and verification.bytes_checked
+                    else None
+                ),
+            )
+        )
     residual = verify_mod.assess_residual_risk(
         device=device,
         capabilities=capabilities,
@@ -1186,6 +1341,8 @@ def execute(
         hidden_covered=hidden_covered,
         unwritable_ranges=unwritable,
         limitations=limitations,
+        elision_detected=calibration.elision_detected if calibration else None,
+        findings=findings,
     )
     result = EraseResult(
         job_id=job.job_id,
@@ -1230,6 +1387,7 @@ def _dispatch(
     buffer_bytes: int,
     checkpoint_bytes: int,
     resume_from: EraseCheckpoint | None,
+    fills: tuple[int, ...] | None = None,
 ) -> Generator[
     Progress, None, tuple[int, int, list[UnwritableRange], list[str], bool]
 ]:
@@ -1245,6 +1403,7 @@ def _dispatch(
             checkpoint_bytes=checkpoint_bytes,
             start_offset=resume_from.offset if resume_from else 0,
             start_pass=resume_from.pass_index if resume_from else 0,
+            fills=fills,
         )
         return (
             outcome.bytes_written,

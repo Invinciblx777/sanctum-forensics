@@ -22,6 +22,7 @@ from pathlib import Path
 #: unimportable here; tests/erase/ covers it on Linux.
 IMPLEMENTED = (
     "core.device",
+    "core.erase.calibrate",
     "core.erase.patterns",
     "core.erase.verify",
     "core.erase.drive",

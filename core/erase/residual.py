@@ -31,6 +31,7 @@ unknown as absent is how a report ends up quietly reassuring.
 from __future__ import annotations
 
 from core.models import (
+    FILE_PATH_KINDS,
     FileEraseRecord,
     FileInspection,
     ResidualFinding,
@@ -452,8 +453,10 @@ _DETECTORS = (
 )
 
 #: The kinds this module actually detects. Asserted against the source by a
-#: test, so it is the truth rather than an aspiration.
-IMPLEMENTED_KINDS: frozenset[ResidualKind] = frozenset(ResidualKind)
+#: test, so it is the truth rather than an aspiration. Drive-path kinds are
+#: excluded: this module inspects a filesystem, and what a disk controller did
+#: is not visible from one.
+IMPLEMENTED_KINDS: frozenset[ResidualKind] = FILE_PATH_KINDS
 
 
 def scan(
