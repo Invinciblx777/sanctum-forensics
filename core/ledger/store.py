@@ -28,12 +28,15 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 import structlog
 
 from core.ledger._filelock import file_lock
+from core.ledger._ownership import hand_over_fd, makedirs_owned
 
 __all__ = ["BlobStore", "LedgerStore", "ChainRead", "CHAIN_FILENAME"]
 
@@ -71,11 +74,18 @@ def _fsync_dir(path: Path) -> None:
 
 
 class BlobStore:
-    """Content-addressed store for operation params and results."""
+    """Content-addressed store for operation params and results.
 
-    def __init__(self, root: Path | str) -> None:
+    ``owner_uid`` is the operator this store hands new files to when the
+    writing process is root. See :mod:`core.ledger._ownership` for why the
+    chain has two writers and what that costs if the artefacts are not
+    readable by both.
+    """
+
+    def __init__(self, root: Path | str, *, owner_uid: int | None = None) -> None:
         self.root = Path(root)
         self.blobs = self.root / "blobs"
+        self.owner_uid = owner_uid
 
     def _path_for(self, digest: str) -> Path:
         return self.blobs / digest[:2] / digest
@@ -86,12 +96,16 @@ class BlobStore:
         target = self._path_for(digest)
         if target.exists():
             return digest
-        target.parent.mkdir(parents=True, exist_ok=True)
+        makedirs_owned(target.parent, self.owner_uid)
         staging = target.with_name(f".{digest}.partial")
         fd = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _BINARY, 0o600)
         try:
             os.write(fd, payload)
             os.fsync(fd)
+            # Handed over on the descriptor this call created, before the
+            # rename: os.replace preserves ownership, so the blob arrives at
+            # its final name already belonging to the operator.
+            hand_over_fd(fd, self.owner_uid)
         finally:
             os.close(fd)
         os.replace(staging, target)
@@ -121,13 +135,18 @@ class ChainRead:
 
 
 class LedgerStore:
-    """The append-only chain file."""
+    """The append-only chain file.
 
-    def __init__(self, root: Path | str) -> None:
+    ``owner_uid`` is the operator this store hands the chain, its lock and any
+    directory it creates to when the writing process is root.
+    """
+
+    def __init__(self, root: Path | str, *, owner_uid: int | None = None) -> None:
         self.root = Path(root)
         self.directory = self.root / "ledger"
         self.path = self.directory / CHAIN_FILENAME
         self.lock_path = self.directory / _LOCK_FILENAME
+        self.owner_uid = owner_uid
 
     def read(self) -> ChainRead:
         """Read every complete line, reporting a partial final line separately."""
@@ -153,8 +172,31 @@ class LedgerStore:
             partial_tail=partial or None,
         )
 
+    @contextmanager
+    def writer_lock(self, *, blocking: bool = True) -> Iterator[None]:
+        """Hold the chain's single-writer lock for the duration of the block.
+
+        A writer that builds an entry has to hold this across reading the head,
+        building the entry that links to it, and writing it. Holding it for the
+        write alone serialises two writes of a forked chain.
+
+        Raises:
+            LockUnavailable: ``blocking`` is false and another writer holds it.
+        """
+        makedirs_owned(self.directory, self.owner_uid)
+        with file_lock(self.lock_path, blocking=blocking, owner_uid=self.owner_uid):
+            yield
+
     def append(self, payload: bytes) -> None:
-        """Append one canonical line. Refuses if the previous write did not finish.
+        """Append one canonical line under the writer lock.
+
+        See :meth:`append_locked` for what is refused.
+        """
+        with self.writer_lock():
+            self.append_locked(payload)
+
+    def append_locked(self, payload: bytes) -> None:
+        """Append one canonical line. The caller must hold :meth:`writer_lock`.
 
         Raises:
             ValueError: ``payload`` contains a newline, which would split one
@@ -167,28 +209,32 @@ class LedgerStore:
                 "a ledger payload may not contain a newline; canonical JSON "
                 "escapes them, so this indicates a caller bypassed canon"
             )
-        self.directory.mkdir(parents=True, exist_ok=True)
-        with file_lock(self.lock_path):
-            existing = self.read()
-            if existing.incomplete_tail:
-                raise RuntimeError(
-                    f"{self.path} ends in an incomplete line of "
-                    f"{len(existing.partial_tail or b'')} bytes, left by a write "
-                    "that did not finish. Refusing to append past it. "
-                    "Recover by archiving the truncated file for the record, "
-                    "then starting a new chain; do not edit it in place."
-                )
-            is_new = not self.path.exists()
-            fd = os.open(
-                self.path,
-                os.O_APPEND | os.O_CREAT | os.O_WRONLY | _BINARY,
-                0o600,
+        existing = self.read()
+        if existing.incomplete_tail:
+            raise RuntimeError(
+                f"{self.path} ends in an incomplete line of "
+                f"{len(existing.partial_tail or b'')} bytes, left by a write "
+                "that did not finish. Refusing to append past it. "
+                "Recover by archiving the truncated file for the record, "
+                "then starting a new chain; do not edit it in place."
             )
-            try:
-                os.write(fd, payload + _NEWLINE)
-                os.fsync(fd)
-            finally:
-                os.close(fd)
+        is_new = not self.path.exists()
+        fd = os.open(
+            self.path,
+            os.O_APPEND | os.O_CREAT | os.O_WRONLY | _BINARY,
+            0o600,
+        )
+        try:
+            os.write(fd, payload + _NEWLINE)
+            os.fsync(fd)
             if is_new:
-                _fsync_dir(self.directory)
+                # Only when this call created it. Re-owning a chain that
+                # was already there would let a root append change who owns
+                # an existing audit trail, which is not this module's
+                # business.
+                hand_over_fd(fd, self.owner_uid)
+        finally:
+            os.close(fd)
+        if is_new:
+            _fsync_dir(self.directory)
         logger.debug("ledger_line_appended", path=str(self.path), size=len(payload))

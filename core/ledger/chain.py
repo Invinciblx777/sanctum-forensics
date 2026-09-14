@@ -38,6 +38,8 @@ from typing import Any
 
 import structlog
 
+from core.errors import LedgerBusy
+from core.ledger._filelock import LockUnavailable
 from core.ledger.canon import CANON_VERSION, canonical_bytes
 from core.ledger.store import BlobStore, LedgerStore
 from core.models import LedgerEntry
@@ -52,6 +54,10 @@ __all__ = [
     "GENESIS_PREV_HASH",
     "boot_id",
     "entry_hash_of",
+    "genesis_fingerprint",
+    "APPEND_LOCK_ATTEMPTS",
+    "APPEND_BACKOFF_INITIAL_SECONDS",
+    "APPEND_BACKOFF_CAP_SECONDS",
 ]
 
 logger = structlog.get_logger(__name__)
@@ -65,6 +71,22 @@ GENESIS_OPERATION = "GENESIS"
 NO_SIGNING_KEY = "NO_SIGNING_KEY_AT_CHAIN_CREATION"
 GENESIS_PREV_HASH = "0" * 64
 GENESIS_ACTOR = "sanctum"
+
+#: How many times :meth:`Ledger.append` tries the writer lock before it fails.
+#:
+#: The lock is held for one append: read the chain, build one entry, write and
+#: ``fsync`` one line. Measured on this project's development host, that is
+#: 0.5 ms on a 100-entry chain and 39 ms on a 10,000-entry chain, because the
+#: read is linear in the chain; a slow USB ``fsync`` adds tens to hundreds of
+#: milliseconds on top. With doubling backoff from 10 ms capped at 1 s, twenty
+#: attempts wait about 13 seconds in total - several hundred appends' worth of
+#: contention - before concluding the holder is not an appender but a hung
+#: process.
+APPEND_LOCK_ATTEMPTS = 20
+#: First wait between attempts; doubled after each one.
+APPEND_BACKOFF_INITIAL_SECONDS = 0.01
+#: Longest single wait between attempts.
+APPEND_BACKOFF_CAP_SECONDS = 1.0
 
 _BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
 _HASHED_FIELDS = (
@@ -134,6 +156,40 @@ def _process_boot_seed() -> int:
     return int(time.time() - time.monotonic()) & ((1 << 96) - 1)
 
 
+def genesis_fingerprint(root: Path | str) -> str | None:
+    """The signing fingerprint the chain under ``root`` recorded at genesis.
+
+    Returns :data:`NO_SIGNING_KEY` for a chain started before any key existed
+    (including chains that recorded an empty string before that constant
+    existed), and ``None`` when there is no readable genesis to ask. Reads the
+    first line and one blob, never the whole chain, so a health check can call
+    it on every poll.
+    """
+    store = LedgerStore(root)
+    try:
+        with store.path.open("rb") as handle:
+            first = handle.readline()
+    except OSError:
+        return None
+    if not first.endswith(b"\n"):
+        return None
+    try:
+        entry = LedgerEntry.model_validate_json(first)
+    except ValueError:
+        return None
+    if entry.operation != GENESIS_OPERATION:
+        return None
+    raw = BlobStore(root).get(entry.params_hash)
+    if raw is None:
+        return None
+    try:
+        params = json.loads(raw)
+    except ValueError:
+        return None
+    value = params.get("pubkey_fingerprint") if isinstance(params, dict) else None
+    return str(value) if value else NO_SIGNING_KEY
+
+
 def entry_hash_of(fields: dict[str, Any]) -> str:
     """SHA-256 hex of an entry's canonical bytes, excluding ``entry_hash``."""
     payload = {name: fields[name] for name in _HASHED_FIELDS}
@@ -168,28 +224,28 @@ class Ledger:
         boot_id_value: str | None = None,
         monotonic_source: Callable[[], int] = time.monotonic_ns,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        owner_uid: int | None = None,
         **kwargs: str,
     ) -> None:
         self.root = Path(root)
-        self.store = LedgerStore(self.root)
-        self.blobs = BlobStore(self.root)
+        # ``owner_uid`` is set by the root helper and by nothing else: it is the
+        # operator uid the daemon was started with, so a chain the helper writes
+        # during a wipe stays readable to the unprivileged API that has to turn
+        # it into a certificate. See :mod:`core.ledger._ownership`.
+        self.owner_uid = owner_uid
+        self.store = LedgerStore(self.root, owner_uid=owner_uid)
+        self.blobs = BlobStore(self.root, owner_uid=owner_uid)
         self.tool_version = tool_version
         self.pubkey_fingerprint = pubkey_fingerprint
         self.boot_id = boot_id_value or kwargs.get("boot_id") or boot_id()
         self._monotonic = monotonic_source
         self._clock = clock
-        #: Chain head as this instance last observed or wrote it. append()
-        #: compares it against disk so a concurrent writer is caught rather
-        #: than silently overwritten.
-        self._head_hash: str | None = None
 
     # -- reading ---------------------------------------------------------
 
     def entries(self) -> list[LedgerEntry]:
-        """Every complete entry, in file order. Loads the head for append()."""
+        """Every complete entry, in file order."""
         parsed, _, _ = self._parse()
-        if parsed:
-            self._head_hash = parsed[-1].entry_hash
         return parsed
 
     def _parse(self) -> tuple[list[LedgerEntry], bool, int | None]:
@@ -230,11 +286,65 @@ class Ledger:
     ) -> LedgerEntry:
         """Append one entry, writing genesis first if the chain is empty.
 
+        **The chain may have several writers**: the API's routes, a job's
+        engine, and the root helper during a wipe each hold their own instance.
+        So the head is read, the entry is built on it, and the line is written
+        all under the chain's writer lock, and the head is always the one on
+        disk at that moment - never one this instance remembers from an earlier
+        append. Remembering it is what turned a report generated during a carve
+        into a failed carve (MANUAL_REPORT FINDING 2).
+
+        The lock is taken without blocking and retried with backoff, bounded by
+        :data:`APPEND_LOCK_ATTEMPTS`. ``flock`` has no timeout, and a writer
+        that waited forever behind a hung process would hang the job with it.
+
         Raises:
-            RuntimeError: the on-disk tail does not match this instance's head
-                (another writer got there first), or the chain ends in an
-                incomplete line.
+            LedgerBusy: another writer held the lock through every attempt. The
+                entry was **not** written; the caller's operation must fail
+                rather than continue without its record.
+            RuntimeError: the chain ends in an incomplete line, or a line does
+                not parse.
         """
+        # Content-addressed and idempotent, so written before the lock: the
+        # critical section stays one read, one build and one line.
+        self.blobs.put(canonical_bytes(params))
+        self.blobs.put(canonical_bytes(result))
+
+        delay = APPEND_BACKOFF_INITIAL_SECONDS
+        waited = 0.0
+        for attempt in range(1, APPEND_LOCK_ATTEMPTS + 1):
+            try:
+                with self.store.writer_lock(blocking=False):
+                    return self._append_locked(
+                        actor=actor, operation=operation, params=params, result=result
+                    )
+            except LockUnavailable:
+                if attempt == APPEND_LOCK_ATTEMPTS:
+                    break
+                logger.debug(
+                    "ledger_lock_contended", attempt=attempt, operation=operation
+                )
+                time.sleep(delay)
+                waited += delay
+                delay = min(delay * 2, APPEND_BACKOFF_CAP_SECONDS)
+
+        raise LedgerBusy(
+            f"Ledger entry {operation!r} was NOT recorded: the writer lock "
+            f"{self.store.lock_path} was held by another writer through "
+            f"{APPEND_LOCK_ATTEMPTS} attempts over {waited:.1f} s. No append "
+            "holds the lock for more than a fraction of a second, so the holder "
+            "is most likely a hung process."
+        )
+
+    def _append_locked(
+        self,
+        *,
+        actor: str,
+        operation: str,
+        params: dict[str, Any],
+        result: dict[str, Any],
+    ) -> LedgerEntry:
+        """The append itself. The caller holds the store's writer lock."""
         existing, incomplete, parse_error = self._parse()
         if incomplete:
             raise RuntimeError(
@@ -270,13 +380,6 @@ class Ledger:
             existing = [genesis]
 
         head = existing[-1]
-        if self._head_hash is not None and self._head_hash != head.entry_hash:
-            raise RuntimeError(
-                f"the on-disk chain head is {head.entry_hash[:12]}..., but this "
-                f"writer expected {self._head_hash[:12]}.... Another writer "
-                "appended concurrently; reload the ledger and retry."
-            )
-
         entry = self._build(
             seq=head.seq + 1,
             actor=actor,
@@ -313,8 +416,7 @@ class Ledger:
         return LedgerEntry.model_validate(fields)
 
     def _write(self, entry: LedgerEntry) -> None:
-        self.store.append(canonical_bytes(_entry_to_record(entry)))
-        self._head_hash = entry.entry_hash
+        self.store.append_locked(canonical_bytes(_entry_to_record(entry)))
         logger.debug("ledger_append", seq=entry.seq, operation=entry.operation)
 
     # -- verification ----------------------------------------------------

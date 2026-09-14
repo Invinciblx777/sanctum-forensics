@@ -17,6 +17,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from core.ledger._ownership import hand_over_fd, makedirs_owned
+
 __all__ = ["file_lock", "LockUnavailable"]
 
 _LOCK_BYTES = 1
@@ -27,16 +29,27 @@ class LockUnavailable(RuntimeError):
 
 
 @contextmanager
-def file_lock(path: Path, *, blocking: bool = True) -> Iterator[None]:
+def file_lock(
+    path: Path, *, blocking: bool = True, owner_uid: int | None = None
+) -> Iterator[None]:
     """Hold an exclusive advisory lock on ``path`` for the duration of the block.
 
     Args:
         path: Lock file. Created if absent; never truncated.
         blocking: Wait for the lock when true, raise
             :class:`LockUnavailable` immediately when false.
+        owner_uid: Operator to hand a newly created lock file to when this
+            process is root. Without it a root writer leaves a ``0600``
+            root-owned lock file, and the *next* writer - the unprivileged API -
+            cannot open it for writing at all, so the lock that exists to keep
+            the chain single-writer becomes the thing that locks the operator
+            out of their own audit trail. See :mod:`core.ledger._ownership`.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    makedirs_owned(path.parent, owner_uid)
+    is_new = not path.exists()
     fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    if is_new:
+        hand_over_fd(fd, owner_uid)
     try:
         _acquire(fd, blocking=blocking)
         try:

@@ -237,17 +237,26 @@ def test_appending_after_an_incomplete_tail_is_refused_with_remediation(
 # --------------------------------------------------------------------------
 
 
-def test_a_stale_writer_is_rejected_and_the_chain_stays_valid(
+def test_a_stale_writer_links_to_the_real_head_and_the_chain_stays_valid(
     chain: Ledger, tmp_path: Path
 ) -> None:
+    """A writer that last looked before somebody else appended still appends.
+
+    This used to assert a refusal. The refusal was the defect: an instance
+    that remembered an old head rejected its own next append, and when that
+    instance was a carve engine the carve was marked failed after its work was
+    done (MANUAL_REPORT FINDING 2). The head is now read under the writer lock,
+    so there is no stale head to refuse over. See test_concurrent_writers.py.
+    """
     stale = make_ledger(tmp_path)
-    stale.entries()  # load head
+    stale.entries()
     winner = make_ledger(tmp_path)
-    winner.append(actor="winner", operation="op", params={}, result={})
+    won = winner.append(actor="winner", operation="op", params={}, result={})
 
-    with pytest.raises(RuntimeError, match="head"):
-        stale.append(actor="loser", operation="op", params={}, result={})
+    late = stale.append(actor="late", operation="op", params={}, result={})
 
+    assert late.prev_entry_hash == won.entry_hash
+    assert late.seq == won.seq + 1
     assert make_ledger(tmp_path).verify().status is ChainStatus.VALID
 
 

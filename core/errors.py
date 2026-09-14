@@ -19,6 +19,7 @@ __all__ = [
     "UnsupportedCapability",
     "EvidenceIntegrityError",
     "LedgerChainBroken",
+    "LedgerBusy",
     "SignatureInvalid",
     "PlatformUnsupported",
 ]
@@ -140,6 +141,22 @@ class LedgerChainBroken(SanctumError):
     default_remediation = (
         "Treat the ledger as compromised. Preserve the raw store and investigate from "
         "the last verified entry."
+    )
+
+
+class LedgerBusy(SanctumError):
+    """Another writer held the ledger lock for longer than an append will wait.
+
+    Raised instead of silently dropping the entry. A ledger entry that was not
+    written is a gap nobody can see; a failed operation is a failure everybody
+    can.
+    """
+
+    default_remediation = (
+        "Another process is holding the ledger lock. Check for a hung Sanctum "
+        "process (the API, the helper, or a harness script) with the same state "
+        "directory, stop it, and retry. Do not delete the lock file while a "
+        "writer may still be running."
     )
 
 
