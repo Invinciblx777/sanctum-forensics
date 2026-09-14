@@ -258,6 +258,35 @@ def test_a_known_cluster_size_refuses_a_split_it_cannot_produce(
     assert found is None
 
 
+def test_two_tails_the_medium_cannot_tell_apart_are_refused(original: bytes) -> None:
+    """The same tail lies on the medium twice, each after a gap of foreign bytes.
+
+    Both joins account for every MCU and hash to the original, but only one set
+    of runs is where the file was, and nothing on the medium says which. Emitting
+    either would put a layout on the record that the evidence does not support,
+    so the search refuses when a second join passes at the level the first did.
+    This is the only layout that reaches that check in practice - a substituted
+    or shifted scan never passed it in 7,200 measured attempts - so without it
+    removing the check would go unnoticed.
+    """
+    filler = bytes((index * 7 + 3) & 0xFF for index in range(GAP_BYTES))
+    tail = original[CLUSTER:]
+    # The first copy's last cluster is padded with slack, as a filesystem would
+    # leave it, so the second copy starts on a cluster boundary too.
+    slack = bytes(-len(tail) % CLUSTER)
+    laid = original[:CLUSTER] + filler + tail + slack + filler + tail
+    image = lay_out([Embedded(ext="jpg", offset=0, data=laid)], len(laid) + 8192)
+
+    found = reassemble_bifragmented_jpeg_runs(
+        BytesEvidence(image), 0, max_size=20 * MIB, cluster_size=CLUSTER
+    )
+
+    assert found is None, (
+        "reassembled a duplicated tail as if the medium said which copy was the "
+        f"file's: runs {[(run.offset, run.length) for run in found.runs]}"
+    )
+
+
 # --------------------------------------------------------------------------
 # What must never happen
 # --------------------------------------------------------------------------
