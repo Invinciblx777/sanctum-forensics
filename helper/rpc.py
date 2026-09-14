@@ -9,6 +9,25 @@ newline cannot, because a frame that never terminates simply never parses. The
 encoders therefore reject any payload that would embed a raw newline, which
 ``json.dumps`` guarantees by escaping them.
 
+**One request, many frames.** A request is answered by zero or more *progress*
+and *heartbeat* frames and then exactly one terminal frame - a result or an
+error. Every frame carries the request id it belongs to. This is the whole of
+the difference from plain JSON-RPC, and it exists because the operations behind
+this socket are hours long: batching a wipe's progress into its final reply
+means the progress arrives after the wipe, which is not progress.
+
+The three non-terminal frame kinds and what each one asserts:
+
+* ``progress`` - the engine moved. Carries one
+  :class:`~core.models.Progress` as JSON.
+* ``heartbeat`` - the helper process is alive and its socket is writable. It
+  carries ``since_progress_seconds`` and asserts **nothing** about the engine:
+  a phase with no yield points (a sampled verify of a 4 TB disk) is quiet for
+  minutes and is not stalled. Read §"liveness" in :mod:`helper.daemon`.
+* ``cancel`` - sent by the *client*, on the connection the operation is running
+  on, to ask for cooperative cancellation. It is the only frame that travels
+  upstream during an operation.
+
 Two rules the daemon depends on:
 
 * **A request names a method, never a command.** ``method`` is a lookup key in
@@ -29,6 +48,11 @@ __all__ = [
     "decode_request",
     "encode_response",
     "decode_response",
+    "encode_progress",
+    "encode_heartbeat",
+    "encode_cancel",
+    "decode_frame",
+    "is_cancel_frame",
     "MAX_FRAME_BYTES",
     "RpcError",
 ]
@@ -121,12 +145,67 @@ def encode_response(
     return text.encode("utf-8") + b"\n"
 
 
-def decode_response(frame: bytes) -> dict[str, Any]:
-    """Parse a response frame, raising on a JSON-RPC error object.
+def encode_progress(req_id: int, record: dict[str, Any]) -> bytes:
+    """Serialize one non-terminal progress frame for ``req_id``."""
+    text = json.dumps(
+        {"jsonrpc": JSONRPC_VERSION, "id": req_id, "progress": record},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return text.encode("utf-8") + b"\n"
+
+
+def encode_heartbeat(req_id: int, info: dict[str, Any]) -> bytes:
+    """Serialize one liveness frame for ``req_id``.
+
+    See the module docstring for what a heartbeat does and does not assert.
+    """
+    text = json.dumps(
+        {"jsonrpc": JSONRPC_VERSION, "id": req_id, "heartbeat": info},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return text.encode("utf-8") + b"\n"
+
+
+def encode_cancel(req_id: int) -> bytes:
+    """Serialize the client's cancellation request for a running ``req_id``.
+
+    It names no method and carries no parameters, so it cannot widen what the
+    daemon will do: the only thing it can ask for is that an operation the
+    caller already started stop early.
+    """
+    text = json.dumps(
+        {"jsonrpc": JSONRPC_VERSION, "id": req_id, "cancel": True},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return text.encode("utf-8") + b"\n"
+
+
+def is_cancel_frame(frame: bytes) -> bool:
+    """True when ``frame`` is a client cancellation for a running operation.
+
+    Deliberately total: a frame this cannot parse is not a cancellation, and
+    the caller - a root daemon in the middle of a wipe - must not be handed an
+    exception for a stray byte on a socket it is about to abandon anyway.
+    """
+    try:
+        payload = json.loads(frame)
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        return False
+    return isinstance(payload, dict) and payload.get("cancel") is True
+
+
+def decode_frame(frame: bytes) -> tuple[str, dict[str, Any]]:
+    """Parse any downstream frame into ``(kind, payload)``.
+
+    ``kind`` is one of ``"progress"``, ``"heartbeat"`` or ``"result"``. A
+    ``"result"`` is terminal; the other two are not.
 
     Raises:
         RpcError: the peer returned an error, with its remediation attached.
-        ValueError: the frame is not a well-formed JSON-RPC response.
+        ValueError: the frame is not a well-formed JSON-RPC frame.
     """
     if len(frame) > MAX_FRAME_BYTES:
         raise ValueError(f"response frame exceeds {MAX_FRAME_BYTES} bytes")
@@ -147,7 +226,32 @@ def decode_response(frame: bytes) -> dict[str, Any]:
             remediation=str(data.get("remediation") or ""),
             kind=str(data.get("kind") or ""),
         )
+    for kind in ("progress", "heartbeat"):
+        if kind in payload:
+            body = payload[kind]
+            if not isinstance(body, dict):
+                raise ValueError(f"a JSON-RPC {kind} body must be an object")
+            return kind, body
     result = payload.get("result")
     if not isinstance(result, dict):
         raise ValueError("a JSON-RPC result must be an object")
-    return result
+    return "result", result
+
+
+def decode_response(frame: bytes) -> dict[str, Any]:
+    """Parse a *terminal* response frame, raising on a JSON-RPC error object.
+
+    Raises:
+        RpcError: the peer returned an error, with its remediation attached.
+        ValueError: the frame is not a well-formed terminal response - which
+            includes a progress or heartbeat frame, because a caller using this
+            entry point asked for one answer and must not silently treat an
+            intermediate frame as the result.
+    """
+    kind, payload = decode_frame(frame)
+    if kind != "result":
+        raise ValueError(
+            f"expected a terminal result frame, got a {kind} frame; use "
+            "decode_frame() to read a streamed operation"
+        )
+    return payload

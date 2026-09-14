@@ -157,6 +157,14 @@ def test_run_erase_refuses_a_mismatched_serial_behind_the_boundary(
 
     A stale UI cannot authorise a wipe of a device that was swapped since the
     page loaded.
+
+    The refusal is now raised by :func:`core.device.guard.assert_serial_confirmed`
+    rather than by a second comparison inside the handler, so this asserts the
+    property - a mismatch is refused, the device is named, and nothing was
+    modified - instead of the deleted duplicate's exact sentence. The guard
+    deliberately does not echo the device's real serial into the message; it is
+    the token that authorises the operation, and ``api.jobs._redact`` exists to
+    keep it from being repeated back.
     """
     from core.errors import ConfirmationMismatch
 
@@ -177,8 +185,110 @@ def test_run_erase_refuses_a_mismatched_serial_behind_the_boundary(
             },
         )
 
-    assert "ACTUAL-SERIAL" in caught.value.message
-    assert "Nothing was erased" in caught.value.message
+    assert "/dev/fake" in caught.value.message
+    assert "does not match" in caught.value.message
+    assert "Nothing has been modified" in caught.value.remediation
+
+
+def _serial_less_device() -> Any:
+    """A stick that reports no serial but does have a stable by-id link.
+
+    Not a hypothetical: the USB media used for hardware validation is this
+    shape whenever the bridge declines to pass the serial through.
+    """
+    from core.models import Device
+
+    return Device(
+        path="/dev/fake",
+        model="SYNTHETIC",
+        serial="",
+        size_bytes=1024 * 1024,
+        rotational=True,
+        transport="usb",
+        is_system_disk=False,
+        mounted_at=[],
+        pt_type=None,
+        by_id_path="/dev/disk/by-id/usb-SYNTHETIC_no_serial-0:0",
+    )
+
+
+def test_a_device_with_no_serial_is_confirmed_by_its_by_id_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The gate the helper's own copy of the rule used to make unpassable.
+
+    ``core.device.guard.assert_serial_confirmed`` accepts the stable by-id path
+    for a device that reports no serial, because there is nothing else the
+    operator can read off the capability report. The helper's duplicate demanded
+    an exact serial match, so it rejected that path and accepted ``""`` - which
+    then failed further in, naming a gate the operator had not touched. The net
+    effect was that a serial-less device could not be erased at all.
+
+    This asserts only that the confirmation gate is passed. What follows fails
+    for want of a real device, which is a different refusal and the point.
+    """
+    from core.errors import ConfirmationMismatch
+
+    monkeypatch.setattr(
+        "core.device.enumerate.get_device", lambda path: _serial_less_device()
+    )
+
+    daemon = HelperDaemon(operator_uid=os.getuid())
+    with pytest.raises(Exception) as caught:  # noqa: B017 - the kind is the assertion
+        daemon._dispatch(
+            "run_erase",
+            {
+                "path": "/dev/fake",
+                "job_id": "j",
+                "dry_run": False,
+                "typed_serial": "/dev/disk/by-id/usb-SYNTHETIC_no_serial-0:0",
+                "ledger_root": str(tmp_path / "ledger"),
+            },
+        )
+
+    assert not isinstance(caught.value, ConfirmationMismatch), (
+        "the by-id path is the only confirmation value a serial-less device has; "
+        f"refusing it makes the device unerasable: {caught.value}"
+    )
+
+
+def test_a_serial_less_device_still_refuses_a_wrong_confirmation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Delegating the check must not have widened it."""
+    from core.errors import ConfirmationMismatch
+
+    monkeypatch.setattr(
+        "core.device.enumerate.get_device", lambda path: _serial_less_device()
+    )
+
+    daemon = HelperDaemon(operator_uid=os.getuid())
+    for typed in ("", "not-the-by-id-path", "/dev/fake"):
+        with pytest.raises(ConfirmationMismatch):
+            daemon._dispatch(
+                "run_erase",
+                {
+                    "path": "/dev/fake",
+                    "job_id": "j",
+                    "dry_run": False,
+                    "typed_serial": typed,
+                    "ledger_root": str(tmp_path / "ledger"),
+                },
+            )
+
+
+def test_the_helper_does_not_reimplement_the_confirmation_rule() -> None:
+    """Static guard: one implementation, called from both sides of the boundary.
+
+    A second comparison here is a second place the rule can be fixed in one
+    spot and left wrong in the other, which is exactly what happened.
+    """
+    import helper.daemon as daemon_module
+
+    source = Path(daemon_module.__file__).read_text(encoding="utf-8")
+
+    assert "guard.assert_serial_confirmed(device, typed_serial)" in source
+    assert "typed_serial != device.serial" not in source
 
 
 def test_the_socket_is_created_owner_only(tmp_path: Path) -> None:
