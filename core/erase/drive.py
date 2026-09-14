@@ -1320,21 +1320,59 @@ def execute(
         )
         yield _progress(job.job_id, ErasePhase.ERASE, 10_000, message)
     else:
-        outcome = yield from _dispatch(
-            device,
-            capabilities,
-            geometry,
-            method,
-            job_id=job.job_id,
-            io=io,
-            ledger=sink,
-            psid=psid,
-            sleep=sleep,
-            buffer_bytes=buffer_bytes,
-            checkpoint_bytes=checkpoint_bytes,
-            resume_from=resume_from,
-            fills=fills,
-        )
+        try:
+            outcome = yield from _dispatch(
+                device,
+                capabilities,
+                geometry,
+                method,
+                job_id=job.job_id,
+                io=io,
+                ledger=sink,
+                psid=psid,
+                sleep=sleep,
+                buffer_bytes=buffer_bytes,
+                checkpoint_bytes=checkpoint_bytes,
+                resume_from=resume_from,
+                fills=fills,
+            )
+        except GeneratorExit:
+            # The caller closed this generator: an operator pressed Cancel, or
+            # the client that asked for the wipe went away. The write stopped at
+            # a yield point, never between an lseek and a write - but the device
+            # is now *partially* sanitized, and that is a fact about a physical
+            # object that outlives this process. It goes in the chain before the
+            # exception is allowed to continue, because a cancelled wipe that
+            # leaves no record is indistinguishable from one that never ran.
+            #
+            # No progress is yielded here and none can be: a generator that
+            # yields while closing raises RuntimeError. The ledger is the only
+            # channel out, which is the right one anyway.
+            sink.record(
+                ErasePhase.ERASE,
+                "cancelled",
+                {
+                    "job_id": job.job_id,
+                    "method": method.value,
+                    "note": (
+                        "Erase cancelled before completion. The device is "
+                        "PARTIALLY SANITIZED: data up to the last recorded "
+                        "checkpoint was overwritten and the remainder was not. "
+                        "No verification ran, so no sanitization level was "
+                        "achieved and no certificate is issued for this job."
+                        + (
+                            ""
+                            if method in pattern_mod.SOFTWARE_METHODS
+                            else " This method runs inside the drive's own "
+                            "firmware: cancelling stopped this tool from "
+                            "watching it, and does not stop the drive. Re-probe "
+                            "the device before drawing any conclusion about it."
+                        )
+                    ),
+                    "resumable": method in pattern_mod.SOFTWARE_METHODS,
+                },
+            )
+            raise
         bytes_written = outcome[0]
         passes = outcome[1]
         unwritable = outcome[2]

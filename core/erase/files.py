@@ -30,6 +30,7 @@ import secrets
 import string
 import time
 from collections.abc import Generator, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -583,10 +584,44 @@ def erase_paths(
 
     All ledgering happens here, in the parent, one entry per phase per record.
     A pool worker appending would race the chain head.
+
+    **A cancelled batch records ``erase.file.cancelled``.** The per-phase
+    entries are written after every file is processed, so a batch closed
+    part-way would otherwise leave the files it reached destroyed and the chain
+    silent about which ones. See :func:`_record_cancelled_batch`.
     """
     settings = options or FileEraseOptions()
-    started_at = datetime.now(UTC)
     targets = expand_targets(paths, recursive=settings.recursive)
+    state = _BatchState(targets=targets)
+    try:
+        return (yield from _erase_batch(settings, state, job_id=job_id, ledger=ledger))
+    except GeneratorExit:
+        # The caller closed this generator between yields. No progress can be
+        # yielded while closing; the ledger is the only channel out.
+        _record_cancelled_batch(ledger, job_id=job_id, settings=settings, state=state)
+        raise
+
+
+@dataclass
+class _BatchState:
+    """What a batch has done so far, readable by the cancellation handler."""
+
+    targets: list[Path]
+    results: dict[int, FileEraseRecord] = field(default_factory=dict)
+    pooled: bool = False
+    phase_entries_recorded: bool = False
+
+
+def _erase_batch(
+    settings: FileEraseOptions,
+    state: _BatchState,
+    *,
+    job_id: str,
+    ledger: LedgerSink,
+) -> Generator[Progress, None, FileEraseResult]:
+    """The body of :func:`erase_paths`, keeping ``state`` current as it goes."""
+    started_at = datetime.now(UTC)
+    targets = state.targets
 
     yield Progress(
         job_id=job_id,
@@ -613,7 +648,8 @@ def erase_paths(
 
     workers = settings.workers or os.cpu_count() or 1
     use_pool = len(targets) >= settings.pool_threshold and workers > 1
-    results: dict[int, FileEraseRecord] = {}
+    state.pooled = use_pool
+    results = state.results
     throughput = _Throughput()
     completed = 0
 
@@ -647,6 +683,7 @@ def erase_paths(
                 f"{phase.value.lower()}.result",
                 {"job_id": job_id} | _phase_payload(record, phase),
             )
+    state.phase_entries_recorded = True
 
     finished_at = datetime.now(UTC)
     limitations: list[str] = []
@@ -686,6 +723,91 @@ def erase_paths(
         ),
     )
     return result
+
+
+def _record_cancelled_batch(
+    ledger: LedgerSink,
+    *,
+    job_id: str,
+    settings: FileEraseOptions,
+    state: _BatchState,
+) -> None:
+    """Append the entry that says which files a cancelled batch reached.
+
+    Every target is named exactly once, on one of three lists:
+
+    * ``processed`` - the erase ran to the end of its steps for this path, and
+      the phases it reached are listed. On the inline path a file is never
+      half-done at cancellation: :func:`erase_one` has no yield inside it.
+    * ``not_processed`` - the inline path never reached it. Untouched.
+    * ``in_flight_unknown`` - the pool path only. Every task is queued to the
+      pool at once and the pool's workers are terminated when the batch is
+      closed, so a path with no result may be untouched, partly overwritten or
+      fully erased. This entry does not guess which.
+
+    No batch verdict is recorded - no success count, no verification result, no
+    severity summary. A cancelled batch is not an erasure certificate, and a
+    field shaped like one would be read as one.
+    """
+    processed: list[dict[str, object]] = []
+    unresulted: list[str] = []
+    for index, path in enumerate(state.targets):
+        record = state.results.get(index)
+        if record is None:
+            unresulted.append(str(path))
+            continue
+        processed.append(
+            {
+                "path": record.path,
+                "ok": record.ok,
+                "error_kind": record.error_kind,
+                "unlinked": record.unlinked,
+                "phases_reached": [
+                    phase.value
+                    for phase in FileErasePhase
+                    if not _phase_payload(record, phase).get("skipped")
+                ],
+            }
+        )
+
+    not_processed = [] if state.pooled else unresulted
+    in_flight = unresulted if state.pooled else []
+    total = len(state.targets)
+    if state.pooled:
+        rest = (
+            f"{len(in_flight)} were queued to a process pool whose workers were "
+            "terminated on cancel; each of those may be untouched, partly "
+            "overwritten or fully erased, and must be checked on disk. "
+        )
+    else:
+        rest = f"{len(not_processed)} were not reached and were not touched. "
+    ledgered = (
+        "The per-file phase entries were recorded before the cancellation. "
+        if state.phase_entries_recorded
+        else "No per-file phase entries were recorded for this batch; this "
+        "entry is the only record of what it did. "
+    )
+    ledger.record_file(
+        "cancelled",
+        {
+            "job_id": job_id,
+            "dry_run": settings.dry_run,
+            "targets": total,
+            "processed": processed,
+            "not_processed": not_processed,
+            "in_flight_unknown": in_flight,
+            "phase_entries_recorded": state.phase_entries_recorded,
+            "note": (
+                f"CANCELLED FILE ERASE: {len(processed)} of {total} target(s) "
+                "were processed and are listed with the phases each reached. "
+                + rest
+                + ledgered
+                + "No batch verdict is recorded: this is not evidence that any "
+                "file was erased beyond what is listed here."
+                + (" DRY RUN: nothing was written." if settings.dry_run else "")
+            ),
+        },
+    )
 
 
 def _batch_progress(
