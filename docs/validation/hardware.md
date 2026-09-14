@@ -350,6 +350,41 @@ Both runs use the identical command, recorded in the results JSON:
 photorec /log /d <out>/recup /cmd <device> partition_none,fileopt,everything,enable,search
 ```
 
+That string now lives in exactly one place, `harness_photorec` in
+`scripts/harness-steps.sh`, sourced by both this harness and `demo-reset.sh`.
+They previously held a copy each. Nothing had drifted between them, but the
+before/after count is worth something only because both runs are the same
+measurement, and a difference either copy could acquire without anyone noticing
+is a difference in a number that goes on a slide.
+
+Three properties were added at the same time, none of which change what is
+measured:
+
+* **A bound.** Every call is killed at 1500s (`SANCTUM_PHOTOREC_TIMEOUT_S`),
+  roughly 2.6x the slowest run recorded above. A timeout is a recorded failure
+  carrying `"timed_out": true`, never a zero count — "nobody looked" and
+  "nothing was recoverable" support opposite conclusions about a wipe.
+* **A heartbeat.** Elapsed time, files so far and bytes on disk, every 30s. A
+  step that can run for nine minutes in silence is indistinguishable from one
+  that has hung.
+* **A refusal, on two counts.** `demo-reset.sh` wrote its recup tree under
+  `mktemp -d`. On a host where `/tmp` is tmpfs, a device holding `0x00` produces
+  94,720 dovecot artefacts totalling 7.76 GB *in RAM*, which does not fail — it
+  swaps, and a swapping host is indistinguishable from a hung one at 1% CPU.
+  That cost forty minutes of a rehearsal window at 1% CPU with a clean `dmesg`.
+  This was a printed warning first; a warning read at 2am is not a guard.
+  `harness_workdir` now picks the work directory before the first destructive
+  step and refuses to start unless it is disk-backed and has at least the
+  device's size free, relocating a memory-backed `TMPDIR` to `/var/tmp` and
+  saying why. `harness_photorec` re-checks both at the output directory it is
+  handed, so a run that never went through `harness_workdir` is covered too.
+  Neither check can be silenced by an operator who is tired.
+
+`SANCTUM_PHOTOREC_OPTS` can narrow the signature set to the formats the demo
+plants (`HARNESS_PHOTOREC_OPTS_PLANTED`). It is deliberately not the default: a
+run using it cannot be compared with the figures in this section, and the
+14-of-14 result depends on that comparison holding.
+
 **The honest slide is 14 → 0, in both runs.** The raw counts, 198 → 94,720 and
 198 → 0, are dominated by a carver artefact in opposite directions and neither
 describes the wipe.

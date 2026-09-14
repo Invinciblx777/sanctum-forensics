@@ -448,7 +448,7 @@ because no step checked an exit status or an output file. PhotoRec recovered
 14 of 14 planted files afterwards.
 
 Nine defects separate run 1 from run 3. **None was caught by the synthetic
-suite, which was green throughout at 757 tests — 766 today.** Loop devices have
+suite, which was green throughout at 757 tests — 970 today.** Loop devices have
 no controller, no bridge and no FTL, so three of the nine are physically
 unreachable on one. Three needed a step to fail, and on a loop device none does.
 Two needed two jobs on one ledger and a key created after the chain started.

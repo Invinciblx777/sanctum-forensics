@@ -27,11 +27,43 @@ are there to be scored against rather than found.
 | `truncated` | 3 | a real file with its tail removed |
 | `decoy` | 3 | a valid header on bytes of another kind entirely |
 
-The full pipeline then runs over the image — carve, validate, classify, score,
-resolve overlaps, dedupe — exactly as the product runs it. **A candidate is a
-true positive when its SHA-256 matches a recoverable manifest entry.** Nothing
-softer counts: not "starts at the right offset", not "is the right type". A
-recovered file that differs from the original by one byte does not open.
+The pipeline then runs over the image — carve, validate, classify, score,
+resolve overlaps, dedupe. **A candidate is a true positive when its SHA-256
+matches a recoverable manifest entry.** Nothing softer counts: not "starts at
+the right offset", not "is the right type". A recovered file that differs from
+the original by one byte does not open.
+
+### Which pipeline these numbers came from
+
+The carve stage here is `core.carve.structure.carve_structures`
+(`testkit/calibrate.py`), and **the shipped API pipeline now runs the same
+call.** `api/carve_job.py` was routed through `carve_structures` after these
+weights were measured; before that it called
+`core.carve.signature.carve_signatures`, so thirty of the thirty-three
+candidates below — `source,structure,30` against `source,signature,3` in
+[`calibration.csv`](calibration.csv) — came from a code path the product did not
+execute. That divergence is closed: the calibration harness and the product now
+run carve, validate, classify, score, resolve overlaps and dedupe in the same
+order through the same functions.
+
+Two things that follow, and one that does not:
+
+- The per-bucket figures below now describe the pipeline that ships, for the
+  carving half of it.
+- The product additionally runs the filesystem-aware undelete pass ahead of
+  carving, which this sweep does not. Undelete is calibrated separately; see the
+  filesystem section and [`calibration-filesystems.csv`](calibration-filesystems.csv).
+- **These numbers have not been re-measured since the pipelines converged.** The
+  sweep was not re-run as part of that change, and it did not need to be — the
+  carve stage is the same call — but a re-run is what would turn "the same
+  pipeline" into "the same pipeline, remeasured". The command at the top of this
+  document reproduces it.
+
+The **hardware figures** in [`../validation/hardware.md`](../validation/hardware.md)
+were produced by `scripts/hardware_validation.py`, which drives
+`api.carve_job.carve_generator`. They therefore describe whichever pipeline was
+in the tree when each run happened; the Phase B runs predate this change. See
+that document's own notes before quoting them against the current build.
 
 Precision is true positives over candidates in the slice. Recall is distinct
 manifest files recovered by the slice, over the 15 that exist.

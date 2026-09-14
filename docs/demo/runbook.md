@@ -115,29 +115,78 @@ sudo ./scripts/demo-reset.sh --check-only --state-dir /var/lib/sanctum-demo
 Every row must read `OK`. If any row reads `STALE` or `MISSING`, that beat runs
 from its fallback and you say the fallback line.
 
-Start the server and leave it running in its own terminal. **Both variables are
-required** — `core.report.sign` refuses to open an unprotected signing key, and
-the value has to match the one `demo-reset.sh` staged with:
+**Two processes, and only one of them is root.** This is the architecture the
+project documents in `docs/privilege-boundary.md`, and it is what a judge will
+check first: the helper holds raw device access, the API and the browser do not.
+Start them in this order, in two terminals.
+
+**Terminal 0 — the privileged helper.** It serves five allowlisted operations
+over a 0600 Unix socket, authenticates its peer with `SO_PEERCRED`, and spawns
+no shell. Neither argument is guessed. `--operator-uid` is the *only* uid it
+will serve, and it is also the uid every file it writes into the ledger is
+handed to, so the unprivileged API can read back the chain a wipe produced.
+`--state-dir` is the only directory tree it will write into: every path in every
+request is resolved against it and refused if it lands outside, which is what
+stops a request body from aiming a root process at the rest of the filesystem.
 
 ```bash
-sudo SANCTUM_STATE_DIR=/var/lib/sanctum-demo \
-     SANCTUM_KEY_PASSPHRASE=sanctum-demo \
-     .venv/bin/python -m api.main
+sudo .venv/bin/python -m helper \
+     --operator-uid "$(id -u)" \
+     --state-dir /var/lib/sanctum-demo
 ```
+
+Expect one line, `helper_listening socket=/run/sanctum/helper.sock mode=0o600`.
+Leave it running. Nothing else in the demo is root.
+
+**Terminal 1 — the API, as yourself.** `SANCTUM_HELPER_SOCKET` is what makes it
+use the daemon rather than dispatching privileged operations inside the web
+server process. **All three variables are required** — without the socket
+variable the API falls back to the in-process helper and `GET /health` reports
+the `HELPER_IN_PROCESS` limitation, which is the state this sequence exists to
+avoid; and `core.report.sign` refuses to open an unprotected signing key, whose
+passphrase has to match the one `demo-reset.sh` staged with:
+
+```bash
+SANCTUM_HELPER_SOCKET=/run/sanctum/helper.sock \
+SANCTUM_STATE_DIR=/var/lib/sanctum-demo \
+SANCTUM_KEY_PASSPHRASE=sanctum-demo \
+.venv/bin/python -m api.main
+```
+
+No `sudo`. The previous version of this runbook ran this line under `sudo`,
+which put every privileged operation back inside the web server, made the
+socket's uid authentication and its five-operation allowlist authenticate
+nothing, and contradicted `docs/privilege-boundary.md` in a way anyone reading
+both documents finds in two minutes.
 
 If you overrode `SANCTUM_KEY_PASSPHRASE` when you ran the reset, use that value
 here. Get it wrong and the 3:15 report beat fails at "Generate signed report"
 with a key error, which is a bad place to discover it.
 
+Confirm the boundary is actually up before the room fills:
+
+```bash
+curl -s http://127.0.0.1:8787/health | python -m json.tool
+```
+
+`limitations` must **not** contain `HELPER_IN_PROCESS`. If it does, the API did
+not see the socket: check that Terminal 0 is still running and that the path in
+`SANCTUM_HELPER_SOCKET` matches the one it printed. It must not contain
+`NO_SIGNING_KEY` or `CHAIN_WITHOUT_KEY_FINGERPRINT` either: the first means no key
+exists yet, the second that the chain was started without one, and both mean the
+`fingerprint_matches_genesis` check will be SKIP on the 3:15 report. Re-run the
+reset rather than continuing.
+
 It binds `127.0.0.1:8787` and nothing else. Open the browser full-screen on
 `http://127.0.0.1:8787`, on the Devices screen, before anyone is looking.
 
-Four things on screen, arranged before you start:
+Five things on screen, arranged before you start:
 
 | Window | Contents | Used at |
 |---|---|---|
 | Browser, full screen | the UI on `http://127.0.0.1:8787` | every beat |
-| Terminal 1, visible | the API server log | background |
+| Terminal 0, minimised | the root helper daemon | background |
+| Terminal 1, visible | the API server log, running as you | background |
 | Terminal 2, large font | empty, cwd is the repo | 3:15 tamper beat |
 | Terminal 3, minimised | stick B's wipe, after 0:45 | 5:00 closer |
 
@@ -280,6 +329,13 @@ CONTROLLER_WRITE_ELISION   severity HIGH   addressable false
 > ledger is on screen at the end.**
 
 Then minimise it to Terminal 3 and move on. **Do not wait for it.**
+
+**Nothing to do here about ledger ownership.** Earlier drafts of this runbook
+carried a `sudo chown -R` after the wipe, because the helper writes the wipe's
+entries and blobs as root at mode `0600` and the unprivileged API has to read
+them back at the 3:15 report beat. That is now handled where it belongs: the
+helper hands each file it creates to the uid you passed as `--operator-uid`,
+mode unchanged. See `docs/privilege-boundary.md`, "Who owns the chain".
 
 **If it fails:**
 
@@ -434,8 +490,31 @@ recovered its named deleted JPEGs at exactly `10000`.
 The strongest 60 seconds in the demo. Rehearse it until the typing is muscle
 memory.
 
-**Do:** Audit screen → **Generate signed report** → note the path. Then
-Terminal 2.
+**Do:** Audit screen → **Generate signed report** for the **2:15 carve job** →
+note the path. Then Terminal 2.
+
+**Which job id to type, and the two that will be refused.** A report is only
+generated for a job this API process ran and that has finished. The job id field
+suggests `erase-drive-…`, and both erase jobs on the demo are wrong answers:
+
+* **The 0:45 live wipe is still running** — it is a 37-minute job. The API
+  answers `409 JobNotFinished`.
+* **The staged erase behind `demo-erase.forensic.json` ran during
+  `demo-reset.sh --full`, in a different process**, and the server has been
+  restarted since (step 15). The API answers `404 JobNotKnown`: a report is built
+  from the job's result, which lived in the process that ran the job.
+
+The one finished job this process owns at 3:15 is the carve from 2:15. Its id is
+on the Recovery screen, in the **Scan job** panel that appears when the scan
+starts (`carve-…`). Press **Copy** at the end of the 2:15 beat and paste it into
+the Audit screen's job id field at 3:15 — do not retype it.
+
+**If the server was restarted after 2:15** (the "Server not running" fallback), the
+carve job is gone with it. Either re-run the 2:15 scan first — it takes seconds —
+or skip the Generate click and go straight to Terminal 2. Nothing below depends on
+the generated file: the tamper sequence verifies the staged
+`demo-erase.forensic.json`, which was signed during the reset and is unaffected by
+a restart.
 
 ```bash
 REPORT=/var/lib/sanctum-demo/reports/demo-erase.forensic.json
@@ -528,7 +607,7 @@ mv "$REPORT.bak" "$REPORT"
 
 ---
 
-## 4:15 — 5:00 · Nine defects real hardware found and 766 synthetic tests did not
+## 4:15 — 5:00 · Nine defects real hardware found and 970 synthetic tests did not
 
 **Do:** slide. No commands.
 
@@ -542,7 +621,7 @@ mv "$REPORT.bak" "$REPORT"
 > the geometry silently shrank to one sector.
 >
 > Nine defects between run one and run three. None of them was caught by the
-> synthetic suite, which was green throughout at 757 tests — 793 today. A loop
+> synthetic suite, which was green throughout at 757 tests — 970 today. A loop
 > device has no controller, no bridge and no flash translation layer, so three
 > of those defects are physically unreachable on one. Three more needed a step
 > to fail, and on a loop device none does. Two needed two jobs on one ledger.
@@ -837,37 +916,78 @@ anything. Follow it in order. Do not skip step 4 because it is boring.
    4.0 MiB/s, the timings in this runbook are wrong for your hardware** — redo
    the arithmetic in [Wipe arithmetic](#wipe-arithmetic) with your number.
 
-8. **Start the server in its own terminal and leave it alone:**
+8. **Start the privileged helper in its own terminal and leave it alone:**
 
    ```bash
-   sudo SANCTUM_STATE_DIR=/var/lib/sanctum-demo \
-        SANCTUM_KEY_PASSPHRASE=sanctum-demo \
-        .venv/bin/python -m api.main
+   sudo .venv/bin/python -m helper \
+        --operator-uid "$(id -u)" \
+        --state-dir /var/lib/sanctum-demo
    ```
 
-9. **Open the browser to `http://127.0.0.1:8787`, full screen, Devices tab.**
-   Your stick must be listed — both, if you staged `--usb-b`. If it is not,
-   refresh once; if it is still not, the server is not running as root and the
-   device probe found nothing.
+   This is the only root process in the demo. It prints
+   `helper_listening socket=/run/sanctum/helper.sock mode=0o600` and then says
+   nothing until you erase something.
 
-10. **Open two more terminals.** Terminal 2, font 16pt or larger, `cd` to the
+9. **Confirm the signing key exists before anything can start a job.** The
+   chain's genesis entry records the fingerprint of whichever key exists when the
+   first job starts it. If none does, genesis records none, and
+   `fingerprint_matches_genesis` is SKIP on every report that chain will ever
+   carry — nothing afterwards repairs it. The reset creates the key; this checks
+   it, with the passphrase the API will use, and creates one only if it is
+   missing:
+
+   ```bash
+   SANCTUM_KEY_PASSPHRASE=sanctum-demo \
+   .venv/bin/python scripts/hardware_validation.py keygen \
+       --key-dir /var/lib/sanctum-demo/keys
+   ```
+
+   It prints `{"fingerprint": "…", "step": "keygen"}`. Compare the fingerprint
+   with the one the reset printed after `KEY`; they must match. An error here
+   means the passphrase is wrong — fix that now, not at 3:15.
+
+   **Then start the API in a second terminal, as yourself — no `sudo`:**
+
+   ```bash
+   SANCTUM_HELPER_SOCKET=/run/sanctum/helper.sock \
+   SANCTUM_STATE_DIR=/var/lib/sanctum-demo \
+   SANCTUM_KEY_PASSPHRASE=sanctum-demo \
+   .venv/bin/python -m api.main
+   ```
+
+   Then check the boundary is real, not assumed:
+
+   ```bash
+   curl -s http://127.0.0.1:8787/health | python -m json.tool
+   ```
+
+   `limitations` must not contain `HELPER_IN_PROCESS`, `NO_SIGNING_KEY` or
+   `CHAIN_WITHOUT_KEY_FINGERPRINT`.
+
+10. **Open the browser to `http://127.0.0.1:8787`, full screen, Devices tab.**
+    Your stick must be listed — both, if you staged `--usb-b`. If it is not,
+    refresh once; if it is still not, the *helper* is not running or is not
+    serving your uid: read Terminal 0. The API itself is unprivileged and never
+    probes a device on its own.
+
+11. **Open two more terminals.** Terminal 2, font 16pt or larger, `cd` to the
     repo — this is the one the audience reads at 1:30 and 3:15. Terminal 3,
     minimised — this is where the live wipe will be.
 
 ### Part B — the run
 
-11. **Open `docs/demo/qa.md` on your phone**, not on the laptop. You will need
+12. **Open `docs/demo/qa.md` on your phone**, not on the laptop. You will need
     it during Q&A and you cannot alt-tab away from the demo to find it.
 
-12. **Open `docs/demo/rehearsal-log.md` on paper or a second screen.** You are
+13. **Open `docs/demo/rehearsal-log.md` on paper or a second screen.** You are
     writing seven numbers into it. Have a pen.
 
-13. **Read the whole runbook top to bottom once, out loud, at normal speaking
+14. **Read the whole runbook top to bottom once, out loud, at normal speaking
     pace, with the timer off.** This is not the rehearsal. This is finding out
     which sentences you cannot say. Expect it to take eight minutes the first
     time.
 
-14. **Reset for the real run:**
+15. **Reset for the real run:**
 
     ```bash
     sudo ./scripts/demo-reset.sh --quick
@@ -877,31 +997,31 @@ anything. Follow it in order. Do not skip step 4 because it is boring.
     re-run the command from step 8). Job state lives in memory, so a restart is
     the only way to clear the jobs step 13 may have created.
 
-15. **Put the browser back on the Devices screen, full screen.** Check the stick
+16. **Put the browser back on the Devices screen, full screen.** Check the stick
     is listed and shows a FAT32 volume — `--quick` put one back. Check the sticky
     note with the serial is where you can see it without turning your head.
 
-16. **Start the timer, and start talking, in that order.** Press start on the
+17. **Start the timer, and start talking, in that order.** Press start on the
     phone with your left hand while your right hand is already on the trackpad.
     **The clock starts on your first word, not on your first click** — the
     Devices screen is already up, so beat 1 is pure talking.
 
-17. **At each transition, glance at the phone and say the number out loud to
+18. **At each transition, glance at the phone and say the number out loud to
     yourself.** You will not remember seven numbers. Saying them makes them
     stick long enough to write down. The transitions are: finishing the badge
     explanation, minimising the wipe, finishing the PhotoRec counts, finishing
     the score breakdown, the report passing again after restore, and finishing
     the nine-defects slide.
 
-18. **Do not stop for mistakes.** A rehearsal you paused is a rehearsal that
+19. **Do not stop for mistakes.** A rehearsal you paused is a rehearsal that
     measured nothing. If a beat fails, use its fallback exactly as written and
     keep the clock running — that *is* the thing you are practising.
 
-19. **Stop the timer at 6:00 or when you run out of words, whichever comes
+20. **Stop the timer at 6:00 or when you run out of words, whichever comes
     first.** Write the seven numbers into `rehearsal-log.md` immediately, before
     you make coffee.
 
-20. **Fill in the "Run 1" block** — what went wrong, what you fell back on, what
+21. **Fill in the "Run 1" block** — what went wrong, what you fell back on, what
     you are changing. Then, for rehearsal 2, go back to step 14. **You do not
     run `--full` again** unless you have physically re-plugged the sticks or
     something is genuinely broken.
@@ -919,8 +1039,10 @@ can run it again.
 
 1. `sudo ./scripts/demo-reset.sh --check-only` prints `OK` on every row and
    exits 0.
-2. The server is running with **both** `SANCTUM_STATE_DIR` and
-   `SANCTUM_KEY_PASSPHRASE` set, matching what the reset staged with.
+2. The root helper is running (Terminal 0) and the API is running **as you**,
+   with `SANCTUM_HELPER_SOCKET`, `SANCTUM_STATE_DIR` and
+   `SANCTUM_KEY_PASSPHRASE` all set, matching what the reset staged with.
+   `GET /health` does not report `HELPER_IN_PROCESS`.
 3. The browser is on the Devices screen, full-screen, showing the stick with a
    FAT32 volume on it.
 4. The serial is written on a sticky note stuck to the laptop.

@@ -52,7 +52,7 @@ primitive. No authentication scheme we could ship would make that a good trade."
 
 ## 3 · The three modules
 
-> # 766
+> # 970
 > **Tests passing, 12 skipped — and nine defects that none of them caught.**
 > *`make test`; the nine are on slide 6*
 
@@ -60,7 +60,7 @@ primitive. No authentication scheme we could ship would make that a good trade."
 |---|---|---|
 | **M1** | Secure Drive Eraser | capability-probed method selection, NIST Clear/Purge/Destroy, verified read-back |
 | **M2** | Secure File & Folder Eraser | targeted erasure, per-filesystem caveats stated rather than assumed |
-| **M3** | Advanced Carving & Recovery | undelete from surviving metadata + signature + structure carving, calibrated confidence |
+| **M3** | Advanced Carving & Recovery | undelete from surviving metadata + signature and structure carving, bifragmented-JPEG reassembly, decoder-validated, calibrated confidence |
 
 - One vocabulary throughout: **sanitize** destroys, **carve** recovers without
   filesystem metadata, **undelete** recovers using it.
@@ -257,7 +257,7 @@ not do than one that tells you it did everything."
 ## Build notes
 
 - **One number per slide, and never repeat one.** The numbers above are chosen
-  to be non-overlapping: 3.6×, 1, 766, `high`, 1500, 512, 19.6 s, 0.0%, 0.
+  to be non-overlapping: 3.6×, 1, 970, `high`, 1500, 512, 19.6 s, 0.0%, 0.
 - Source line under every number, in the file path form used above. A panel that
   can check a number trusts the ones it does not check.
 - No screenshots of code. One screenshot maximum, and it is the residual-risk

@@ -1,0 +1,1061 @@
+# Sanctum Forensics — user manual
+
+For the examiner or administrator who has been handed this tool and a drive.
+It assumes you know what a filesystem is. It does not assume you have read the
+source, and nothing here requires you to.
+
+Every claim below was checked against the code as it stands. Where the tool
+cannot do something, this manual says so in the same breath as the thing it can
+do. Measured figures — recall, precision, throughput, timings — are deliberately
+**not** repeated here; they live in
+[`performance/calibration.md`](performance/calibration.md),
+[`performance/acquisition.md`](performance/acquisition.md) and
+[`validation/hardware.md`](validation/hardware.md), and several are pending a
+re-run. A number you need for a court or a report comes from those documents, not
+from this one.
+
+**Contents**
+
+1. [Before you start](#1-before-you-start)
+2. [Installation](#2-installation)
+3. [Starting it](#3-starting-it)
+4. [Sanitize a drive (M1)](#4-sanitize-a-drive-m1)
+5. [Erase files and folders (M2)](#5-erase-files-and-folders-m2)
+6. [Acquire and recover (M3)](#6-acquire-and-recover-m3)
+7. [Reports and verification](#7-reports-and-verification)
+8. [Reading the ledger](#8-reading-the-ledger)
+9. [When something refuses](#9-when-something-refuses)
+10. [Cancelling, and what a cancelled operation leaves](#10-cancelling-and-what-a-cancelled-operation-leaves)
+11. [Limitations](#11-limitations)
+
+---
+
+## 1. Before you start
+
+Sanctum Forensics does two opposite jobs from one program, and keeps them apart
+by construction.
+
+| Module | What it does | Vocabulary |
+|---|---|---|
+| **M1 Secure Drive Eraser** | Sanitizes a whole block device, using the mechanism the device reported it can perform | NIST SP 800-88 Rev.1: **Clear**, **Purge** |
+| **M2 Secure File & Folder Eraser** | Overwrites named files and folders, cleanses *document* metadata, and enumerates the filesystem metadata it did **not** cleanse | Clear only |
+| **M3 Advanced File Carving & Recovery** | Acquires an image read-only, then recovers objects by filesystem metadata (*undelete*) and by content (*carve*) | read-only throughout |
+
+Two words are used here in one sense each, everywhere:
+
+* **sanitize** — destroy data so it cannot be recovered.
+* **carve** — recover an object without filesystem metadata. Recovering *with*
+  surviving filesystem metadata is **undelete**, and it is reported separately.
+
+### What this tool does not guarantee
+
+The three sanitization types come from NIST SP 800-88 Rev.1 and the tool uses no
+others. **Clear** overwrites every user-addressable location and resists
+keyboard-level recovery. **Purge** uses a mechanism — a firmware sanitize, a
+cryptographic erase — that makes recovery infeasible with laboratory technique.
+**Destroy** is physical: disintegrate, incinerate, pulverize, shred, melt. This
+tool **never returns Destroy**, because no software can perform it; where Destroy
+is what your policy requires, the tool's job ends at telling you so.
+
+Which of Clear or Purge you get is decided by what the device reported, never by
+what you selected — see §4. On media where the tool can only Clear, the report
+says Clear and says why. It does not say "military-grade", and it does not offer
+Gutmann-style multi-pass overwrite on flash, because extra passes on flash
+consume program/erase cycles for no security benefit.
+
+The full list of guarantees the tool declines to make is
+[`limitations.md`](limitations.md). Read it before you rely on a result. §11
+points at the parts you are most likely to need.
+
+---
+
+## 2. Installation
+
+The deployment target is Linux. Whole-device sanitization needs Linux block-device
+semantics (`O_DIRECT`, `BLKGETSIZE64`, sysfs queue attributes, ATA/NVMe
+pass-through) and refuses to run anywhere else; file and folder erasure (M2) still
+works on other platforms.
+
+**Python 3.11 is required and your host `python3` is probably not it.** Fedora 44
+ships CPython 3.14, which fails the pin and has no `libewf-python` wheel.
+
+```bash
+sudo dnf install -y python3.11 python3.11-devel     # or the Debian equivalents
+cd sanctum-forensics
+make install        # bootstraps .venv with python3.11 and installs under constraints.txt
+make check          # ruff + mypy --strict + the test suite
+```
+
+Two dependencies have sharp edges:
+
+* **`pytsk3`** installs from a `cp311` wheel that bundles its own libtsk. It needs
+  no Sleuth Kit build and no `libtsk-dev`. Installing `sleuthkit` for the `fls` /
+  `icat` command-line tools is useful for cross-checking a recovery by hand;
+  nothing in the code shells out to them.
+* **`libewf-python` builds from source, and a stock `pip install` of it cannot
+  write E01.** The upstream `setup.py` passes `--disable-shared-libs`, which also
+  disables zlib, and the first write fails with
+  `libewf_handle_open: write access currently not supported - compiled without zlib`.
+  Reading E01 works either way. If you need to *acquire* to E01, run
+  `scripts/build-libewf-python.sh`, which round-trips a 1 MiB E01 during the build
+  and fails if it cannot. Check what you have with:
+
+  ```bash
+  .venv/bin/python -c "from core.carve.acquire import e01_write_supported; print(e01_write_supported())"
+  ```
+
+  `False` means raw (`fmt: "raw"`) acquisition only.
+
+The details behind all three are in [`technical.md`](technical.md).
+
+### The container
+
+```bash
+docker build -t sanctum-forensics .
+docker run --rm --network host -e SANCTUM_STATE_DIR=/var/lib/sanctum sanctum-forensics
+```
+
+`--network host` is required: the API binds `127.0.0.1` and nothing else, so there
+is no port to publish. The image builds the UI with `npm ci` and fails if the
+bundle references any external origin, and runs `scripts/build-libewf-python.sh`,
+so an image that cannot write E01 does not get built.
+
+**The container has no privileged helper.** `/health` reports the
+`HELPER_IN_PROCESS` limitation and device operations inside it fail rather than
+escalate. Drive sanitization is a host operation. The image is for the API, the
+UI, carving and recovery, and reporting.
+
+---
+
+## 3. Starting it
+
+**Two processes. Exactly one of them is root.** Start them in this order.
+
+### Terminal 0 — the privileged helper
+
+It serves five allowlisted operations over a `0600` Unix socket, authenticates the
+peer with `SO_PEERCRED`, and never spawns a shell.
+
+```bash
+sudo mkdir -p /var/lib/sanctum
+sudo .venv/bin/python -m helper \
+     --operator-uid "$(id -u)" \
+     --state-dir /var/lib/sanctum
+```
+
+Expect one line — a `helper_listening` record naming the socket path and
+`mode=0o600`. Leave it running.
+
+Neither argument is guessed, and both are required:
+
+* `--operator-uid` is the **only** uid allowed to connect, and it is also the uid
+  every file the helper writes into the ledger is handed to — which is what lets
+  the unprivileged API read back the chain a wipe produced. Pass the account that
+  will run the API, normally `$(id -u)`.
+* `--state-dir` is the **only** directory tree the helper will write into. Every
+  path in every request (`ledger_root`, `dest`) is resolved against it — symlinks
+  resolved before the comparison — and refused if it lands outside. It must exist
+  already; the helper will not invent a directory nobody chose.
+
+An older two-argument form of this command (without `--state-dir`) now fails with
+`python -m helper: error: the following arguments are required: --state-dir`. That
+is the correct failure — a root daemon that invented its own directory would be
+worse — so add the argument rather than working around it.
+
+### Terminal 1 — the API, as yourself
+
+**No `sudo`.** Running the API as root puts every privileged operation back inside
+the web server and makes the socket's uid check and its five-operation allowlist
+authenticate nothing.
+
+```bash
+SANCTUM_HELPER_SOCKET=/run/sanctum/helper.sock \
+SANCTUM_STATE_DIR=/var/lib/sanctum \
+SANCTUM_KEY_PASSPHRASE='<your passphrase>' \
+.venv/bin/python -m api.main
+```
+
+It binds `127.0.0.1:8787` and nothing else. Open `http://127.0.0.1:8787`.
+
+| Variable | What happens without it |
+|---|---|
+| `SANCTUM_HELPER_SOCKET` | **The API silently falls back to an in-process helper.** Nothing warns you on the console. Device operations then run with the web server's own privileges, which as an ordinary user means they *fail* — they are never escalated. See the check below. |
+| `SANCTUM_STATE_DIR` | The state directory defaults to `~/.local/share/sanctum`. Your ledger, reports, evidence and recovered objects go there instead of where you meant. |
+| `SANCTUM_KEY_PASSPHRASE` | Report signing refuses to write or read an unprotected key. In a terminal you are prompted; with no TTY the report fails with `KeyPassphraseMissing`. |
+| `SANCTUM_PORT` | Defaults to `8787`. |
+
+### The one check to run before anything matters
+
+```bash
+curl -s http://127.0.0.1:8787/health | python3 -m json.tool
+```
+
+Started **without** a helper socket, it answers like this — and this is the state
+the sequence above exists to avoid:
+
+```json
+{
+    "status": "ok",
+    "tool_version": "sanctum-forensics/0.0.0",
+    "state_dir": "/var/lib/sanctum",
+    "ui_bundled": true,
+    "limitations": [
+        "HELPER_IN_PROCESS: no helper socket was configured, so privileged operations run with this process's own privileges rather than through the root daemon. On an unprivileged process the device operations will fail; nothing is silently escalated."
+    ]
+}
+```
+
+**`limitations` must be empty — it must not contain `HELPER_IN_PROCESS`.** If it
+does, the API did not see the socket:
+
+```
+"HELPER_IN_PROCESS: no helper socket was configured, so privileged operations
+run with this process's own privileges rather than through the root daemon. On
+an unprivileged process the device operations will fail; nothing is silently
+escalated."
+```
+
+Check that Terminal 0 is still running and that `SANCTUM_HELPER_SOCKET` matches
+the path it printed. Until then the Devices screen will still list devices, but
+every capability probe comes back
+`hdparm could not read /dev/sdX: permission denied.` and no wipe can start. That
+string is a privilege failure, not a statement about the drive.
+
+If the limitation is present when a report is generated, it is copied into the
+report's limitations section, so a report produced in this state says so on its
+face.
+
+> `make run` is a developer convenience and starts uvicorn on **port 8000**, not
+> 8787, and ignores `SANCTUM_PORT`. Use `python -m api.main` for anything real.
+
+### One more thing, before the first job
+
+Create the signing key **before the first ledger entry is written**:
+
+```bash
+SANCTUM_KEY_PASSPHRASE='<your passphrase>' \
+.venv/bin/python scripts/hardware_validation.py keygen --key-dir /var/lib/sanctum/keys
+```
+
+```json
+{
+  "fingerprint": "43:62:3F:92:1A:22:4C:25:82:87:55:B8:0C:CB:6B:1E:AB:32:C7:8A:3E:83:D5:F2:7B:DB:2C:94:AB:C1:29:67",
+  "step": "keygen"
+}
+```
+
+The chain's genesis entry records whichever signing fingerprint exists when the
+chain is started. Start the chain first and the genesis records none, and the
+report check `fingerprint_matches_genesis` will report **SKIP — "the chain was
+created before any signing key existed"** for every report on that chain, for the
+life of that chain. Nothing is broken and the report still verifies; you have
+simply lost one of the five checks. Write the fingerprint down: §7 explains why a
+third party needs it from somewhere other than the report.
+
+---
+
+## 4. Sanitize a drive (M1)
+
+Use the **Devices** screen to pick a target, then **Sanitize**.
+
+### The method is selected from probed capability, never from preference
+
+You choose a *level* — CLEAR or PURGE. The tool chooses the *mechanism*. The
+request the browser sends carries `path`, `level`, `dry_run` and `typed_serial`,
+and has no field for a method at all; `core/erase/drive.py:select_method` reads a
+decision table over what the capability probe returned. The panel that looks like
+a method picker is a capability disclosure with a level selector, and each entry
+carries the evidence for its own availability — hover it and read it, because that
+sentence is the answer to "how do you know?".
+
+**Clear** is a host-pattern overwrite of every user-addressable location. It is
+always achievable on a writable device.
+
+**Purge** needs a mechanism inside the device. What the probe looks for:
+
+| Reported by | Purge mechanism |
+|---|---|
+| `hdparm -I`, SANITIZE feature set | ATA SANITIZE — block erase, crypto scramble, or overwrite |
+| `hdparm -I`, security block | ATA SECURITY ERASE (enhanced), if security is not frozen |
+| `nvme id-ctrl`, SANICAP | NVMe SANITIZE (block or crypto); or Format NVM with a crypto setting |
+| `sedutil-cli` | Opal SSC — see the exception below |
+
+If none of those is reported, PURGE is **not offered**, and asking for it returns
+`UnsupportedCapability` naming the levels that are reachable. A USB stick is the
+common case: ATA pass-through is not dependable through a USB bridge, so the
+capability record says *"ATA pass-through is unavailable through this usb bridge,
+so firmware sanitize and secure erase cannot be verified or issued. Only
+overwrite-based CLEAR can be assured."* — which is a statement about the bridge,
+not a claim that the device lacks the feature.
+
+**SED cryptographic erase (Opal) is disabled in this build.** The radio is dimmed
+and carries a `NOT IN THIS BUILD` chip reading *"PSID required. The PSID is
+printed on the drive label and this build has no way to accept it, so the REVERT
+cannot be issued."* On an Opal drive the evidence line says the drive supports it,
+this build cannot issue it, and what to use instead: ATA or NVMe SANITIZE if
+reported, otherwise a single-pass overwrite that **achieves Clear, not Purge, and
+the report will say so.**
+
+### The two gates
+
+Destructive erasure is opt-in twice, and both gates are re-checked inside the root
+helper, not in the browser:
+
+1. **Dry run is the default.** A request that omits `dry_run` simulates. Nothing
+   is written; you get the full plan, the chosen method and the limitations.
+2. **You type the device serial.** The helper compares it against the serial *it*
+   re-reads from the device, so a browser tab that went stale before the drive was
+   swapped cannot authorise the wipe. A device that reports no serial is confirmed
+   by typing its full `/dev/disk/by-id/...` path instead — still a value you read
+   off the capability report, never one you can guess.
+
+Before either gate matters, the tool refuses outright to touch a device that holds
+the running system (root, `/boot` or active swap) or that has any mounted
+filesystem. Unmount first; there is no override.
+
+### The 0xA5 write calibration
+
+Immediately after the gates clear and never in a dry run, a Clear-level overwrite
+runs a **write calibration**: 64 MiB of `0x00` and 64 MiB of `0xA5`, both
+`O_DIRECT`, both timed. It is destructive — it writes 128 MiB over a region of the
+target — and it exists because a flash controller can acknowledge an all-zero write
+without programming a single cell, and no host-side *read* can tell the difference.
+The write's duration can.
+
+If the non-zero write takes more than **2.0×** as long as the zero write, the zero
+fill was not programmed. The tool then writes the pattern with `0xA5` rather than
+zeros, and raises a `CONTROLLER_WRITE_ELISION` residual finding carrying the
+measurement. This is why a wiped device may read back as `0xA5` rather than zeros:
+a device holding `0xA5` was written, and a device holding zeros may not have been.
+
+A ratio below the threshold is reported as **"no elision detected"** and never as
+"the write was performed". The calibration measures the controller's behaviour, not
+the state of the cells. If the device is too small, the region is unwritable, or the
+clock produced a zero duration, the result is *unknown* — recorded with its reason,
+never as a pass.
+
+### What you get
+
+The job moves through six phases — `PREFLIGHT`, `HIDDEN_AREA_UNLOCK`, `ERASE`,
+`HIDDEN_AREA_RESTORE`, `VERIFY`, `REPORT` — and each writes a ledger entry as it
+completes. Progress streams to the screen while the wipe runs. Verification reads
+the medium back: exhaustively at or below 64 GiB, and above that the first and last
+1 GiB in full plus 4096 seeded random 1 MiB windows, with the report carrying the
+detection-probability formula and the seed rather than a bare percentage — so a
+third party can redraw the same sample.
+
+---
+
+## 5. Erase files and folders (M2)
+
+Use the **File eraser** screen, or `POST /jobs/erase-files`. This path is
+unprivileged: it writes through ordinary file handles and runs in the API process,
+because the API can already open any file you can.
+
+**Dry run is the default here too**, and the second gate is an explicit `confirm`
+rather than a serial — there is no device to identify. A dry run inspects every
+target and reports exactly what would happen and what would survive, writing
+nothing.
+
+Eleven steps run per file in a fixed order: inspect, cleanse metadata, overwrite,
+alternate data streams, truncate, rename to a **same-length** random name (a shorter
+name leaves the tail of the original in the directory entry), unlink, residual scan,
+verify. A per-file `OSError` sets `ok=false` on that record and the batch continues;
+one bad file does not abort a run.
+
+Two options change what is destroyed:
+
+* **`cleanse_metadata`** (default on) rewrites *document* metadata before the
+  overwrite: EXIF, OOXML `docProps`, PDF info dictionaries, OLE summary streams. It
+  never claims a clean it did not achieve — a format it cannot rewrite is reported,
+  not silently skipped.
+* **`break_hardlinks`** (default **off**). Overwriting a file with more than one
+  hard link destroys data reachable under names you did not give. With the option
+  off, such a file is reported as `HARDLINK_SURVIVES` and its content is left. The
+  finding is reported either way.
+
+### The enumeration is the deliverable
+
+Filesystem metadata is **detected and reported, never cleansed**: resident MFT data,
+the filesystem journal, the USN journal, MFT slack, `$I30` index slack, file slack,
+copy-on-write snapshots, VSS shadow copies, TRIM remapping, compressed
+reallocation, EFS encryption, sparse unwritten regions, likely backup copies. Each
+appears as a residual finding with a severity. The tool tells you what the
+filesystem kept; it does not claim to have removed it.
+
+**A per-file erase is usually unverifiable, and is reported as unverifiable rather
+than as a pass.** Verification needs a physical extent map, which needs FIEMAP; on a
+filesystem that does not answer FIEMAP the record says so in as many words — e.g.
+*"FIEMAP is unavailable for `<path>` (\[Errno 95\] Operation not supported), so no
+physical extent map was captured and the overwrite cannot be verified by reading the
+medium."* Read the `limitations` list on each file's record; it is per-file and per
+filesystem, not a global footnote.
+
+The tool refuses a filesystem root and a protected system location
+(`/`, `/boot`, `/etc`, `/usr`, `/var`, `/System`, `C:\Windows`, …) outright.
+
+---
+
+## 6. Acquire and recover (M3)
+
+**The evidence path is read-only by construction.** Nothing under `core/carve`
+opens a device or an image `O_RDWR`; the evidence classes declare no write method
+at all and open `O_RDONLY`. There is no dry-run gate on acquisition or carving,
+because there is nothing to destroy.
+
+### Acquire
+
+**There is no acquisition control in the UI in this build** — the Recovery screen
+carves an image you already have. Acquire with `POST /jobs/acquire`, passing
+`source`, `dest` and `fmt` (`raw` or `e01`):
+
+```bash
+curl -s -X POST http://127.0.0.1:8787/jobs/acquire \
+  -H 'Content-Type: application/json' \
+  -d '{"source":"/dev/sdX","dest":"case-001/source.dd","fmt":"raw",
+       "case_id":"CASE-001","operator":"examiner"}'
+```
+
+On Linux, against a block device, the acquisition sets the kernel's read-only flag
+with `BLKROSET` and reads it back with `BLKROGET` before opening anything.
+
+**Read what that establishes.** It establishes that *the kernel holds the device
+read-only*. It does **not** establish that a write would be refused, and the
+acquisition record says so: `write_block_verified_by: flag_read_back`, plus a
+`WRITE_BLOCK_NOT_VERIFIED` note. Proving the refusal means attempting a write, and
+this path never writes to a device. Two routes are not covered by the flag on any
+bridge: **SG_IO / ATA pass-through**, which addresses the device below the block
+layer where the flag is never consulted, and **a partition node whose own flag was
+never set** — an automount writing through `/dev/sdX1` while only `/dev/sdX` was
+blocked. `scripts/probe-write-block.py`, gated behind
+`--i-understand-this-may-write-to-the-device`, qualifies an interface by attempting
+a write against **scratch media**; a record produced that way says
+`write_block_verified_by: attempted_write`. **For evidence that will be presented,
+use a hardware write blocker.**
+
+`dest` is confined to `<state-dir>/evidence/`. A relative path is taken as relative
+to it, so `case-001/source.dd` is the ordinary form and no absolute path is needed.
+An absolute path outside it is refused with a 400 before anything is opened.
+
+### Carve
+
+Use the **Recovery** screen — image path, *Undelete*, *Signature and structure
+carve*, output directory — or `POST /jobs/carve`:
+
+```bash
+curl -s -X POST http://127.0.0.1:8787/jobs/carve \
+  -H 'Content-Type: application/json' \
+  -d '{"image":"/var/lib/sanctum/evidence/case-001/source.dd",
+       "undelete": true, "carve_signatures": true,
+       "out_dir": "case-001", "case_id":"CASE-001", "operator":"examiner"}'
+```
+
+```json
+{"job_id":"carve-43c34d2ca280","kind":"carve","state":"running","dry_run":false,
+ "stream_url":"/jobs/carve-43c34d2ca280/stream"}
+```
+
+`out_dir` is confined to `<state-dir>/recovered/` — deliberately *not* the evidence
+directory, so a recovery can never write into the tree holding the image it is
+reading. Omit `out_dir` entirely and nothing is written: you get the candidate list
+only. Written filenames encode what produced them:
+`000000001337_09000_carved-000000001337.jpg` is offset 1337, confidence 9000 basis
+points.
+
+`undelete` walks filesystem metadata for deleted entries; `carve_signatures` runs
+the signature and structure carvers over the image. The undelete pass also returns
+the allocated/unallocated map, which is reported but deliberately does **not** bound
+the carve — bounding it was measured and loses recall.
+
+### Confidence buckets: what a bucket does and does not assert
+
+Confidence is the sum of six measured components in basis points — `header`,
+`exact_length`, `decoder`, `entropy`, `fs_metadata`, `no_overlap` — clamped, never
+scaled. The buckets are a reading of that number:
+
+| Bucket | Score | What it asserts |
+|---|---|---|
+| **HIGH** | ≥ 8000 | Several independent components agreed: a header at the start, a length derived rather than guessed, and usually a decoder that consumed the object without error. |
+| **MEDIUM** | 5000–7999 | Enough evidence to be worth an examiner's time, typically with one component missing — most often no decoder for the format (`validation: decoder_unavailable`). |
+| **LOW** | < 5000 | A signature was found and little else agreed. Reported, never dropped. |
+
+**A bucket asserts nothing about what the object is or who made it.** It does not
+mean "this file is intact", it does not mean "this file was deleted by the suspect",
+and it is not a probability. It is a reading of a measurement whose weights were
+calibrated against a ground-truth corpus — see
+[`performance/calibration.md`](performance/calibration.md) for the derivation and
+the measured per-bucket precision and recall. The report prints
+`score_components` per candidate so the number can be taken apart by someone who
+was not there when it was computed.
+
+A LOW candidate is not a false positive. A candidate whose `validation` reads
+`corrupt` or `truncated` is telling you what the decoder found, and both are
+findings.
+
+### Candidates carrying `fragments`
+
+Most candidates are one contiguous span: `fragments` is empty, and
+`offset`..`offset + length` says where the bytes are. A candidate whose `fragments`
+list is **non-empty is not a span**. It was reassembled from two runs with somebody
+else's bytes in between:
+
+```json
+{"bucket":"HIGH","confidence_bp":9000,"ext":"jpg","offset":0,"length":77458,
+ "fragments":[{"offset":0,"length":4096},{"offset":36864,"length":73362}],
+ "sha256":"72dc6393d6a4b85e…","validation":"valid"}
+```
+
+`length` is the **sum of the runs**, `offset` is the first run's offset, and
+`sha256` is the digest of **the runs concatenated** — not of `offset`..`offset +
+length`, which would cover the gap as well and hash to something that was never a
+file. Hash the span and you will not reproduce the digest; that is correct
+behaviour, not a mismatch.
+
+**Check it against the medium yourself.** Save this as `check_digests.py` in the
+repository root and run it, with the venv's interpreter, against the report and the
+image:
+
+```python
+"""Recompute every carved candidate's SHA-256 from the image itself."""
+import hashlib, json, sys
+from pathlib import Path
+from core.carve.evidence import open_evidence
+from core.carve.fragmentation import read_fragments
+from core.models import CarveFragment
+
+report = json.loads(Path(sys.argv[1]).read_text())
+image = Path(sys.argv[2])
+items = report["sections"]["recovery"]["items"]
+handle = open_evidence(image)
+bad = 0
+for item in items:
+    runs = [CarveFragment(**f) for f in item.get("fragments") or []]
+    data = read_fragments(handle, runs) if runs else handle.read(item["offset"], item["length"])
+    got = hashlib.sha256(data).hexdigest()
+    if got != item["sha256"]:
+        bad += 1
+    print(f"{'OK  ' if got == item['sha256'] else 'BAD '}{item['offset']:>10} "
+          f"{item['ext']:<7} {len(runs)} runs  {got[:16]}")
+print(f"{len(items) - bad}/{len(items)} candidates match the image")
+sys.exit(1 if bad else 0)
+```
+
+```
+$ .venv/bin/python check_digests.py <state>/reports/CASE-001.forensic.json image.dd
+OK           0 jpg     2 runs  72dc6393d6a4b85e
+1/1 candidates match the image
+```
+
+It reads the runs back through the same read-only handle the carve used, so it
+recomputes rather than trusts. The report's recovery section also carries
+`reassembled_from_fragments`, a count of how many candidates in this run were built
+this way.
+
+**Two limits, stated where they bite.** Bifragment reassembly is **JPEG only** —
+every other format gets `possibly_fragmented: true` and no reconstruction attempt at
+all. And the second run is sought on **4096-byte cluster boundaries**; a split
+produced by a volume with a different cluster size is not enumerated, and the object
+is reported as a low-confidence candidate rather than guessed at. General
+reassembly of arbitrary fragmented files is an open research problem, and this tool
+does not claim it.
+
+---
+
+## 7. Reports and verification
+
+This is the section that carries the tool's central claim, so it is the one to
+read carefully.
+
+### Generating
+
+```bash
+curl -s -X POST http://127.0.0.1:8787/reports/<job_id> \
+  -H 'Content-Type: application/json' \
+  -d '{"case_id":"CASE-001","operator":"examiner"}'
+```
+
+```json
+{
+    "job_id": "carve-43c34d2ca280",
+    "json_path": "<state>/reports/CASE-001.forensic.json",
+    "pdf_path":  "<state>/reports/CASE-001.forensic.pdf",
+    "pubkey_fingerprint": "43:62:3F:92:1A:…:29:67",
+    "sha256": "aabc749cd11bd67e7fea3dbacc37671b475211a8e1cf52e9e0033dafcd3d68b1",
+    "bytes": 20150
+}
+```
+
+**The JSON is authoritative; the PDF is not.** The signature covers the canonical
+JSON bytes. The PDF is a rendering for a human and says so on itself. Generating a
+report is itself a ledger event (`report.generated`), which is how verification
+later finds the right file for a job instead of guessing at filenames.
+
+**A report is generated only for a job that has finished.** Asking for one while
+the job is `pending` or `running` is refused with HTTP 409 `JobNotFinished`, and
+nothing is written. Asking for one for a job this API process has no record of —
+the id is wrong, or the API was restarted since the job ran — is refused with
+HTTP 404 `JobNotKnown`; the message says whether the chain holds entries for that
+job and names the last one, because a report is built from the job's result and
+that result lived in the process that ran it.
+
+A job that ended `failed` or `cancelled` does get a report. Its
+`case_identity.job_state` says which, and its first limitation begins
+`JOB FAILED` or `JOB CANCELLED` and explains that an empty section means the job
+did not get that far. A report for a finished job carries `"job_state": "complete"`.
+
+Generating a report while another job is still writing to the chain is safe: every
+ledger writer waits its turn for the chain's writer lock, so neither append is
+lost.
+
+### Verifying on this host
+
+`GET /reports/<job_id>/verify` resolves the report through the ledger and runs the
+five checks. Beyond the five it reports one more field:
+
+* **`ledger_digest_matches`** — whether the file on disk is still the bytes the
+  chain recorded when the report was generated. It is reported alongside the checks
+  rather than folded into them: a digest mismatch and a broken signature are the
+  same event seen twice, and an examiner reading one wants to see the other.
+
+### The five checks
+
+| Check | What a PASS means | When it is SKIP |
+|---|---|---|
+| **`signature`** | The detached Ed25519 signature is valid for **these exact bytes** under the public key embedded in the report. A FAIL means the report was altered after signing, or signed by a different key. | never |
+| **`fingerprint_matches_genesis`** | That public key's fingerprint is the one recorded in the ledger's **genesis** entry, so the report was signed by the key the chain was started with. | when there is no genesis entry in the excerpt, no reachable ledger store, a missing or unparsable genesis blob, or the chain was started before any key existed — and the result names **which** of those it is |
+| **`chain_integrity`** | The ledger excerpt carried **inside** the report hashes and links correctly on its own terms. An excerpt is a filtered view of one job's entries, so gaps are expected: the status is `VERIFIED_COMPLETE`, `VERIFIED_PARTIAL` (gaps named and cross-checked against the gaps the report declares), or `BROKEN`. | never |
+| **`chain_store`** | The **whole** chain re-verified from the store on disk, independently of the excerpt and of the `chain_status` the report prints. | when no ledger store was given, or it is unreachable or unreadable |
+| **`blobs_available`** | Every params and result blob the excerpt references is present in the store. | when no blob store is reachable |
+
+**An inapplicable check is not a passing one.** A report verified on a host with no
+ledger cannot have its chain checked, and the output prints `SKIP`, not `PASS`.
+`Result: PASS` means every *applicable* check passed — read the lines, not only the
+last one.
+
+### The command a third party runs, on their own machine, without your help
+
+They need the report file and — to get all five checks — a copy of the ledger
+directory. They do not need your API, your helper, or your cooperation while they
+run it. This is the exact command, run here against the copy shipped in this
+repository:
+
+```bash
+# `sanctum` is a console script installed into the venv; with the venv activated
+# the bare name works, and .venv/bin/sanctum always does.
+.venv/bin/sanctum verify-report docs/demo/fallback/demo-erase.forensic.json \
+        --ledger-root docs/demo/fallback/demo-ledger
+```
+
+```
+Report: docs/demo/fallback/demo-erase.forensic.json
+Signed by fingerprint: 69:45:A0:97:57:16:4D:A0:63:36:61:BF:B5:18:BD:4D:38:70:F5:3F:29:F6:9C:45:69:7A:75:FD:37:25:50:F5
+
+[PASS] signature: valid Ed25519 signature by 69:45:A0:97:…:50:F5
+[PASS] fingerprint_matches_genesis: signing key 69:45:A0:97:…:50:F5 is the key recorded in the ledger genesis
+[PASS] chain_integrity: all 37 excerpt entries link and hash correctly (0..36)
+[PASS] chain_store: the ledger store verifies independently: All 67 entries verify, 0..66.
+[PASS] blobs_available: every blob referenced by 37 entries is present
+
+Result: PASS
+
+Note: An embedded public key proves internal consistency only. It does not prove
+identity: a third party must compare the fingerprint above against a value published
+out-of-band before treating this signature as evidence of who produced the report.
+```
+
+`sanctum` exits **0** only when every applicable check passed, **1** when one
+failed, and **2** when the file is missing or is not valid JSON — so it drops
+straight into a script. Without `--ledger-root` the signature and excerpt checks
+still run and the other three report `SKIP`.
+
+Altering one byte anywhere inside the signed body produces exactly one changed
+line, and the other four still pass:
+
+```
+[FAIL] signature: signature does not match the report contents; the report was
+       altered after signing, or signed by a different key
+…
+Result: FAIL
+```
+
+### The caveat that travels with every result
+
+> An embedded public key proves internal consistency only. It does not prove
+> identity: a third party must compare the fingerprint above against a value
+> published out-of-band before treating this signature as evidence of who produced
+> the report.
+
+Anyone can generate a key, sign a fabricated report, embed their own public key,
+and pass all five checks. The fingerprint must be compared against a value
+published somewhere the report cannot reach — an organisation's key listing, a
+printed card, a prior communication — before the signature says anything about
+*who*. Until then it says only that these bytes have not changed since they were
+signed.
+
+---
+
+## 8. Reading the ledger
+
+Every operation appends an entry to a hash-chained, append-only log.
+
+```bash
+curl -s http://127.0.0.1:8787/ledger/verify | python3 -m json.tool
+```
+
+```json
+{
+    "status": "VALID",
+    "entry_count": 4,
+    "explanation": "All 4 entries verify, 0..3.",
+    "first_broken_seq": null,
+    "root": "/var/lib/sanctum/ledger",
+    "entries": [ … newest first … ]
+}
+```
+
+`GET /ledger/entries?limit=N` lists entries without re-verifying; the **Audit**
+screen shows the same thing.
+
+An entry carries a sequence number, a UTC timestamp, a monotonic clock reading and
+a boot id (so a clock that moved cannot silently reorder history), the actor, the
+operation name, the SHA-256 of its parameters and of its result, **the SHA-256 of
+the previous entry**, and its own hash. Parameters and results themselves live in a
+content-addressed blob store beside the chain, `0600`, because operation parameters
+are case material.
+
+Entry 0 is `GENESIS`. Operation names are readable and specific:
+`erase.preflight.*`, `erase.erase.checkpoint`, `erase.erase.cancelled`,
+`erase.verify.*`, `erase.file.*` for M2's eleven steps, `acquire.start`,
+`erase.file.cancelled`, `acquire.checkpoint`, `acquire.complete`,
+`acquire.cancelled`, `carve.start`, `carve.complete`, `carve.cancelled`, and
+`report.generated`.
+
+### What the chain proves, and what it does not
+
+**It proves entries were not altered after the fact.** Because entry *N* contains
+the hash of entry *N-1*, insertion, deletion and mutation are all detectable, and
+`verify()` names the first broken sequence number rather than returning a bare
+"invalid". You do not have to trust the tool's own verdict: `sanctum verify-report
+--ledger-root` recomputes it, and so can anything else that can hash.
+
+**It does not prove the operator did not choose what to record.** The operator runs
+the tool. The chain has two writers by design — the API appends carve, file-erase
+and `report.generated` entries as the operator; the root helper appends the six
+phases of a drive erase and its checkpoints — and the helper hands each file it
+creates to the operator uid it was started with, so the unprivileged half can read
+the chain back and build a report. That handover changes an owner, never a mode
+(files stay `0600`) and never a hash. Tamper-*evidence* comes from the links, not
+from file permissions, and no file mode this tool could set would make the chain
+evidence of custody rather than evidence of sequence.
+
+Two further honest limits: the helper does not ledger every call it is *asked* for
+— a bare `enumerate_devices` leaves no entry — so the chain evidences what was
+**done**, not everything that was **requested**. And the `report.generated` entry
+is appended after the report's own excerpt is built, so a report never contains the
+entry that names it; the chain that resolves a report is the *live* chain, which is
+exactly what the `chain_store` check verifies independently.
+
+---
+
+## 9. When something refuses
+
+A refusal is a designed output. Every one carries a remediation written by whoever
+implemented the guard, and the API passes that sentence through verbatim. Search
+this section for the text you were shown.
+
+### Device and erase
+
+**`{device} ({model}) holds the running system (root, /boot or active swap). Refusing to erase it.`** — HTTP 409, `SystemDiskRefused`
+The target hosts the running root filesystem. The guard is inside the erase path,
+not in the UI, so nothing can route around it.
+*Do:* Boot from separate media and run the erase against the drive as a non-system disk.
+
+**`{device} has mounted filesystems: {mounts}. Refusing to erase it.`** — HTTP 409, `MountedRefused`
+Writing under a live filesystem corrupts the page cache's view of a device the
+kernel still believes it owns.
+*Do:* Unmount every filesystem on the device and retry.
+
+**`Refusing to erase {path}: dry_run is off but no serial was typed. Destructive erasure is opt-in twice.`** — HTTP 409, `ConfirmationMismatch`
+Gate two is missing. *Do:* Re-read the device serial from the capability report and
+type it exactly.
+
+**`The typed serial {typed!r} does not match {path}, whose serial is {serial!r}. Nothing was erased.`** — HTTP 409, `ConfirmationMismatch`
+Also seen as `Typed value does not match the serial of {device}.` from inside the
+helper, which re-reads the serial itself.
+*Do:* Re-read the device serial from the capability report and type it exactly.
+Nothing has been modified.
+
+**`{device} reports no serial, and the typed value does not match its stable identifier.`** — HTTP 409, `ConfirmationMismatch`
+*Do:* This device exposes no serial. Confirm it by typing its full
+`/dev/disk/by-id` path from the capability report instead.
+
+**`Refusing to erase: dry_run is off but confirm was not set. Destructive file erasure is opt-in twice.`** — HTTP 409, `ConfirmationMismatch`
+The M2 equivalent. *Do:* Set `confirm=true` to proceed, or leave `dry_run=true` to
+see what would survive without writing anything.
+
+**`Refusing to erase {path}: it is a filesystem root.`** / **`… it is a protected system location, and erasing it would break the running system.`** — `SystemDiskRefused`
+*Do:* Name the files or folders, not the root.
+
+**`{device} supports an enhanced security erase, but ATA security is frozen so it cannot be issued. Refusing to fall back to a Clear-level overwrite, which would not be the Purge you asked for.`** — HTTP 409, `DeviceFrozen`
+Also `{device} has ATA security frozen; SECURITY SET PASSWORD cannot be issued.`
+The BIOS or firmware froze ATA security at boot. The tool refuses to quietly give
+you a weaker level than you asked for.
+*Do:* Issue an S3 sleep/wake cycle or power-cycle the drive to clear the frozen
+state, then re-probe capabilities.
+
+**`{level} is not achievable on this device. {reason}`** — HTTP 422, `UnsupportedCapability`
+The probe found no mechanism for that level. The reason names what was observed —
+often the USB-bridge sentence from §4.
+*Do:* Choose one of the reachable levels, which the remediation lists. To reach the
+level you asked for on this media, physical destruction is the remaining option.
+
+**`{method} cannot be requested directly; firmware methods are selected from probed capability only.`** — HTTP 422, `UnsupportedCapability`
+*Do:* Ask for a sanitization level and let capability probing choose the mechanism.
+
+**`{device} is an Opal drive; a PSID revert needs the PSID printed on the physical drive label.`** — HTTP 422, `UnsupportedCapability`
+This build has no way to accept a PSID (§4).
+*Do:* Use ATA or NVMe SANITIZE if the drive reports one; otherwise a single-pass
+overwrite achieves Clear, not Purge. Physical destruction is the remaining option
+for Purge on this drive.
+
+**`hdparm could not read {device}: permission denied.`** / **`nvme id-ctrl could not read {device}: permission denied.`** — HTTP 422, `UnsupportedCapability`
+Capability probing needs raw device access and did not have it. **This is not a
+statement that the device lacks the feature.**
+*Do:* Run the privileged helper as root and retry — see §3 — and do not treat this
+as an unsupported device.
+
+**`No block device matches {path!r}.`** / **`No device identifier was supplied.`** — HTTP 410, `DeviceVanished`
+*Do:* Re-enumerate devices and confirm the target is still connected before retry.
+
+**`The erase geometry for {device} is N bytes, smaller than the M bytes the kernel reports. Refusing to erase part of a device and call it done.`** — `GeometryRefused`
+A hidden-area probe produced a size smaller than the kernel's.
+*Do:* Re-run enumeration and HPA/DCO detection. If the hidden-area probe cannot
+produce a trustworthy native max, erase using the kernel-reported size and record
+that hidden sectors were not covered.
+
+**`the overwrite planned N byte(s) … but accounts for only M: X written and Y recorded unwritable. Z byte(s) are unaccounted for and the medium is not erased.`** — `OverwriteIncomplete`
+Every planned byte must end up either written or named in `unwritable`. A byte that
+is neither is a hole, and a run that reported success over a hole is the one result
+this tool must never produce.
+*Do:* **Do not treat the medium as sanitized.** Re-run the erase; if it stops at the
+same offset again, the device is failing writes without reporting an error and
+should be physically destroyed rather than reused.
+
+**`Run this on Linux.`** — HTTP 501, `PlatformUnsupported`
+Whole-device sanitization needs Linux block-device semantics.
+*Do:* On Windows use WSL2 and attach the target disk with usbipd-win
+(`usbipd bind --busid <id>` then `usbipd attach --wsl`), or a Linux VM with the
+controller passed through. File and folder erasure remains available on this
+platform.
+
+### Evidence, paths and the helper
+
+**`evidence not found: {path}`** / **`acquisition source not found: {path}`** — HTTP 422, `EvidenceIntegrityError`
+*Do:* Check the path; nothing was opened.
+
+**`Refusing to write out_dir={value!r}: it resolves to {target}, which is outside the configured output directory {base}. Nothing was created.`** — HTTP 400, `OutputPathRefused`
+Same message with `dest=` for acquisitions. Symlinks are resolved *before* the
+comparison, so a link planted inside the directory cannot point the write out of it.
+*Do:* Pass a path inside the named directory, or a relative path — it is taken as
+relative to that directory. Set `SANCTUM_STATE_DIR` to move it.
+
+**`{field}={value!r} resolves to {path}, which is outside the helper's state directory {base}. The helper runs as root and will not write outside the directory it was started with.`**
+The same rule inside the root helper, applied to `ledger_root` and `dest` before any
+handler runs. It arrives as an ordinary error frame; the daemon keeps serving.
+*Do:* Use paths under the `--state-dir` the helper was started with, and give the API
+the same value in `SANCTUM_STATE_DIR`.
+
+**`The privileged helper could not be reached: {error}`** — HTTP 501
+*Do:* Start the helper daemon and set `SANCTUM_HELPER_SOCKET` — §3.
+
+**`The helper must run as root: it exists to be the one process that holds raw device access.`** — exit code 2
+Printed with the exact `sudo` line to run.
+
+**`python -m helper: error: the following arguments are required: --state-dir`** — exit code 2
+*Do:* Add `--state-dir`; see §3.
+
+**`--state-dir {path} does not exist. Create it before starting the helper …`** — exit code 2
+*Do:* `sudo mkdir -p <path>` and start again.
+
+**`peer uid N is neither root nor the operator uid M`**
+Something other than the account named by `--operator-uid` connected. The peer is
+dropped before a byte of its request is read.
+*Do:* Run the API as that account, or restart the helper with the right uid.
+
+**`the helper sent no frame for 120s during {method}; it is not slow, it has stopped speaking. Whatever it was doing to the device may still be running: check the helper log and the ledger before doing anything else.`** — `TimeoutError`
+The deadline is on **silence**, not on completion — an operation may legitimately
+run for hours, and both progress and heartbeat frames reset it. This fires only when
+nothing at all arrives.
+*Do:* Exactly what it says. Read Terminal 0's log and the ledger before touching the
+device.
+
+### Reports, keys and the chain
+
+**`No report has been generated for job {job_id!r}. The chain at {root} carries no report.generated entry for it, so there is nothing to verify.`** — HTTP 404, `ReportNotFound`
+*Do:* Generate one first: `POST /reports/{job_id}`. Reports are resolved through the
+ledger, never by guessing at filenames — a report for a different job is not an
+answer to this question.
+
+**`The chain records a report for job {job_id!r} at {path}, but that file is not there.`** — HTTP 404, `ReportNotFound`
+*Do:* The report was moved or deleted after it was generated. Restore it, or
+generate a new one.
+
+**`No passphrase available for {path} (SANCTUM_KEY_PASSPHRASE is unset and no interactive prompt was possible); refusing to write or read an unprotected signing key.`** — HTTP 503, `KeyPassphraseMissing`
+*Do:* Set `SANCTUM_KEY_PASSPHRASE` in the environment, or run interactively so the
+passphrase can be prompted for. There is deliberately no default.
+
+**`{path} has mode {mode}; a signing key must be 0600 so only its owner can read it.`** — HTTP 503, `KeyPermissionsUnsafe`
+*Do:* Restore owner-only access with `chmod 0600 <keyfile>` and confirm no copy was
+made while it was exposed. Rotate the key if in doubt.
+
+**`Job {id} is {state}, not finished. A report built now would be signed over a result that does not exist yet: …`** — HTTP 409, `JobNotFinished`
+*Do:* Wait until `GET /jobs/<id>` reports `complete`, `failed` or `cancelled`, then
+generate the report. Nothing was written.
+
+**`No job {id} is known to this process, and the chain at {root} holds no entries for it.`** — HTTP 404, `JobNotKnown`
+*Do:* Check the id — it is the `job_id` a `POST /jobs/*` call returned.
+
+**`Job {id} is not known to this process - the API was restarted since it ran, or it ran in another process - but the chain holds N entries for it, the last being {operation} at seq {seq}. …`** — HTTP 404, `JobNotKnown`
+The job's result, which a report is built from, did not survive the restart. Its
+chain entries did.
+*Do:* Read the entries with `GET /ledger/verify`. To get a report, run the job again
+and generate the report from the process that ran it.
+
+**`Ledger entry {operation} was NOT recorded: the writer lock {path} was held by another writer through 20 attempts over {seconds} s. …`** — `LedgerBusy`; HTTP 503 when it comes from report generation
+Every ledger writer takes the chain's lock for one append, which lasts well under a
+second, and retries for about 13 seconds before giving up. Reaching this means
+something held the lock far longer than an append does. When it comes from a job,
+the job is `failed` with this message; when it comes from report generation, the
+message adds that the report files were written but are not recorded in the chain.
+*Do:* Look for a hung Sanctum process (API, helper or harness script) using the same
+state directory, stop it, and retry. Do not delete the lock file while a writer may
+still be running. Regenerate a report whose entry was not recorded.
+
+**`The ledger at {root} could not be read: {error}`** — HTTP 500, `LedgerChainBroken`
+*Do:* Check that the ledger root exists and is readable. If the chain itself is
+broken rather than unreadable: treat the ledger as compromised, preserve the raw
+store, and investigate from the last verified entry.
+
+**`signature does not match the report contents; the report was altered after signing, or signed by a different key`**
+*Do:* Confirm the correct public key and that the payload was not modified after
+signing.
+
+---
+
+## 10. Cancelling, and what a cancelled operation leaves
+
+Cancel is on every running job's panel, and `POST /jobs/<id>/cancel`. It is
+**cooperative, never a kill**: the job stops at its next yield point, so a wipe is
+never interrupted between a seek and a write. A client that simply disappears is
+treated identically to one that cancelled.
+
+### A cancelled wipe leaves a partially sanitized device, and the ledger says so
+
+The `erase.erase.cancelled` entry is written during teardown, before the
+cancellation is allowed to continue, and reads:
+
+> Erase cancelled before completion. The device is **PARTIALLY SANITIZED**: data up
+> to the last recorded checkpoint was overwritten and the remainder was not. No
+> verification ran, so no sanitization level was achieved and no certificate is
+> issued for this job.
+
+It carries `resumable: true` when the method was a host-pattern overwrite, which can
+be resumed from the last checkpoint. No progress is yielded — a generator cannot
+yield while closing — so the ledger is the only channel out, and it is the right one:
+a cancelled wipe that left no record would be indistinguishable from one that never
+ran.
+
+**For a firmware method, cancelling stops the tool watching, not the drive.** The
+entry adds:
+
+> This method runs inside the drive's own firmware: cancelling stopped this tool from
+> watching it, and does not stop the drive. **Re-probe the device before drawing any
+> conclusion about it.**
+
+Say that twice, because it is the one that gets people: an ATA or NVMe SANITIZE runs
+inside the device. Pressing Cancel ends this program's involvement. **The drive keeps
+erasing.** Do not unplug it, do not assume its contents, and re-probe before you say
+anything about it.
+
+### A cancelled acquisition leaves a partial image with no published digest
+
+`acquire.cancelled` records the destination, `bytes_acquired`, `bytes_expected`, the
+container size on disk, and:
+
+> Acquisition cancelled before completion. The file at this destination is a
+> **PARTIAL IMAGE**: it holds the first N of M source bytes and is NOT a complete copy
+> of the source. **No sha256 or blake3 is recorded for it** — the digests an
+> acquisition publishes cover the whole source as it was read, and this read did not
+> finish, so any hash of this file attests to the fragment only. **Do not carve it and
+> report the results as coverage of the source.** Re-acquire, or resume from the last
+> `acquire.checkpoint` entry for this job.
+
+The entry exists because a truncated `.dd` looks exactly like a complete one. Nothing
+was destroyed; the record is about what the artifact *is*.
+
+### Cancelling a carve or a file erase
+
+Both stop at their next yield, the job state becomes `cancelled`, and each writes a
+cancellation entry in place of its terminal one.
+
+`carve.cancelled` names the image, the stage the carve had reached, how many bytes
+the signature scan covered, and every recovered object already written to `out_dir`.
+It records **no** `findings_sha256`: that digest attests to a finished candidate list,
+and a cancelled carve has none. Do not report a partial carve's output as coverage of
+the image.
+
+`erase.file.cancelled` names every target once: `processed` (with the phases each
+file reached), `not_processed` (untouched), or — when the batch was running in a
+process pool — `in_flight_unknown`, meaning the pool's workers were stopped while
+those files were queued and their state must be checked on disk. It records no batch
+verdict; a cancelled file erase is not an erasure certificate.
+
+**Neither a cancellation nor a `failed` job is a crash.** Both are recorded states.
+Read `GET /jobs/<id>` for `state`, `error` and `remediation` before concluding
+anything.
+
+---
+
+## 11. Limitations
+
+[`limitations.md`](limitations.md) is the complete list, and it is not duplicated
+here. The entries an operator hits most often:
+
+* **The ATA security-erase password is fixed and published.** If the process dies
+  between `SECURITY SET PASSWORD` and `SECURITY ERASE UNIT`, the drive stays locked;
+  the password is written to the ledger *before* it is set so the recovery value
+  survives the crash, and the document gives the `hdparm` line to clear it.
+* **Overwrite cannot reach remapped or over-provisioned blocks on flash.** Where the
+  device cannot Purge, the report says Clear and says why.
+* **Some controllers do not program a zero fill at all** — §4's calibration.
+* **Verification above 64 GiB is sampled**, with the detection probability and the
+  seed in the report rather than a bare percentage.
+* **A software write block is a claim about a flag, not about a refusal** — §6.
+* **Undelete recovers a different amount on every filesystem**, and **ext4 recovers
+  essentially nothing by design**, because `ext4_ext_remove_space` zeroes the extent
+  tree on unlink. That is measured, not assumed. FAT recovery is a *reconstruction*
+  however clean it looks; exFAT is the one case where the filesystem records the
+  answer.
+* **Per-file erasure is usually unverifiable**, and is reported as unverifiable
+  rather than as a pass — §5.
+* **Destroy is not achievable in software** and this tool will not claim it.
+* **The local API has no authentication.** Path confinements bound what an
+  unauthenticated local caller can write; they do not stop one from asking. Run it
+  on a workstation you control, on loopback, as the design intends —
+  [`privilege-boundary.md`](privilege-boundary.md) records this as the largest open
+  item.
+
+A guarantee this tool cannot make is printed as a limitation, in the report as well
+as in that document. If a result looks stronger than you expected, read the
+limitations attached to it before you rely on it.
+
+---
+
+**See also**
+[`architecture.md`](architecture.md) (layer map and invariants) ·
+[`privilege-boundary.md`](privilege-boundary.md) (threat model around the root
+process) · [`compliance.md`](compliance.md) (clause-by-clause NIST SP 800-88 Rev.1
+and IEEE 2883-2022 mapping) · [`technical.md`](technical.md) (build environment) ·
+[`validation/hardware.md`](validation/hardware.md) (real-media runs and the defects
+they found) · [`demo/runbook.md`](demo/runbook.md) (the six-minute demonstration
+script).
