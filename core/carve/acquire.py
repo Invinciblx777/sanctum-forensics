@@ -768,20 +768,49 @@ def acquire(
             message=f"imaging {reader.size} bytes to {destination.name}",
         )
 
-        record = yield from _read_pass(
-            reader,
-            destination,
-            fmt=fmt,
-            options=options,
-            job_id=job_id,
-            resume=resume,
-            started_at=started_at,
-            source_path=source_path,
-            write_blocked=block.applied,
-            write_block_verified_by=block.verified_by,
-            limitations=limitations,
-            ledger=ledger,
-        )
+        watermark: dict[str, int] = {"bytes_done": 0, "bytes_total": reader.size}
+        try:
+            record = yield from _read_pass(
+                reader,
+                destination,
+                fmt=fmt,
+                options=options,
+                job_id=job_id,
+                resume=resume,
+                started_at=started_at,
+                source_path=source_path,
+                write_blocked=block.applied,
+                write_block_verified_by=block.verified_by,
+                limitations=limitations,
+                ledger=ledger,
+                watermark=watermark,
+            )
+        except GeneratorExit:
+            # The caller closed this generator: an operator pressed Cancel, or
+            # the client that asked for the image went away. The read stopped at
+            # a yield, so nothing is half-written - but there is now a file on
+            # disk that looks like an image and is not one.
+            #
+            # It goes in the chain before the exception continues, for the same
+            # reason a cancelled erase does (core/erase/drive.py): an examiner
+            # who finds this file later must be able to tell from the chain that
+            # it is a fragment. Without an entry it is indistinguishable from a
+            # crash, and a truncated image that nobody knows is truncated is a
+            # worse artifact than no image at all.
+            #
+            # No progress is yielded here and none can be: a generator that
+            # yields while closing raises RuntimeError. The ledger is the only
+            # channel out, which is the right one anyway.
+            _record_cancelled_acquisition(
+                ledger,
+                job_id=job_id,
+                destination=destination,
+                fmt=fmt,
+                source_path=source_path,
+                operator=options.operator,
+                watermark=watermark,
+            )
+            raise
     finally:
         if owns_reader:
             reader.close()
@@ -795,6 +824,72 @@ def acquire(
         )
 
     return record
+
+
+def _record_cancelled_acquisition(
+    ledger: Ledger | None,
+    *,
+    job_id: str,
+    destination: Path,
+    fmt: str,
+    source_path: Path | None,
+    operator: str,
+    watermark: dict[str, int],
+) -> None:
+    """Append the entry that says what the file on disk actually is.
+
+    Everything an examiner needs to classify the artifact without opening it:
+    that it is a **partial image**, how many bytes of the source reached it, how
+    many the source has, and - the part that matters most - that no digest for
+    it is on record, because the hashes an acquisition publishes are computed
+    over the whole source as it is read and there is no whole source here.
+
+    A truncated ``.dd`` looks exactly like a complete ``.dd``. That is why this
+    is written even though nothing was destroyed.
+    """
+    if ledger is None:
+        return
+    done = int(watermark.get("bytes_done", 0))
+    total = int(watermark.get("bytes_total", 0))
+    try:
+        on_disk = destination.stat().st_size if destination.exists() else 0
+    except OSError:  # pragma: no cover - the stat of a file we just wrote
+        on_disk = 0
+    try:
+        ledger.append(
+            actor=operator,
+            operation="acquire.cancelled",
+            params={
+                "job_id": job_id,
+                "source": str(source_path) if source_path else "<reader>",
+                "destination": str(destination),
+                "fmt": fmt,
+                "bytes_acquired": done,
+                "bytes_expected": total,
+                "container_bytes_on_disk": on_disk,
+                "note": (
+                    "Acquisition cancelled before completion. The file at this "
+                    "destination is a PARTIAL IMAGE: it holds the first "
+                    f"{done} of {total} source bytes and is NOT a complete copy "
+                    "of the source. No sha256 or blake3 is recorded for it - "
+                    "the digests an acquisition publishes cover the whole "
+                    "source as it was read, and this read did not finish, so "
+                    "any hash of this file attests to the fragment only. Do not "
+                    "carve it and report the results as coverage of the source. "
+                    "Re-acquire, or resume from the last acquire.checkpoint "
+                    "entry for this job."
+                ),
+            },
+            result={},
+        )
+    except (OSError, ValueError, RuntimeError) as exc:  # pragma: no cover
+        # Losing the cancellation record is bad; failing to unwind the
+        # generator on top of it is worse, and would leave the caller with an
+        # exception from a teardown path instead of the cancellation it asked
+        # for.
+        logger.warning(
+            "acquire_cancel_record_failed", job_id=job_id, error=str(exc)
+        )
 
 
 def _read_pass(
@@ -811,8 +906,16 @@ def _read_pass(
     write_block_verified_by: str,
     limitations: list[str],
     ledger: Ledger | None,
+    watermark: dict[str, int] | None = None,
 ) -> Generator[Progress, None, AcquisitionRecord]:
-    """The single pass that reads, hashes, salvages and writes."""
+    """The single pass that reads, hashes, salvages and writes.
+
+    ``watermark`` is updated in place with how far the read has got, before
+    every yield. It exists for one caller and one case: :func:`acquire` closing
+    this generator, where the return value never arrives and the only way to say
+    how much of the source made it into the image is to have been told as it
+    went.
+    """
     sha = hashlib.sha256()
     blake = _blake3_hasher()
     chunk_sha = hashlib.sha256()
@@ -916,6 +1019,12 @@ def _read_pass(
             elapsed_ns = max(_monotonic_ns() - monotonic_start, 1)
             done = offset - start_offset
             rate = int(done * 1_000_000_000 // elapsed_ns)
+            if watermark is not None:
+                # Before the yield, not after: the yield is where this
+                # generator can be closed, and a watermark updated afterwards
+                # would be one record behind at exactly the moment it is read.
+                watermark["bytes_done"] = offset
+                watermark["bytes_total"] = reader.size
             yield Progress(
                 job_id=job_id,
                 phase=AcquisitionPhase.READ,

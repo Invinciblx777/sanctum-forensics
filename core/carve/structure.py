@@ -26,6 +26,7 @@ nothing, not attempt a four-gigabyte read.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 import zlib
@@ -36,6 +37,10 @@ from typing import Literal
 import structlog
 
 from core.carve.evidence import EvidenceHandle
+from core.carve.fragmentation import (
+    is_whole_jpeg,
+    reassemble_bifragmented_jpeg_runs,
+)
 from core.carve.signature import Signature, load_signatures, scan
 from core.models import CarveCandidate
 
@@ -658,51 +663,85 @@ def carve_structures(
             yield candidate
             continue
 
-        fragmented = parsed.validation != "valid"
         length = parsed.length
+        validation = parsed.validation
+        reassembly_capable = attempt_reassembly and name in _FRAGMENT_CAPABLE
 
-        if (
-            attempt_reassembly
-            and fragmented
-            and name in _FRAGMENT_CAPABLE
-        ):
-            from core.carve.fragmentation import reassemble_bifragmented_jpeg
+        if reassembly_capable and validation == "valid":
+            # A JPEG segment walk cannot tell a contiguous object from
+            # head + gap + tail. Entropy-coded data is arbitrary bytes, so
+            # _scan_entropy_to_eoi steps over an unrelated 32 KiB of somebody
+            # else's file and stops at the real EOI on the far side of the gap
+            # - reporting "valid" for a span that was never one object. The
+            # only thing that can tell the difference is a decoder, so ask one
+            # before the verdict leaves this function. Gated on
+            # _FRAGMENT_CAPABLE: this is one extra decode per JPEG candidate
+            # and it buys nothing for a format with no reassembler behind it.
+            if not is_whole_jpeg(_read_range(image, candidate.offset, length)):
+                validation = "corrupt"
 
-            rebuilt = reassemble_bifragmented_jpeg(
+        if reassembly_capable and validation != "valid":
+            rebuilt = reassemble_bifragmented_jpeg_runs(
                 image, candidate.offset, max_size=signature.max_size
             )
             if rebuilt is not None:
-                import hashlib
-
+                # The digest is of the reassembled content. The runs say where
+                # each byte of it was, so the claim can be checked against the
+                # medium; without them offset+length would describe the gap as
+                # part of the file. A single run means the search found the
+                # object contiguous after all, at a length the parser got
+                # wrong, and it is recorded as the contiguous object it is.
                 yield candidate.model_copy(
                     update={
-                        "length": len(rebuilt),
+                        "offset": rebuilt.runs[0].offset,
+                        "length": len(rebuilt.payload),
                         "source": "structure",
                         "validation": "valid",
                         "confidence_bp": 7500,
                         "bucket": "MEDIUM",
-                        "sha256": hashlib.sha256(rebuilt).hexdigest(),
-                        "possibly_fragmented": True,
+                        "sha256": hashlib.sha256(rebuilt.payload).hexdigest(),
+                        "possibly_fragmented": rebuilt.fragmented,
+                        "fragments": list(rebuilt.runs) if rebuilt.fragmented else [],
                     }
                 )
                 continue
 
+        # Reassembly was not attempted, or was attempted and failed. Either way
+        # the candidate keeps the span the parser delineated, which really is on
+        # the medium and really does hash to the digest below. It says
+        # possibly_fragmented, it does not say valid, and it does not claim a
+        # digest for bytes nobody can point at - the downstream decoder in
+        # core.carve.validate then has the last word on the verdict.
+        fragmented = validation != "valid"
         yield candidate.model_copy(
             update={
                 "length": length,
                 "source": "structure",
-                "validation": parsed.validation,
-                "confidence_bp": 9500 if parsed.validation == "valid" else 4000,
-                "bucket": "HIGH" if parsed.validation == "valid" else "LOW",
+                "validation": validation,
+                "confidence_bp": 9500 if validation == "valid" else 4000,
+                "bucket": "HIGH" if validation == "valid" else "LOW",
                 "sha256": _hash_range(image, candidate.offset, length),
                 "possibly_fragmented": fragmented,
             }
         )
 
 
-def _hash_range(handle: EvidenceHandle, offset: int, length: int) -> str:
-    import hashlib
+def _read_range(handle: EvidenceHandle, offset: int, length: int) -> bytes:
+    """Copy one span out of the evidence, a megabyte at a time."""
+    out = bytearray()
+    cursor = offset
+    remaining = length
+    while remaining > 0:
+        piece = handle.read(cursor, min(MIB, remaining))
+        if not piece:
+            break
+        out += piece
+        cursor += len(piece)
+        remaining -= len(piece)
+    return bytes(out)
 
+
+def _hash_range(handle: EvidenceHandle, offset: int, length: int) -> str:
     digest = hashlib.sha256()
     cursor = offset
     remaining = length

@@ -30,6 +30,7 @@ __all__ = [
     "CarveCategory",
     "CarveFlags",
     "MacTimestamps",
+    "CarveFragment",
     "CarveCandidate",
     "SubstitutedRange",
     "BadSectorRange",
@@ -408,6 +409,26 @@ class MacTimestamps(BaseModel):
     created: datetime | None = None
 
 
+class CarveFragment(BaseModel):
+    """One contiguous run of a carved object's content, image-absolute.
+
+    A carved object is normally one span, and ``CarveCandidate.offset`` plus
+    ``length`` says everything about where it was. A *bifragmented* object is
+    not: its content is two runs with somebody else's bytes in between, and no
+    single span describes it. Reporting one anyway - an offset, a length and a
+    digest that do not agree - would be the tool claiming the medium held
+    something it never held.
+    """
+
+    offset: int
+    length: int
+
+    @property
+    def end(self) -> int:
+        """First byte after the run."""
+        return self.offset + self.length
+
+
 class CarveCandidate(BaseModel):
     """A recovered-or-recoverable object produced by the carving pipeline."""
 
@@ -423,6 +444,18 @@ class CarveCandidate(BaseModel):
     sha256: str
     original_name: str | None
     possibly_fragmented: bool
+    #: The image-absolute runs the object's content was reassembled from, in
+    #: file order. **Empty for the ordinary contiguous case**, where
+    #: ``offset``..``offset + length`` already says where the bytes are.
+    #:
+    #: When it is populated the candidate is not a span: ``length`` is the sum
+    #: of the runs, ``offset`` is the first run's offset, and ``sha256`` is the
+    #: digest of the runs concatenated - *not* of
+    #: ``offset``..``offset + length``, which covers the gap as well and hashes
+    #: to something that was never a file. Anything reading the object's bytes
+    #: must walk the runs; :func:`core.carve.fragmentation.read_fragments`
+    #: does it through the read-only evidence handle.
+    fragments: list[CarveFragment] = []
     #: What the decoder said, in the operator's words. Empty when no decoder ran.
     validation_detail: str = ""
     #: Mean Shannon entropy over the candidate, in thousandths of a bit per
