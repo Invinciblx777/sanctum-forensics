@@ -49,6 +49,7 @@ from typing import Any
 import PIL
 import structlog
 from PIL import Image, ImageFile, UnidentifiedImageError
+from PIL.MpoImagePlugin import MpoImageFile
 
 from core.carve.evidence import BytesEvidence, EvidenceHandle
 from core.carve.fragmentation import accounts_for_scan
@@ -109,6 +110,10 @@ class ValidationReport:
     detail: str
     #: Which decoder produced the verdict, or which one was missing.
     decoder: str
+    #: Images an MPF index declares at or past the end of the candidate, as
+    #: (index, offset from the candidate's first byte). Outside the candidate,
+    #: not failed to decode: see :func:`validate_image`.
+    absent_frames: tuple[tuple[int, int], ...] = ()
 
 
 Validator = Callable[[bytes, "_Deadline"], ValidationReport]
@@ -170,6 +175,98 @@ def _pillow_verdict(error: Exception, decoder: str) -> ValidationReport:
     )
 
 
+#: Pillow formats whose first image exact scan accounting can judge. ``MPO`` is
+#: a JPEG whose APP2 MPF index lists further images; its first image runs from
+#: SOI to EOI like any other JPEG.
+_EXACT_ACCOUNTING_FORMATS = frozenset({"JPEG", "MPO"})
+
+
+def _mpf_index_base(data: bytes) -> int | None:
+    """Where MPF ``DataOffset`` values are counted from: the byte after ``MPF\\0``.
+
+    Walks the first image's segments up to its scan, bounded by ``data``.
+    """
+    cursor = 2
+    limit = len(data)
+    while cursor + 4 <= limit and data[cursor] == 0xFF:
+        kind = data[cursor + 1]
+        if kind == 0xFF:
+            cursor += 1
+            continue
+        if kind in (0x01, 0xD8) or 0xD0 <= kind <= 0xD7:
+            cursor += 2
+            continue
+        if kind in (0xD9, 0xDA):
+            return None
+        length = int.from_bytes(data[cursor + 2 : cursor + 4], "big")
+        if length < 2:
+            return None
+        if kind == 0xE2 and data[cursor + 4 : cursor + 8] == b"MPF\x00":
+            return cursor + 8
+        cursor += 2 + length
+    return None
+
+
+def _frames_held(
+    image: Image.Image, data: bytes, frames: int
+) -> tuple[list[int], list[tuple[int, int]]]:
+    """Which declared frames lie inside ``data``, and where the others were declared.
+
+    A carved JPEG object ends at the EOI its scan reaches. A phone photo's MPF
+    index declares a second image - its HDR gain map - stored after that EOI,
+    so the object holds frame 0 and an index pointing past its own end. A frame
+    declared at or beyond the end of ``data`` is outside this candidate: the
+    object says it had one, and where. A frame that starts inside ``data`` is
+    held, and must decode like any other.
+
+    When the index cannot be located, every frame counts as held - what the
+    validator did before it looked - so a doubt here can only fail a decode,
+    never excuse one.
+    """
+    every = list(range(frames))
+    if frames <= 1 or not isinstance(image, MpoImageFile):
+        return every, []
+    base = _mpf_index_base(data)
+    entries = image.mpinfo.get(0xB002) if image.mpinfo else None
+    if base is None or not entries or len(entries) != frames:
+        return every, []
+    held = [0]
+    absent: list[tuple[int, int]] = []
+    for index in range(1, frames):
+        declared = base + int(entries[index]["DataOffset"])
+        if declared >= len(data):
+            absent.append((index, declared))
+        else:
+            held.append(index)
+    return held, absent
+
+
+def _decoded_detail(
+    fmt: str,
+    size: tuple[int, int],
+    decoded: int,
+    frames: int,
+    absent: list[tuple[int, int]],
+    length: int,
+) -> str:
+    dimensions = f"{fmt} {size[0]}x{size[1]}"
+    if not absent:
+        if frames > 1:
+            return f"{dimensions}, {decoded} frame(s) fully decoded"
+        return f"{dimensions} fully decoded"
+    missing = "; ".join(
+        f"image {index + 1}, declared at byte {declared}" for index, declared in absent
+    )
+    return (
+        f"{dimensions}: this object holds {decoded} of the {frames} images its MPF "
+        f"index declares, fully decoded. Not in this object ({length} bytes): "
+        f"{missing}, at or past its end. The index describes a file that "
+        "continues after this image's EOI - an HDR gain map or a second view - "
+        "and that image, where it survives on the medium, is carved as an object "
+        "of its own."
+    )
+
+
 def validate_image(data: bytes, deadline: _Deadline) -> ValidationReport:
     """Decode with Pillow, forcing the full pass.
 
@@ -192,21 +289,31 @@ def validate_image(data: bytes, deadline: _Deadline) -> ValidationReport:
             size = image.size
             image.load()
             frames = getattr(image, "n_frames", 1)
+            # Only the frames this candidate holds are decoded. One its MPF
+            # index declares past its end is recorded, not sought: seeking it
+            # raises "No data found for frame", which used to mark every
+            # carved iPhone photo corrupt.
+            held, absent = _frames_held(image, data, frames)
             decoded = 1
-            while decoded < frames:
+            for index in held[1:]:
                 if deadline.expired:
                     return ValidationReport(
                         verdict="valid",
                         detail=(
-                            f"{fmt} {size[0]}x{size[1]}, {decoded} of {frames} "
+                            f"{fmt} {size[0]}x{size[1]}, {decoded} of {len(held)} "
                             f"frames decoded before {deadline.note()}"
                         ),
                         decoder=decoder,
+                        absent_frames=tuple(absent),
                     )
-                image.seek(decoded)
+                image.seek(index)
                 image.load()
                 decoded += 1
-        if fmt == "JPEG":
+        # An MPO's first image is counted exactly as a JPEG is. Undelete has no
+        # other check: without this, one reused cluster in a deleted two-image
+        # phone photo came back valid at HIGH, where the same damage to a plain
+        # JPEG came back corrupt. Further frames get the decoder's word only.
+        if fmt in _EXACT_ACCOUNTING_FORMATS:
             # libjpeg reports a scan with bytes missing, extra or out of place as
             # a warning and returns an image regardless, so a JPEG head, a
             # cluster of zeros or directory entries, and the real tail decode
@@ -215,10 +322,11 @@ def validate_image(data: bytes, deadline: _Deadline) -> ValidationReport:
                 data, deadline=time.monotonic() + deadline.remaining
             )
             if exact is False:
+                scan = "the scan of its first image" if fmt == "MPO" else "its scan"
                 return ValidationReport(
                     verdict="corrupt",
                     detail=(
-                        f"JPEG {size[0]}x{size[1]} decoded, but its scan does not "
+                        f"{fmt} {size[0]}x{size[1]} decoded, but {scan} does not "
                         "account for the frame: entropy-coded bytes are missing, "
                         "extra or out of place, which the decoder reports only as "
                         "a warning"
@@ -227,12 +335,9 @@ def validate_image(data: bytes, deadline: _Deadline) -> ValidationReport:
                 )
         return ValidationReport(
             verdict="valid",
-            detail=(
-                f"{fmt} {size[0]}x{size[1]}, {decoded} frame(s) fully decoded"
-                if frames > 1
-                else f"{fmt} {size[0]}x{size[1]} fully decoded"
-            ),
+            detail=_decoded_detail(fmt, size, decoded, frames, absent, len(data)),
             decoder=decoder,
+            absent_frames=tuple(absent),
         )
     except Image.DecompressionBombError as error:
         # A declared pixel count this large is a property of the header, not of
@@ -735,6 +840,25 @@ def validate_bytes(
     return report
 
 
+def _locate_absent_frames(
+    report: ValidationReport, candidate: CarveCandidate, *, contiguous: bool
+) -> str:
+    """The detail, plus where on the medium each absent declared image would begin.
+
+    Only for a contiguous candidate, whose offset plus a declared offset is a
+    position on the medium. A reassembled or multi-extent object's own byte
+    numbering does not map onto the medium that simply, so it keeps the
+    object-relative offsets the detail already gives.
+    """
+    if not report.absent_frames or not contiguous:
+        return report.detail
+    where = "; ".join(
+        f"image {index + 1} at offset {candidate.offset + declared}"
+        for index, declared in report.absent_frames
+    )
+    return f"{report.detail} On the medium, reading on from this object: {where}."
+
+
 def validate_candidate(
     candidate: CarveCandidate,
     image: EvidenceHandle | None = None,
@@ -781,7 +905,12 @@ def validate_candidate(
         decoder=report.decoder,
     )
     return candidate.model_copy(
-        update={"validation": report.verdict, "validation_detail": report.detail}
+        update={
+            "validation": report.verdict,
+            "validation_detail": _locate_absent_frames(
+                report, candidate, contiguous=data is None
+            ),
+        }
     )
 
 

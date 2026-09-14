@@ -318,6 +318,27 @@ def test_the_carve_report_counts_candidates_whose_layout_was_inferred() -> None:
     assert sections["recovery"]["contiguity_contradicted"] == 1
 
 
+def test_the_carve_report_carries_what_the_decoder_said() -> None:
+    """A verdict without its reason is half a finding.
+
+    A phone photo carved from a medium is ``valid`` while its MPF index declares
+    a gain map the object does not hold. That second image, and where it was
+    declared, is visible only in the detail - so the report has to carry it.
+    """
+    detail = (
+        "MPO 4032x3024: this object holds 1 of the 2 images its MPF index "
+        "declares, fully decoded. Not in this object (1921938 bytes): image 2, "
+        "declared at byte 1921938, at or past its end."
+    )
+    inputs = carve_inputs()
+    inputs["candidates"][0]["validation_detail"] = detail
+
+    items = build_carve_report(**inputs)["sections"]["recovery"]["items"]
+
+    assert items[0]["validation_detail"] == detail
+    assert items[1]["validation_detail"] == ""
+
+
 def test_the_confidence_section_carries_the_arithmetic_not_only_the_bucket() -> None:
     sections = build_carve_report(**carve_inputs())["sections"]
     confidence = sections["confidence"]

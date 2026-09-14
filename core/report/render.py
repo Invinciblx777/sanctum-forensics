@@ -571,6 +571,11 @@ def build_carve_report(
                     "mime": item.get("mime", ""),
                     "source": item.get("source", ""),
                     "validation": item.get("validation", ""),
+                    # What the decoder said, verbatim. A verdict without its
+                    # reason is half a finding: "valid" for a phone photo whose
+                    # MPF index declares a gain map this object does not hold
+                    # is only honest next to the sentence saying so.
+                    "validation_detail": item.get("validation_detail") or "",
                     "bucket": item.get("bucket", ""),
                     "confidence_bp": int(item.get("confidence_bp") or 0),
                     "sha256": item.get("sha256", ""),
