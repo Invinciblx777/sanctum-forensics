@@ -17,6 +17,7 @@ import json
 import time
 from pathlib import Path
 
+from api.deps import AppServices
 from fastapi.testclient import TestClient
 
 from .test_streaming import parse_events
@@ -33,19 +34,22 @@ def _await_job(client: TestClient, job_id: str, timeout: float = 60.0) -> dict:
 
 
 def test_acquire_stream_report_and_verify_through_the_api_only(
-    client: TestClient, tmp_path: Path
+    client: TestClient, services: AppServices, tmp_path: Path
 ) -> None:
     # -- a test image, with content whose hash we know ---------------------
     source = tmp_path / "evidence.dd"
     payload = bytes(range(256)) * 4096  # 1 MiB, non-repeating within a block
     source.write_bytes(payload)
     expected = hashlib.sha256(payload).hexdigest()
-    dest = tmp_path / "acquired.dd"
+    # Relative, and therefore inside the deployment's evidence directory. An
+    # absolute path outside it is refused before anything is opened; see
+    # test_an_acquisition_outside_the_evidence_directory_is_refused.
+    dest = services.evidence_dir / "acquired.dd"
 
     # -- acquire -----------------------------------------------------------
     accepted = client.post(
         "/jobs/acquire",
-        json={"source": str(source), "dest": str(dest), "fmt": "raw"},
+        json={"source": str(source), "dest": "acquired.dd", "fmt": "raw"},
     )
     assert accepted.status_code == 200, accepted.text
     job_id = accepted.json()["job_id"]
@@ -134,7 +138,7 @@ def test_a_tampered_report_fails_its_signature_check(
     source.write_bytes(b"S" * 4096)
     accepted = client.post(
         "/jobs/acquire",
-        json={"source": str(source), "dest": str(tmp_path / "out.dd")},
+        json={"source": str(source), "dest": "out.dd"},
     ).json()
     _await_job(client, accepted["job_id"])
 

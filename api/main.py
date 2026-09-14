@@ -34,7 +34,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from api.deps import AppServices, default_services
+from api.deps import AppServices, default_services, signing_key_limitations
 from api.routes import all_routers
 
 __all__ = ["create_app", "run", "UI_DIST", "LOOPBACK_HOST"]
@@ -127,7 +127,9 @@ def create_app(
             "tool_version": state.tool_version,
             "state_dir": str(state.state_dir),
             "ui_bundled": UI_DIST.is_dir(),
-            "limitations": state.limitations,
+            # Computed per request: the key and the chain can both come into
+            # existence after startup, and the second one is permanent.
+            "limitations": state.limitations + signing_key_limitations(state),
         }
 
     if serve_ui and UI_DIST.is_dir():

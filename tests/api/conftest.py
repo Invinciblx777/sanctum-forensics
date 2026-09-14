@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -195,6 +195,21 @@ class RecordingHelper:
             remediation="Only the operations in the allowlist are served.",
             kind="KeyError",
         )
+
+    def call_stream(
+        self, method: str, params: dict[str, Any]
+    ) -> Generator[dict[str, Any], None, dict[str, Any]]:
+        """The streaming half of the transport, over the same fixtures.
+
+        The real transports stream: they yield each progress record as the
+        engine produces it and return the result. This double reproduces that
+        shape by yielding the fixture's progress list one record at a time, so
+        an API test exercises the same code path the product does - including
+        cancellation, which reaches a generator only if there is one.
+        """
+        answer = self.call(method, params)
+        yield from answer.get("progress", [])
+        return {key: value for key, value in answer.items() if key != "progress"}
 
     def _row(self, path: str) -> dict[str, Any]:
         for row in FAKE_DEVICES:

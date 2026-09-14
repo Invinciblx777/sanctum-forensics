@@ -42,6 +42,8 @@ __all__ = [
     "NONE_RECORDED",
     "PDF_DISCLAIMER",
     "build_report",
+    "build_file_erase_report",
+    "build_carve_report",
     "excerpt_gaps",
     "render_json",
     "render_pdf",
@@ -80,6 +82,18 @@ _SECTION_TITLES = {
     "limitations": "7. Limitations",
     "audit_trail": "8. Audit Trail",
     "signature": "9. Signature",
+    # File erasure. Numbered from 2 because the shapes diverge after case
+    # identity and converge again at limitations; a reader comparing two reports
+    # side by side should find the same thing under the same number.
+    "scope": "2. Scope",
+    "results": "3. Results",
+    "residual_findings": "4. Residual Findings",
+    "erase_verification": "5. Verification",
+    # Recovery.
+    "evidence": "2. Evidence",
+    "acquisition_integrity": "3. Evidential Integrity",
+    "recovery": "4. Recovery",
+    "confidence": "5. Confidence",
 }
 
 #: Fields rendered in monospace: hashes, serials, paths, and anything an
@@ -103,6 +117,14 @@ _MONOSPACE_KEYS = frozenset(
 
 def _or_none_recorded(items: list[str]) -> list[str]:
     return list(items) if items else [NONE_RECORDED]
+
+
+def _rows_or_none_recorded(rows: list[dict[str, Any]]) -> list[Any]:
+    """Rows, or the single placeholder string the renderer draws for an empty
+    section. The return type widens to ``list[Any]`` because the placeholder is
+    a string standing in for a table of dicts, which is exactly what the
+    renderer expects to see when a section recorded nothing."""
+    return list(rows) if rows else [NONE_RECORDED]
 
 
 def excerpt_gaps(entries: list[dict[str, Any]]) -> list[dict[str, int]]:
@@ -157,6 +179,7 @@ def build_report(
     merkle_root: str | None = None,
     anchor: dict[str, Any] | None = None,
     signature: Signature | None = None,
+    job_state: str | None = None,
 ) -> dict[str, Any]:
     """Assemble the nine report sections in order.
 
@@ -170,6 +193,7 @@ def build_report(
             "generated_at": generated_at,
             "tool_version": tool_version,
             "canon_version": CANON_VERSION,
+            "job_state": job_state or NONE_RECORDED,
         },
         "device_identity": {
             "model": device.get("model", ""),
@@ -246,6 +270,358 @@ def build_report(
     if signature is not None:
         report["signature"] = signature.model_dump()
     return report
+
+
+def _case_identity(
+    *,
+    case_id: str,
+    operator: str,
+    generated_at: datetime,
+    tool_version: str,
+    job_state: str | None,
+) -> dict[str, Any]:
+    """Who, when, with what - and what state the documented job was in.
+
+    ``job_state`` is inside the signed bytes so a report for a failed or a
+    cancelled job says so wherever it travels. A caller with no job registry
+    to ask gets ``none recorded`` rather than an implied ``complete``.
+    """
+    return {
+        "case_id": case_id,
+        "operator": operator,
+        "generated_at": generated_at,
+        "tool_version": tool_version,
+        "canon_version": CANON_VERSION,
+        "job_state": job_state or NONE_RECORDED,
+    }
+
+
+def _audit_trail(
+    *,
+    ledger_excerpt: list[dict[str, Any]],
+    chain_verification: ChainVerification,
+    merkle_root: str | None,
+    anchor: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """The section every report shape shares, byte for byte.
+
+    A file erasure and a recovery are different documents from a drive erasure,
+    but the thing a third party checks is the same thing in all three, and it
+    must be assembled identically or `verify_report` would have to know which
+    kind it was handed.
+    """
+    return {
+        "chain_status": chain_verification.status.value,
+        "chain_explanation": chain_verification.explanation,
+        "verified_through": chain_verification.verified_through,
+        "first_bad_seq": chain_verification.first_bad_seq,
+        "failure_kind": (
+            chain_verification.failure_kind.value
+            if chain_verification.failure_kind
+            else None
+        ),
+        "entry_count": chain_verification.entry_count,
+        "merkle_root": merkle_root or "",
+        "anchor": anchor or {},
+        "entries": list(ledger_excerpt),
+        "excerpt_gaps": excerpt_gaps(list(ledger_excerpt)),
+    }
+
+
+def _envelope(
+    *,
+    case_id: str,
+    generated_at: datetime,
+    tool_version: str,
+    pubkey_fingerprint: str,
+    sections: dict[str, Any],
+    signature: Signature | None,
+) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "case_id": case_id,
+        "generated_at": generated_at,
+        "tool_version": tool_version,
+        "canon_version": CANON_VERSION,
+        "pubkey_fingerprint": pubkey_fingerprint,
+        "authoritative": True,
+        "authoritative_artifact": f"{case_id}.forensic.json",
+        "sections": sections,
+    }
+    if signature is not None:
+        report["signature"] = signature.model_dump()
+    return report
+
+
+def build_file_erase_report(
+    *,
+    case_id: str,
+    operator: str,
+    generated_at: datetime,
+    tool_version: str,
+    records: list[dict[str, Any]],
+    dry_run: bool,
+    limitations: list[str],
+    ledger_excerpt: list[dict[str, Any]],
+    chain_verification: ChainVerification,
+    pubkey_fingerprint: str,
+    merkle_root: str | None = None,
+    anchor: dict[str, Any] | None = None,
+    signature: Signature | None = None,
+    job_state: str | None = None,
+) -> dict[str, Any]:
+    """The M2 report: what was erased, and what the filesystem kept anyway.
+
+    The residual findings are the deliverable, not the overwrite, so they get
+    their own section rather than a line inside results. A per-file overwrite is
+    usually unverifiable, and this report says so per file rather than reporting
+    an unverifiable erasure as a success.
+    """
+    findings: list[dict[str, Any]] = []
+    severities: dict[str, int] = {}
+    unverified = 0
+    failed = 0
+    bytes_overwritten = 0
+
+    for record in records:
+        path = str(record.get("path", ""))
+        if not record.get("ok", False):
+            failed += 1
+        bytes_overwritten += int(record.get("bytes_overwritten") or 0)
+        verification = record.get("verification") or {}
+        if verification.get("passed") is not True:
+            unverified += 1
+        for finding in record.get("findings") or []:
+            severity = str(finding.get("severity", ""))
+            severities[severity] = severities.get(severity, 0) + 1
+            findings.append(
+                {
+                    "path": path,
+                    "kind": finding.get("kind", ""),
+                    "severity": severity,
+                    "addressable": bool(finding.get("addressable")),
+                    "explanation": finding.get("explanation", ""),
+                }
+            )
+
+    sections: dict[str, Any] = {
+        "case_identity": _case_identity(
+            case_id=case_id,
+            operator=operator,
+            generated_at=generated_at,
+            tool_version=tool_version,
+            job_state=job_state,
+        ),
+        "scope": {
+            "paths_requested": len(records),
+            "dry_run": dry_run,
+            "paths": _or_none_recorded([str(item.get("path", "")) for item in records]),
+        },
+        "results": {
+            "erased": len(records) - failed,
+            "failed": failed,
+            "bytes_overwritten": bytes_overwritten,
+            "items": [
+                {
+                    "path": str(record.get("path", "")),
+                    "ok": bool(record.get("ok")),
+                    "dry_run": bool(record.get("dry_run")),
+                    "bytes_overwritten": int(record.get("bytes_overwritten") or 0),
+                    "unlinked": bool(record.get("unlinked")),
+                    "streams_removed": list(record.get("streams_removed") or []),
+                    "xattrs_removed": list(record.get("xattrs_removed") or []),
+                    "error": record.get("error") or "",
+                    "error_kind": record.get("error_kind") or "",
+                }
+                for record in records
+            ]
+            or [NONE_RECORDED],
+        },
+        "residual_findings": {
+            "count": len(findings),
+            "by_severity": severities or {"none": 0},
+            # Never collapsed to a count. What survived, and where, is the
+            # question this module exists to answer.
+            "items": _rows_or_none_recorded(findings),
+        },
+        "erase_verification": {
+            "files_verified_by_physical_read": len(records) - unverified,
+            "files_not_verifiable": unverified,
+            "note": (
+                "A per-file overwrite is verifiable only where the filesystem "
+                "lets the original extents be re-read. Where it does not, this "
+                "report says the erasure was not verified rather than reporting "
+                "a pass it cannot support."
+            ),
+            "items": [
+                {
+                    "path": str(record.get("path", "")),
+                    "passed": (record.get("verification") or {}).get("passed"),
+                    "strategy": (record.get("verification") or {}).get("strategy", ""),
+                    "reason": (record.get("verification") or {}).get("reason", ""),
+                }
+                for record in records
+            ]
+            or [NONE_RECORDED],
+        },
+        "limitations": {"items": _or_none_recorded(list(limitations))},
+        "audit_trail": _audit_trail(
+            ledger_excerpt=ledger_excerpt,
+            chain_verification=chain_verification,
+            merkle_root=merkle_root,
+            anchor=anchor,
+        ),
+        "signature": signature.model_dump() if signature else {},
+    }
+    return _envelope(
+        case_id=case_id,
+        generated_at=generated_at,
+        tool_version=tool_version,
+        pubkey_fingerprint=pubkey_fingerprint,
+        sections=sections,
+        signature=signature,
+    )
+
+
+def build_carve_report(
+    *,
+    case_id: str,
+    operator: str,
+    generated_at: datetime,
+    tool_version: str,
+    evidence: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    partitions: list[dict[str, Any]],
+    unallocated_bytes: int,
+    written: list[str],
+    limitations: list[str],
+    ledger_excerpt: list[dict[str, Any]],
+    chain_verification: ChainVerification,
+    pubkey_fingerprint: str,
+    merkle_root: str | None = None,
+    anchor: dict[str, Any] | None = None,
+    signature: Signature | None = None,
+    job_state: str | None = None,
+) -> dict[str, Any]:
+    """The M3 report: what was recovered, how sure the tool is, and why.
+
+    Confidence gets a section of its own carrying the component weights, because
+    a bucket label with no arithmetic behind it is an assertion. The weights are
+    calibrated; see docs/performance/calibration.md.
+    """
+    buckets: dict[str, int] = {}
+    by_source: dict[str, int] = {}
+    by_category: dict[str, int] = {}
+    fragmented = 0
+    contradicted = 0
+    reassembled = 0
+
+    for item in candidates:
+        bucket = str(item.get("bucket", ""))
+        buckets[bucket] = buckets.get(bucket, 0) + 1
+        source = str(item.get("source", ""))
+        by_source[source] = by_source.get(source, 0) + 1
+        category = str(item.get("category", ""))
+        by_category[category] = by_category.get(category, 0) + 1
+        if item.get("contiguity_assumed"):
+            fragmented += 1
+        if item.get("contiguity_contradicted"):
+            contradicted += 1
+        if item.get("fragments"):
+            reassembled += 1
+
+    sections: dict[str, Any] = {
+        "case_identity": _case_identity(
+            case_id=case_id,
+            operator=operator,
+            generated_at=generated_at,
+            tool_version=tool_version,
+            job_state=job_state,
+        ),
+        "evidence": {
+            "path": evidence.get("path", ""),
+            "size_bytes": int(evidence.get("size_bytes") or 0),
+            "format": evidence.get("format", ""),
+            "identity": evidence.get("identity", {}),
+            "partitions": _rows_or_none_recorded(partitions),
+            "unallocated_bytes": unallocated_bytes,
+        },
+        "acquisition_integrity": {
+            "opened_read_only": True,
+            "note": (
+                "Nothing in the carving path opens evidence for writing: "
+                "core.carve.evidence declares no write method and opens "
+                "O_RDONLY. Recovered objects are written to an operator-chosen "
+                "output directory, never back to the evidence."
+            ),
+            "objects_written": len(written),
+            "output_paths": _or_none_recorded(list(written)),
+        },
+        "recovery": {
+            "candidates": len(candidates),
+            "by_source": by_source or {"none": 0},
+            "by_category": by_category or {"none": 0},
+            "contiguity_assumed": fragmented,
+            "contiguity_contradicted": contradicted,
+            "reassembled_from_fragments": reassembled,
+            "items": [
+                {
+                    "offset": int(item.get("offset") or 0),
+                    "length": int(item.get("length") or 0),
+                    "ext": item.get("ext", ""),
+                    "mime": item.get("mime", ""),
+                    "source": item.get("source", ""),
+                    "validation": item.get("validation", ""),
+                    "bucket": item.get("bucket", ""),
+                    "confidence_bp": int(item.get("confidence_bp") or 0),
+                    "sha256": item.get("sha256", ""),
+                    "original_name": item.get("original_name") or "",
+                    # Where the bytes behind that digest were. Empty means the
+                    # object is the span above; a list means it is not, and
+                    # hashing offset..offset+length would cover a gap holding
+                    # somebody else's data. A reader checking the digest has to
+                    # know which, so the report has to say.
+                    "fragments": item.get("fragments") or [],
+                }
+                for item in candidates
+            ]
+            or [NONE_RECORDED],
+        },
+        "confidence": {
+            "by_bucket": buckets or {"none": 0},
+            "thresholds": {"HIGH": 8000, "MEDIUM": 5000},
+            "components": [
+                "header",
+                "exact_length",
+                "decoder",
+                "entropy",
+                "fs_metadata",
+                "no_overlap",
+            ],
+            "note": (
+                "Confidence is the sum of six measured components in basis "
+                "points, clamped and never scaled. The weights were calibrated "
+                "against a ground-truth corpus and bounded from above by that "
+                "measurement; see docs/performance/calibration.md. A bucket is a "
+                "reading of the number, not a substitute for it."
+            ),
+        },
+        "limitations": {"items": _or_none_recorded(list(limitations))},
+        "audit_trail": _audit_trail(
+            ledger_excerpt=ledger_excerpt,
+            chain_verification=chain_verification,
+            merkle_root=merkle_root,
+            anchor=anchor,
+        ),
+        "signature": signature.model_dump() if signature else {},
+    }
+    return _envelope(
+        case_id=case_id,
+        generated_at=generated_at,
+        tool_version=tool_version,
+        pubkey_fingerprint=pubkey_fingerprint,
+        sections=sections,
+        signature=signature,
+    )
 
 
 def render_json(report: dict[str, Any]) -> bytes:
@@ -345,10 +721,12 @@ def render_pdf(report: dict[str, Any]) -> bytes:
         newline(3.8 * mm)
     newline(3 * mm)
 
-    for name in SECTION_ORDER:
-        section = report["sections"][name]
+    # The report's own key order, not SECTION_ORDER. A drive erasure, a file
+    # erasure and a recovery are different documents with different sections,
+    # and every builder emits its sections in the order it wants them read.
+    for name, section in report["sections"].items():
         page.setFont("Helvetica-Bold", 11)
-        page.drawString(left, cursor, _SECTION_TITLES[name])
+        page.drawString(left, cursor, _SECTION_TITLES.get(name, name.title()))
         newline(5.5 * mm)
         if not section:
             draw(NONE_RECORDED, indent=1)

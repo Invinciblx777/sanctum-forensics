@@ -23,7 +23,11 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
 from api.deps import AppServices
-from api.routes.common import get_services, sanctum_error_response
+from api.routes.common import (
+    get_services,
+    resolve_output_path,
+    sanctum_error_response,
+)
 from api.routes.models import (
     AcquireRequest,
     CarveRequest,
@@ -127,29 +131,61 @@ def erase_drive(
 
     registry = services.registry
 
-    def factory() -> Any:
-        return _helper_job(services, "run_erase", params)
+    # Minted here rather than by the registry, for the same reason the carve
+    # route mints its own: the ledger entries this run writes are keyed by the
+    # job id the helper is given, and GET /jobs/{id} and the report excerpt
+    # both look them up by the id this endpoint returned. Sending a placeholder
+    # instead wrote all six phases under an id no consumer ever queries, so a
+    # wipe's audit trail could not be found again and the erasure certificate
+    # carried nothing but the genesis entry.
+    job_id = f"erase-drive-{uuid.uuid4().hex[:12]}"
 
-    job_id = registry.submit("erase-drive", params, factory)
+    def factory() -> Any:
+        return _helper_job(services, "run_erase", params, job_id=job_id)
+
+    registry.submit("erase-drive", params, factory, job_id=job_id)
     return _accepted(job_id, "erase-drive", body.dry_run)
 
 
 def _helper_job(
-    services: AppServices, method: str, params: dict[str, Any]
+    services: AppServices, method: str, params: dict[str, Any], *, job_id: str
 ) -> Any:
     """Drive a helper call as a generator so the registry can stream it.
 
-    The socket protocol is request/response, so a socket-backed helper returns
-    its progress in one reply rather than incrementally. Replaying that list as
-    a generator keeps one code path in the registry for both transports: the
-    in-process helper is equally not incremental, and making the registry care
-    which one it has would be complexity in the wrong module.
+    The helper streams: one progress frame per record the engine yields, over
+    the same connection the request went out on. This used to be one blocking
+    request/response that returned the whole progress list at the end, which
+    made the UI's progress bar a replay of an operation that had already
+    finished and left ``POST /jobs/{id}/cancel`` with no yield point to act on.
+
+    Two consequences follow from ``yield from``, and both are the point:
+
+    * the registry sees records as the device is written, so the bar moves
+      while the wipe runs;
+    * the registry's cancellation - ``generator.close()`` between yields -
+      propagates into the helper transport, which tells the helper, which stops
+      the engine at *its* next yield. Nothing is killed mid-write.
+
+    ``job_id`` is the id the caller was handed and the registry filed the job
+    under. It has to be the one the helper receives, because the helper is what
+    passes it to the engine that writes the ledger.
     """
     from core.models import Progress
 
-    answer = services.helper.call(method, {**params, "job_id": "pending"})
-    for record in answer.get("progress", []):
-        yield Progress.model_validate(record)
+    stream = services.helper.call_stream(method, {**params, "job_id": job_id})
+    try:
+        while True:
+            try:
+                record = next(stream)
+            except StopIteration as stop:
+                answer: dict[str, Any] = stop.value
+                break
+            yield Progress.model_validate(record)
+    finally:
+        # Explicit, not left to the collector. On cancellation this is the call
+        # that reaches the helper, and "when the frame happens to be freed" is
+        # not a schedule to run a drive erase on.
+        stream.close()
     return answer.get("result") or answer.get("record")
 
 
@@ -238,6 +274,22 @@ def acquire_image(
 
     The source is opened ``O_RDONLY`` and, on Linux against a block device, set
     read-only at the block layer first. See :mod:`core.carve.acquire`.
+
+    **The destination is confined to this deployment's evidence directory.** It
+    used to be passed through verbatim, and the API has no authentication of any
+    kind, so any local process that could open the port could name any path this
+    process can write and have an image written over it. Under the runbook's
+    former ``sudo python -m api.main`` that process was root, which made it an
+    arbitrary-file-write-as-root primitive; the runbook is corrected separately,
+    but a path check that only holds when the deployment is configured correctly
+    is not a check. A path outside the configured directory is now refused with
+    a 400 before anything is opened.
+
+    The acquisition itself runs in *this* process, not through the helper: it is
+    an ``O_RDONLY`` read and needs no privilege the operator does not already
+    have. The helper's ``acquire_image`` operation exists for the case where the
+    source is a raw device the operator cannot open, and this route does not use
+    it today.
     """
     from core.carve.acquire import AcquireOptions, acquire
     from core.ledger.chain import Ledger
@@ -250,9 +302,12 @@ def acquire_image(
             "Check the path. Nothing was created.",
         )
 
+    dest = resolve_output_path(services.evidence_dir, body.dest, field="dest")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
     params = {
         "source": str(source),
-        "dest": body.dest,
+        "dest": str(dest),
         "fmt": body.fmt,
         "compression": body.compression,
     }
@@ -272,7 +327,7 @@ def acquire_image(
     def factory() -> Any:
         return acquire(
             source,
-            Path(body.dest),
+            dest,
             fmt=body.fmt,
             options=AcquireOptions(
                 compression=body.compression, operator=body.operator
@@ -310,23 +365,50 @@ def carve_image(
             "Check the path; nothing was opened.",
         )
 
+    from core.ledger.chain import Ledger
+
+    # Same treatment as the acquisition destination, for the same reason: the
+    # API has no authentication, so an unchecked output path is a
+    # write-anywhere primitive for any local process that can open the port.
+    # Confined to the *recovered* directory rather than the evidence one -
+    # recovered objects are derived output and evidence is read-only input, and
+    # a recovery that wrote into the tree holding the image it is reading is
+    # the one thing this path must never do.
+    out_dir = (
+        resolve_output_path(services.recovered_dir, body.out_dir, field="out_dir")
+        if body.out_dir
+        else None
+    )
+
     params = {
         "image": str(image),
         "undelete": body.undelete,
         "carve_signatures": body.carve_signatures,
-        "out_dir": body.out_dir,
+        "out_dir": str(out_dir) if out_dir else None,
     }
     registry = services.registry
+
+    # Minted here for the same reason the erase routes mint theirs: the ledger
+    # entries this run writes have to be keyed to an id GET /jobs/{id} and the
+    # report excerpt can find again.
+    job_id = f"carve-{uuid.uuid4().hex[:12]}"
+    ledger = Ledger(
+        services.ledger_root,
+        tool_version=services.tool_version,
+        pubkey_fingerprint=_signing_fingerprint(services),
+    )
 
     def factory() -> Any:
         return carve_generator(
             image,
             undelete=body.undelete,
             carve_signatures=body.carve_signatures,
-            out_dir=Path(body.out_dir) if body.out_dir else None,
+            out_dir=out_dir,
+            job_id=job_id,
+            ledger=ledger,
         )
 
-    job_id = registry.submit("carve", params, factory)
+    registry.submit("carve", params, factory, job_id=job_id)
     return _accepted(job_id, "carve", dry_run=False)
 
 

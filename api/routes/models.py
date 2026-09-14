@@ -79,10 +79,14 @@ class CarveRequest(BaseModel):
     """Body for ``POST /jobs/carve``. Read-only by construction."""
 
     image: str
-    #: Walk filesystem metadata for deleted entries before signature carving.
-    #: The undelete pass also returns the unallocated map the carver then uses.
+    #: Walk filesystem metadata for deleted entries before carving. The undelete
+    #: pass also returns the allocated/unallocated map, which is reported but
+    #: deliberately does not bound the carve: bounding was measured and loses
+    #: recall. See :mod:`api.carve_job`.
     undelete: bool = True
-    #: Run the signature and structure carvers over the image.
+    #: Run the signature and structure carvers over the whole image. Both, from
+    #: one pass: the structure carver runs the signature scan itself and then
+    #: derives each object's length from its own format where a parser exists.
     carve_signatures: bool = True
     #: Where recovered objects are written. None means nothing is written and
     #: only the candidate list is returned.
