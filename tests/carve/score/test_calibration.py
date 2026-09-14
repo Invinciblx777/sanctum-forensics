@@ -53,6 +53,7 @@ def test_scored_candidates_carry_their_components(tmp_path: Path) -> None:
             "entropy",
             "fs_metadata",
             "no_overlap",
+            "reassembly",
         }
         assert sum(item.score_components.values()) >= item.confidence_bp or (
             item.confidence_bp == 10_000

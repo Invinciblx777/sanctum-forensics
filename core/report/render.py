@@ -596,13 +596,17 @@ def build_carve_report(
                 "entropy",
                 "fs_metadata",
                 "no_overlap",
+                "reassembly",
             ],
             "note": (
                 "Confidence is the sum of six measured components in basis "
-                "points, clamped and never scaled. The weights were calibrated "
-                "against a ground-truth corpus and bounded from above by that "
-                "measurement; see docs/performance/calibration.md. A bucket is a "
-                "reading of the number, not a substitute for it."
+                "points, clamped and never scaled, plus a seventh, reassembly, "
+                "that is zero unless the object was rebuilt from separate runs, "
+                "where it holds the total below HIGH because the layout across "
+                "the gap is inferred. The weights were calibrated against a "
+                "ground-truth corpus and bounded from above by that measurement; "
+                "see docs/performance/calibration.md. A bucket is a reading of "
+                "the number, not a substitute for it."
             ),
         },
         "limitations": {"items": _or_none_recorded(list(limitations))},

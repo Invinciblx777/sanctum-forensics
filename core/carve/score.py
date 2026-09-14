@@ -25,7 +25,25 @@ component                     weight  what it establishes
                                       that file, and is weighted accordingly
 ``no_overlap``                   500  no higher-scoring candidate claims the
                                       same bytes
+``reassembly``                 <= 0  holds an object rebuilt from separate
+                                      runs at 7999, below HIGH, whatever the
+                                      others add up to; 0 for everything else
 ============================  ======  ====================================
+
+**Why a reassembled object cannot be HIGH.** Every other component of a
+contiguous candidate is measured on bytes that sit on the medium as one run. A
+reassembled candidate's bytes are measured just as well - the header, the exact
+MCU accounting in :mod:`core.carve.fragmentation`, the decode and the entropy
+all cover every byte emitted - but *where the gap was* is an inference, and on a
+real case there is no manifest to check it against. The residual of that
+inference is measured, not assumed: a join that loses or replaces 512 to 1,536
+bytes of an object's own scan passes the accounting about one time in twenty on
+noise-like JPEGs when the true tail start is not on the medium. No contiguous
+candidate has that failure mode, and the population HIGH's precision was
+calibrated on contained no reassembled object. The ceiling costs nothing about
+the recovery - the bytes and their runs are unchanged - and changes only what
+the tool claims about its own certainty. It is a component rather than a clamp
+so the arithmetic still reconciles and the reason is on the record.
 
 The weights are not invented: :mod:`testkit.calibrate` runs the pipeline over a
 corpus with a known manifest and measures the precision and recall each bucket
@@ -66,6 +84,7 @@ __all__ = [
     "ENTROPY_WINDOW_BYTES",
     "HIGH_BUCKET_FLOOR_BP",
     "MEDIUM_BUCKET_FLOOR_BP",
+    "REASSEMBLED_CEILING_BP",
     "measure_entropy",
     "bucket_for",
     "gather_evidence",
@@ -103,6 +122,10 @@ MIXED_ENTROPY_FLOOR_MILLIBITS = 2000
 
 HIGH_BUCKET_FLOOR_BP = 8000
 MEDIUM_BUCKET_FLOOR_BP = 5000
+
+#: The most a candidate reassembled from separate runs can score. One basis
+#: point under HIGH; see the module docstring for why.
+REASSEMBLED_CEILING_BP = HIGH_BUCKET_FLOOR_BP - 1
 
 EntropyProfile = Literal["high", "low", "mixed"]
 
@@ -230,6 +253,9 @@ class ScoreEvidence:
     entropy_matches: bool = False
     fs_corroborated: bool = False
     overlapped: bool = False
+    #: The object was rebuilt from separate runs across a gap the medium does
+    #: not describe, so its layout is inferred.
+    reassembled: bool = False
     #: Mean entropy in thousandths of a bit per byte, or None if not measured.
     entropy_millibits: int | None = None
     #: Share of windows at or above the high-entropy floor, in basis points.
@@ -360,6 +386,7 @@ def gather_evidence(
         entropy_matches=entropy_matches,
         fs_corroborated=candidate.source == "fs_metadata",
         overlapped=candidate.overlapped,
+        reassembled=bool(candidate.fragments),
         entropy_millibits=entropy_millibits,
         high_windows_bp=high_windows_bp,
     )
@@ -383,14 +410,27 @@ def score_from_evidence(
         "decoder_unavailable": weights.decoder_unavailable,
     }[evidence.decoder]
 
-    return {
+    components = {
         "header": weights.header if evidence.header_match else 0,
         "exact_length": weights.exact_length if evidence.exact_length else 0,
         "decoder": decoder_points,
         "entropy": weights.entropy if evidence.entropy_matches else 0,
         "fs_metadata": weights.fs_metadata if evidence.fs_corroborated else 0,
         "no_overlap": 0 if evidence.overlapped else weights.no_overlap,
+        "reassembly": 0,
     }
+    if evidence.reassembled:
+        components["reassembly"] = _reassembly_ceiling(components)
+    return components
+
+
+def _reassembly_ceiling(components: dict[str, int]) -> int:
+    """What holds a reassembled object's total at :data:`REASSEMBLED_CEILING_BP`.
+
+    Zero when the other components already come to less. Never positive.
+    """
+    others = sum(value for name, value in components.items() if name != "reassembly")
+    return min(0, REASSEMBLED_CEILING_BP - others)
 
 
 def bucket_for(confidence_bp: int) -> Literal["HIGH", "MEDIUM", "LOW"]:
@@ -478,6 +518,10 @@ def resolve_overlaps(
         components = dict(candidate.score_components)
         if components:
             components["no_overlap"] = 0
+            if candidate.fragments and "reassembly" in components:
+                # The ceiling was computed with no_overlap awarded. Recompute it
+                # so the component still says exactly what holds the total down.
+                components["reassembly"] = _reassembly_ceiling(components)
             total = max(0, min(10_000, sum(components.values())))
         else:
             total = max(0, candidate.confidence_bp - weights.no_overlap)

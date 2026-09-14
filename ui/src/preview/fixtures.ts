@@ -295,10 +295,11 @@ export const CANDIDATES: CarveCandidate[] = Array.from({ length: 500 }, (_, inde
   const entropy = index % 5 === 0 ? 0 : 1200
   const fsMetadata = source === 'undelete' ? 1800 : 0
   const noOverlap = index % 11 === 0 ? 0 : 800
-  const bp = Math.min(
-    header + exactLength + decoder + entropy + fsMetadata + noOverlap,
-    10000,
-  )
+  const measured = header + exactLength + decoder + entropy + fsMetadata + noOverlap
+  // Every ninth candidate is reassembled (see fragments below). Like the real
+  // scorer, a reassembly component holds its total one basis point under HIGH.
+  const reassembly = index % 9 === 0 ? Math.min(0, 7999 - measured) : 0
+  const bp = Math.min(measured + reassembly, 10000)
   const bucket = bp >= 8000 ? 'HIGH' : bp >= 5000 ? 'MEDIUM' : 'LOW'
   const offset = 1048576 + index * 262144 + (index % 7) * 512
   const length = 8192 + ((index * 7919) % 4194304)
@@ -336,6 +337,7 @@ export const CANDIDATES: CarveCandidate[] = Array.from({ length: 500 }, (_, inde
       entropy,
       fs_metadata: fsMetadata,
       no_overlap: noOverlap,
+      reassembly,
     },
     overlapped: noOverlap === 0,
     overlaps_with: noOverlap === 0 ? 1048576 + (index - 1) * 262144 : null,

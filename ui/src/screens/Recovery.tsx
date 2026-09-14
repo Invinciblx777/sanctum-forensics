@@ -38,6 +38,8 @@ const COMPONENT_MEANING: Record<string, string> = {
   entropy: 'the byte distribution matches what this format produces',
   fs_metadata: 'a surviving filesystem record agrees that a file lived here',
   no_overlap: 'no higher-scoring candidate claims the same bytes',
+  reassembly:
+    'rebuilt from separate runs: where the gap was is inferred, so the total is held below HIGH',
 }
 
 function ScoreBreakdown({ candidate }: { candidate: CarveCandidate }) {

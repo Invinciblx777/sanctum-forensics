@@ -50,6 +50,7 @@ EXPECTED_COMPONENTS = {
     "entropy",
     "fs_metadata",
     "no_overlap",
+    "reassembly",
 }
 
 
@@ -128,11 +129,14 @@ def test_a_reassembled_candidate_reconciles_like_any_other(
 ) -> None:
     """Every Batch 2 scoring invariant, applied to the reassembled object.
 
-    It lands in HIGH, and that is defensible rather than generous: all six
-    components were measured on the reassembled bytes themselves - the header
-    is at the start of them, the decoder consumed all of them, the entropy was
-    taken over all of them - and ``fragments`` says where every one of those
-    bytes was, so the claim is checkable against the medium.
+    It lands in MEDIUM, one basis point under HIGH, and the ``reassembly``
+    component is what holds it there. Batch 3 scored this object HIGH on the
+    grounds that every component was measured on the reassembled bytes, which
+    is still true. Batch 7 measured what that argument left out: where the gap
+    was is an inference, the exact-accounting oracle has a residual on joins it
+    cannot tell from the truth, and HIGH's precision was never calibrated on a
+    reassembled population. The bytes and runs are unchanged; only the claim
+    about certainty moved. See ``core/carve/score.py``.
     """
     from core.carve.score import bucket_for
 
@@ -154,11 +158,12 @@ def test_a_reassembled_candidate_reconciles_like_any_other(
     assert item["confidence_bp"] not in {7500, 9500, 4000}, (
         "a structure.py placeholder survived scoring"
     )
-    assert item["bucket"] == "HIGH", (
+    assert item["bucket"] == "MEDIUM", (
         f"reassembled object landed in {item['bucket']} at "
-        f"{item['confidence_bp']} bp with {components}; if the weights moved, "
-        "the report's bucket claim needs updating with them"
+        f"{item['confidence_bp']} bp with {components}; a reassembled object "
+        "must never reach HIGH, and the report's bucket claim depends on it"
     )
+    assert components["reassembly"] < 0, "nothing on the record says why"
 
 
 # --------------------------------------------------------------------------
@@ -167,14 +172,20 @@ def test_a_reassembled_candidate_reconciles_like_any_other(
 
 
 @pytest.mark.parametrize("head_bytes", UNALIGNED_SPLITS)
-def test_an_unaligned_split_is_reported_honestly_not_guessed_at(
+def test_a_split_off_the_4096_grid_on_a_raw_image_is_recovered_exactly_or_not_at_all(
     client: TestClient, tmp_path: Path, original: bytes, head_bytes: int
 ) -> None:
-    """Fragments are sought on cluster boundaries. These are not on one.
+    """A raw image has no cluster size, so no split can be ruled out by one.
 
-    The requirement is not that they recover. It is that failing to recover
-    them yields a candidate over a span that really is on the medium, with a
-    digest of exactly those bytes, below HIGH.
+    Before Batch 7 the search assumed 4096-byte clusters and these splits were
+    never enumerated. It now walks the 512-byte sector grid when the volume's
+    cluster size is unknown, because every allocator's fragment boundaries lie
+    on that grid, and a join is accepted only if the scan accounts for every
+    MCU. So the requirement is the one that matters: if anything carries
+    ``fragments`` it is the original byte for byte, and every other candidate
+    is a span that reads back to its own digest. A volume whose cluster size
+    *does* rule these splits out is covered in
+    ``tests/carve/signature/test_fragmentation_reachability.py``.
     """
     blob = _fragmented_image(original, head_bytes)
     image = tmp_path / f"unaligned-{head_bytes}.dd"
@@ -183,10 +194,10 @@ def test_an_unaligned_split_is_reported_honestly_not_guessed_at(
     want = hashlib.sha256(original).hexdigest()
     result = _carve(client, image)
 
-    assert not [item for item in result["candidates"] if item["sha256"] == want]
     for item in result["candidates"]:
-        assert item["bucket"] != "HIGH"
-        assert not item["fragments"]
+        if item["fragments"]:
+            assert item["sha256"] == want, "a reassembled object is not the original"
+            continue
         span = blob[item["offset"] : item["offset"] + item["length"]]
         assert hashlib.sha256(span).hexdigest() == item["sha256"]
 

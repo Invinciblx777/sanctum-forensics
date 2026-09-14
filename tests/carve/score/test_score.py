@@ -70,6 +70,7 @@ def test_components_that_were_not_established_are_reported_as_zero() -> None:
         "entropy",
         "fs_metadata",
         "no_overlap",
+        "reassembly",
     }
     assert components["header"] == 0
 

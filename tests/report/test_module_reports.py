@@ -322,7 +322,9 @@ def test_the_confidence_section_carries_the_arithmetic_not_only_the_bucket() -> 
     sections = build_carve_report(**carve_inputs())["sections"]
     confidence = sections["confidence"]
     assert confidence["thresholds"] == {"HIGH": 8000, "MEDIUM": 5000}
-    assert len(confidence["components"]) == 6
+    # Six measured components plus the reassembly ceiling (Batch 7).
+    assert len(confidence["components"]) == 7
+    assert confidence["components"][-1] == "reassembly"
     assert "calibrated" in confidence["note"]
 
 

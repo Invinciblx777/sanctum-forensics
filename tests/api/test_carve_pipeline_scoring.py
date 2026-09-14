@@ -46,8 +46,9 @@ from tests.carve.signature.conftest import (
 #: The values core/carve/structure.py assigns without evidence.
 PLACEHOLDER_CONFIDENCE = {7500, 9500, 4000}
 
-#: The six components core.carve.score always emits. A candidate carrying a
-#: different key set did not come from score_from_evidence.
+#: The seven components core.carve.score always emits - six measured, and the
+#: reassembly ceiling, which is zero unless the object was rebuilt from runs. A
+#: candidate carrying a different key set did not come from score_from_evidence.
 EXPECTED_COMPONENTS = {
     "header",
     "exact_length",
@@ -55,6 +56,7 @@ EXPECTED_COMPONENTS = {
     "entropy",
     "fs_metadata",
     "no_overlap",
+    "reassembly",
 }
 
 
@@ -287,7 +289,8 @@ def test_the_pipeline_calls_carve_structures_and_not_both_carvers() -> None:
     source = Path(carve_job.__file__).read_text(encoding="utf-8")
 
     assert "from core.carve.structure import carve_structures" in source
-    assert "carve_structures(handle)" in source
+    # Batch 7 passes the undelete pass's cluster sizes as a keyword argument.
+    assert "carve_structures(handle," in source
     assert "import carve_signatures" not in source, (
         "both carvers are wired in; carve_structures already runs the scan"
     )
