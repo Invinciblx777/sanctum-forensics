@@ -378,6 +378,52 @@ sector in small files, which is why `candidate.sha256` is computed over the
 same extents `read_recovered()` returns rather than over the bytes TSK hands
 back — the claim is checkable.
 
+## Bifragment reassembly is narrow, and depends on the volume's cluster size
+
+`core/carve/fragmentation.py` rebuilds a JPEG split into two runs. What it can be
+trusted with is exactly this and no more:
+
+* **One baseline JPEG, exactly two runs, both still on the medium.** Progressive,
+  arithmetic-coded, lossless and multi-scan JPEGs are never reassembled, and neither is
+  any other format. A file in three or more pieces is not recovered.
+* **Reach: the gap between the runs at most 2 MiB (2,097,152 bytes).** Measured over
+  ten random layouts at each of 64 KiB, 128 KiB, 256 KiB, 512 KiB, 1 MiB and 2 MiB, on
+  512-byte and 4096-byte clusters with the size known: all recovered byte for byte.
+  Beyond that it is not reliable on small clusters — 7 of 10 at 4 MiB and 3 of 10 at
+  8 MiB on 512-byte clusters, 10 of 10 to 8 MiB on 4096-byte ones — and the object must
+  end within 8 MiB of its header in every case. Failures are refusals; none of the
+  layouts was reassembled wrongly.
+* **The volume's cluster size has to be known for that reach.** It is read per volume
+  by the undelete pass (boot sector, BPB or superblock) and limits every join to that
+  grid. On a raw image, a damaged boot sector or a carve run without undelete, the
+  search walks 512-byte sectors instead: still safe, since every real layout lies on
+  that grid, but slower and with less reach — on a 4096-byte volume, 10 of 10 recovered
+  to 1 MiB and 8 of 10 at 8 MiB, and two or more clusters of ambiguous gap bytes next
+  to a run edge were refused.
+* **Ambiguous gap bytes cost reach.** Bytes that cannot occur inside a JPEG scan mark
+  where the gap starts and ends. Zeros, directory entries, text and another JPEG's scan
+  data do not, so the search has to try every join through them: up to 8 clusters of
+  them next to a run edge were recovered, 16 were refused.
+* **A refused search costs time.** Up to about 1.7 seconds per JPEG header, against
+  tens of milliseconds before Batch 7. Measured on an adversarial image with an EOI
+  every 4 KiB: 396 ms per header, against 23 ms before.
+
+### Why a reassembled object is never HIGH
+
+Acceptance rests on an exact count of the scan's entropy-coded data against its frame
+header, which Pillow does not do: libjpeg reports a short, overlong or misaligned scan
+as a warning and returns an image regardless, and at `hwval-run4` that let the tool
+emit a real head joined to its own tail read 3,584 bytes late, scored HIGH (PREFLIGHT2
+FINDING 1). The count is much stronger — 0 of 600 insertions, 0 of 400 chimeras of two
+JPEGs and 0 of 7,200 same-length substitutions accepted — but it is not a proof. **A
+join that drops 512 to 1,536 bytes of the object's own scan passes about one time in
+twenty on noise-like JPEGs** (18, 21 and 14 of 400 at 512 and 1,024 bytes; none at
+3,584 bytes or more; none on a smooth photographic image). The search tries the true
+join before any such one whenever the true join is on the medium, so this bites when it
+is not: a tail whose first sectors were overwritten. That is why every reassembled
+candidate carries a `reassembly` score component holding it at 7999, one basis point
+below HIGH, and why the report and the UI both say it was rebuilt from runs.
+
 ## E01 acquisition is uncompressed, and slightly larger than the source
 
 `pyewf` binds exactly one write-configuration setter, `set_header_codepage`.
@@ -440,6 +486,21 @@ second construction site appears.
 
 On an ordinary unprivileged run the honest outcome is: the file was overwritten,
 renamed, unlinked — and verification reports `not_possible`.
+
+### No file erase on FAT or exFAT can be verified by reading back extents
+
+The extent map a file erase is verified against is captured with the `FS_IOC_FIEMAP`
+ioctl on Linux. **Neither `vfat` nor `exfat` answers it**: both return
+`[Errno 95] Operation not supported`, measured on loopback mounts of each during the
+second hardware pre-flight (PREFLIGHT2 FINDING 2). So `core/erase/inspect.py` captures
+no extents for any file on either filesystem, and `verify_file_erase` reports
+`not_possible` for every one of them.
+
+That is not an edge case. FAT32 and exFAT are what a USB stick or an SD card is
+formatted with out of the box, so **a per-file erase on a removable device's own
+filesystem can never be verified by reading the medium back.** The overwrite, the
+renames and the unlink still happen and are recorded; the verification claim is
+absent, and the report says why.
 
 ### Hard-linked files are not overwritten by default
 

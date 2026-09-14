@@ -470,8 +470,9 @@ the carve — bounding it was measured and loses recall.
 ### Confidence buckets: what a bucket does and does not assert
 
 Confidence is the sum of six measured components in basis points — `header`,
-`exact_length`, `decoder`, `entropy`, `fs_metadata`, `no_overlap` — clamped, never
-scaled. The buckets are a reading of that number:
+`exact_length`, `decoder`, `entropy`, `fs_metadata`, `no_overlap` — plus a seventh,
+`reassembly`, which is 0 for every candidate except one rebuilt from separate runs
+(see below). Clamped, never scaled. The buckets are a reading of that number:
 
 | Bucket | Score | What it asserts |
 |---|---|---|
@@ -500,10 +501,21 @@ list is **non-empty is not a span**. It was reassembled from two runs with someb
 else's bytes in between:
 
 ```json
-{"bucket":"HIGH","confidence_bp":9000,"ext":"jpg","offset":0,"length":77458,
+{"bucket":"MEDIUM","confidence_bp":7999,"ext":"jpg","offset":0,"length":77458,
  "fragments":[{"offset":0,"length":4096},{"offset":36864,"length":73362}],
- "sha256":"72dc6393d6a4b85e…","validation":"valid"}
+ "sha256":"72dc6393d6a4b85e…","validation":"valid",
+ "score_components":{"header":2000,"exact_length":1500,"decoder":4000,"entropy":1000,
+                     "fs_metadata":0,"no_overlap":500,"reassembly":-1001}}
 ```
+
+**A reassembled candidate is never HIGH.** Every byte it emits was checked — the
+header, an exact count of the JPEG's entropy-coded data against its frame header, a
+decode, the entropy — but *where the gap was* is an inference the medium cannot
+confirm, and the check has a measured residual that no contiguous candidate has
+(see [`limitations.md`](limitations.md)). The `reassembly` component holds the total
+at 7999, one basis point under HIGH, whatever the others add up to, so the arithmetic
+still reconciles and the reason is on the record. The bytes and the runs are the
+same either way; only the claim about certainty differs.
 
 `length` is the **sum of the runs**, `offset` is the first run's offset, and
 `sha256` is the digest of **the runs concatenated** — not of `offset`..`offset +
@@ -551,13 +563,33 @@ recomputes rather than trusts. The report's recovery section also carries
 `reassembled_from_fragments`, a count of how many candidates in this run were built
 this way.
 
-**Two limits, stated where they bite.** Bifragment reassembly is **JPEG only** —
-every other format gets `possibly_fragmented: true` and no reconstruction attempt at
-all. And the second run is sought on **4096-byte cluster boundaries**; a split
-produced by a volume with a different cluster size is not enumerated, and the object
-is reported as a low-confidence candidate rather than guessed at. General
-reassembly of arbitrary fragmented files is an open research problem, and this tool
-does not claim it.
+**What it recovers, exactly.** One baseline JPEG in **exactly two runs**, both still
+on the medium, whose gap is **at most 2 MiB (2,097,152 bytes)**, on a volume whose
+cluster size the undelete pass read from its boot sector or superblock. Measured over
+ten random layouts each at 64 KiB to 2 MiB: every one recovered byte for byte on
+512-byte and on 4096-byte clusters. That is the claim, and it is deliberately narrow.
+
+**What it refuses rather than guesses at:**
+
+* **Anything but a baseline JPEG** — progressive, arithmetic-coded, lossless or
+  multi-scan JPEG, and every other format — gets `possibly_fragmented: true` and no
+  reconstruction attempt at all.
+* **A layout the volume could not produce.** Runs are sought only on the volume's own
+  cluster grid. When no filesystem is recognised the grid is the 512-byte sector,
+  which every real layout lies on; the search is then slower and refuses sooner, and
+  accepts nothing it would otherwise refuse.
+* **A join the bytes do not settle.** If more than one join accounts for the object,
+  or the search runs out of budget before showing that only one does, nothing is
+  reassembled. Gap bytes that cannot be told apart from JPEG data — zeros, directory
+  entries, text, another JPEG's scan — next to a run edge are what use the budget up:
+  measured, up to 8 clusters of them recovered and 16 were refused.
+* **A gap beyond 2 MiB is not a promise either way.** On 4096-byte clusters every
+  layout measured recovered out to the 8 MiB search window; on 512-byte clusters
+  7 of 10 did at 4 MiB and 3 of 10 at 8 MiB, the rest refused. None was fabricated.
+
+Each refusal leaves the candidate the parser delineated, over a span that really is
+on the medium, with a digest of exactly those bytes. General reassembly of arbitrary
+fragmented files is an open research problem, and this tool does not claim it.
 
 ---
 

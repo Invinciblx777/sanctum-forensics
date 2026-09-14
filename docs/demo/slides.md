@@ -60,7 +60,7 @@ primitive. No authentication scheme we could ship would make that a good trade."
 |---|---|---|
 | **M1** | Secure Drive Eraser | capability-probed method selection, NIST Clear/Purge/Destroy, verified read-back |
 | **M2** | Secure File & Folder Eraser | targeted erasure, per-filesystem caveats stated rather than assumed |
-| **M3** | Advanced Carving & Recovery | undelete from surviving metadata + signature and structure carving, bifragmented-JPEG reassembly, decoder-validated, calibrated confidence |
+| **M3** | Advanced Carving & Recovery | undelete from surviving metadata + signature and structure carving, two-run baseline-JPEG reassembly (gap ≤ 2 MiB, on the volume's own cluster grid, never above MEDIUM), decoder-validated, calibrated confidence |
 
 - One vocabulary throughout: **sanitize** destroys, **carve** recovers without
   filesystem metadata, **undelete** recovers using it.
