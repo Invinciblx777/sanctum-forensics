@@ -55,8 +55,12 @@ test:
 # The full gate, in the order a failure is cheapest to read.
 check: lint typecheck test
 
+# The same port and loopback address as `python -m api.main`, which is what every
+# document names. Without these uvicorn serves its own default, 8000.
+SANCTUM_PORT ?= 8787
+
 run:
-	$(PY) -m uvicorn api.main:create_app --factory --reload
+	$(PY) -m uvicorn api.main:create_app --factory --reload --host 127.0.0.1 --port $(SANCTUM_PORT)
 
 docker:
 	docker build -t sanctum-forensics .
