@@ -232,8 +232,12 @@ def test_fs_geometry_reads_the_cluster_size_from_the_boot_sector(
     assert out["bytes_per_sector"] == sector
     assert out["sectors_per_cluster"] == per_cluster
     assert out["cluster_bytes"] == cluster
-    assert out["assumed_by_reassembly"] == 4096
-    assert out["matches_reassembly_assumption"] is (cluster == 4096)
+    # Batch 7: the reassembler walks the volume's own cluster size, so the
+    # record says which grid a carve of this volume searches, not whether the
+    # volume happens to match a fixed assumption.
+    assert out["reassembly_grid_bytes"] == cluster
+    assert out["reassembly_grid_source"] == "volume"
+    assert "matches_reassembly_assumption" not in out
 
 
 def test_fs_geometry_says_unknown_rather_than_guessing(
@@ -246,7 +250,8 @@ def test_fs_geometry_says_unknown_rather_than_guessing(
     out = json.loads(capsys.readouterr().out)
     assert out["filesystem"] == "unknown"
     assert out["cluster_bytes"] is None
-    assert out["matches_reassembly_assumption"] is None
+    assert out["reassembly_grid_bytes"] == 512
+    assert out["reassembly_grid_source"] == "sector"
 
 
 # --------------------------------------------------------------------------

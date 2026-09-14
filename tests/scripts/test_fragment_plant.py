@@ -72,11 +72,11 @@ def _runs(*pairs: tuple[int, int]) -> list[dict[str, int]]:
 def test_two_forward_runs_within_reach_are_a_good_plant_and_reachable(
     harness: ModuleType,
 ) -> None:
-    from core.carve.fragmentation import MAX_GAP_CANDIDATES
+    from core.carve.fragmentation import MAX_SEARCH_WINDOW
 
     size = 100_000
     verdict = harness.judge_fragment_plant(
-        _runs((10 * K, PAD), (10 * K + 2 * PAD, 12 * K)), size=size
+        _runs((10 * K, PAD), (10 * K + 2 * PAD, 12 * K)), size=size, cluster_bytes=K
     )
     assert verdict["plant_ok"] is True, verdict["reasons"]
     assert verdict["reachable"] is True, verdict["reach_reasons"]
@@ -84,9 +84,39 @@ def test_two_forward_runs_within_reach_are_a_good_plant_and_reachable(
     assert verdict["head_bytes"] == PAD
     assert verdict["gap_bytes"] == PAD
     assert verdict["tail_bytes"] == size - PAD
-    assert verdict["gap_candidates_needed"] == (PAD - K + PAD) // K + 1
-    assert verdict["gap_candidates_needed"] <= MAX_GAP_CANDIDATES
+    assert verdict["grid_bytes"] == K
+    assert verdict["max_search_window"] == MAX_SEARCH_WINDOW
+    assert "gap_candidates_needed" not in verdict, (
+        "reach is a byte window now; a step count would describe the old search"
+    )
     assert verdict["reasons"] == [] and verdict["reach_reasons"] == []
+
+
+def test_the_finding_1_split_is_reachable_on_its_own_512_byte_grid(
+    harness: ModuleType,
+) -> None:
+    """PREFLIGHT2 FINDING 1's runs: off the 4096 grid, on the volume's own.
+
+    The old verdict called this unreachable because the search walked 4096-byte
+    steps whatever the volume was. The search now walks the volume's cluster
+    size, so this plant is one it can recover - and one where a fabricated
+    object would be a defect rather than a documented limit.
+    """
+    runs = _runs((266_937_856, 65_536), (267_069_440, 8_704))
+
+    verdict = harness.judge_fragment_plant(runs, size=73_870, cluster_bytes=512)
+
+    assert verdict["gap_bytes"] == 66_048
+    assert verdict["grid_bytes"] == 512
+    assert verdict["reachable"] is True, verdict["reach_reasons"]
+
+
+def test_an_unknown_cluster_size_judges_on_the_sector_grid(harness: ModuleType) -> None:
+    verdict = harness.judge_fragment_plant(
+        _runs((0, PAD), (2 * PAD + 512, 12 * K)), size=100_000, cluster_bytes=None
+    )
+    assert verdict["grid_bytes"] == 512
+    assert verdict["reachable"] is True, verdict["reach_reasons"]
 
 
 @pytest.mark.parametrize(
@@ -102,7 +132,7 @@ def test_anything_but_two_runs_is_a_failed_plant(
     harness: ModuleType, runs: list[dict[str, int]], reason: str
 ) -> None:
     """The brief's step 4: one run, or more than two, and the pass stops."""
-    verdict = harness.judge_fragment_plant(runs, size=100_000)
+    verdict = harness.judge_fragment_plant(runs, size=100_000, cluster_bytes=K)
     assert verdict["plant_ok"] is False
     assert verdict["reachable"] is False
     assert reason in " ".join(verdict["reasons"]), verdict["reasons"]
@@ -127,10 +157,13 @@ def test_anything_but_two_runs_is_a_failed_plant(
             id="head-off-grid",
         ),
         pytest.param(
-            _runs((0, PAD), (PAD + 300 * K, 12 * K)), 100_000, "reach", id="too-far"
+            _runs((0, PAD), (PAD + 9 * 1024 * K, 12 * K)),
+            100_000,
+            "window",
+            id="too-far",
         ),
         pytest.param(
-            _runs((0, PAD), (2 * PAD, K)), PAD + 1000, "tail", id="tail-under-floor"
+            _runs((0, PAD), (2 * PAD, K)), PAD + 2, "tail", id="tail-is-only-the-eoi"
         ),
     ],
 )
@@ -139,12 +172,12 @@ def test_a_two_run_plant_the_search_cannot_recover_is_kept_and_labelled(
 ) -> None:
     """Not a failed plant: a genuine bifragmented object the reassembler cannot recover.
 
-    Measured on a loopback FAT32 volume before this was written: a plant whose
-    gap was one 512-byte cluster off the grid made the reassembler join the real
-    head to a partial tail and score the result HIGH, matching nothing planted.
-    Refusing such a pass would hide exactly that. It proceeds, labelled.
+    Measured on a loopback FAT32 volume: a plant whose gap the search could not
+    enumerate made the reassembler of ``hwval-run4`` join the real head to a
+    partial tail and score it HIGH, matching nothing planted. Refusing such a
+    pass would hide whether that still happens. It proceeds, labelled.
     """
-    verdict = harness.judge_fragment_plant(runs, size=size)
+    verdict = harness.judge_fragment_plant(runs, size=size, cluster_bytes=K)
     assert verdict["plant_ok"] is True, verdict["reasons"]
     assert verdict["reachable"] is False
     assert reason in " ".join(verdict["reach_reasons"]), verdict["reach_reasons"]

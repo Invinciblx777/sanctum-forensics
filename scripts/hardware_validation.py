@@ -871,11 +871,11 @@ def cmd_fs_geometry(args: argparse.Namespace) -> int:
     Opened read-only and reads 512 bytes. mkfs chooses the cluster size from the
     volume size, so it has to be read back rather than assumed: FAT32 at the
     256 MiB Phase B default is 512-byte clusters, exFAT at the same size is
-    4096. Bifragment reassembly searches 4096-byte boundaries (BATCH3 FINDINGS
-    4), and a pass whose volume does not match that cannot be read as evidence
-    about whether reassembly works.
+    4096. Bifragment reassembly searches the volume's own cluster grid when the
+    carve can read it and the 512-byte sector grid when it cannot (Batch 7), so
+    the record says which one a carve of this volume walks.
     """
-    from core.carve.fragmentation import DEFAULT_CLUSTER_BYTES
+    from core.carve.fragmentation import SECTOR_BYTES
 
     geometry = _boot_geometry(args.device)
     cluster = geometry["cluster_bytes"]
@@ -884,10 +884,8 @@ def cmd_fs_geometry(args: argparse.Namespace) -> int:
             "step": "fs_geometry",
             "device": args.device,
             **geometry,
-            "assumed_by_reassembly": DEFAULT_CLUSTER_BYTES,
-            "matches_reassembly_assumption": (
-                None if cluster is None else cluster == DEFAULT_CLUSTER_BYTES
-            ),
+            "reassembly_grid_bytes": cluster or SECTOR_BYTES,
+            "reassembly_grid_source": "volume" if cluster else "sector",
         }
     )
     return 0
@@ -1196,16 +1194,22 @@ def plant_fragmented(
 
 
 def judge_fragment_plant(
-    runs: list[dict[str, int]], *, size: int
+    runs: list[dict[str, int]], *, size: int, cluster_bytes: int | None = None
 ) -> dict[str, Any]:
     """Whether a JPEG's on-disk runs are something the reassembler can recover.
 
-    Mirrors the constraints of
-    :func:`core.carve.fragmentation.reassemble_bifragmented_jpeg_runs` rather
-    than restating them: exactly two runs, the second after the first, both
-    boundaries on the 4096-byte grid the search walks, a tail of at least one
-    cluster, and a second run close enough that the bounded gap search reaches
-    it.
+    Mirrors the geometric constraints of
+    :func:`core.carve.fragmentation.reassemble_bifragmented_jpeg_runs`: exactly
+    two runs, the second after the first, head and gap whole multiples of the
+    volume's cluster size (the 512-byte sector when it is unknown), a tail
+    holding more than its EOI marker, and the whole object within the search
+    window of its header.
+
+    ``reachable`` is necessary, not sufficient. The search also refuses when
+    the gap bytes next to the runs carry no byte pair a scan cannot contain and
+    too many joins would have to be tried to rule them out, and when other JPEG
+    ends between the runs use up its budget. Those depend on bytes this verdict
+    does not read.
 
     Two verdicts, because they mean different things and lead to different
     actions:
@@ -1213,21 +1217,15 @@ def judge_fragment_plant(
     * ``plant_ok`` - the object really is one JPEG in exactly two runs. When it
       is not, the pass has nothing to say about bifragment reassembly and the
       harness stops it.
-    * ``reachable`` - the search can recover it byte for byte: forward, on the
-      4096-byte grid, a tail of at least one cluster, within the gap budget.
-      When a good plant is *not* reachable the pass still runs, labelled:
-      measured on a loopback FAT32 volume, an off-grid two-run JPEG made the
-      reassembler join the real head to a partial tail and score it HIGH,
-      matching nothing planted. Refusing that pass would hide the one result
-      the run most needs to see.
+    * ``reachable`` - the layout is one the search enumerates. When a good
+      plant is *not* reachable the pass still runs, labelled: at ``hwval-run4``
+      a two-run JPEG the search could not enumerate made the reassembler join
+      the real head to a partial tail and score it HIGH, matching nothing
+      planted. Refusing that pass would hide whether it still can.
     """
-    from core.carve.fragmentation import (
-        DEFAULT_CLUSTER_BYTES,
-        MAX_GAP_CANDIDATES,
-        MAX_SEARCH_WINDOW,
-    )
+    from core.carve.fragmentation import MAX_SEARCH_WINDOW, SECTOR_BYTES
 
-    step = DEFAULT_CLUSTER_BYTES
+    step = cluster_bytes or SECTOR_BYTES
     reasons: list[str] = []
     reach: list[str] = []
     verdict: dict[str, Any] = {
@@ -1235,9 +1233,8 @@ def judge_fragment_plant(
         "head_bytes": None,
         "gap_bytes": None,
         "tail_bytes": None,
-        "gap_candidates_needed": None,
-        "max_gap_candidates": MAX_GAP_CANDIDATES,
-        "search_step_bytes": step,
+        "grid_bytes": step,
+        "max_search_window": MAX_SEARCH_WINDOW,
     }
     if len(runs) != 2:
         plural = "" if len(runs) == 1 else "s"
@@ -1260,30 +1257,22 @@ def judge_fragment_plant(
             if head_bytes % step:
                 reach.append(
                     f"the head is {head_bytes} bytes, not a multiple of {step}; "
-                    "the search only tries heads on that grid"
+                    "the search only tries heads on the volume's cluster grid"
                 )
             if gap % step:
                 reach.append(
                     f"the gap is {gap} bytes, not a multiple of {step}; the "
-                    "search only tries gaps on that grid"
+                    "search only tries gaps on the volume's cluster grid"
                 )
-            if tail_bytes < step:
+            if tail_bytes <= 2:
                 reach.append(
-                    f"the tail holds {tail_bytes} bytes, under the reassembler's "
-                    f"one-cluster floor of {step}"
-                )
-            needed = (head_bytes - step + gap) // step + 1
-            verdict["gap_candidates_needed"] = needed
-            if needed > MAX_GAP_CANDIDATES:
-                reach.append(
-                    f"the second run starts {head_bytes + gap} bytes after the "
-                    f"header, which takes {needed} gap candidates; the search "
-                    f"gives up after {MAX_GAP_CANDIDATES}, so it is out of reach"
+                    f"the tail holds {tail_bytes} bytes, no more than the EOI "
+                    "marker; there is nothing to join"
                 )
             if head_bytes + gap + max(tail_bytes, 0) > MAX_SEARCH_WINDOW:
                 reach.append(
-                    f"the object spans more than the {MAX_SEARCH_WINDOW}-byte "
-                    "search window"
+                    f"the object ends {head_bytes + gap + tail_bytes} bytes after "
+                    f"its header, past the {MAX_SEARCH_WINDOW}-byte search window"
                 )
     verdict["reasons"] = reasons
     verdict["reach_reasons"] = reach
@@ -1334,7 +1323,11 @@ def cmd_fragment_verify(args: argparse.Namespace) -> int:
 
     jpeg = runs.get(plant["jpeg"]) or {"size": None, "runs": None}
     jpeg_runs = jpeg["runs"] or []
-    verdict = judge_fragment_plant(jpeg_runs, size=int(jpeg["size"] or 0))
+    verdict = judge_fragment_plant(
+        jpeg_runs,
+        size=int(jpeg["size"] or 0),
+        cluster_bytes=geometry["cluster_bytes"],
+    )
 
     on_disk = bytearray()
     with open(args.device, "rb") as handle:

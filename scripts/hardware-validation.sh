@@ -334,7 +334,7 @@ record_geometry() {
     harness_step "$label" "$out" "${out%.json}.err" \
         "$PY" "$REPO/scripts/hardware_validation.py" fs-geometry --device "$part" \
         || return 0
-    note "$label: $(harness_json_field "$out" filesystem), cluster $(harness_json_field "$out" cluster_bytes) bytes, matches the 4096-byte reassembly assumption: $(harness_json_field "$out" matches_reassembly_assumption)"
+    note "$label: $(harness_json_field "$out" filesystem), cluster $(harness_json_field "$out" cluster_bytes) bytes, reassembly grid $(harness_json_field "$out" reassembly_grid_bytes) bytes from the $(harness_json_field "$out" reassembly_grid_source)"
 }
 
 # ==========================================================================
@@ -740,7 +740,7 @@ v = d["verdict"]
 print(
     f'{d["filesystem"]}, cluster {d["cluster_bytes"]} bytes, runs {d["jpeg_runs"]}, '
     f'head {v["head_bytes"]} + gap {v["gap_bytes"]} + tail {v["tail_bytes"]}, '
-    f'{v["gap_candidates_needed"]} of {v["max_gap_candidates"]} gap candidates, '
+    f'on the {v["grid_bytes"]}-byte grid, within the {v["max_search_window"]}-byte window, '
     f'on-disk digest matches: {v["on_disk_sha256_matches"]}'
 )
 PY
