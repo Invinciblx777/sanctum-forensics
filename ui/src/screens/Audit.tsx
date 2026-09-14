@@ -147,6 +147,11 @@ export default function Audit() {
       setVerification(await api.verifyReport(jobId))
     } catch (exc) {
       const failure = exc as RequestFailed
+      // The previous verdict is cleared, not left on screen. A 404 means no
+      // report was ever generated for this job; leaving the last job's green
+      // tick above the error would read as "this one verified too", which is
+      // the confusion the endpoint's own filename fallback used to create.
+      setVerification(null)
       setError({
         message: failure.message,
         kind: failure.kind,

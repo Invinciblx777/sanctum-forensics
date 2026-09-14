@@ -254,6 +254,8 @@ export interface ReportResult {
   json_path: string
   pdf_path: string
   pubkey_fingerprint: string
+  /** SHA-256 of the JSON artifact, as recorded in the ledger at generation. */
+  sha256: string
   bytes: number
 }
 
@@ -277,6 +279,10 @@ export interface ReportVerification {
   fingerprint: string
   /** The identity caveat, written by core and passed through verbatim. */
   caveat: string
+  /** Digest the chain recorded when this report was generated. */
+  ledger_digest: string
+  /** Whether the file on disk is still those bytes. */
+  ledger_digest_matches: boolean
   checks: ReportCheck[]
 }
 
@@ -288,6 +294,11 @@ export interface CarveFlags {
   has_embedded_files: boolean
   is_signed: boolean
   inspected: boolean
+}
+
+export interface CarveFragment {
+  offset: number
+  length: number
 }
 
 export interface CarveCandidate {
@@ -302,6 +313,13 @@ export interface CarveCandidate {
   sha256: string
   original_name: string | null
   possibly_fragmented: boolean
+  /**
+   * Image-absolute runs the object's content was reassembled from, in file
+   * order. Empty for the ordinary case, where offset..offset+length is the
+   * object. When it is not empty the digest is of these runs concatenated,
+   * and offset+length spans a gap holding somebody else's bytes.
+   */
+  fragments: CarveFragment[]
   validation_detail: string
   entropy_millibits_per_byte: number | null
   high_entropy_windows_bp: number | null

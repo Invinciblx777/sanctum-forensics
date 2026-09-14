@@ -5,6 +5,7 @@ import { bytes, hex, percent } from '../lib/format'
 import {
   Empty,
   ErrorNotice,
+  JobId,
   Evidence,
   Notice,
   Panel,
@@ -287,6 +288,17 @@ export default function Recovery() {
           </Panel>
         )}
 
+        {jobId && (
+          <Panel title="Scan job">
+            <JobId value={jobId} />
+            <p className="note" style={{ marginTop: 'var(--space-2)' }}>
+              {status
+                ? `Scan ${status.state}. The Audit screen generates this scan's report from this id.`
+                : 'Scanning. Once the scan has finished, the Audit screen generates its report from this id.'}
+            </p>
+          </Panel>
+        )}
+
         {candidates.length > 0 && (
           <div className="split">
             <Panel
@@ -429,11 +441,35 @@ export default function Recovery() {
                         value: selected.validation,
                         kind: 'mono',
                       },
+                      ...(selected.fragments.length > 0
+                        ? [
+                            {
+                              label: 'Fragments',
+                              value: selected.fragments
+                                .map(
+                                  (run) =>
+                                    `${hex(run.offset)} + ${run.length.toLocaleString('en-US')}`,
+                                )
+                                .join('  ·  '),
+                              kind: 'mono' as const,
+                            },
+                          ]
+                        : []),
                       ...(selected.fs_type
                         ? [{ label: 'Filesystem', value: selected.fs_type }]
                         : []),
                     ]}
                   />
+
+                  {selected.fragments.length > 0 && (
+                    <Notice tone="warn">
+                      Reassembled across a gap. This object was not one run on
+                      the medium: the digest above covers the fragments listed,
+                      in order, and not the span from the offset. A JPEG decoder
+                      consumed the reassembled bytes whole, which is the
+                      evidence the gap was found correctly.
+                    </Notice>
+                  )}
 
                   {selected.contiguity_assumed && (
                     <Notice tone="warn">

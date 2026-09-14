@@ -217,6 +217,12 @@ export const REPORT_VERIFICATION: ReportVerification = {
   report: '/var/lib/sanctum/reports/erase-drive-3f9c2a.forensic.json',
   passed: false,
   fingerprint: 'SHA256:9f2c1a7e4b0d8365c1ae92f0d47b6a83',
+  ledger_digest: '4a7d1ed414474e4033ac29ccb8653d9b1ee2b0bd0d4a3a3a1c1f7f5a2b3c4d5e',
+  // False, matching `passed: false` above: this fixture is the tampered case,
+  // and a report whose bytes changed after generation no longer hashes to what
+  // the chain recorded. The two facts have to agree in a preview or the screen
+  // is teaching a reader something untrue.
+  ledger_digest_matches: false,
   caveat:
     'An embedded public key proves internal consistency only. It does not prove ' +
     'identity: compare the fingerprint above against a value published ' +
@@ -294,9 +300,11 @@ export const CANDIDATES: CarveCandidate[] = Array.from({ length: 500 }, (_, inde
     10000,
   )
   const bucket = bp >= 8000 ? 'HIGH' : bp >= 5000 ? 'MEDIUM' : 'LOW'
+  const offset = 1048576 + index * 262144 + (index % 7) * 512
+  const length = 8192 + ((index * 7919) % 4194304)
   return {
-    offset: 1048576 + index * 262144 + (index % 7) * 512,
-    length: 8192 + ((index * 7919) % 4194304),
+    offset,
+    length,
     ext,
     mime,
     source,
@@ -306,6 +314,15 @@ export const CANDIDATES: CarveCandidate[] = Array.from({ length: 500 }, (_, inde
     sha256: digest(index + 1000),
     original_name: source === 'undelete' ? `IMG_${4000 + index}.${ext}` : null,
     possibly_fragmented: index % 9 === 0,
+    // Every ninth candidate is reassembled across one gap, so the preview
+    // exercises the fragment rows and the notice that goes with them.
+    fragments:
+      index % 9 === 0
+        ? [
+            { offset, length: 4096 },
+            { offset: offset + 4096 + 32768, length: length - 4096 },
+          ]
+        : [],
     validation_detail:
       decoder > 0
         ? `Pillow opened the object: ${ext.toUpperCase()} ${1920 + (index % 8) * 160}x${1080 + (index % 8) * 90}, mode RGB. Full decode to the last scanline succeeded.`

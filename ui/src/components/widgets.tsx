@@ -1,4 +1,4 @@
-import { Fragment } from 'react'
+import { Fragment, useState } from 'react'
 import type { ReactNode } from 'react'
 import { bytes, duration, exactBytes, percent, rate, shortHash } from '../lib/format'
 import type { Progress } from '../lib/api'
@@ -201,6 +201,38 @@ export function Notice({
   children: ReactNode
 }) {
   return <div className={`notice ${tone}`}>{children}</div>
+}
+
+/**
+ * A job id, selectable in one click and copyable in another.
+ *
+ * The Audit screen asks for this id to generate a report. Retyping a
+ * `carve-<hex>` string by hand in front of an audience is how a report ends up
+ * generated for the wrong job, or for none.
+ */
+export function JobId({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false)
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1500)
+    } catch {
+      setCopied(false)
+    }
+  }
+
+  return (
+    <div className="row" style={{ gap: 'var(--space-2)', alignItems: 'center' }}>
+      <span className="mono" style={{ userSelect: 'all' }}>
+        {value}
+      </span>
+      <button className="btn" onClick={() => void copy()}>
+        {copied ? 'Copied' : 'Copy'}
+      </button>
+    </div>
+  )
 }
 
 export function Stat({ label, value }: { label: string; value: ReactNode }) {

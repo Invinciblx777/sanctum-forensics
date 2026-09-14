@@ -34,6 +34,15 @@ interface MethodOption {
   level: 'CLEAR' | 'PURGE'
   available: boolean
   legacy?: boolean
+  /**
+   * Set when the *product* cannot run this method, whatever the drive reports.
+   *
+   * Distinct from `available: false` on its own, which means the hardware said
+   * no. An operator needs to be able to tell "your drive does not support this"
+   * from "this build does not implement it", because only the second is our
+   * fault and only the first is a fact about the device in their hand.
+   */
+  unsupported?: string
   /** Why this method is or is not available, quoting what was probed. */
   evidence: string
 }
@@ -89,11 +98,24 @@ export function methodsFor(caps: Capabilities | null): MethodOption[] {
       id: 'SED_CRYPTO_ERASE',
       label: 'SED cryptographic erase (Opal)',
       level: 'PURGE',
-      available: Boolean(caps?.is_sed_opal),
+      // Never selectable, on any drive. `core/erase/drive.py` needs the PSID
+      // printed on the drive's own label to issue a REVERT, and no PSID is
+      // carried by the request model, the API or the helper - so an Opal drive
+      // that reached this method raised instead of erasing. Offering it while
+      // that is true would be a control that cannot do what it says.
+      available: false,
+      unsupported:
+        'PSID required. The PSID is printed on the drive label and this ' +
+        'build has no way to accept it, so the REVERT cannot be issued.',
       evidence: caps?.is_sed_opal
-        ? 'sedutil-cli reported an Opal SSC. The data encryption key is ' +
-          'replaced, so the ciphertext on the media becomes undecryptable.'
-        : 'No Opal self-encrypting drive was reported.',
+        ? 'sedutil-cli reported an Opal SSC, so the drive itself supports a ' +
+          'cryptographic erase: the data encryption key would be replaced and ' +
+          'the ciphertext on the media would become undecryptable. This build ' +
+          'cannot issue it. Use ATA SANITIZE or NVMe SANITIZE if the drive ' +
+          'reports one; otherwise a single-pass overwrite achieves Clear, not ' +
+          'Purge, and the report will say so.'
+        : 'No Opal self-encrypting drive was reported, and this build could ' +
+          'not issue an Opal revert in any case.',
     },
     {
       id: 'ATA_SECURITY_ERASE_ENHANCED',
@@ -284,6 +306,11 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
                         >
                           {item.level}
                         </span>
+                        {item.unsupported && (
+                          <Chip tone="medium" title={item.unsupported}>
+                            NOT IN THIS BUILD
+                          </Chip>
+                        )}
                         {item.legacy && (
                           <Chip tone="high" title="Superseded by NIST SP 800-88 Rev.1">
                             LEGACY
@@ -295,6 +322,15 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
                       </span>
                       {/* The evidence, not the conclusion. */}
                       <span className="note">{item.evidence}</span>
+                      {/* Visible, not only in the chip's tooltip: a limitation
+                          an operator has to hover to find is one they will
+                          discover from the failure instead. */}
+                      {item.unsupported && (
+                        <span className="note">
+                          <strong>Not supported in this build:</strong>{' '}
+                          {item.unsupported}
+                        </span>
+                      )}
                     </span>
                   </label>
                 ))}
