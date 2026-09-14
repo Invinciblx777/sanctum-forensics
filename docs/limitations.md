@@ -424,6 +424,36 @@ is not: a tail whose first sectors were overwritten. That is why every reassembl
 candidate carries a `reassembly` score component holding it at 7999, one basis point
 below HIGH, and why the report and the UI both say it was rebuilt from runs.
 
+### The JPEG verdict has been checked against one camera's photos
+
+The same exact scan count also marks a contiguous baseline JPEG `corrupt` when it
+decodes but its entropy-coded data does not account for its frame header — including
+the first image of a JPEG whose MPF index lists further images, which Pillow opens as
+MPO — and that verdict has been checked against the JPEGs of one camera firmware
+only, an Apple iPhone 15 Pro Max on iOS 18.5 (7 photos, 6 EXIF thumbnails and 7 HDR
+gain maps, every one with restart intervals, all counted exactly), and against no
+Android phone and no dedicated camera, so on JPEGs from any other device that verdict
+is not yet shown to mean damage.
+
+**Only the first image of an MPO is counted.** A further image the candidate holds —
+the gain map of a phone photo recovered whole by undelete, or a second stereo view —
+is judged by the decoder alone, which reports foreign bytes inside a scan only as a
+warning. Damage confined to that second image can therefore still read `valid`.
+
+**A carved phone photo is its first image only.** The object ends at the EOI its scan
+reaches, and the gain map an iPhone stores after that EOI is carved as a separate
+candidate. The photo's `validation_detail` says how many images its MPF index
+declares, how many the object holds, and where the absent ones were declared to be;
+the photo's bytes and digest are exact.
+
+**Every recall and precision figure in `docs/validation/` and `docs/performance/` was
+measured on populations whose JPEGs were all Pillow encodes**: the calibration corpora
+built by `testkit/generate_corpus.py` and `testkit/fsimage.py`, and the files
+`scripts/hardware-validation.sh` plants on real media. No camera-written JPEG was in
+any measured population. That is a limit of those figures, not a finding about the
+tool: they say nothing, in either direction, about how camera photos are recovered or
+scored.
+
 ## E01 acquisition is uncompressed, and slightly larger than the source
 
 `pyewf` binds exactly one write-configuration setter, `set_header_codepage`.
