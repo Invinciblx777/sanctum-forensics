@@ -33,11 +33,49 @@
 # gate. See docs/demo/runbook.md for what each artefact is used for.
 set -uo pipefail
 
+# Run from a copy of this file, never from the file itself.
+#
+# bash does not read a script into memory. It reads a chunk, executes what it
+# parsed, records a byte offset, then seeks back for more. A --full reset spends
+# ~37 minutes inside a single wipe step, and any edit to this file during that
+# window moves the bytes underneath the offset bash is holding. The next read
+# then starts mid-line, and bash reports a syntax error on a line that is
+# correct - the error names the branch it happened to land in, not the defect.
+# That is exactly how "syntax error near unexpected token `('" appeared at the
+# resumed-run skip branch after a wipe that had completed.
+#
+# So the first thing this script does is copy itself somewhere bash can hold
+# open and nothing else will touch, and hand execution to that copy. The copy
+# unlinks itself immediately: on Linux the open descriptor keeps the contents
+# alive, so there is nothing left behind even if the run is killed.
+if [[ -z "${SANCTUM_RESET_PIN:-}" ]]; then
+    __pin_src="${BASH_SOURCE[0]}"
+    if __pin="$(mktemp -t sanctum-demo-reset.XXXXXXXX.sh 2>/dev/null)" \
+        && cat "$__pin_src" > "$__pin"; then
+        SANCTUM_RESET_ROOT="$(cd "$(dirname "$__pin_src")/.." && pwd)"
+        SANCTUM_RESET_SELF="$0"
+        export SANCTUM_RESET_PIN="$__pin" SANCTUM_RESET_ROOT SANCTUM_RESET_SELF
+        exec bash "$__pin" "$@"
+    fi
+    # Could not pin. Say so and carry on rather than block a reset: the risk is
+    # only realised if someone edits the file mid-run.
+    printf '!  could not pin this script to a temporary copy; do not edit it while it runs\n' >&2
+    rm -f "${__pin:-}"
+else
+    rm -f "$SANCTUM_RESET_PIN"
+fi
+
 # NOT set -e, for the same reason hardware-validation.sh is not: a step that
 # fails is a row that reads STALE in the check table, not a reason to abandon
 # the reset and leave the operator with no idea which beats still work.
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# After the pin above, BASH_SOURCE[0] is the temporary copy, so the repository
+# root comes from the environment the original run exported.
+REPO="${SANCTUM_RESET_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+
+# Every command this script prints for the operator to retype must name the
+# path they invoked, not the pinned copy that path was run from.
+SELF="${SANCTUM_RESET_SELF:-$0}"
 PY="$REPO/.venv/bin/python"
 
 USB=""
@@ -192,7 +230,7 @@ if [[ $LIST_STEPS -eq 1 ]]; then
     say "--full steps, in order"
     harness_steps_list | while read -r name; do note "$name"; done
     printf '\n'
-    note "resume with: sudo $0 --full --usb <dev> \\"
+    note "resume with: sudo $SELF --full --usb <dev> \\"
     note "               --i-understand-this-destroys-data --resume-from <step>"
     exit 0
 fi
@@ -373,7 +411,7 @@ snapshot_take() {
     done
     date -u +%Y-%m-%dT%H:%M:%SZ > "$SNAP_STAMP"
     note "snapshot at $SNAP ($(du -sh "$SNAP" 2>/dev/null | cut -f1))"
-    note "restore it between rehearsals with: sudo $0 --quick"
+    note "restore it between rehearsals with: sudo $SELF --quick"
 }
 
 # Roll the ledger, the key, the report and the demo JSONs back to what --full
@@ -629,7 +667,11 @@ if [[ "$MODE" == "quick" ]]; then
     note "recovery image is NOT re-acquired: the 2:15 beat carves the image from"
     note "  --full, and acquisition is read-only. Pass --with-recovery to redo it."
 
-    WORK="$(mktemp -d)"
+    # Before anything is formatted. A rehearsal that dies for want of disk
+    # after it has already wiped the stick is worse than one that never ran.
+    harness_workdir "$(harness_device_bytes "$USB")" \
+        || die "no work directory that can hold this reset's output. See above."
+    WORK="$HARNESS_WORKDIR"
     trap 'rm -rf "$WORK"' EXIT
 
     snapshot_restore
@@ -675,7 +717,12 @@ if [[ "$MODE" == "quick" ]]; then
     fi
 
     if [[ -n "${SUDO_USER:-}" ]]; then
-        chown -R "$SUDO_USER" "$DEMO" "$REPORTS"
+        # The API runs unprivileged (docs/demo/runbook.md, "Before the room
+        # fills"), so every directory it writes into has to belong to the
+        # operator, not to the root process that staged them. $LEDGER and $KEYS
+        # were missing from this list, which left the unprivileged API unable to
+        # append to the chain or open its own signing key.
+        chown -R "$SUDO_USER" "$STATE_DIR"
     fi
     harness_write_failures "$DEMO/reset-failures.json"
 
@@ -715,6 +762,15 @@ fi
 confirm_serial "$USB_SERIAL" "stage usb" "$USB"
 
 USB_BYTES="$(blockdev --getsize64 "$USB")"
+
+# Chosen here, before the first destructive step, and sized against the device
+# rather than against a guess: PhotoRec's recup tree from a zeroed stick is
+# roughly as large as the stick. harness_workdir refuses a memory-backed TMPDIR
+# and refuses a volume too small to hold that, rather than warning about either.
+harness_workdir "$USB_BYTES" \
+    || die "no work directory that can hold a carve of $USB. See above."
+WORK="$HARNESS_WORKDIR"
+
 TOTAL_START="$(now)"
 
 mkdir -p "$STATE_DIR"
@@ -732,7 +788,7 @@ resume_hint() {
     [[ -n "$next" ]] || return 0
     printf '\n'
     note "to pick up where this stopped:"
-    note "  sudo $0 --full --usb $USB \\"
+    note "  sudo $SELF --full --usb $USB \\"
     note "      --i-understand-this-destroys-data --resume-from $next"
 }
 trap 'rm -rf "${WORK:-}"; resume_hint' EXIT
@@ -753,7 +809,6 @@ else
 fi
 mkdir -p "$LEDGER" "$KEYS" "$REPORTS" "$DEMO"
 chmod 700 "$KEYS"
-WORK="$(mktemp -d)"
 note "ledger  $LEDGER"
 note "keys    $KEYS"
 note "reports $REPORTS"
@@ -766,12 +821,22 @@ harness_should_run state && harness_checkpoint state
 # instead of "no genesis entry was available".
 if harness_should_run key; then
     say "KEY - created before the first ledger entry"
+    # Fatal, unlike the device steps, which record a failure and carry on.
+    # Every later step that appends to the ledger would start the chain with no
+    # key fingerprint in genesis, and fingerprint_matches_genesis would then be
+    # SKIP on every report that chain ever carries. No repair exists afterwards.
     harness_step "key" "$DEMO/key.json" "$DEMO/key.err" \
-        "$PY" "$REPO/scripts/hardware_validation.py" keygen --key-dir "$KEYS"
+        "$PY" "$REPO/scripts/hardware_validation.py" keygen --key-dir "$KEYS" \
+        || die "the signing key could not be created, and nothing may append to the ledger before it exists. Check SANCTUM_KEY_PASSPHRASE and $DEMO/key.err, then re-run."
+    [[ -n "$(harness_json_field "$DEMO/key.json" fingerprint)" ]] \
+        || die "keygen wrote no fingerprint to $DEMO/key.json; refusing to continue to steps that start the ledger."
     harness_checkpoint key
 else
     say "KEY - skipped (resumed run)"
 fi
+# A resumed run skips the step above, so check the result rather than the step.
+[[ -f "$KEYS/sanctum-signing.key.pem" ]] \
+    || die "no signing key at $KEYS/sanctum-signing.key.pem. Re-run without --resume-from, or from --resume-from key; the ledger must not be started without one."
 note "fingerprint $(harness_json_field "$DEMO/key.json" fingerprint)"
 
 # ==========================================================================
@@ -798,22 +863,12 @@ run_photorec() {
         warn "  a missing scan and a clean device must not produce the same number."
         return 0
     fi
-    mkdir -p "$outdir"
-    local start rc=0 elapsed count
-    start="$(now)"
-    photorec /log /d "$outdir/recup" /cmd "$device" \
-        partition_none,fileopt,everything,enable,search > "$outdir/photorec.out" 2>&1 || rc=$?
-    elapsed="$(since "$start")"
-    count="$(find "$outdir" -path "$outdir/recup*" -type f \
-        ! -name 'report.xml' ! -name '*.log' 2>/dev/null | wc -l)"
-    {
-        printf '{"label": "%s", "returncode": %d, "elapsed_seconds": %s, ' "$label" "$rc" "$elapsed"
-        printf '"files_recovered": %d, ' "$count"
-        printf '"command": "photorec /log /d %s/recup /cmd %s partition_none,fileopt,everything,enable,search"}\n' \
-            "$outdir" "$device"
-    } > "$DEMO/photorec-$label.json"
-    note "photorec $label: $count files in ${elapsed}s"
-    # Kept for the hash comparison below; the recup tree is large.
+    # The shared invocation, so this run and the validation harness's run stay
+    # the same measurement. See harness_photorec in scripts/harness-steps.sh.
+    harness_photorec "$label" "$device" "$outdir" "$DEMO/photorec-$label.json" || true
+    # Kept for the hash comparison below; the recup tree is large. Written even
+    # after a timeout: a partial tree still says how many planted files were
+    # matched before the clock ran out, which beats no number at all.
     printf '%s' "$outdir" > "$WORK/photorec-$label.dir"
 }
 
@@ -1096,12 +1151,21 @@ print(json.dumps({
 PYSTATE
 note "state at $STATE_JSON"
 
-# The demo runs as the operator, not as root. Without this the UI cannot read
-# the ledger it is about to display.
+# The demo runs as the operator, not as root: only the helper daemon is
+# privileged (docs/demo/runbook.md, "Before the room fills"). So every
+# directory the API writes into has to belong to the operator.
+#
+# $LEDGER and $KEYS used to be held back here, with a note calling that "by
+# design". It was not a design, it was an artefact of the API having been
+# started under sudo: an unprivileged API cannot append to a root-owned 0600
+# chain and cannot open a root-owned 0600 signing key, so the report beat failed
+# on a permission error. The ledger's own file modes are still 0600 and the root
+# helper still creates blobs during a wipe - see the chown step in the runbook's
+# 0:45 beat, and FINDING 1 in BATCH4_REPORT.md.
 if [[ -n "${SUDO_USER:-}" ]]; then
-    chown -R "$SUDO_USER" "$DEMO" "$REPORTS"
-    note "handed $DEMO and $REPORTS to $SUDO_USER"
-    note "the ledger and the signing key stay root-owned 0600, by design"
+    chown -R "$SUDO_USER" "$STATE_DIR"
+    note "handed $STATE_DIR to $SUDO_USER, including the ledger and the keys"
+    note "a wipe's own blobs are written by the root helper; see the runbook"
 fi
 
 harness_write_failures "$DEMO/reset-failures.json"
@@ -1130,7 +1194,7 @@ if [[ $CHECK_BAD -ne 0 ]]; then
 fi
 if [[ $RESET_RC -eq 0 ]]; then
     printf '\n\033[32m   READY.\033[0m\n'
-    printf '\033[32m   Between rehearsals:  sudo %s --quick\033[0m\n' "${BASH_SOURCE[0]}"
-    printf '\033[32m   Five minutes before: sudo %s --check-only\033[0m\n\n' "${BASH_SOURCE[0]}"
+    printf '\033[32m   Between rehearsals:  sudo %s --quick\033[0m\n' "$SELF"
+    printf '\033[32m   Five minutes before: sudo %s --check-only\033[0m\n\n' "$SELF"
 fi
 exit $RESET_RC

@@ -15,8 +15,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import errno
 import hashlib
+import io
 import json
+import os
+import random
+import struct
 import subprocess
 import sys
 import time
@@ -447,6 +452,16 @@ def cmd_report(args: argparse.Namespace) -> int:
         json.loads(Path(args.verify_json).read_text()) if args.verify_json else {}
     )
     payload = erase.get("result") or {}
+    # The state this harness watched the erase end in, so the signed report
+    # says it (BATCH6 FINDINGS 5). cmd_erase writes "result" only when the
+    # engine's generator returned, and "error" only when it raised. With no
+    # erase output at all there is nothing observed, and the builder records
+    # "none recorded" rather than an implied completion.
+    job_state: str | None = None
+    if erase.get("result") is not None:
+        job_state = "complete"
+    elif erase.get("error"):
+        job_state = "failed"
 
     key = load_or_create_key(Path(args.key_dir))
     finger = fingerprint(public_key_of(key))
@@ -472,6 +487,7 @@ def cmd_report(args: argparse.Namespace) -> int:
         "ledger_excerpt": excerpt,
         "chain_verification": ledger.verify(),
         "pubkey_fingerprint": finger,
+        "job_state": job_state,
     }
     unsigned = build_report(**fields)
     signature = sign_report(unsigned, key)
@@ -702,6 +718,50 @@ def cmd_carve(args: argparse.Namespace) -> int:
             ),
         }
 
+    # BATCH5 §4.5 rows 5 and 6. A reassembled candidate carries the runs its
+    # bytes came from; one whose digest matches nothing planted is the most
+    # important negative result a run can produce, so every reassembled
+    # candidate is listed with what, if anything, it matched.
+    planted = deleted | live
+    fragment_candidates = [
+        {
+            "offset": item.get("offset"),
+            "sha256": item["sha256"],
+            "bucket": item.get("bucket"),
+            "source": item.get("source"),
+            "runs": item.get("fragments"),
+            "matches": (
+                "deleted"
+                if item["sha256"] in deleted
+                else "live" if item["sha256"] in live else "none"
+            ),
+            "planted_names": sorted(
+                entry["name"]
+                for entry in manifest.values()
+                if entry["sha256"] == item["sha256"]
+            ),
+        }
+        for item in candidates
+        if item.get("fragments")
+    ]
+    high = [item for item in candidates if item.get("bucket") == "HIGH"]
+    high_correct = [item for item in high if item["sha256"] in planted]
+    high_true_positives = {
+        "high_candidates": len(high),
+        "true_positives": len(high_correct),
+        "true_positives_with_fragments": sum(
+            1 for item in high_correct if item.get("fragments")
+        ),
+        "true_positives_without_fragments": sum(
+            1 for item in high_correct if not item.get("fragments")
+        ),
+        "false_positives_with_fragments": sum(
+            1
+            for item in high
+            if item.get("fragments") and item["sha256"] not in planted
+        ),
+    }
+
     by_fs: dict[str, list[dict[str, Any]]] = {}
     for item in candidates:
         by_fs.setdefault(item.get("fs_type") or args.filesystem, []).append(item)
@@ -736,6 +796,9 @@ def cmd_carve(args: argparse.Namespace) -> int:
             "image": args.image,
             "filesystem": args.filesystem,
             "damage": args.damage,
+            # Which population was planted. A fragment-plant pass is not the
+            # population any calibration row describes, and compare says so.
+            "population": getattr(args, "population", "default"),
             # Both halves ran. The baseline this is compared against may not
             # have run both, which is why "compare" slices before it subtracts.
             "pipeline": "undelete+signature",
@@ -766,9 +829,546 @@ def cmd_carve(args: argparse.Namespace) -> int:
                 )
                 for bucket in ("HIGH", "MEDIUM", "LOW")
             },
+            "reassembled_from_fragments": len(fragment_candidates),
+            "fragment_candidates": fragment_candidates,
+            "high_true_positives": high_true_positives,
         }
     )
     return 0
+
+
+def _boot_geometry(path: str) -> dict[str, Any]:
+    """Filesystem and cluster size from a volume's boot sector. Reads 512 bytes."""
+    with open(path, "rb") as handle:
+        sector = handle.read(512)
+
+    filesystem = "unknown"
+    bytes_per_sector: int | None = None
+    sectors_per_cluster: int | None = None
+    if len(sector) == 512 and sector[3:11] == b"EXFAT   ":
+        filesystem = "exfat"
+        bytes_per_sector = 1 << sector[108]
+        sectors_per_cluster = 1 << sector[109]
+    elif len(sector) == 512 and sector[82:90] == b"FAT32   ":
+        filesystem = "fat32"
+        bytes_per_sector = struct.unpack_from("<H", sector, 11)[0]
+        sectors_per_cluster = sector[13]
+    return {
+        "filesystem": filesystem,
+        "bytes_per_sector": bytes_per_sector,
+        "sectors_per_cluster": sectors_per_cluster,
+        "cluster_bytes": (
+            bytes_per_sector * sectors_per_cluster
+            if bytes_per_sector and sectors_per_cluster
+            else None
+        ),
+    }
+
+
+def cmd_fs_geometry(args: argparse.Namespace) -> int:
+    """The cluster size a volume was formatted with, read from its boot sector.
+
+    Opened read-only and reads 512 bytes. mkfs chooses the cluster size from the
+    volume size, so it has to be read back rather than assumed: FAT32 at the
+    256 MiB Phase B default is 512-byte clusters, exFAT at the same size is
+    4096. Bifragment reassembly searches 4096-byte boundaries (BATCH3 FINDINGS
+    4), and a pass whose volume does not match that cannot be read as evidence
+    about whether reassembly works.
+    """
+    from core.carve.fragmentation import DEFAULT_CLUSTER_BYTES
+
+    geometry = _boot_geometry(args.device)
+    cluster = geometry["cluster_bytes"]
+    emit(
+        {
+            "step": "fs_geometry",
+            "device": args.device,
+            **geometry,
+            "assumed_by_reassembly": DEFAULT_CLUSTER_BYTES,
+            "matches_reassembly_assumption": (
+                None if cluster is None else cluster == DEFAULT_CLUSTER_BYTES
+            ),
+        }
+    )
+    return 0
+
+
+def read_runs(device: str, names: list[str]) -> dict[str, dict[str, Any]]:
+    """The physical runs each named file occupies, from the volume's own structures.
+
+    Read with pytsk3 rather than asked of the kernel. Measured on this host:
+    neither ``vfat`` nor ``exfat`` answers FIEMAP (``EOPNOTSUPP``), so a
+    FIEMAP-based map reports every file on exactly the filesystems Phase B
+    builds as unmeasured. pytsk3 reads the FAT chain or exFAT allocation the
+    carver will later read, in sector units; offsets here are bytes from the
+    start of the volume, adjacent runs merged.
+
+    ``runs`` is ``None`` for a name the volume does not hold.
+    """
+    import pytsk3
+
+    filesystem = pytsk3.FS_Info(pytsk3.Img_Info(device))
+    unit = int(filesystem.info.block_size)
+    found: dict[str, dict[str, Any]] = {}
+    for name in names:
+        try:
+            entry = filesystem.open("/" + name)
+        except OSError:
+            found[name] = {"size": None, "runs": None}
+            continue
+        runs: list[dict[str, int]] = []
+        for attribute in entry:
+            if attribute.info.type != pytsk3.TSK_FS_ATTR_TYPE_DEFAULT:
+                continue
+            for run in attribute:
+                if run.len <= 0:
+                    continue
+                offset = int(run.addr) * unit
+                length = int(run.len) * unit
+                if runs and runs[-1]["offset"] + runs[-1]["length"] == offset:
+                    runs[-1]["length"] += length
+                else:
+                    runs.append({"offset": offset, "length": length})
+        found[name] = {"size": int(entry.info.meta.size), "runs": runs}
+    return found
+
+
+def cmd_extents(args: argparse.Namespace) -> int:
+    """How many physical runs each named file occupies, before it is damaged.
+
+    Reassembly has nothing to reassemble on a contiguous population, whatever
+    the cluster size. Phase B's default populate writes a fresh volume in one
+    pass, so its planted files are expected to be contiguous; this records
+    whether they were, so a zero in ``reassembled_from_fragments`` says which
+    of the two it means.
+
+    Read from the volume with pytsk3 (see :func:`read_runs`), after ``sync``.
+    The first version of this step used FIEMAP, which vfat and exfat both
+    refuse, and so would have recorded every file as unmeasured.
+    """
+    geometry = _boot_geometry(args.device)
+    runs = read_runs(args.device, list(args.names))
+    files: list[dict[str, Any]] = []
+    for name in args.names:
+        row = runs[name]
+        files.append(
+            {
+                "name": name,
+                "size_bytes": row["size"],
+                "extents": None if row["runs"] is None else len(row["runs"]),
+                "runs": row["runs"],
+            }
+        )
+    emit(
+        {
+            "step": "extents",
+            "device": args.device,
+            "method": "pytsk3: runs read from the volume's allocation structures",
+            "cluster_bytes": geometry["cluster_bytes"],
+            "files": len(files),
+            "fragmented_files": sum(1 for f in files if (f["extents"] or 0) > 1),
+            "unmeasured_files": sum(
+                1
+                for f in files
+                if f["extents"] is None
+                or (f["extents"] == 0 and (f["size_bytes"] or 0))
+            ),
+            "per_file": files,
+        }
+    )
+    return 0
+
+
+# --------------------------------------------------------------------------
+# Phase B, opt-in - a JPEG in exactly two runs the reassembler can reach
+# --------------------------------------------------------------------------
+
+#: Size of each pad written at the end of the fill. The plant frees two
+#: consecutive pads around a live one, so the head of the JPEG is one pad long
+#: and the gap between its runs is one pad long.
+#:
+#: 64 KiB because of how far the reassembler reaches. It fixes the head at one
+#: cluster and walks the gap in 4096-byte steps, and it gives up after
+#: MAX_GAP_CANDIDATES (64) joins - so the second run has to start within about
+#: 256 KiB of the header. A 64 KiB head plus a 64 KiB gap needs 32 of them.
+#: The brief's first recipe, "delete one filler and let the tail land in the
+#: remaining free space", puts the tail at the end of the volume - tens of MiB
+#: past the header, and past the search.
+FRAG_PAD_BYTES = 64 * 1024
+
+#: Filler written first, to bring the volume to within a few pads of full.
+FRAG_FILL_BYTES = 256 * 1024
+
+#: Name of the planted JPEG. Created empty before the fill, so writing it later
+#: needs no new directory cluster on a volume that has no free clusters left
+#: except the two holes.
+FRAG_JPEG_NAME = "fragjpeg.jpg"
+
+
+class PlantAborted(RuntimeError):
+    """The fragmented plant could not be laid down as designed."""
+
+
+def fragment_jpeg_bytes() -> bytes:
+    """A deterministic JPEG sized to need both holes and fit inside them.
+
+    Larger than one pad plus two clusters, so it cannot fit in the first hole
+    and its second run clears the reassembler's one-cluster floor with margin;
+    smaller than two pads minus two clusters, so it cannot spill past the
+    second hole on a 4096-byte volume.
+    """
+    from PIL import Image
+
+    low = FRAG_PAD_BYTES + 8 * 1024
+    high = 2 * FRAG_PAD_BYTES - 8 * 1024
+    side = 128
+    while side <= 1024:
+        rng = random.Random(0x5A1C7 + side)
+        image = Image.new("RGB", (side, side))
+        image.putdata(
+            [
+                (rng.randrange(256), rng.randrange(256), rng.randrange(256))
+                for _ in range(side * side)
+            ]
+        )
+        buffer = io.BytesIO()
+        image.save(buffer, "JPEG", quality=95)
+        payload = buffer.getvalue()
+        if low <= len(payload) <= high:
+            return payload
+        if len(payload) > high:
+            break
+        side += 4
+    raise PlantAborted(
+        f"no noise JPEG between {low} and {high} bytes was found; the plant "
+        "cannot size its object"
+    )
+
+
+def plant_fragmented(
+    root: Path | str, *, statvfs: Any = os.statvfs, seed: int = 11
+) -> dict[str, Any]:
+    """Lay one JPEG down in exactly two runs, around a live pad.
+
+    1. Create the JPEG's directory entry, empty, while space remains.
+    2. Fill the volume: 256 KiB fillers until a few pads' worth is left, then
+       64 KiB pads, then whatever is left, until there is no free space at all.
+    3. Delete the first and third pads. The only free space on the volume is
+       now two 64 KiB holes with a live 64 KiB pad between them.
+    4. Write the JPEG. It does not fit the first hole, so the allocator puts
+       the head there and the tail in the second.
+
+    Every file the plant will write is created, empty, **before** the first
+    byte of fill. Measured on a loopback FAT32 volume: creating pads one at a
+    time made the root directory grow mid-fill, its new 512-byte cluster landed
+    between two pads, and the gap came out 66,048 bytes - off the 4096-byte grid
+    the search walks. An empty file takes a directory slot and no data cluster,
+    so creating them all first moves every directory cluster ahead of the fill.
+    Placeholders the fill did not need are removed before the holes are made;
+    removing an empty file frees no data cluster.
+
+    Step 2 filling the volume *completely* is what makes this independent of
+    the allocator's search order. A next-fit allocator starts after the last
+    cluster it handed out - the end of the volume - and wraps; a first-fit one
+    starts at the front. With nothing free but the two holes, both reach the
+    first hole first.
+
+    This lays the plant down and records what it did. It does not decide
+    whether the filesystem cooperated: ``fragment-verify`` reads the runs back
+    from the volume and refuses the pass if they are not what the reassembler
+    needs.
+
+    Raises:
+        PlantAborted: fewer than three pads fit, a pad came out short, or the
+            volume could not be brought to zero free space.
+    """
+    target_root = Path(root)
+    rng = random.Random(seed)
+    jpeg = fragment_jpeg_bytes()
+
+    def free() -> int:
+        stats = statvfs(target_root)
+        return int(stats.f_bavail) * int(stats.f_frsize)
+
+    created: list[str] = []
+    fill_names = [
+        f"fragfill{index:05d}.bin" for index in range(free() // FRAG_FILL_BYTES + 1)
+    ]
+    pad_names = [
+        f"fragpad{index:03d}.bin"
+        for index in range(FRAG_FILL_BYTES // FRAG_PAD_BYTES + 6)
+    ]
+    rest_names = [f"fragrest{index:02d}.bin" for index in range(16)]
+    placeholders = [FRAG_JPEG_NAME, *fill_names, *pad_names, *rest_names]
+    try:
+        for name in placeholders:
+            (target_root / name).write_bytes(b"")
+    except OSError as exc:
+        raise PlantAborted(
+            f"creating {len(placeholders)} empty directory entries failed at "
+            f"{name!r} with {free()} bytes free: {exc}"
+        ) from exc
+    os.sync()
+
+    def write(name: str, size: int) -> None:
+        path = target_root / name
+        try:
+            with path.open("r+b") as handle:
+                handle.write(rng.randbytes(size))
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError as exc:
+            if exc.errno != errno.ENOSPC:
+                raise
+        created.append(name)
+
+    created.append(FRAG_JPEG_NAME)
+
+    for name in fill_names:
+        if free() < FRAG_FILL_BYTES + 4 * FRAG_PAD_BYTES:
+            break
+        write(name, FRAG_FILL_BYTES)
+
+    pads: list[str] = []
+    for name in pad_names:
+        if free() < FRAG_PAD_BYTES:
+            break
+        write(name, FRAG_PAD_BYTES)
+        pads.append(name)
+    if len(pads) < 3:
+        raise PlantAborted(
+            f"only {len(pads)} pad(s) of {FRAG_PAD_BYTES} bytes fit on the volume; "
+            "the plant needs three consecutive pads"
+        )
+    first, gap, second = pads[0], pads[1], pads[2]
+    for name in (first, gap, second):
+        size = (target_root / name).stat().st_size
+        if size != FRAG_PAD_BYTES:
+            raise PlantAborted(
+                f"pad {name} holds {size} bytes, not {FRAG_PAD_BYTES}; the holes "
+                "would not be the size the plant was designed around"
+            )
+
+    for name in rest_names:
+        if free() <= 0:
+            break
+        write(name, free())
+    if free() > 0:
+        raise PlantAborted(
+            f"{free()} bytes are still free after {len(rest_names)} top-up files; "
+            "free space outside the two holes would be allocated first"
+        )
+    for name in placeholders:
+        if name not in created:
+            (target_root / name).unlink()
+    os.sync()
+
+    for name in (first, second):
+        (target_root / name).unlink()
+        created.remove(name)
+    os.sync()
+    free_before_jpeg = free()
+
+    try:
+        with (target_root / FRAG_JPEG_NAME).open("wb") as handle:
+            handle.write(jpeg)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError as exc:
+        raise PlantAborted(
+            f"writing the {len(jpeg)}-byte JPEG failed with {free_before_jpeg} "
+            f"bytes free after freeing two {FRAG_PAD_BYTES}-byte pads: {exc}"
+        ) from exc
+    os.sync()
+
+    return {
+        "jpeg": FRAG_JPEG_NAME,
+        "jpeg_bytes": len(jpeg),
+        "jpeg_sha256": hashlib.sha256(jpeg).hexdigest(),
+        "pad_bytes": FRAG_PAD_BYTES,
+        "fill_bytes": FRAG_FILL_BYTES,
+        "pad_order": pads,
+        "freed": [first, second],
+        "gap_file": gap,
+        "free_bytes_before_jpeg": free_before_jpeg,
+        "files": created,
+    }
+
+
+def judge_fragment_plant(
+    runs: list[dict[str, int]], *, size: int
+) -> dict[str, Any]:
+    """Whether a JPEG's on-disk runs are something the reassembler can recover.
+
+    Mirrors the constraints of
+    :func:`core.carve.fragmentation.reassemble_bifragmented_jpeg_runs` rather
+    than restating them: exactly two runs, the second after the first, both
+    boundaries on the 4096-byte grid the search walks, a tail of at least one
+    cluster, and a second run close enough that the bounded gap search reaches
+    it.
+
+    Two verdicts, because they mean different things and lead to different
+    actions:
+
+    * ``plant_ok`` - the object really is one JPEG in exactly two runs. When it
+      is not, the pass has nothing to say about bifragment reassembly and the
+      harness stops it.
+    * ``reachable`` - the search can recover it byte for byte: forward, on the
+      4096-byte grid, a tail of at least one cluster, within the gap budget.
+      When a good plant is *not* reachable the pass still runs, labelled:
+      measured on a loopback FAT32 volume, an off-grid two-run JPEG made the
+      reassembler join the real head to a partial tail and score it HIGH,
+      matching nothing planted. Refusing that pass would hide the one result
+      the run most needs to see.
+    """
+    from core.carve.fragmentation import (
+        DEFAULT_CLUSTER_BYTES,
+        MAX_GAP_CANDIDATES,
+        MAX_SEARCH_WINDOW,
+    )
+
+    step = DEFAULT_CLUSTER_BYTES
+    reasons: list[str] = []
+    reach: list[str] = []
+    verdict: dict[str, Any] = {
+        "runs": len(runs),
+        "head_bytes": None,
+        "gap_bytes": None,
+        "tail_bytes": None,
+        "gap_candidates_needed": None,
+        "max_gap_candidates": MAX_GAP_CANDIDATES,
+        "search_step_bytes": step,
+    }
+    if len(runs) != 2:
+        plural = "" if len(runs) == 1 else "s"
+        reasons.append(
+            f"the JPEG occupies {len(runs)} run{plural} on the medium; the "
+            "reassembler recovers exactly 2"
+        )
+    else:
+        head, tail = runs
+        head_bytes = int(head["length"])
+        gap = int(tail["offset"]) - (int(head["offset"]) + head_bytes)
+        tail_bytes = size - head_bytes
+        verdict.update(head_bytes=head_bytes, gap_bytes=gap, tail_bytes=tail_bytes)
+        if int(tail["offset"]) <= int(head["offset"]):
+            reach.append(
+                "the second run lies before the first on the medium; the gap "
+                "search only looks forward from the header"
+            )
+        else:
+            if head_bytes % step:
+                reach.append(
+                    f"the head is {head_bytes} bytes, not a multiple of {step}; "
+                    "the search only tries heads on that grid"
+                )
+            if gap % step:
+                reach.append(
+                    f"the gap is {gap} bytes, not a multiple of {step}; the "
+                    "search only tries gaps on that grid"
+                )
+            if tail_bytes < step:
+                reach.append(
+                    f"the tail holds {tail_bytes} bytes, under the reassembler's "
+                    f"one-cluster floor of {step}"
+                )
+            needed = (head_bytes - step + gap) // step + 1
+            verdict["gap_candidates_needed"] = needed
+            if needed > MAX_GAP_CANDIDATES:
+                reach.append(
+                    f"the second run starts {head_bytes + gap} bytes after the "
+                    f"header, which takes {needed} gap candidates; the search "
+                    f"gives up after {MAX_GAP_CANDIDATES}, so it is out of reach"
+                )
+            if head_bytes + gap + max(tail_bytes, 0) > MAX_SEARCH_WINDOW:
+                reach.append(
+                    f"the object spans more than the {MAX_SEARCH_WINDOW}-byte "
+                    "search window"
+                )
+    verdict["reasons"] = reasons
+    verdict["reach_reasons"] = reach
+    verdict["plant_ok"] = not reasons
+    verdict["reachable"] = not reasons and not reach
+    return verdict
+
+
+def cmd_plant_fragmented(args: argparse.Namespace) -> int:
+    """Lay the fragmented plant down on a mounted volume. See plant_fragmented."""
+    try:
+        plant = plant_fragmented(Path(args.root))
+    except PlantAborted as exc:
+        emit({"step": "fragment_plant", "ok": False, "error": str(exc)})
+        return 1
+    emit({"step": "fragment_plant", "ok": True, **plant})
+    return 0
+
+
+def cmd_fragment_verify(args: argparse.Namespace) -> int:
+    """Read the plant back from the unmounted volume and refuse it unless usable.
+
+    Annotates every manifest entry with its runs, extent count and the volume's
+    cluster size, so the recall figures can be read against the population that
+    was actually on the medium. Exits 1 when the JPEG is not in exactly two
+    runs, or when the bytes at those runs are not the JPEG that was written:
+    the harness stops the pass there, loudly, because a zero from a failed plant
+    would read as a result about reassembly. A good plant the search cannot
+    recover exits 0 with ``reachable: false`` - see judge_fragment_plant.
+    """
+    plant = json.loads(Path(args.plant_json).read_text())
+    geometry = _boot_geometry(args.device)
+    manifest_path = Path(args.manifest)
+    manifest = json.loads(manifest_path.read_text())
+
+    runs = read_runs(
+        args.device, sorted({entry["name"] for entry in manifest.values()})
+    )
+    roles = {plant["jpeg"]: "fragmented_jpeg", plant["gap_file"]: "gap_pad"}
+    for entry in manifest.values():
+        row = runs.get(entry["name"]) or {"runs": None}
+        entry["runs"] = row["runs"]
+        entry["extent_count"] = None if row["runs"] is None else len(row["runs"])
+        entry["cluster_bytes"] = geometry["cluster_bytes"]
+        if entry["name"] in roles:
+            entry["fragment_plant_role"] = roles[entry["name"]]
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+
+    jpeg = runs.get(plant["jpeg"]) or {"size": None, "runs": None}
+    jpeg_runs = jpeg["runs"] or []
+    verdict = judge_fragment_plant(jpeg_runs, size=int(jpeg["size"] or 0))
+
+    on_disk = bytearray()
+    with open(args.device, "rb") as handle:
+        for run in jpeg_runs:
+            handle.seek(run["offset"])
+            on_disk += handle.read(run["length"])
+    on_disk_sha = hashlib.sha256(bytes(on_disk[: int(jpeg["size"] or 0)])).hexdigest()
+    verdict["on_disk_sha256_matches"] = on_disk_sha == plant["jpeg_sha256"]
+    if not verdict["on_disk_sha256_matches"]:
+        verdict["reasons"].append(
+            "the bytes at the recorded runs are not the JPEG that was written"
+        )
+        verdict["plant_ok"] = False
+        verdict["reachable"] = False
+
+    emit(
+        {
+            "step": "fragment_verify",
+            "device": args.device,
+            "cluster_bytes": geometry["cluster_bytes"],
+            "filesystem": geometry["filesystem"],
+            "jpeg": plant["jpeg"],
+            "jpeg_size": jpeg["size"],
+            "jpeg_runs": jpeg["runs"],
+            "gap_file_runs": (runs.get(plant["gap_file"]) or {}).get("runs"),
+            "verdict": verdict,
+            "plant_ok": verdict["plant_ok"],
+            "reachable": verdict["reachable"],
+            "manifest_files_with_more_than_one_run": sum(
+                1 for entry in manifest.values() if (entry["extent_count"] or 0) > 1
+            ),
+        }
+    )
+    return 0 if verdict["plant_ok"] else 1
 
 
 #: Below this many deleted files a baseline row is a demonstration that a
@@ -829,8 +1429,13 @@ def cmd_compare(args: argparse.Namespace) -> int:
     for path in args.carve_json:
         measured = json.loads(Path(path).read_text())
         damage = measured.get("damage", "delete")
+        population = measured.get("population", "default")
         for name, row in measured["per_filesystem"].items():
-            predicted = synthetic.get((name, damage))
+            # A pass that planted a different population has no baseline, even
+            # when a row for its filesystem and damage exists.
+            predicted = (
+                synthetic.get((name, damage)) if population == "default" else None
+            )
             entry: dict[str, Any] = {
                 "filesystem": name,
                 "damage": damage,
@@ -856,6 +1461,10 @@ def cmd_compare(args: argparse.Namespace) -> int:
                     note=(
                         f"no calibration row for {name}/{damage}: this is a new"
                         " measurement, not a comparison"
+                        if population == "default"
+                        else f"this pass planted the {population!r} population,"
+                        " which no calibration row describes: a new measurement,"
+                        " not a comparison"
                     ),
                     diverges=None,
                 )
@@ -1089,6 +1698,11 @@ def main() -> int:
         ),
     )
     carve_parser.add_argument("--out-dir")
+    carve_parser.add_argument(
+        "--population",
+        default="default",
+        help="What Phase B planted: 'default', or 'fragment-plant'.",
+    )
     carve_parser.set_defaults(handler=cmd_carve)
 
     compare_parser = sub.add_parser("compare")
@@ -1098,6 +1712,25 @@ def main() -> int:
         default="docs/performance/calibration-filesystems.csv",
     )
     compare_parser.set_defaults(handler=cmd_compare)
+
+    geometry_parser = sub.add_parser("fs-geometry")
+    geometry_parser.add_argument("--device", required=True)
+    geometry_parser.set_defaults(handler=cmd_fs_geometry)
+
+    extents_parser = sub.add_parser("extents")
+    extents_parser.add_argument("--device", required=True)
+    extents_parser.add_argument("--names", nargs="+", required=True)
+    extents_parser.set_defaults(handler=cmd_extents)
+
+    plant_parser = sub.add_parser("plant-fragmented")
+    plant_parser.add_argument("--root", required=True)
+    plant_parser.set_defaults(handler=cmd_plant_fragmented)
+
+    frag_verify_parser = sub.add_parser("fragment-verify")
+    frag_verify_parser.add_argument("--device", required=True)
+    frag_verify_parser.add_argument("--plant-json", required=True)
+    frag_verify_parser.add_argument("--manifest", required=True)
+    frag_verify_parser.set_defaults(handler=cmd_fragment_verify)
 
     keygen_parser = sub.add_parser("keygen")
     keygen_parser.add_argument("--key-dir", required=True)

@@ -49,6 +49,7 @@ import json
 import os
 import struct
 import sys
+from pathlib import Path
 from typing import Any
 
 BLKROSET = 0x125D
@@ -143,11 +144,113 @@ def try_write(path: str, offset: int, payload: bytes) -> dict[str, Any]:
 
 CONFIRM_FLAG = "--i-understand-this-may-write-to-the-device"
 
+#: Above this a "USB stick" is a disk somebody plugged in. The same figure
+#: ``scripts/device-gate.sh`` uses, so the two destructive paths refuse the
+#: same devices for the same reason.
+MAX_SANE_BYTES = 137438953472  # 128 GiB
+
+USAGE = (
+    "usage: probe-write-block.py <device> "
+    f"{CONFIRM_FLAG}\n"
+    "\n"
+    "The device is required and is never defaulted. This probe writes to its\n"
+    "target when the write block does not hold, which is the case it exists to\n"
+    "detect, so a forgotten argument must not become a write to whatever\n"
+    "happens to be first on the bus.\n"
+)
+
+
+def _refuse(reason: str) -> int:
+    sys.stderr.write(f"REFUSED: {reason}\n")
+    return 2
+
+
+def _assert_scratch_media(path: str) -> str | None:
+    """Refuse anything that is not scratch media. Returns a reason, or ``None``.
+
+    The gates are the ones every other destructive path in this repository
+    applies, and two of them are not reimplemented here:
+    :func:`core.device.guard.assert_erasable` is the same function the erase
+    engine calls, so the system-disk and mounted-filesystem refusals cannot
+    drift between this script and the tool. Removable and size are checked
+    against the figures ``scripts/device-gate.sh`` uses.
+
+    A regular file is allowed through with no device gates, because none of
+    them mean anything for an image and running the probe against one is what
+    makes it exercisable without hardware. A regular file cannot be a raw
+    device, so nothing is weakened by allowing it.
+    """
+    # Run from anywhere: the repository root has to be importable for `core`.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+    from core.device.enumerate import get_device
+    from core.device.guard import assert_erasable
+    from core.errors import SanctumError
+
+    try:
+        mode = os.stat(path).st_mode
+    except OSError as exc:
+        return f"{path} cannot be read: {exc}"
+
+    import stat as stat_mod
+
+    if stat_mod.S_ISREG(mode):
+        return None
+    if not stat_mod.S_ISBLK(mode):
+        return (
+            f"{path} is neither a block device nor a regular file. This probe "
+            "runs against scratch media or an image, and nothing else."
+        )
+
+    try:
+        device = get_device(path)
+    except SanctumError as exc:
+        return f"{path} could not be identified: {exc.message}"
+
+    # The system disk and any mounted filesystem, refused by the same function
+    # the erase engine uses rather than by a second copy of the rule.
+    try:
+        assert_erasable(device)
+    except SanctumError as exc:
+        return exc.message
+
+    kernel_name = os.path.basename(os.path.realpath(path))
+    removable = ""
+    try:
+        removable = (
+            Path(f"/sys/block/{kernel_name}/removable")
+            .read_text(encoding="utf-8")
+            .strip()
+        )
+    except OSError:
+        removable = ""
+    if removable != "1":
+        return (
+            f"{path} is not removable (/sys/block/{kernel_name}/removable = "
+            f"{removable or 'unreadable'}). This probe writes to its target "
+            "when the block fails; point it at scratch media."
+        )
+
+    if device.size_bytes > MAX_SANE_BYTES:
+        return (
+            f"{path} is {device.size_bytes} bytes, over the "
+            f"{MAX_SANE_BYTES} byte sanity limit. That is not a scratch stick."
+        )
+
+    return None
+
 
 def main() -> int:
     argv = [item for item in sys.argv[1:] if item != CONFIRM_FLAG]
     confirmed = CONFIRM_FLAG in sys.argv[1:]
-    path = argv[0] if argv else "/dev/sda"
+
+    # No default. The confirmation flag is filtered out of argv above, so a run
+    # carrying only the flag used to fall through to a hardcoded device path -
+    # which on most hosts is the system disk.
+    if not argv:
+        sys.stderr.write(USAGE)
+        return 2
+    path = argv[0]
 
     if not confirmed:
         # The same two-gate shape the erase path uses. This probe writes to the
@@ -159,6 +262,13 @@ def main() -> int:
             f"media, never at evidence, and pass {CONFIRM_FLAG}.\n"
         )
         return 2
+
+    # The flag says "I meant to run a destructive probe". The gates say "against
+    # this device". The flag does not replace them, and both run before a single
+    # byte is read or written.
+    refusal = _assert_scratch_media(path)
+    if refusal is not None:
+        return _refuse(refusal)
 
     result: dict[str, Any] = {"step": "write_block_probe", "device": path}
 

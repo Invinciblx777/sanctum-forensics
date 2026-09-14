@@ -84,6 +84,120 @@ raise SystemExit(0)
 PYTHON
 }
 
+# ==========================================================================
+# Where large output is allowed to land.
+#
+# PhotoRec's dovecot signature emits one 81,920-byte file per all-zero 80 KiB
+# block, so a device holding 0x00 produces a recup tree roughly the size of the
+# device: a zeroed 7.4 GiB stick gave 94,720 files, 7.76 GB. Under mktemp -d on
+# a host where /tmp is tmpfs, all of that is written into RAM. It does not fail.
+# The host starts swapping, and a swapping host presents as 1% CPU, no progress,
+# a clean dmesg and no error at all - forty minutes of a rehearsal window spent
+# looking for a hang that was a full memory disk.
+#
+# The first fix for this was a warning. A warning read at 2am is not a guard, so
+# these refuse.
+# ==========================================================================
+
+#: Where to relocate when TMPDIR is memory-backed. Overridable for tests.
+HARNESS_WORKDIR_FALLBACK="${HARNESS_WORKDIR_FALLBACK:-/var/tmp}"
+
+#: Filesystem types that are RAM wearing a directory's clothes.
+HARNESS_MEMORY_FSTYPES="tmpfs ramfs"
+
+# The filesystem type backing a path, or "" if it cannot be determined.
+harness_fstype() {
+    df --output=fstype "$1" 2>/dev/null | tail -1 | tr -d '[:space:]'
+}
+
+# True when a path is backed by memory rather than by a disk.
+harness_is_memory_fs() {
+    local fstype="$1" candidate
+    for candidate in $HARNESS_MEMORY_FSTYPES; do
+        [[ "$fstype" == "$candidate" ]] && return 0
+    done
+    return 1
+}
+
+# Bytes available to a non-root writer at a path. 0 when it cannot be read,
+# which is deliberately the answer that fails a size check rather than one that
+# passes it.
+harness_free_bytes() {
+    local avail
+    avail="$(df --output=avail -B1 "$1" 2>/dev/null | tail -1 | tr -d '[:space:]')"
+    [[ "$avail" =~ ^[0-9]+$ ]] || avail=0
+    printf '%s' "$avail"
+}
+
+# Size of a device or image file in bytes, or 0 when neither.
+harness_device_bytes() {
+    local target="$1"
+    if [[ -b "$target" ]]; then
+        blockdev --getsize64 "$target" 2>/dev/null || printf '0'
+    elif [[ -f "$target" ]]; then
+        stat -c%s "$target" 2>/dev/null || printf '0'
+    else
+        printf '0'
+    fi
+}
+
+# Bytes as the units the device vendor and the demo script both quote.
+harness_gb() {
+    awk -v bytes="$1" 'BEGIN { printf "%.2f GB", bytes / 1000000000 }'
+}
+
+#: Set by harness_workdir on success. Read it there, not from a subshell: the
+#: function prints its reasoning to stdout, so command substitution would
+#: swallow the explanation this exists to give.
+HARNESS_WORKDIR=""
+
+# Choose a work directory that can actually hold what the run will write.
+#   harness_workdir <bytes the run may write>
+#
+# Refuses rather than warns, on either count: a memory-backed filesystem with no
+# disk-backed fallback, or a volume with less free space than the run needs.
+# Sets HARNESS_WORKDIR and returns 0, or explains and returns 1.
+harness_workdir() {
+    local need="${1:-0}"
+    local base="${TMPDIR:-/tmp}"
+    HARNESS_WORKDIR=""
+
+    local fstype; fstype="$(harness_fstype "$base")"
+    if harness_is_memory_fs "$fstype"; then
+        local fallback="$HARNESS_WORKDIR_FALLBACK"
+        local fallback_fstype; fallback_fstype="$(harness_fstype "$fallback")"
+        warn "$base is $fstype - memory, not disk. Output written there is RAM,"
+        warn "  and a carve of a zeroed device can reach the size of the device."
+        if [[ ! -d "$fallback" ]] || harness_is_memory_fs "$fallback_fstype"; then
+            warn "  $fallback is ${fallback_fstype:-not a directory} too, so there is"
+            warn "  nowhere disk-backed to relocate to. Set TMPDIR to a real"
+            warn "  filesystem and run this again."
+            return 1
+        fi
+        base="$fallback"
+        note "work directory relocated to $base ($fallback_fstype), because"
+        note "  $fstype cannot hold a recup tree without holding it in memory"
+    fi
+
+    local free; free="$(harness_free_bytes "$base")"
+    if [[ "$need" -gt 0 && "$free" -lt "$need" ]]; then
+        warn "$base has $(harness_gb "$free") free, and this run can write up to"
+        warn "  $(harness_gb "$need") - a recup tree reaches the size of the device"
+        warn "  it was carved from. Free space there, or point TMPDIR at a volume"
+        warn "  that has it."
+        return 1
+    fi
+
+    local dir
+    if ! dir="$(TMPDIR="$base" mktemp -d -t sanctum-work.XXXXXXXX 2>/dev/null)"; then
+        warn "could not create a work directory under $base"
+        return 1
+    fi
+    HARNESS_WORKDIR="$dir"
+    note "work    $dir ($(harness_fstype "$dir"), $(harness_gb "$free") free)"
+    return 0
+}
+
 # Run one command, capture stdout/stderr to files, and judge it.
 #   harness_step <label> <out.json> <err file> <argv...>
 harness_step() {
@@ -91,6 +205,143 @@ harness_step() {
     shift 3
     "$@" > "$out" 2> "$err"
     harness_check "$label" "$?" "$out" "$err"
+}
+
+# ==========================================================================
+# PhotoRec
+#
+# One definition, sourced by both the validation harness and the demo reset.
+# They had two, and the whole point of the before/after count is that the two
+# runs are the same measurement - a difference either script could acquire
+# without anyone noticing is a difference in a number we put on a slide.
+#
+# The option set is the one recorded in docs/validation/hardware.md, which is
+# what makes a demo run comparable to the Phase A figures. Narrowing it is a
+# deliberate act, not a default: see SANCTUM_PHOTOREC_OPTS below.
+# ==========================================================================
+
+declare -F now >/dev/null || now() { date +%s; }
+declare -F since >/dev/null || since() { echo $(( $(date +%s) - $1 )); }
+
+#: The recorded invocation. Every published before/after number used this.
+HARNESS_PHOTOREC_OPTS_FULL="partition_none,fileopt,everything,enable,search"
+
+#: Only the formats the demo actually plants, for a rehearsal where wall-clock
+#: matters more than comparability. Fewer signatures also means fewer false
+#: positives. It is NOT the default: a run using this cannot be compared with
+#: the figures in docs/validation/hardware.md, and the 14-of-14 slide depends
+#: on that comparison holding.
+HARNESS_PHOTOREC_OPTS_PLANTED="partition_none,fileopt,everything,disable,jpg,enable,png,enable,pdf,enable,zip,enable,gif,enable,sqlite,enable,search"
+
+#: Seconds before a PhotoRec call is killed. Both recorded Phase A runs on a
+#: 7.4 GiB stick finished in 309s and 563s, so 1500 is roughly 2.6x the worst
+#: measurement - long enough to be certain, short enough that it cannot eat a
+#: pre-demo window. Read at call time, not here: an override has to work when
+#: it is set on the call, which is where an operator will reach for it.
+HARNESS_PHOTOREC_TIMEOUT_S=1500
+
+#: How often the console says the scan is alive. A step that can run for
+#: minutes in silence is indistinguishable from one that has hung, and that
+#: cost an evening.
+HARNESS_PHOTOREC_HEARTBEAT_S=30
+
+# Count recovered files, excluding PhotoRec's own report and log.
+harness_photorec_count() {
+    local outdir="$1"
+    find "$outdir" -path "$outdir/recup*" -type f \
+        ! -name 'report.xml' ! -name '*.log' 2>/dev/null | wc -l
+}
+
+# Run one scan, with a bound and a pulse.
+#   harness_photorec <label> <device> <outdir> <json out>
+# Returns non-zero when the scan failed or timed out. Always writes the JSON.
+harness_photorec() {
+    local label="$1" device="$2" outdir="$3" json="$4"
+    local opts="${SANCTUM_PHOTOREC_OPTS:-$HARNESS_PHOTOREC_OPTS_FULL}"
+    local timeout_s="${SANCTUM_PHOTOREC_TIMEOUT_S:-$HARNESS_PHOTOREC_TIMEOUT_S}"
+    local heartbeat_s="${SANCTUM_PHOTOREC_HEARTBEAT_S:-$HARNESS_PHOTOREC_HEARTBEAT_S}"
+    local log="$outdir/photorec.out"
+
+    mkdir -p "$outdir"
+
+    # A recup tree on tmpfs is a recup tree in RAM. PhotoRec's dovecot signature
+    # emits an 81,920-byte file per all-zero block, so a zeroed 7.4 GiB device
+    # produces 94,720 of them - 7.76 GB into memory, which does not fail, it
+    # swaps, and a swapping host looks exactly like a hung one. This used to
+    # warn. Refusing is the only version of it that works on a tired operator.
+    local fstype
+    fstype="$(harness_fstype "$outdir")"
+    if harness_is_memory_fs "$fstype"; then
+        harness_fail "photorec $label" \
+            "$outdir is $fstype - memory, not disk. A carve of a zeroed device fills it and the host swaps instead of failing."
+        note "  set TMPDIR to a real filesystem, or pass an output directory on one"
+        printf '{"skipped": "output directory is %s, which is memory-backed"}\n' \
+            "$fstype" > "$json"
+        return 1
+    fi
+
+    # The size check is separate from the filesystem check because a disk-backed
+    # volume with 2 GB free fails the same way tmpfs does, only with ENOSPC in a
+    # log nobody is reading. The recup tree can reach the size of the device.
+    local need; need="$(harness_device_bytes "$device")"
+    local free; free="$(harness_free_bytes "$outdir")"
+    if [[ "$need" -gt 0 && "$free" -lt "$need" ]]; then
+        harness_fail "photorec $label" \
+            "$outdir has $(harness_gb "$free") free; a carve of $device can write $(harness_gb "$need")."
+        printf '{"skipped": "insufficient free space at output directory"}\n' > "$json"
+        return 1
+    fi
+
+    note "photorec $label: scanning $device"
+    note "  options  $opts"
+    note "  output   $outdir"
+    note "  bound    ${timeout_s}s, heartbeat every ${heartbeat_s}s"
+
+    local start; start="$(now)"
+    timeout --signal=TERM --kill-after=30 "${timeout_s}s" \
+        photorec /log /d "$outdir/recup" /cmd "$device" "$opts" \
+        > "$log" 2>&1 &
+    local pid=$!
+
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep "$heartbeat_s"
+        kill -0 "$pid" 2>/dev/null || break
+        note "  ... ${label} alive at $(since "$start")s, $(harness_photorec_count "$outdir") files, $(du -sh "$outdir" 2>/dev/null | cut -f1) on disk"
+    done
+    wait "$pid"; local rc=$?
+
+    local elapsed; elapsed="$(since "$start")"
+    local count; count="$(harness_photorec_count "$outdir")"
+    local timed_out=false
+
+    # 124 is what `timeout` exits when it fired. Named, because "photorec failed"
+    # and "photorec was still running after 25 minutes" lead to different actions.
+    if [[ $rc -eq 124 || $rc -eq 137 ]]; then
+        timed_out=true
+        harness_fail "photorec $label" \
+            "still running after ${timeout_s}s and was killed"
+        note "  the partial recup tree is at $outdir"
+        note "  tail of $log:"
+        tail -5 "$log" 2>/dev/null | while IFS= read -r line; do note "  | $line"; done
+    elif [[ $rc -ne 0 ]]; then
+        # Non-zero is "nobody looked", not "nothing was recoverable", and the two
+        # support opposite conclusions about the wipe.
+        harness_fail "photorec $label" "exit $rc"
+        harness_dump_err "$log"
+    fi
+
+    {
+        printf '{"label": "%s", "returncode": %d, "elapsed_seconds": %s, ' \
+            "$label" "$rc" "$elapsed"
+        printf '"files_recovered": %d, "timed_out": %s, "timeout_seconds": %s, ' \
+            "$count" "$timed_out" "$timeout_s"
+        printf '"options": "%s", ' "$opts"
+        printf '"command": "photorec /log /d %s/recup /cmd %s %s"}\n' \
+            "$outdir" "$device" "$opts"
+    } > "$json"
+
+    note "photorec $label: $count files in ${elapsed}s"
+    [[ $rc -eq 0 ]]
 }
 
 harness_failure_count() { printf '%s' "${#HARNESS_FAILURES[@]}"; }
@@ -467,4 +718,46 @@ harness_next_step() {
         return 0
     }
     printf '%s' "${HARNESS_STEPS[$((index + 1))]:-}"
+}
+
+# ==========================================================================
+# The code a run measured
+# ==========================================================================
+
+# Write the commit, `git describe` and whether tracked files were modified.
+#   harness_record_code <repo> <out.json>
+#
+# Returns 1, writing nothing, when there is nothing to name: a results
+# directory that cannot say which code produced it is not evidence, and the
+# caller refuses to run. Untracked files do not make the tree dirty - the
+# harness writes its own results inside the repository.
+#
+# `safe.directory` is set per call because the harness runs as root against a
+# checkout owned by the operator, and git refuses that ownership mismatch.
+harness_record_code() {
+    local repo="$1" out="$2"
+    if ! command -v git > /dev/null; then
+        warn "git is not installed, so this run cannot name the code it measured"
+        return 1
+    fi
+    local git_cmd=(git -c "safe.directory=$repo" -C "$repo")
+    local sha describe porcelain dirty modified
+    if ! sha="$("${git_cmd[@]}" rev-parse HEAD 2>/dev/null)"; then
+        warn "$repo is not a git checkout with a commit, so this run cannot name the code it measured"
+        return 1
+    fi
+    describe="$("${git_cmd[@]}" describe --tags --always --dirty 2>/dev/null)"
+    porcelain="$("${git_cmd[@]}" status --porcelain --untracked-files=no 2>/dev/null)"
+    modified=0
+    [[ -n "$porcelain" ]] && modified="$(printf '%s\n' "$porcelain" | wc -l | tr -d ' ')"
+    dirty=false
+    [[ "$modified" -gt 0 ]] && dirty=true
+    printf '{"git_sha": "%s", "git_describe": "%s", "git_dirty": %s, "modified_tracked_files": %s}\n' \
+        "$sha" "$describe" "$dirty" "$modified" > "$out"
+    note "code    $describe ($sha)"
+    if [[ "$dirty" == true ]]; then
+        warn "tree is DIRTY: $modified tracked file(s) modified. These results describe code"
+        warn "  that is in no commit; commit and re-run if they are going to be quoted."
+    fi
+    return 0
 }
