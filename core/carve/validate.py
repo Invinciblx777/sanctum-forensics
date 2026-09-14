@@ -51,6 +51,7 @@ import structlog
 from PIL import Image, ImageFile, UnidentifiedImageError
 
 from core.carve.evidence import BytesEvidence, EvidenceHandle
+from core.carve.fragmentation import accounts_for_scan
 from core.models import CarveCandidate, Validation
 
 __all__ = [
@@ -205,6 +206,25 @@ def validate_image(data: bytes, deadline: _Deadline) -> ValidationReport:
                 image.seek(decoded)
                 image.load()
                 decoded += 1
+        if fmt == "JPEG":
+            # libjpeg reports a scan with bytes missing, extra or out of place as
+            # a warning and returns an image regardless, so a JPEG head, a
+            # cluster of zeros or directory entries, and the real tail decode
+            # "fully". Counting the scan against the frame header does not.
+            exact = accounts_for_scan(
+                data, deadline=time.monotonic() + deadline.remaining
+            )
+            if exact is False:
+                return ValidationReport(
+                    verdict="corrupt",
+                    detail=(
+                        f"JPEG {size[0]}x{size[1]} decoded, but its scan does not "
+                        "account for the frame: entropy-coded bytes are missing, "
+                        "extra or out of place, which the decoder reports only as "
+                        "a warning"
+                    ),
+                    decoder=f"{decoder} + exact scan accounting",
+                )
         return ValidationReport(
             verdict="valid",
             detail=(

@@ -146,7 +146,10 @@ def test_the_pipeline_does_not_bound_the_scan() -> None:
 
     source = Path(carve_job.__file__).read_text(encoding="utf-8")
 
-    assert "carve_structures(handle)" in source, (
+    # Batch 7 added one keyword argument, the undelete pass's cluster sizes,
+    # which chooses the reassembly grid and bounds nothing. Re-checked: no
+    # range is passed, which the assertion below still enforces.
+    assert "carve_structures(handle, cluster_bytes_at=" in source, (
         "the carve call changed shape; re-check whether a range is now passed"
     )
     assert "start=" not in source and "end=" not in source, (

@@ -259,6 +259,11 @@ class PartitionInfo:
     allocated: bool
     #: Filesystem opened there, e.g. ``ntfs``. Empty when none could be opened.
     fs_type: str = ""
+    #: The filesystem's allocation unit in bytes, read from its own boot sector
+    #: or superblock. 0 when no filesystem was opened or the field is not a
+    #: power of two of at least 512, which is what "unknown" looks like to the
+    #: reassembler.
+    cluster_bytes: int = 0
 
 
 @dataclass(frozen=True)
@@ -1342,6 +1347,37 @@ def read_fat32_boot(volume: EvidenceHandle) -> FatBoot | None:
     )
 
 
+def volume_cluster_bytes(volume: EvidenceHandle, fs_type: str, fs: Any = None) -> int:
+    """The allocation unit of the filesystem ``volume`` holds, or 0 if unknown.
+
+    Read from the volume's own structures rather than from TSK's
+    ``block_size``, because TSK means different things by it: a sector on FAT
+    and exFAT, a cluster on NTFS, a block on ext. The carver needs the unit a
+    file's fragments are allocated in, since that is the only grid a fragment
+    boundary can fall on.
+    """
+    size = 0
+    if fs_type == "exfat":
+        boot = read_exfat_boot(volume)
+        size = boot.cluster_bytes if boot is not None else 0
+    elif fs_type in {"fat12", "fat16", "fat32", "ntfs"}:
+        sector = volume.read(0, 512)
+        if len(sector) == 512:
+            per_sector = struct.unpack_from("<H", sector, 0x0B)[0]
+            raw = sector[0x0D]
+            # NTFS stores clusters above 64 KiB as a negative power of two.
+            per_cluster = 1 << (256 - raw) if fs_type == "ntfs" and raw > 0x80 else raw
+            size = per_sector * per_cluster
+    elif fs_type.startswith("ext") and fs is not None:
+        size = int(fs.info.block_size)
+    # Sectors are at least 512 bytes and clusters are whole powers of two of
+    # them; anything else is a damaged field, and a wrong grid would refuse
+    # every genuine join on the volume.
+    if size < 512 or size & (size - 1):
+        return 0
+    return size
+
+
 def _fat_entries_allocated(
     volume: EvidenceHandle, boot: FatBoot, first: int, count: int
 ) -> bool:
@@ -2178,6 +2214,7 @@ def undelete_report(handle: EvidenceHandle) -> UndeleteReport:
                 description=partition.description,
                 allocated=partition.allocated,
                 fs_type=fs_type,
+                cluster_bytes=volume_cluster_bytes(window, fs_type, fs),
             )
         )
 

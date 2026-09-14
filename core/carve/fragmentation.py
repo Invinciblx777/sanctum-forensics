@@ -1,4 +1,4 @@
-"""Bifragment gap carving, for JPEG and for nothing else.
+"""Bifragment gap carving, for baseline JPEG and for nothing else.
 
 **Read this before extending it.** General fragment reassembly - "SmartCarving"
 in the literature - is an open research problem. Deciding which of a million
@@ -9,51 +9,106 @@ taken apart by anyone who asks how, and rightly.
 
 What is tractable is the *bifragmented* case: an object split into exactly two
 runs separated by one gap, which is what a filesystem produces when an existing
-extent blocks a contiguous allocation. It is tractable because JPEG carries
-enough of its own structure to be checked, so the search has an oracle rather
-than a heuristic.
+extent blocks a contiguous allocation. It is tractable only because a baseline
+JPEG's scan can be *accounted for* bit by bit, so the search has an oracle
+rather than a heuristic.
 
-**That oracle is not the decoder on its own, and assuming it was is what made
-this dangerous.** Measured against Pillow 12: ``Image.load`` accepts
-``jpeg[:4096] + FFD9`` - five per cent of a 77 KB object - and reports a fully
-decoded 256x256 image, because libjpeg stops at EOI and returns whatever it
-managed. Accepting the first join a decoder tolerates therefore produces
-*fabricated* objects: a head spliced to a stray EOI in an unrelated file,
-decoding without complaint, hashing to something that was never on the medium
-as one thing. Three checks, layered, are what makes the answer trustworthy:
+**The acceptance rule is the one thing here that must not be weakened.** A
+forensic tool that emits an object which was never on the medium is inventing
+evidence; a missed recovery is a stated limit. Every choice below refuses rather
+than guesses.
 
-* :func:`is_whole_jpeg` - the scan data must contain no reserved marker code
-  and no early EOI. Foreign bytes spliced into a scan carry roughly one
-  ``0xFF`` per 256 bytes and three quarters of those are followed by a reserved
-  code, so a wrong gap is rejected here, before a decoder is allocated.
-* a one-cluster floor on the second run - a fragment is a run of the medium,
-  not two bytes of EOI that happen to land on a cluster boundary. This costs
-  the rare object whose tail holds under one cluster of data, which is the
-  safe direction to be wrong in.
-* head extension - the enumeration tries short heads first, so the first join
-  that passes may skip clusters that were the object's own. The gap is where
-  *somebody else's* bytes are, so the true head is the longest one that still
-  reassembles.
+Why the oracle is an exact entropy walk and not a decoder
+---------------------------------------------------------
+
+Two cheaper oracles were shipped before this one and both fabricated objects:
+
+* **Pillow's decode.** ``Image.load`` accepts ``jpeg[:4096] + FFD9`` and reports
+  a fully decoded image: libjpeg treats a short scan, an overlong scan, a bad
+  Huffman code and a marker in the wrong place as *warnings*, fills what it
+  could not decode, and returns. A decode that "succeeds" says nothing about
+  whether the bytes between SOS and EOI were this object's.
+* **:func:`is_whole_jpeg`**, which adds a structural check for reserved marker
+  codes. Measured at ``hwval-run4`` it still accepted 537 of 538 joins of an
+  object to *its own* bytes at the wrong offset, 598 of 600 objects with a
+  directory cluster, zeros or text spliced into the scan, and 399 of 400
+  chimeras of one JPEG's head and another's scan. The product shipped that
+  class at HIGH: PREFLIGHT2 FINDING 1 is a real head joined to the real tail
+  read 3,584 bytes late.
+
+:func:`scan_is_exact` walks the entropy-coded data itself. Every Huffman code
+must be one the image's own tables define; no block may run past coefficient
+63; restart markers must arrive in sequence exactly at the restart interval;
+and the scan must end at EOI having produced **exactly** the number of MCUs the
+frame header implies, with nothing but 1-bit padding left over. A join that
+drops, duplicates or substitutes bytes shifts the bit stream and has to come out
+at exactly the right count at exactly the right byte to pass. Measured on the
+same populations: 0 of 600 insertions, 0 of 400 chimeras, FINDING 1 rejected at
+every offset from 512 to 3,584 bytes late. It is the Huffman layer of a decoder
+and nothing more - no IDCT, no pixels - which is what keeps it small enough to
+read: 28 ms for a 74 KB object, 0.65 s for 1.5 MB.
+
+**It is not a proof, and the residual is measured rather than assumed.** A
+join that loses or replaces between 512 and 1,536 bytes of the object's own
+scan passes about one time in twenty on JPEGs of pure noise, and far more rarely
+on photographic content (0 of 3,200 on a smooth image). The search below is
+ordered so that the true join, when it is on the medium, is examined before any
+such pair; the residual applies when it is not - a tail whose first sectors were
+overwritten. That is why a reassembled object is scored below HIGH
+(:mod:`core.carve.score`) whatever this module says about it.
+
+Progressive, arithmetic-coded, lossless, 12-bit and multi-scan JPEGs cannot be
+accounted for here, and are never reassembled.
+
+How the join is found
+---------------------
+
+The search never trusts the first join a check tolerates. It uses what the
+medium's layout says about where the gap can be:
+
+* **Bounded edges.** A byte pair that cannot occur inside entropy-coded data
+  (``FF`` followed by anything but ``00`` or a restart code) cannot be in the
+  object's head or tail. The first such pair after the scan starts bounds how
+  long the head can be; the last one before a candidate EOI bounds how early
+  that tail can start. Gap bytes that happen to contain no such pair - zeros, a
+  directory cluster, text, another JPEG's scan data - are the only ambiguity.
+* **Ordered by what is assumed.** Joins are tried in order of how many of those
+  ambiguous bytes they assign to the object, fewest first, across every
+  candidate EOI at once. A join that assigns *fewer* ambiguous bytes than the
+  truth necessarily splices gap bytes in, which the oracle rejects; so when the
+  true join is on the medium it is the first to pass.
+* **Unique at its level.** Every other join assigning the same number of
+  ambiguous bytes is checked too. If a second one passes, the object is refused:
+  the medium does not say which is the file.
+* **On the cluster grid.** Heads and gaps are whole clusters, because that is
+  the only layout an allocator produces. When the volume's cluster size is known
+  it is the grid. When it is not - raw carving with no recognisable filesystem -
+  the grid is :data:`SECTOR_BYTES`, the smallest unit any filesystem this tool
+  reads allocates in, so the true layout is always on it. A finer grid costs
+  search time; it does not change what is accepted.
 
 The search is bounded on every axis, because an unrecoverable object must cost
 a fixed budget rather than the rest of the image:
 
-* :data:`MAX_GAP_CANDIDATES` gap sizes tried, at cluster boundaries only;
-* :data:`MAX_SEARCH_WINDOW` bytes ahead of the header searched;
+* :data:`MAX_GAP_CANDIDATES` joins handed to the oracle;
+* :data:`MAX_SEARCH_STEPS` joins enumerated, including the ones skipped;
+* :data:`MAX_SEARCH_WINDOW` bytes from the header to the end of the object;
 * :data:`DECODE_DEADLINE_S` seconds of wall clock per candidate object.
 
-Two stated limits belong in the report next to the recovered files. Fragments
-are sought on :data:`DEFAULT_CLUSTER_BYTES` boundaries, so a split a volume with
-a different cluster size produced is not enumerated and the object is reported
-as a low-confidence candidate rather than guessed at. And everything that is not
-a JPEG gets ``possibly_fragmented=True`` and no reconstruction attempt at all.
+Reach is therefore a byte distance, not a count of steps: the distance between
+the two runs costs nothing by itself. What costs budget is ambiguous gap bytes
+next to the runs and other JPEG ends between them.
+
+Everything that is not a baseline JPEG gets ``possibly_fragmented=True`` and no
+reconstruction attempt at all.
 """
 
 from __future__ import annotations
 
 import io
+import re
 import time
-from bisect import bisect_right
+from bisect import bisect_left
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -67,10 +122,12 @@ __all__ = [
     "MAX_SEARCH_STEPS",
     "MAX_SEARCH_WINDOW",
     "DECODE_DEADLINE_S",
-    "DEFAULT_CLUSTER_BYTES",
+    "SECTOR_BYTES",
     "Reassembly",
     "decodes_cleanly",
     "is_whole_jpeg",
+    "accounts_for_scan",
+    "scan_is_exact",
     "read_fragments",
     "reassemble_bifragmented_jpeg",
     "reassemble_bifragmented_jpeg_runs",
@@ -81,31 +138,43 @@ logger = structlog.get_logger(__name__)
 KIB = 1024
 MIB = 1024 * KIB
 
-#: Gap sizes tried before giving up. Each is a full decode attempt, so this is
-#: the dominant cost and the number that keeps it bounded.
+#: Joins handed to :func:`scan_is_exact` before giving up. Each walks the whole
+#: candidate object, so this is the dominant cost and the number that keeps it
+#: bounded.
 MAX_GAP_CANDIDATES = 64
 
-#: How far past the header the second fragment is searched for.
+#: How far past the header the end of the object is searched for. This, not a
+#: step count, is the reassembler's reach.
 MAX_SEARCH_WINDOW = 8 * MIB
 
 #: Wall-clock budget for one object's entire reassembly search.
 DECODE_DEADLINE_S = 10.0
 
-#: (head, gap) pairs examined before giving up, counting the ones cheap enough
-#: to reject without a decode. Separate from :data:`MAX_GAP_CANDIDATES`, which
-#: counts only the joins that reach a decoder, because the two failure modes are
-#: different: a hostile image can present thousands of ``FFD9`` bytes that cost
-#: nothing individually and everything in aggregate. Measured on a 9 MiB image
-#: with an EOI on every cluster boundary: without this cap the search ran the
-#: full :data:`DECODE_DEADLINE_S` on a single candidate, which on a stick with
-#: many unrecoverable JPEG headers is minutes of a live demo per header.
+#: Joins enumerated before giving up, counting the ones rejected without a walk
+#: (off the grid, over ``max_size``, gap shorter than a cluster). Separate from
+#: :data:`MAX_GAP_CANDIDATES` because a hostile image can present thousands of
+#: ``FFD9`` bytes that cost nothing individually and everything in aggregate.
 MAX_SEARCH_STEPS = 20_000
 
-#: Fragments begin on cluster boundaries, so only those offsets are tried.
-DEFAULT_CLUSTER_BYTES = 4096
+#: The smallest allocation unit of any filesystem this tool reads. Clusters are
+#: whole sectors and sectors are at least 512 bytes, so every fragment boundary
+#: of every file lies on this grid, measured from the file's first byte. It is
+#: the grid used when the volume's own cluster size is not known.
+SECTOR_BYTES = 512
 
 _SOI = b"\xff\xd8\xff"
 _EOI = b"\xff\xd9"
+
+#: ``FF`` followed by a byte that cannot follow it inside entropy-coded data.
+#: A lookahead, so ``FF FF D9`` reports both positions.
+_ILLEGAL_IN_SCAN = re.compile(rb"\xff(?=[^\x00\xd0-\xd7])")
+_RESTART = re.compile(rb"\xff[\xd0-\xd7]")
+
+#: Frame markers this module can account for: baseline and extended sequential,
+#: Huffman-coded.
+_SEQUENTIAL_HUFFMAN = (0xC0, 0xC1)
+#: Frame markers it cannot: progressive, lossless, arithmetic, hierarchical.
+_UNSUPPORTED_FRAMES = frozenset(range(0xC2, 0xD0)) - {0xC4, 0xC8, 0xCC}
 
 
 @dataclass(frozen=True)
@@ -130,12 +199,11 @@ class Reassembly:
 
 
 def decodes_cleanly(payload: bytes) -> bool:
-    """True when a real decoder consumes the whole object without error.
+    """True when Pillow loads the object without raising.
 
-    This is the oracle the gap search needs. ``Image.verify`` checks structure
-    but not entropy data, so the pixels are actually loaded: a wrong gap
-    produces a stream that parses and then fails partway through decoding, and
-    only ``load`` catches that.
+    **Not an oracle for reassembly**, and kept only as the last of several
+    checks: libjpeg reports short, overlong and corrupt scans as warnings and
+    returns an image regardless. See the module docstring.
     """
     try:
         from PIL import Image
@@ -153,27 +221,12 @@ def decodes_cleanly(payload: bytes) -> bool:
 #: reserved and cannot appear in a JPEG at all, which is what makes it a
 #: usable rejection test for foreign bytes spliced into a scan.
 def _entropy_data_is_well_formed(payload: bytes) -> bool:
-    """Whether the scan data reads as one JPEG scan ending exactly at EOI.
+    """Whether the scan data carries no reserved marker code and no early EOI.
 
-    This exists because **Pillow is not the oracle the search needs on its
-    own.** Measured: ``Image.load`` accepts ``jpeg[:4096] + FFD9`` and reports
-    a fully decoded 256x256 image. Once an EOI arrives libjpeg stops and
-    returns what it has, so "it decoded" says nothing about whether the bytes
-    between SOS and EOI were the object's own.
-
-    What the bytes themselves say is checkable. Inside entropy-coded data a
-    ``0xFF`` is either stuffed (``FF00``), a fill byte (``FFFF``) or a marker
-    (``FFC0``-``FFFE``); ``FF02``-``FFBF`` is reserved and cannot occur. A
-    32 KiB run of somebody else's file spliced into a scan carries roughly 128
-    ``0xFF`` bytes and about three quarters of them are followed by a reserved
-    code, so a wrong gap is rejected here without a decode being attempted.
-    An early ``FFD9`` is rejected for the same reason: the image ended there,
-    so anything after it belongs to something else.
-
-    It does not catch a join of two runs that are both genuinely this object's
-    data with a piece missing between them - both halves are legal scans. That
-    case is what the head extension in
-    :func:`reassemble_bifragmented_jpeg_runs` is for.
+    A cheap structural check, and a weak one: foreign bytes containing no
+    ``0xFF`` pass it, and so does the object's own scan data joined at the
+    wrong place. It decides whether a contiguous span is plausibly whole; it
+    does not decide whether a join is right. :func:`scan_is_exact` does that.
     """
     scan_at = _scan_start(payload)
     if scan_at is None:
@@ -213,33 +266,339 @@ def _scan_start(payload: bytes) -> int | None:
 
 
 def is_whole_jpeg(payload: bytes) -> bool:
-    """The oracle the gap search actually needs: whole object, not merely parsed.
+    """Whether a *contiguous* span is plausibly one whole JPEG.
 
-    Structure first, because it is cheap and rejects almost every wrong gap
-    without allocating a decoder, then the decode, because structure alone does
-    not prove the Huffman data is this image's.
+    Structure first, because it is cheap, then Pillow. This is the trigger's
+    question - "does the parser's span need reassembly?" - and it is answered
+    generously on purpose, since a yes leaves the span as it is. It is **not**
+    the acceptance test for a join; see :func:`scan_is_exact`.
     """
     return _entropy_data_is_well_formed(payload) and decodes_cleanly(payload)
 
 
-def _find_eoi(handle: EvidenceHandle, start: int, limit: int) -> list[int]:
-    """Offsets just past each EOI marker in ``[start, limit)``, in order."""
-    found: list[int] = []
-    window = 256 * KIB
-    cursor = start
-    while cursor < limit:
-        block = handle.read(cursor, min(window, limit - cursor))
-        if not block:
-            break
-        position = 0
-        while True:
-            index = block.find(_EOI, position)
-            if index == -1:
-                break
-            found.append(cursor + index + 2)
-            position = index + 1
-        cursor += max(len(block) - 1, 1)
-    return found
+# --------------------------------------------------------------------------
+# Exact accounting of a baseline scan
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Frame:
+    """What a baseline JPEG's header says its scan must contain."""
+
+    #: Offset of the first byte of entropy-coded data.
+    scan_offset: int
+    #: MCUs in the scan (or blocks, for a single-component image).
+    units: int
+    #: (DC lookup, AC lookup) for every block of one unit, in scan order.
+    blocks: tuple[tuple[list[int], list[int]], ...]
+    #: MCUs between restart markers; 0 when there are none.
+    restart_interval: int
+
+
+def _huffman_lookup(counts: bytes, symbols: bytes) -> list[int] | None:
+    """A 16-bit-prefix table: ``(code length << 8) | symbol``, 0 where invalid."""
+    lookup = [0] * 65536
+    code = 0
+    index = 0
+    for length in range(1, 17):
+        for _ in range(counts[length - 1]):
+            if index >= len(symbols) or code >= (1 << length):
+                return None
+            span = 1 << (16 - length)
+            base = code << (16 - length)
+            lookup[base : base + span] = [(length << 8) | symbols[index]] * span
+            code += 1
+            index += 1
+        code <<= 1
+    return lookup
+
+
+def _parse_frame(payload: bytes) -> _Frame | None:
+    """Read the header up to SOS, or ``None`` for anything not accountable."""
+    if not payload.startswith(b"\xff\xd8"):
+        return None
+    tables: dict[tuple[int, int], list[int]] = {}
+    components: dict[int, tuple[int, int]] = {}
+    order: list[int] = []
+    width = height = 0
+    restart = 0
+    cursor = 2
+    limit = len(payload)
+    while cursor + 4 <= limit:
+        if payload[cursor] != 0xFF:
+            return None
+        kind = payload[cursor + 1]
+        if kind == 0xFF:
+            cursor += 1
+            continue
+        if kind == 0x01 or 0xD0 <= kind <= 0xD8:
+            cursor += 2
+            continue
+        if kind == 0xD9 or kind in _UNSUPPORTED_FRAMES:
+            return None
+        length = int.from_bytes(payload[cursor + 2 : cursor + 4], "big")
+        if length < 2 or cursor + 2 + length > limit:
+            return None
+        segment = payload[cursor + 4 : cursor + 2 + length]
+        if kind in _SEQUENTIAL_HUFFMAN:
+            if order or len(segment) < 6 or segment[0] != 8:
+                return None  # a second frame, or not 8-bit
+            height = int.from_bytes(segment[1:3], "big")
+            width = int.from_bytes(segment[3:5], "big")
+            count = segment[5]
+            if not width or not height or not 1 <= count <= 4:
+                return None
+            if len(segment) < 6 + 3 * count:
+                return None
+            for item in range(count):
+                identifier = segment[6 + 3 * item]
+                sampling = segment[7 + 3 * item]
+                horizontal, vertical = sampling >> 4, sampling & 0x0F
+                if not (1 <= horizontal <= 4 and 1 <= vertical <= 4):
+                    return None
+                components[identifier] = (horizontal, vertical)
+                order.append(identifier)
+        elif kind == 0xC4:
+            at = 0
+            while at < len(segment):
+                if at + 17 > len(segment):
+                    return None
+                table_class, table_id = segment[at] >> 4, segment[at] & 0x0F
+                counts = segment[at + 1 : at + 17]
+                total = sum(counts)
+                symbols = segment[at + 17 : at + 17 + total]
+                built = _huffman_lookup(counts, symbols)
+                if built is None or table_class > 1 or table_id > 3:
+                    return None
+                tables[(table_class, table_id)] = built
+                at += 17 + total
+        elif kind == 0xDD:
+            if len(segment) < 2:
+                return None
+            restart = int.from_bytes(segment[0:2], "big")
+        elif kind == 0xDA:
+            return _frame_from_scan_header(
+                segment,
+                scan_offset=cursor + 2 + length,
+                tables=tables,
+                components=components,
+                order=order,
+                width=width,
+                height=height,
+                restart=restart,
+            )
+        cursor += 2 + length
+    return None
+
+
+def _ceil_div(numerator: int, denominator: int) -> int:
+    return (numerator + denominator - 1) // denominator
+
+
+def _frame_from_scan_header(
+    segment: bytes,
+    *,
+    scan_offset: int,
+    tables: dict[tuple[int, int], list[int]],
+    components: dict[int, tuple[int, int]],
+    order: list[int],
+    width: int,
+    height: int,
+    restart: int,
+) -> _Frame | None:
+    if not components or not segment:
+        return None
+    selected = segment[0]
+    # One scan holding every component. A scan of fewer means more scans follow,
+    # and their markers inside the "scan data" would be a different object.
+    if selected != len(order) or len(segment) < 1 + 2 * selected:
+        return None
+    max_h = max(h for h, _ in components.values())
+    max_v = max(v for _, v in components.values())
+    blocks: list[tuple[list[int], list[int]]] = []
+    for item in range(selected):
+        identifier = segment[1 + 2 * item]
+        selector = segment[2 + 2 * item]
+        if identifier not in components:
+            return None
+        dc = tables.get((0, selector >> 4))
+        ac = tables.get((1, selector & 0x0F))
+        if dc is None or ac is None:
+            return None
+        horizontal, vertical = components[identifier]
+        repeat = 1 if selected == 1 else horizontal * vertical
+        blocks.extend([(dc, ac)] * repeat)
+    if selected == 1:
+        horizontal, vertical = components[order[0]]
+        columns = _ceil_div(_ceil_div(width * horizontal, max_h), 8)
+        rows = _ceil_div(_ceil_div(height * vertical, max_v), 8)
+    else:
+        if len(blocks) > 10:
+            return None
+        columns = _ceil_div(width, 8 * max_h)
+        rows = _ceil_div(height, 8 * max_v)
+    return _Frame(
+        scan_offset=scan_offset,
+        units=columns * rows,
+        blocks=tuple(blocks),
+        restart_interval=restart,
+    )
+
+
+def scan_is_exact(payload: bytes, *, deadline: float | None = None) -> bool:
+    """Whether ``payload`` is exactly one whole JPEG, ending at its own EOI.
+
+    True only for a baseline or extended-sequential Huffman JPEG whose every
+    code is defined by its own tables, whose every block stays within 64
+    coefficients, whose restart markers arrive in sequence at the declared
+    interval, and whose scan ends at the final EOI after exactly the declared
+    number of MCUs with only 1-bit padding left. Anything this cannot account
+    for - progressive, arithmetic, several scans - is ``False``: not "bad", but
+    not something a join can be accepted on. ``deadline`` is a
+    ``time.monotonic`` value past which the answer is ``False``.
+    """
+    frame = _parse_frame(payload)
+    if frame is None or not payload.endswith(_EOI):
+        return False
+    if _scan_end(payload, frame.scan_offset) != len(payload) - 2:
+        return False
+    return _scan_accounts(frame, payload[frame.scan_offset : -2], deadline)
+
+
+def accounts_for_scan(payload: bytes, *, deadline: float | None = None) -> bool | None:
+    """Whether a decoded JPEG's scan is exactly the image its header declares.
+
+    The question a validator asks of a *contiguous* object, which may legally
+    carry bytes after its EOI (a motion photo appends a video there). Three
+    answers, because declining is not condemning:
+
+    * ``True`` - a baseline scan, ended by EOI, accounting for every MCU.
+    * ``False`` - a baseline scan that does not: bytes inside it are missing,
+      extra or out of place, a reserved marker code sits in it, or it never
+      ends. A decoder reports all of these as warnings and returns an image.
+    * ``None`` - nothing this module can judge: not a JPEG, not baseline, or a
+      scan ended by a legal marker other than EOI (another scan, DNL).
+    """
+    frame = _parse_frame(payload)
+    if frame is None:
+        return None
+    end = _scan_end(payload, frame.scan_offset)
+    if end is None:
+        return False
+    following = payload[end + 1]
+    if following != 0xD9:
+        return False if 0x02 <= following <= 0xBF else None
+    return _scan_accounts(frame, payload[frame.scan_offset : end], deadline)
+
+
+def _scan_end(payload: bytes, scan_at: int) -> int | None:
+    """Position of the marker ending the entropy-coded data, past any fill bytes."""
+    for match in _ILLEGAL_IN_SCAN.finditer(payload, scan_at):
+        position = match.start()
+        if payload[position + 1] != 0xFF:
+            return position
+    return None
+
+
+def _scan_accounts(frame: _Frame, data: bytes, deadline: float | None) -> bool:
+    markers = _RESTART.findall(data)
+    for index, marker in enumerate(markers):
+        if marker[1] != 0xD0 + index % 8:
+            return False
+    segments = _RESTART.split(data)
+    interval = frame.restart_interval
+    if interval:
+        if len(segments) != -(-frame.units // interval):
+            return False
+    elif len(segments) != 1:
+        return False
+    remaining = frame.units
+    for raw_segment in segments:
+        units = min(interval, remaining) if interval else remaining
+        remaining -= units
+        # 0xFF fill bytes may precede any marker and carry no data.
+        segment = raw_segment.rstrip(b"\xff")
+        if b"\xff" in segment.replace(b"\xff\x00", b""):
+            return False  # a marker, or a fill byte, where only data may be
+        if not _decode_units(
+            segment.replace(b"\xff\x00", b"\xff"), units, frame.blocks, deadline
+        ):
+            return False
+    return remaining == 0
+
+
+def _decode_units(
+    raw: bytes,
+    units: int,
+    blocks: tuple[tuple[list[int], list[int]], ...],
+    deadline: float | None,
+) -> bool:
+    """Walk ``units`` MCUs of Huffman codes; exactly all of ``raw``, no more."""
+    acc = 0
+    nbits = 0
+    position = 0
+    size = len(raw)
+    for unit in range(units):
+        if deadline is not None and not unit & 0xFF and time.monotonic() > deadline:
+            return False
+        for dc, ac in blocks:
+            while nbits < 32 and position < size:
+                acc = ((acc & 0xFFFFFFFF) << 8) | raw[position]
+                position += 1
+                nbits += 8
+            if nbits >= 16:
+                peek = (acc >> (nbits - 16)) & 0xFFFF
+            else:
+                peek = ((acc << (16 - nbits)) & 0xFFFF) | ((1 << (16 - nbits)) - 1)
+            entry = dc[peek]
+            length = entry >> 8
+            category = entry & 0xFF
+            if not entry or length > nbits or category > 11:
+                return False
+            nbits -= length
+            if category > nbits:
+                return False
+            nbits -= category
+            coefficient = 1
+            while coefficient < 64:
+                if nbits < 26:
+                    while nbits < 32 and position < size:
+                        acc = ((acc & 0xFFFFFFFF) << 8) | raw[position]
+                        position += 1
+                        nbits += 8
+                if nbits >= 16:
+                    peek = (acc >> (nbits - 16)) & 0xFFFF
+                else:
+                    peek = ((acc << (16 - nbits)) & 0xFFFF) | (
+                        (1 << (16 - nbits)) - 1
+                    )
+                entry = ac[peek]
+                length = entry >> 8
+                if not entry or length > nbits:
+                    return False
+                nbits -= length
+                run = entry >> 4 & 0x0F
+                category = entry & 0x0F
+                if category == 0:
+                    if run != 15:
+                        break  # end of block
+                    coefficient += 16
+                    if coefficient > 64:
+                        return False
+                    continue
+                coefficient += run
+                if coefficient > 63 or category > 10 or category > nbits:
+                    return False
+                nbits -= category
+                coefficient += 1
+    if position != size or nbits >= 8:
+        return False
+    return (acc & ((1 << nbits) - 1)) == (1 << nbits) - 1
+
+
+# --------------------------------------------------------------------------
+# Reading and searching
+# --------------------------------------------------------------------------
 
 
 def read_fragments(
@@ -265,43 +624,14 @@ def read_fragments(
     return bytes(out)
 
 
-def _extend_head(
-    handle: EvidenceHandle,
-    start: int,
-    *,
-    head_bytes: int,
-    tail_start: int,
-    end: int,
-    cluster_size: int,
-    deadline: float,
-    accepted: bytes,
-) -> tuple[int, bytes]:
-    """Grow an accepted head one cluster at a time while it still holds.
+def _read_window(handle: EvidenceHandle, start: int, length: int) -> bytes:
+    return read_fragments(handle, [CarveFragment(offset=start, length=length)])
 
-    The enumeration tries short heads first, so the first combination that
-    passes may be a short head joined to the right tail with some of the
-    object's own clusters skipped. Measured: a JPEG split 8192 bytes in was
-    "recovered" as head 4096 + the correct tail - a real, decodable, structurally
-    clean JPEG that is 4096 bytes short of the original and hashes to something
-    else. Both halves are this object's own scan data, so no structural test can
-    see it.
 
-    What sees it is the medium's own layout. The gap is where somebody *else's*
-    bytes are, so every byte of the object that can be contiguous with the head
-    is contiguous with the head: the true head is the longest one that still
-    reassembles. Extending stops at the first cluster that fails, which is the
-    first cluster of the gap.
-    """
-    tail = handle.read(tail_start, end - tail_start)
-    best_head, best = head_bytes, accepted
-    grown = head_bytes + cluster_size
-    while start + grown <= tail_start and time.monotonic() <= deadline:
-        payload = handle.read(start, grown) + tail
-        if not is_whole_jpeg(payload):
-            break
-        best_head, best = grown, payload
-        grown += cluster_size
-    return best_head, best
+def _whole(payload: bytes, deadline: float) -> bool:
+    return _entropy_data_is_well_formed(payload) and scan_is_exact(
+        payload, deadline=deadline
+    )
 
 
 def reassemble_bifragmented_jpeg(
@@ -309,7 +639,7 @@ def reassemble_bifragmented_jpeg(
     start: int,
     *,
     max_size: int,
-    cluster_size: int = DEFAULT_CLUSTER_BYTES,
+    cluster_size: int | None = None,
 ) -> bytes | None:
     """The reassembled bytes only. See :func:`reassemble_bifragmented_jpeg_runs`."""
     found = reassemble_bifragmented_jpeg_runs(
@@ -318,118 +648,155 @@ def reassemble_bifragmented_jpeg(
     return None if found is None else found.payload
 
 
+@dataclass(frozen=True)
+class _TailEnd:
+    """One candidate EOI and the tail starts its bytes allow."""
+
+    end: int
+    first_start: int
+    last_start: int
+
+
 def reassemble_bifragmented_jpeg_runs(
     handle: EvidenceHandle,
     start: int,
     *,
     max_size: int,
-    cluster_size: int = DEFAULT_CLUSTER_BYTES,
+    cluster_size: int | None = None,
 ) -> Reassembly | None:
     """Recover a JPEG split into two runs by one gap, or return ``None``.
 
-    The contiguous case is tried first and costs one decode. Failing that, the
-    head is truncated at successive cluster boundaries and the tail is sought
-    at successive cluster boundaries after the gap, accepting the first
-    combination the decoder consumes whole.
+    ``cluster_size`` is the volume's cluster size when it is known, and ``None``
+    when it is not, in which case the search walks :data:`SECTOR_BYTES`. See
+    the module docstring for why that grid cannot admit a join the volume's own
+    grid would have refused.
 
-    Returns the reassembled bytes *and the runs they came from*, so the caller
-    can hash the content and still say where on the medium each byte was: a
-    candidate that reports a length but not its content cannot be checked by
-    anyone, and one that reports content it cannot locate cannot be corroborated
-    by anyone.
+    Returns the reassembled bytes *and the runs they came from*. Returns
+    ``None`` when no join accounts for the object, when more than one does,
+    and when the budget runs out before either is known.
     """
+    grid = SECTOR_BYTES if cluster_size is None else cluster_size
+    if grid <= 0 or grid % SECTOR_BYTES:
+        raise ValueError(
+            f"cluster size {cluster_size} is not a whole number of "
+            f"{SECTOR_BYTES}-byte sectors"
+        )
     deadline = time.monotonic() + DECODE_DEADLINE_S
-    limit = min(start + max_size, handle.size)
-
-    if handle.read(start, 3) != _SOI:
+    limit = min(start + max_size, handle.size, start + MAX_SEARCH_WINDOW)
+    if limit - start < 4 or handle.read(start, 3) != _SOI:
         return None
+    window = _read_window(handle, start, limit - start)
+    eoi_ends = [match.start() + 2 for match in re.finditer(_EOI, window)]
 
     # 1. Contiguous. Cheapest and by far the most common.
-    for end in _find_eoi(handle, start, min(limit, start + MAX_SEARCH_WINDOW))[:8]:
-        payload = handle.read(start, end - start)
-        if is_whole_jpeg(payload):
+    for end in eoi_ends[:8]:
+        if _whole(window[:end], deadline):
             return Reassembly(
-                payload=payload,
-                runs=(CarveFragment(offset=start, length=len(payload)),),
+                payload=window[:end],
+                runs=(CarveFragment(offset=start, length=end),),
             )
         if time.monotonic() > deadline:
             return None
 
-    # 2. Bifragmented. Walk head lengths on cluster boundaries; for each, try
-    #    gap sizes that also land on cluster boundaries.
-    search_end = min(limit, start + MAX_SEARCH_WINDOW)
-    tail_candidates = _find_eoi(handle, start, search_end)
-    if not tail_candidates:
+    frame = _parse_frame(window)
+    if frame is None:
+        return None
+    scan_at = frame.scan_offset
+    illegal = [
+        match.start() for match in _ILLEGAL_IN_SCAN.finditer(window, scan_at)
+    ]
+
+    def up(value: int) -> int:
+        return _ceil_div(value, grid) * grid
+
+    # The head holds the header and cannot hold a byte pair no scan contains.
+    head_min = up(max(scan_at, 1))
+    head_max = ((illegal[0] + 1 if illegal else len(window)) // grid) * grid
+    if head_min > head_max:
         return None
 
+    ends: list[_TailEnd] = []
+    for end in eoi_ends:
+        if end <= head_min + grid + 2:
+            continue
+        # The tail cannot hold an illegal pair either, except its own EOI.
+        before = bisect_left(illegal, end - 2) - 1
+        floor = illegal[before] + 1 if before >= 0 else head_min + grid
+        first = max(up(floor), head_min + grid)
+        last = ((end - 3) // grid) * grid
+        if first <= last:
+            ends.append(_TailEnd(end=end, first_start=first, last_start=last))
+    if not ends:
+        return None
+
+    deepest = max(
+        (head_max - head_min) // grid + (item.last_start - item.first_start) // grid
+        for item in ends
+    )
     attempts = 0
     steps = 0
-    head_bytes = cluster_size
-    while head_bytes < MAX_SEARCH_WINDOW and start + head_bytes < search_end:
-        head = handle.read(start, head_bytes)
-        gap = cluster_size
-        while gap <= MAX_SEARCH_WINDOW:
-            if (
-                attempts >= MAX_GAP_CANDIDATES
-                or steps >= MAX_SEARCH_STEPS
-                or time.monotonic() > deadline
-            ):
-                logger.debug(
-                    "bifragment search exhausted",
-                    offset=start,
-                    attempts=attempts,
-                    steps=steps,
-                )
-                return None
-            steps += 1
-            tail_start = start + head_bytes + gap
-            if tail_start >= search_end:
-                break
-            # Only the nearest EOI past this gap is a plausible object end, and
-            # the list is ascending, so find it by bisection rather than
-            # rescanning from the front - which on an image carrying an EOI on
-            # every cluster boundary made this loop quadratic and spent the
-            # whole per-object deadline on one candidate.
-            index = bisect_right(tail_candidates, tail_start)
-            if index >= len(tail_candidates):
-                break
-            end = tail_candidates[index]
-            # A second fragment is a run of the medium. Two bytes of EOI that
-            # happen to land on a cluster boundary are not one, and joining a
-            # head to them yields "prefix + FFD9", which Pillow decodes without
-            # complaint and which is a fabricated object. Costs the rare file
-            # whose tail holds under one cluster of data; that is the safe
-            # direction to be wrong in.
-            if end - tail_start >= cluster_size:
+    for level in range(deepest + 1):
+        accepted: tuple[int, int, int] | None = None
+        for tail in ends:
+            for shortened in range(level + 1):
+                head = head_max - shortened * grid
+                if head < head_min:
+                    break
+                tail_start = tail.first_start + (level - shortened) * grid
+                steps += 1
+                if steps > MAX_SEARCH_STEPS:
+                    _log_exhausted(start, attempts, steps, accepted)
+                    return None
+                if tail_start > tail.last_start or tail_start < head + grid:
+                    continue
+                if head + tail.end - tail_start > max_size:
+                    continue
+                if attempts >= MAX_GAP_CANDIDATES or time.monotonic() > deadline:
+                    _log_exhausted(start, attempts, steps, accepted)
+                    return None
                 attempts += 1
-                payload = head + handle.read(tail_start, end - tail_start)
-                if len(payload) <= max_size and is_whole_jpeg(payload):
-                    head_bytes, payload = _extend_head(
-                        handle,
-                        start,
-                        head_bytes=head_bytes,
-                        tail_start=tail_start,
-                        end=end,
-                        cluster_size=cluster_size,
-                        deadline=deadline,
-                        accepted=payload,
-                    )
+                payload = window[:head] + window[tail_start : tail.end]
+                if not _scan_accounts(frame, payload[scan_at:-2], deadline):
+                    continue
+                if accepted is not None:
                     logger.info(
-                        "bifragmented jpeg reassembled",
+                        "bifragment join ambiguous; refused",
                         offset=start,
-                        head_bytes=head_bytes,
-                        gap_bytes=tail_start - start - head_bytes,
+                        joins=[accepted, (head, tail_start, tail.end)],
                     )
-                    return Reassembly(
-                        payload=payload,
-                        runs=(
-                            CarveFragment(offset=start, length=head_bytes),
-                            CarveFragment(
-                                offset=tail_start, length=len(payload) - head_bytes
-                            ),
-                        ),
-                    )
-            gap += cluster_size
-        head_bytes += cluster_size
-
+                    return None
+                accepted = (head, tail_start, tail.end)
+        if accepted is not None:
+            head, tail_start, end = accepted
+            payload = window[:head] + window[tail_start:end]
+            if not decodes_cleanly(payload):
+                return None
+            logger.info(
+                "bifragmented jpeg reassembled",
+                offset=start,
+                head_bytes=head,
+                gap_bytes=tail_start - head,
+                grid_bytes=grid,
+                attempts=attempts,
+            )
+            return Reassembly(
+                payload=payload,
+                runs=(
+                    CarveFragment(offset=start, length=head),
+                    CarveFragment(offset=start + tail_start, length=end - tail_start),
+                ),
+            )
     return None
+
+
+def _log_exhausted(
+    start: int, attempts: int, steps: int, accepted: tuple[int, int, int] | None
+) -> None:
+    """Out of budget. A join found but not yet shown unique is refused too."""
+    logger.debug(
+        "bifragment search exhausted",
+        offset=start,
+        attempts=attempts,
+        steps=steps,
+        unconfirmed=accepted,
+    )

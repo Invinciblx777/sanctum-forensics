@@ -82,11 +82,16 @@ class CarveRequest(BaseModel):
     #: Walk filesystem metadata for deleted entries before carving. The undelete
     #: pass also returns the allocated/unallocated map, which is reported but
     #: deliberately does not bound the carve: bounding was measured and loses
-    #: recall. See :mod:`api.carve_job`.
+    #: recall. It does supply each volume's cluster size to bifragment
+    #: reassembly; with this off, reassembly walks 512-byte sectors instead,
+    #: which is slower and reaches less. See :mod:`api.carve_job`.
     undelete: bool = True
     #: Run the signature and structure carvers over the whole image. Both, from
     #: one pass: the structure carver runs the signature scan itself and then
     #: derives each object's length from its own format where a parser exists.
+    #: A baseline JPEG split into exactly two runs, with a gap of at most 2 MiB,
+    #: is reassembled and scored MEDIUM at most; nothing else is. See
+    #: :mod:`api.carve_job` for the exact scope.
     carve_signatures: bool = True
     #: Where recovered objects are written. None means nothing is written and
     #: only the candidate list is returned.

@@ -30,7 +30,7 @@ import hashlib
 import re
 import time
 import zlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Literal
 
@@ -38,6 +38,7 @@ import structlog
 
 from core.carve.evidence import EvidenceHandle
 from core.carve.fragmentation import (
+    accounts_for_scan,
     is_whole_jpeg,
     reassemble_bifragmented_jpeg_runs,
 )
@@ -633,13 +634,23 @@ def _signature_by_ext(signatures: list[Signature]) -> dict[str, Signature]:
 
 
 def carve_structures(
-    image: EvidenceHandle, *, attempt_reassembly: bool = True
+    image: EvidenceHandle,
+    *,
+    attempt_reassembly: bool = True,
+    cluster_bytes_at: Callable[[int], int | None] | None = None,
 ) -> Iterator[CarveCandidate]:
     """Locate objects, then derive each one's length by parsing it.
 
     Candidates a parser resolved carry ``source="structure"``. Candidates whose
     format has no parser, or whose parse declined, keep ``source="signature"``
     and the footer-derived bound.
+
+    ``cluster_bytes_at`` maps an image offset to the cluster size of the volume
+    holding it, or ``None`` where no filesystem was recognised. This function
+    has no filesystem context of its own; the undelete pass does. A known size
+    restricts a reassembled object's runs to that grid, since no allocator
+    produces any other layout; an unknown one leaves the search on the 512-byte
+    sector grid, which every allocator's layout lies on.
     """
     signatures = load_signatures()
     by_ext = _signature_by_ext(signatures)
@@ -674,15 +685,24 @@ def carve_structures(
             # else's file and stops at the real EOI on the far side of the gap
             # - reporting "valid" for a span that was never one object. The
             # only thing that can tell the difference is a decoder, so ask one
-            # before the verdict leaves this function. Gated on
-            # _FRAGMENT_CAPABLE: this is one extra decode per JPEG candidate
-            # and it buys nothing for a format with no reassembler behind it.
-            if not is_whole_jpeg(_read_range(image, candidate.offset, length)):
+            # before the verdict leaves this function - and a decoder is not
+            # enough on its own: when the gap holds zeros, text or directory
+            # entries the span decodes cleanly. Exact scan accounting sees it.
+            # Gated on _FRAGMENT_CAPABLE: this is one extra decode per JPEG
+            # candidate and it buys nothing for a format with no reassembler.
+            span = _read_range(image, candidate.offset, length)
+            if not is_whole_jpeg(span) or accounts_for_scan(span) is False:
                 validation = "corrupt"
 
         if reassembly_capable and validation != "valid":
+            cluster = None if cluster_bytes_at is None else cluster_bytes_at(
+                candidate.offset
+            )
             rebuilt = reassemble_bifragmented_jpeg_runs(
-                image, candidate.offset, max_size=signature.max_size
+                image,
+                candidate.offset,
+                max_size=signature.max_size,
+                cluster_size=cluster,
             )
             if rebuilt is not None:
                 # The digest is of the reassembled content. The runs say where

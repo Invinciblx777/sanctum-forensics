@@ -239,6 +239,25 @@ def test_the_split_points_recover_when_the_cluster_size_matches(
     assert found.runs[0].length == head_bytes
 
 
+@pytest.mark.parametrize("head_bytes", UNALIGNED_SPLITS)
+def test_a_known_cluster_size_refuses_a_split_it_cannot_produce(
+    original: bytes, head_bytes: int
+) -> None:
+    """On a 4096-byte-cluster volume a head of 1024 or 2048 bytes is impossible.
+
+    No allocator produced it, so no join is enumerated for it - including the
+    right one. The object is refused, not guessed at.
+    """
+    found = reassemble_bifragmented_jpeg_runs(
+        BytesEvidence(_fragmented_image(original, head_bytes)),
+        0,
+        max_size=20 * MIB,
+        cluster_size=CLUSTER,
+    )
+
+    assert found is None
+
+
 # --------------------------------------------------------------------------
 # What must never happen
 # --------------------------------------------------------------------------

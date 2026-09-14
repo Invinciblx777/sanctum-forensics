@@ -43,14 +43,16 @@ an open handle and exposes no worker count. Parallel structure carving would
 mean changing :mod:`core.carve.structure`, which is out of scope for the change
 that wired it in.
 
-**Bifragment reassembly fires, for bifragmented JPEG with both runs present.**
-``carve_structures`` no longer trusts ``parse_jpeg``'s verdict for a JPEG: a
+**Bifragment reassembly fires, for a baseline JPEG in exactly two runs.**
+``carve_structures`` does not trust ``parse_jpeg``'s verdict for a JPEG: a
 segment walk cannot tell a contiguous object from head + gap + tail, because
 entropy-coded data is arbitrary bytes and the walk steps over the gap to the
-real EOI beyond it. The verdict is now checked against
-:func:`core.carve.fragmentation.is_whole_jpeg` before it becomes a candidate's
-``validation``, and a span that fails goes to
-:func:`~core.carve.fragmentation.reassemble_bifragmented_jpeg_runs`.
+real EOI beyond it. The verdict is checked against
+:func:`core.carve.fragmentation.is_whole_jpeg` and, for a baseline JPEG, against
+:func:`~core.carve.fragmentation.scan_is_exact`, which counts the scan's MCUs
+against the frame header - the check a decoder does not make, and the one that
+tells a span with foreign bytes inside it from a whole file. A span that fails
+goes to :func:`~core.carve.fragmentation.reassemble_bifragmented_jpeg_runs`.
 
 A recovered object is **not a span**, so it does not pretend to be one. It
 carries ``fragments`` - the image-absolute runs its content came from - and its
@@ -61,13 +63,24 @@ already did for a filesystem file stored in several extents. Nothing downstream
 sees ``offset``..``offset + length`` for one of these, because that span covers
 the gap and hashes to something that was never a file.
 
-Scope, stated plainly: bifragmented **JPEG only**, both runs still on the
-medium, and fragment boundaries on 4096-byte clusters. Anything else - three
-fragments, a missing tail, a non-JPEG, a split a differently-sized cluster
-produced - is reported as a candidate over the span the parser derived, below
-HIGH, with a digest of bytes that really are there. Measured in
-``tests/carve/signature/test_fragmentation_reachability.py`` and
-``tests/api/test_carve_fragment_recovery.py``.
+The undelete pass supplies the cluster size of every volume it opened, and this
+generator hands it to the carver: runs are sought only on that grid, because no
+allocator produces any other layout. Outside every recognised volume, and when
+``undelete`` is off, the search walks 512-byte sectors - still safe, since every
+real layout lies on that grid, but slower and with less reach.
+
+Scope, stated plainly: **one baseline JPEG in exactly two runs, both still on the
+medium, with a gap of at most 2 MiB, on a volume whose cluster size is known.**
+That is measured to come back byte for byte, and it is scored MEDIUM at most: the
+``reassembly`` score component holds it one basis point under HIGH, because where
+the gap was is inferred. Anything else - three fragments, a missing tail, a
+progressive JPEG, a non-JPEG, a layout off the volume's grid, a join the bytes do
+not settle - is reported as a candidate over the span the parser derived, with a
+digest of bytes that really are there, and never as a recovery. Measured in
+``tests/carve/signature/test_reassembly_fabrication.py``,
+``tests/carve/signature/test_reassembly_cluster_size.py`` and
+``tests/api/test_carve_fragment_recovery.py``; the reach figures are in
+``docs/limitations.md``.
 
 A recovery is ledgered like an erase, and for the same reason. An examiner is
 asked to believe that these candidates came out of that image; without a
@@ -79,7 +92,7 @@ came out, digest first.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -143,6 +156,25 @@ def _progress(
     )
 
 
+def _cluster_lookup(
+    volumes: list[tuple[int, int, int]],
+) -> Callable[[int], int | None]:
+    """Offset -> cluster size of the volume holding it, ``None`` outside every one.
+
+    ``None`` is what an unrecognised region and a run with ``undelete=False``
+    both get: the reassembler then walks the 512-byte sector grid, which costs
+    search time and never admits a join the volume's own grid would refuse.
+    """
+
+    def cluster_bytes_at(offset: int) -> int | None:
+        for start, end, size in volumes:
+            if start <= offset < end:
+                return size
+        return None
+
+    return cluster_bytes_at
+
+
 def carve_generator(
     image: Path,
     *,
@@ -183,6 +215,10 @@ def carve_generator(
     # undelete record and a carved header can legitimately land on the same
     # offset and mean different objects.
     payloads: dict[tuple[str, int], bytes] = {}
+    # (start, end, cluster bytes) for every volume whose filesystem the undelete
+    # pass opened. The carver has no filesystem context of its own, and a
+    # reassembled object's runs can only be on its volume's cluster grid.
+    volumes: list[tuple[int, int, int]] = []
     # What a cancellation has to report, kept current as the stages run. See
     # _record_cancelled_carve.
     written: list[str] = []
@@ -233,8 +269,14 @@ def carve_generator(
                         "length": item.length,
                         "description": item.description,
                         "fs_type": item.fs_type,
+                        "cluster_bytes": item.cluster_bytes,
                     }
                     for item in report.partitions
+                ]
+                volumes = [
+                    (item.offset, item.offset + item.length, item.cluster_bytes)
+                    for item in report.partitions
+                    if item.cluster_bytes
                 ]
                 unallocated_bytes = sum(item.length for item in report.unallocated)
                 for item in report.files:
@@ -263,7 +305,9 @@ def carve_generator(
                 # This is the same call testkit/calibrate.py makes, which is what
                 # makes the measured weights in core/carve/score.py describe the
                 # pipeline the product actually runs.
-                carved = list(carve_structures(handle))
+                carved = list(
+                    carve_structures(handle, cluster_bytes_at=_cluster_lookup(volumes))
+                )
                 # One uninterrupted pass with no yield inside it: by the time this
                 # line runs the scan covered the whole image, and before it, none.
                 bytes_scanned = handle.size
