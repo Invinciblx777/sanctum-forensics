@@ -378,19 +378,28 @@ def _filler(size: int, rng: random.Random) -> bytearray:
     return bytearray(rng.randbytes(size))
 
 
-def generate_corpus(out_dir: Path, *, seed: int = 0) -> CorpusManifest:
-    """Write a synthetic image plus ``ground_truth.json`` into ``out_dir``."""
+def generate_corpus(
+    out_dir: Path, *, seed: int = 0, first_offset: int = FIRST_OFFSET
+) -> CorpusManifest:
+    """Write a synthetic image plus ``ground_truth.json`` into ``out_dir``.
+
+    ``first_offset`` moves every object by the same amount. The default puts
+    objects off every sector boundary, which no filesystem does; the benchmark
+    also carves a copy with ``first_offset=4096`` because a carver that looks
+    for headers only at block starts, as PhotoRec does, finds nothing in the
+    default layout for a reason that has nothing to do with real media.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     rng = random.Random(seed)
 
     plants = _plants(rng)
-    size = FIRST_OFFSET + STRIDE_BYTES * (len(plants) + 1)
+    size = first_offset + STRIDE_BYTES * (len(plants) + 1)
     canvas = _filler(size, rng)
 
     objects: list[PlantedObject] = []
     for index, plant in enumerate(plants):
-        offset = FIRST_OFFSET + index * STRIDE_BYTES
+        offset = first_offset + index * STRIDE_BYTES
         canvas[offset : offset + len(plant.data)] = plant.data
         objects.append(
             PlantedObject(
@@ -572,7 +581,7 @@ def _ntfs_objects(rng: random.Random) -> list[tuple[str, bytes]]:
 
 
 def generate_filesystem_corpus(  # noqa: C901 - one pass per filesystem, read top to bottom
-    out_dir: Path, *, seed: int = 0
+    out_dir: Path, *, seed: int = 0, payload_dir: Path | None = None
 ) -> FilesystemCorpus:
     """Build one image per filesystem, plus the damaged and multi-partition ones.
 
@@ -580,6 +589,11 @@ def generate_filesystem_corpus(  # noqa: C901 - one pass per filesystem, read to
     structures directly or drives a tool that does, because a corpus that only
     builds under ``sudo`` stops being built and nobody finds out until it
     matters.
+
+    ``payload_dir``, when given, receives every planted file's bytes named by
+    their SHA-256. The manifest records digests only; the benchmark needs the
+    bytes to find each file on the medium and to tell a corrupt recovery of a
+    planted file from an object that was never planted.
     """
     # Image sizes are kept small on purpose. The corpus is built into pytest's
     # tmp_path, which on most Linux hosts is a tmpfs - so every megabyte here
@@ -616,6 +630,12 @@ def generate_filesystem_corpus(  # noqa: C901 - one pass per filesystem, read to
         recoverable: bool,
         note: str = "",
     ) -> None:
+        if payload_dir is not None:
+            digest = hashlib.sha256(planted.data).hexdigest()
+            stored = Path(payload_dir) / digest
+            if not stored.exists():
+                stored.parent.mkdir(parents=True, exist_ok=True)
+                stored.write_bytes(planted.data)
         rows.append(
             FilesystemFile(
                 image=image,
