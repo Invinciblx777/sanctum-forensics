@@ -50,10 +50,13 @@ loses the character/complement/character shape, which is worth less than passes
 that actually reach the medium. The plan records the fill bytes and the reason.
 
 The method is offered only because operators are sometimes contractually
-required to name it. It is superseded by NIST SP 800-88 Rev.1, provides no
-measurable benefit over a single pass on any drive made after 2001, and on
-flash media it is actively harmful: every extra pass burns program/erase cycles
-without reaching a single remapped or over-provisioned block.
+required to name it. NIST SP 800-88r2 (September 2025) states that multi-pass
+overwrite is not needed for clear and calls the DoD 5220.22-M pass-count language
+obsolete (Appendix D); for SSDs with over-provisioning it says such practices
+should be avoided, as very little confidentiality protection is achieved
+(Sec. 3.1.1). This tool measures no benefit over a single pass, and on flash
+media every extra pass burns program/erase cycles without reaching a single
+remapped or over-provisioned block.
 
 ## Overwrite cannot reach all of a flash device
 
@@ -122,11 +125,12 @@ a pattern the controller had to store. **A device wiped this way holds `0xA5`
 afterwards, not zeros.** The plan states the fill bytes before the run starts.
 
 The substitution is a truthfulness fix before it is a security one: the report
-names `SINGLE_PASS_OVERWRITE`, and a controller that elides performed a
-deallocate. NIST SP 800-88 Rev.1 does not recognise a deallocate as a
-sanitization method. The Clear *outcome* still holds — every block reads as zero
-through the device's own interface, which is what Clear is defined to protect
-against — but the method statement would have been false.
+names `SINGLE_PASS_OVERWRITE`, and a controller that elides wrote nothing. NIST
+SP 800-88r2 Sec. 3.1.1 describes overwrite as replacing target data with
+non-sensitive data, and an elided write replaced nothing. The Clear *outcome*
+still holds — every block reads as zero through the device's own interface,
+which is what clear is defined to protect against — but the method statement
+would have been false.
 
 ### What this does to a three-pass estimate
 
@@ -167,6 +171,30 @@ transport, the flag, the model string, or the write calibration, and returns the
 signal that decided it so the report can say how it knew. Transport wins over
 the flag: there are no rotating USB sticks or SD cards, and the flag being wrong
 is the documented failure mode.
+
+## ATA enhanced SECURITY ERASE is Purge on magnetic media only, and that rule is unvalidated
+
+On a device `is_flash` determines to be flash, ATA enhanced SECURITY ERASE and
+ATA SANITIZE overwrite are not counted as Purge. The authority is the withdrawn
+NIST SP 800-88r1 Table A-8, which lists SECURITY ERASE UNIT under Clear for ATA
+SSDs; SP 800-88r2 does not name the command and defers to IEEE 2883, which has
+not been read. `docs/compliance.md` quotes the text.
+
+What this does not establish:
+
+- **No SATA SSD has been available**, so the flash half of the rule has never
+  run on real media. No ATA firmware erase has run on hardware at all. The unit
+  tests in `tests/device/test_purge_by_device_class.py` and
+  `tests/erase/test_enhanced_erase_on_flash.py` are the only evidence.
+- **The rule is only as good as the flash determination.** A hybrid drive, or an
+  SSD whose kernel reports `rotational=1` and whose model string names no flash,
+  is treated as magnetic, and its enhanced erase is counted as Purge. r1 Table
+  A-5 itself warns that hybrid drives "may not be easily identifiable by the
+  label".
+- **On magnetic media the Purge claim rests on a withdrawn table.** The capability
+  record says so on every device where enhanced erase would be the Purge method.
+- r1 advises consulting the manufacturer before relying on SECURITY ERASE UNIT
+  on either media type. This tool does not, and cannot.
 
 ## USB and MMC bridges block ATA pass-through
 

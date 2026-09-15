@@ -59,6 +59,7 @@ export function methodsFor(caps: Capabilities | null): MethodOption[] {
   const ops = caps?.ata_sanitize_ops ?? []
   const nvme = (caps?.nvme_sanicap ?? {}) as Record<string, unknown>
   const frozen = caps?.security_frozen ?? false
+  const purgeReachable = (caps?.achievable_levels ?? []).includes('PURGE')
 
   return [
     {
@@ -121,13 +122,26 @@ export function methodsFor(caps: Capabilities | null): MethodOption[] {
       id: 'ATA_SECURITY_ERASE_ENHANCED',
       label: 'ATA SECURITY ERASE (enhanced)',
       level: 'PURGE',
-      available: Boolean(caps?.ata_enhanced_erase) && !frozen,
+      // The engine decides whether this counts as Purge, because only it knows
+      // whether the medium is flash. When it does not reach PURGE the drive's
+      // support is shown as evidence but the option is not offered.
+      available:
+        Boolean(caps?.ata_enhanced_erase) &&
+        !frozen &&
+        purgeReachable,
       evidence: frozen
         ? 'The drive reports ATA security as frozen, so no SECURITY command can ' +
           'be issued. Power-cycle the drive or issue an S3 sleep/wake to clear it.'
-        : caps?.ata_enhanced_erase
-          ? 'hdparm -I reported enhanced erase support and security is not frozen.'
-          : 'Enhanced erase was not reported.',
+        : !caps?.ata_enhanced_erase
+          ? 'Enhanced erase was not reported.'
+          : purgeReachable
+            ? 'hdparm -I reported enhanced erase support and security is not ' +
+              'frozen. It counts as Purge on magnetic media only; on flash it is ' +
+              'a Clear (NIST SP 800-88r1 Table A-8), and the engine chooses a ' +
+              'sanitize or cryptographic erase there instead.'
+            : 'hdparm -I reported enhanced erase support, but the engine did not ' +
+              'count it as Purge for this device: on flash it is a Clear only ' +
+              '(NIST SP 800-88r1 Table A-8). See the limitations below.',
     },
     {
       id: 'SINGLE_PASS_OVERWRITE',
@@ -147,8 +161,8 @@ export function methodsFor(caps: Capabilities | null): MethodOption[] {
       available: true,
       legacy: true,
       evidence:
-        'LEGACY. Superseded by NIST SP 800-88 Rev.1, which states that a single ' +
-        'overwrite pass is sufficient for any drive manufactured after 2001. ' +
+        'LEGACY. NIST SP 800-88r2 states that multi-pass overwrite is not needed ' +
+        'for clear, and calls the DoD 5220.22-M pass-count language obsolete. ' +
         'Offered only because operators are sometimes contractually required to ' +
         'name it. On flash media it is actively harmful: every extra pass burns ' +
         'program/erase cycles without reaching a single remapped block.',
@@ -312,7 +326,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
                           </Chip>
                         )}
                         {item.legacy && (
-                          <Chip tone="high" title="Superseded by NIST SP 800-88 Rev.1">
+                          <Chip tone="high" title="Multi-pass overwrite is not needed for clear: NIST SP 800-88r2">
                             LEGACY
                           </Chip>
                         )}

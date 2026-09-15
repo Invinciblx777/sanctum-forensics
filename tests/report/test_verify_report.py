@@ -81,6 +81,42 @@ def tamper(path: Path, mutate: Any) -> None:
 # --------------------------------------------------------------------------
 
 
+def test_a_report_signed_before_the_standards_fields_existed_still_verifies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Adding the standards and regulatory fields changed what new certificates
+    carry, not how any certificate is verified. A report without them - the
+    shape of every report signed before the change - must still pass."""
+    monkeypatch.setenv(PASSPHRASE_ENV, PASSPHRASE)
+    key = load_or_create_key(tmp_path / "sanctum.key.pem")
+    report = build_report(
+        case_id="CASE-OLD",
+        operator="A. Operator",
+        generated_at=datetime(2026, 3, 1, tzinfo=UTC),
+        tool_version="0.1.0",
+        device={"model": "M", "serial": "S", "size_bytes": 1},
+        method={"method": "SINGLE_PASS_OVERWRITE"},
+        hidden_areas={},
+        verification={"strategy": "full_read", "passed": True},
+        residual_risk={"level": "low", "factors": [], "purge_achieved": False},
+        limitations=[],
+        ledger_excerpt=[],
+        chain_verification=Ledger(
+            tmp_path / "store", tool_version="0.1.0", pubkey_fingerprint=""
+        ).verify(),
+        pubkey_fingerprint=fingerprint(public_key_of(key)),
+    )
+    del report["sections"]["method"]["standards"]
+    del report["sections"]["method"]["regulatory_references"]
+    report["signature"] = sign_report(report, key).model_dump()
+    json_path, _ = write_report(report, tmp_path / "out")
+
+    result = verify_report_file(json_path)
+    signature = next(c for c in result.checks if c.name is CheckName.SIGNATURE)
+    assert signature.passed is True
+    assert result.ok is True
+
+
 def test_a_good_report_passes_every_check(case: dict[str, Any]) -> None:
     result = verify_report_file(case["path"], ledger_root=case["ledger_root"])
     assert result.ok is True

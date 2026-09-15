@@ -268,6 +268,17 @@ def test_an_unverifiable_erasure_is_never_counted_as_verified() -> None:
     assert "not verified" in verification["note"]
 
 
+def test_the_file_report_claims_no_sanitization_method_for_a_file_overwrite() -> None:
+    """NIST SP 800-88r2 defines clear over every user-addressable location of a
+    medium. A file erasure reaches the file's extents, so it is not one."""
+    scope = build_file_erase_report(**file_inputs())["sections"]["scope"]
+    standards = scope["standards"]
+    assert standards["method_vocabulary"].startswith("No NIST SP 800-88r2")
+    assert "no conformance is claimed" in standards["technique_standard"]
+    (dpdp,) = scope["regulatory_references"]
+    assert dpdp["instrument"].startswith("Digital Personal Data Protection Act")
+
+
 def test_the_file_report_records_the_dry_run_flag() -> None:
     sections = build_file_erase_report(**file_inputs(dry_run=True))["sections"]
     assert sections["scope"]["dry_run"] is True

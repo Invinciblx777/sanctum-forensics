@@ -22,15 +22,15 @@ Sources: `docs/validation/hardware.md` (hardware run, 2026-09-05),
 
 **The full written answer, for the follow-up:**
 
-Because neither buys anything measurable on any drive made after 2001, and on
-flash the extra passes are actively harmful.
+Because neither buys anything we can measure over a single pass, and on flash
+the extra passes are actively harmful.
 
 Gutmann's 35 passes target MFM and RLL encoding on drives with areal densities
 five orders of magnitude below current ones. Gutmann himself wrote the epilogue
 saying so. On modern perpendicular recording the patterns are noise.
 
 DoD 5220.22-M we do offer, because operators are sometimes contractually
-required to name it. It is superseded by NIST SP 800-88 Rev.1. On this
+required to name it. NIST SP 800-88r2 calls its pass-count language obsolete. On this
 validation stick we measured what it actually costs: **94.3 minutes against 26.1
 minutes** for a naive estimate, because two of its three passes are zero passes
 that this controller elides, and the tool substitutes `0xA5` so they are
@@ -42,9 +42,10 @@ One caveat we state rather than hide: our third pass is a fixed zero character,
 not the historical random one. A random pass cannot be read back and checked,
 and an unverifiable erase is not something this project reports as verified.
 
-**NIST SP 800-88 Rev.1 is explicit that a single overwrite pass is sufficient
-for Clear on any post-2001 drive.** We follow the standard, and we name the
-level we achieved.
+**NIST SP 800-88r2 (September 2025) states that multi-pass overwrite is not
+needed for clear, and for SSDs with over-provisioning says such practices should
+be avoided because very little confidentiality protection is achieved.** We name
+the method we achieved. (Its predecessor, r1, was withdrawn on 2025-09-26.)
 
 ---
 
@@ -96,11 +97,13 @@ overwrite. We will tell you that in the report.
 ## 3 · What is your recovery rate?
 
 > **Say it out loud:** There is no single number, and any tool quoting one is
-> averaging filesystems that behave nothing like each other. On real media last
-> week we recovered **456 of 456 on FAT32 and 460 of 460 on exFAT, byte-identical**
-> — but every file on those volumes was contiguous, so that is 100% on a
-> contiguous population, not 100%. Synthetically, FAT32 is 95.5% and ext4 is 0%,
-> and the 0% is physics, not a defect.
+> averaging filesystems that behave nothing like each other. On real media on
+> 2026-09-05 we recovered **456 of 456 on FAT32 and 460 of 460 on exFAT,
+> byte-identical** — on the carve pipeline as it was before structure carving was
+> wired in, so not the one that ships now, and every file on those volumes was
+> contiguous, so that is 100% on a contiguous population, not 100%.
+> Synthetically, FAT32 is 95.5% and ext4 is 0%, and the 0% is physics, not a
+> defect.
 
 **The full written answer, for the follow-up:**
 
@@ -148,7 +151,14 @@ Everything above is synthetic-corpus data. The real-media numbers follow.
 ### Real removable media, measured 2026-09-05
 
 Three passes against a Toshiba TransMemory USB stick, volume images acquired and
-verified before carving (`docs/validation/hardware.md`, Phase B):
+verified before carving (`docs/validation/hardware.md`, Phase B).
+
+**Every figure in this subsection was measured on the pre-Batch-2 pipeline.**
+Phase B ran on 2026-09-05, when `api/carve_job.py` still called the signature
+carver alone. Batch 2 then routed it through `carve_structures`, which adds the
+format parsers and bifragment reassembly. The pipeline that ships has not yet
+been measured on real media; that is the next hardware run, and these figures
+are not a stand-in for it.
 
 | Filesystem | Damage | Deleted | Recovered exactly | Recall |
 |---|---|---:|---:|---:|
@@ -448,7 +458,7 @@ because no step checked an exit status or an output file. PhotoRec recovered
 14 of 14 planted files afterwards.
 
 Nine defects separate run 1 from run 3. **None was caught by the synthetic
-suite, which was green throughout at 757 tests — 970 today.** Loop devices have
+suite, which was green throughout at 757 tests — 1211 today.** Loop devices have
 no controller, no bridge and no FTL, so three of the nine are physically
 unreachable on one. Three needed a step to fail, and on a loop device none does.
 Two needed two jobs on one ledger and a key created after the chain started.
@@ -468,7 +478,9 @@ that would mean the Clear itself had failed.
 **Phase B — the recovery side on real media — has now been run too, three times
 on 2026-09-05.** It was blocked for a long time because the validation host had
 no card reader; it runs on a USB volume instead, which is the same filesystem
-code path (see question 21).
+code path (see question 21). **It ran on the pre-Batch-2 carve pipeline** — the
+signature carver alone, before structure carving and reassembly were wired in —
+so the figures below describe that pipeline, not the one that ships.
 
 FAT32 with half the files deleted: **456 of 456 recovered byte-exact.** exFAT
 with half the files deleted: **460 of 460.** FAT32 quick-formatted: 10 of 912,
@@ -504,9 +516,12 @@ changes what every Phase B recall figure is measured over, which is a new
 experiment rather than a repair. All six are written up in
 `docs/validation/hardware.md`.
 
-**What Phase B did not find is a divergence in the carver.** HIGH was 30 for 30
-across the three passes, matching the synthetic calibration's 100.0% HIGH
-precision, so the confidence weights stand as calibrated.
+**What Phase B did not find is a divergence in the carver it ran.** HIGH was 30
+for 30 across the three passes, matching the synthetic calibration's 100.0% HIGH
+precision. That is agreement between the pre-Batch-2 signature pipeline on real
+media and the structure pipeline on the corpus; it is not a real-media
+measurement of the weights as the shipped pipeline applies them. The next
+hardware run is.
 
 Every one of the nine defects now has a regression test that fails without its
 fix.
@@ -516,7 +531,8 @@ fix.
 ## 10 · What is your biggest weakness?
 
 > **Say it out loud:** We have never recovered a fragmented file from real media.
-> Recovery is validated on real hardware now — 456 of 456 and 460 of 460 — but
+> Recovery was measured on real hardware — 456 of 456 and 460 of 460, on the
+> pipeline before structure carving was wired in — but
 > **every file on both volumes was contiguous**, so the reconstruction that can go
 > wrong never had to make a decision. On a used card fragmentation is the common
 > case, and we do not yet know what it costs us. That is the honest answer, and
@@ -525,9 +541,11 @@ fix.
 **The full written answer, for the follow-up:**
 
 **We have never recovered a fragmented file from real media.** Recovery has now
-been validated on real removable media — three Phase B passes, 456 of 456 and
-460 of 460 byte-exact — but **every file on both volumes was contiguous**, and
-that is the whole caveat.
+been measured on real removable media — three Phase B passes, 456 of 456 and
+460 of 460 byte-exact, on the pre-Batch-2 carve pipeline — but **every file on
+both volumes was contiguous**, and that is the caveat this answer is about. The
+other is that the shipped pipeline, with structure carving and reassembly, has
+not been run on real media at all.
 
 The harness populates a freshly formatted volume in one sequential pass and only
 then deletes. Nothing is ever written into a hole, so **0 of the 916 recovered
@@ -558,9 +576,10 @@ would rather say that than quote 100% without the qualifier.
 Two things that are *not* the answer to this question, since Phase B settled
 them:
 
-- **It is not the confidence calibration.** HIGH was 30 for 30 across the three
-  passes and no false positive reached it, matching the synthetic corpus's
-  100.0% HIGH precision. The one soft spot is ordering *within* MEDIUM, where
+- **It is probably not the confidence calibration.** HIGH was 30 for 30 across
+  the three passes and no false positive reached it, matching the synthetic
+  corpus's 100.0% HIGH precision — but on the pre-Batch-2 pipeline, so this is
+  not yet a real-media measurement of what ships. The one soft spot is ordering *within* MEDIUM, where
   906 correct recoveries scored 0.5500 and a false positive scored 0.6000 — the
   bucket floor separates them, the number inside the bucket does not.
 - **It is not the media.** Six acquisitions of a stick this validation has
@@ -827,7 +846,10 @@ A firmware sanitize on a native interface, with attestation, on a drive that is
 not behind a bridge — and even then we would report what the drive told us about
 itself, not a proof.
 
-The ladder, in the vocabulary of NIST SP 800-88 Rev.1:
+The ladder, in the vocabulary of NIST SP 800-88r2 Sec. 3.1 (clear, purge,
+destroy — unchanged from the withdrawn r1). Which technique reaches purge on a
+given device is, under r2, a matter for IEEE 2883, which we have not been able to
+check this table against:
 
 | Level | Achieved by | What we report |
 |---|---|---|

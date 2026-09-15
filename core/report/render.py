@@ -44,7 +44,10 @@ __all__ = [
     "build_report",
     "build_file_erase_report",
     "build_carve_report",
+    "dpdp_erasure_reference",
     "excerpt_gaps",
+    "file_erasure_standards",
+    "sanitization_standards",
     "render_json",
     "render_pdf",
     "write_report",
@@ -71,6 +74,104 @@ PDF_DISCLAIMER = (
     "artifact. The signed JSON report is authoritative. Verify it with: "
     "sanctum verify-report <case>.forensic.json"
 )
+
+
+def sanitization_standards() -> dict[str, Any]:
+    """What a drive erasure certificate rests on, and what it does not claim.
+
+    Stated inside the signed bytes so the claim travels with the certificate.
+    NIST SP 800-88r1 was withdrawn on 2025-09-26; r2 keeps clear, purge and
+    destroy but defers technique detail to IEEE 2883, whose text this project
+    has not had. The sources are in docs/compliance.md.
+    """
+    return {
+        "method_vocabulary": (
+            "clear, purge and destroy, as defined in NIST SP 800-88r2 "
+            "(September 2025), Sec. 3.1. NIST SP 800-88r1 was withdrawn on "
+            "2025-09-26."
+        ),
+        "technique_standard": (
+            "NIST SP 800-88r2 Sec. 4.4 says sanitization should be performed in "
+            "a manner that complies with IEEE 2883 or a standard identified as "
+            "acceptable by organizational policy. This tool's techniques have "
+            "not been verified against the text of IEEE 2883-2022, and this "
+            "report does not claim conformance to it."
+        ),
+        "verification_and_validation": (
+            "The verification section records this tool's read-back of the "
+            "medium. NIST SP 800-88r2 Sec. 4.5.2 validation - the decision to "
+            "accept the outcome or to repeat or escalate sanitization - belongs "
+            "to the organization and is not made by this tool."
+        ),
+        "nist_sp_800_88r2_sec_4_6_fields_not_recorded": [
+            "manufacturer, as a field separate from the model string",
+            "organizationally assigned media or property number",
+            "media source",
+            "pre-sanitization confidentiality categorization (optional)",
+            "name, position or title, location, contact information and "
+            "signature of each individual performing verification and "
+            "validation",
+        ],
+    }
+
+
+def file_erasure_standards() -> dict[str, Any]:
+    """What a file erasure report claims against the sanitization standards.
+
+    A per-file overwrite is not a clear of a medium, so no method is claimed.
+    """
+    return {
+        "method_vocabulary": (
+            "No NIST SP 800-88r2 sanitization method is claimed. Sec. 3.1.1 "
+            "defines clear over all user-addressable storage locations of a "
+            "medium; a file erasure overwrites only the extents of the files "
+            "named."
+        ),
+        "scope": (
+            "This is closest to what NIST SP 800-88r2 Sec. 4.2 calls partial "
+            "sanitization, which it notes carries the risk that sensitive data "
+            "spilled into other areas of the medium. The residual findings "
+            "section names the areas this tool knows of."
+        ),
+        "technique_standard": (
+            "Not verified against the text of IEEE 2883-2022; no conformance "
+            "is claimed."
+        ),
+    }
+
+
+def dpdp_erasure_reference() -> dict[str, Any]:
+    """The one Indian instrument an erasure record directly bears on.
+
+    Which obligation the record helps discharge, and what it cannot establish.
+    Verified against the Act (MeitY) and G.S.R. 843(E) and 846(E) of
+    13 November 2025; see docs/compliance.md.
+    """
+    return {
+        "instrument": "Digital Personal Data Protection Act, 2023, section 8(7)",
+        "in_force": (
+            "Not at the date of this build: G.S.R. 843(E) of 13 November 2025 "
+            "brings sections 3 to 17 of the Act into force eighteen months "
+            "after its publication."
+        ),
+        "this_record_evidences": (
+            "that the device or paths named in this report were overwritten or "
+            "sanitized by the method named, and the verification result this "
+            "tool recorded for them"
+        ),
+        "requires_a_person": [
+            "deciding that the specified purpose is no longer served or that "
+            "consent was withdrawn",
+            "confirming that no law in force requires the data to be retained",
+            "finding every other copy, including backups and data made "
+            "available to a Data Processor, which section 8(7)(b) also requires "
+            "to be erased",
+            "informing the Data Principal where rule 8(2) of the Digital "
+            "Personal Data Protection Rules, 2025 applies",
+            "retaining the processing logs rule 8(3) requires for at least one "
+            "year, which an erasure must not destroy",
+        ],
+    }
 
 _SECTION_TITLES = {
     "case_identity": "1. Case Identity",
@@ -210,6 +311,8 @@ def build_report(
             "level_achieved": method.get("level_achieved", ""),
             "justification": method.get("justification", ""),
             "capability_evidence": method.get("capability_evidence", {}),
+            "standards": sanitization_standards(),
+            "regulatory_references": [dpdp_erasure_reference()],
         },
         "hidden_areas": {
             "hpa_present": bool(hidden_areas.get("hpa_present")),
@@ -415,6 +518,8 @@ def build_file_erase_report(
             "paths_requested": len(records),
             "dry_run": dry_run,
             "paths": _or_none_recorded([str(item.get("path", "")) for item in records]),
+            "standards": file_erasure_standards(),
+            "regulatory_references": [dpdp_erasure_reference()],
         },
         "results": {
             "erased": len(records) - failed,

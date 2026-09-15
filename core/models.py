@@ -59,7 +59,7 @@ __all__ = [
 
 
 class SanitizationLevel(StrEnum):
-    """NIST SP 800-88 Rev.1 sanitization categories."""
+    """The sanitization methods of NIST SP 800-88r2 Sec. 3.1: clear, purge, destroy."""
 
     CLEAR = "CLEAR"
     PURGE = "PURGE"

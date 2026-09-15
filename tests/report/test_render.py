@@ -118,6 +118,48 @@ def test_method_section_prints_capability_evidence_not_only_the_conclusion() -> 
     assert evidence["achievable_levels"] == ["CLEAR", "PURGE"]
 
 
+def test_method_section_cites_nist_r2_and_names_r1_only_as_withdrawn() -> None:
+    """NIST SP 800-88r1 was withdrawn on 2025-09-26. A certificate citing it as
+    current would carry a false claim inside its signed bytes."""
+    report = build_report(**sample_inputs())
+    standards = report["sections"]["method"]["standards"]
+    assert "NIST SP 800-88r2" in standards["method_vocabulary"]
+    text = render_json(report).decode("utf-8")
+    assert "Rev.1" not in text
+    assert text.count("800-88r1") == text.count("800-88r1 was withdrawn")
+
+
+def test_method_section_does_not_claim_ieee_2883_conformance() -> None:
+    """IEEE 2883-2022 is a paid standard this project has not read. Naming it
+    as the standard NIST r2 defers to is a fact about r2; claiming conformance
+    would not be."""
+    standards = build_report(**sample_inputs())["sections"]["method"]["standards"]
+    technique = standards["technique_standard"]
+    assert "not been verified against the text of IEEE 2883-2022" in technique
+    assert "does not claim conformance" in technique
+
+
+def test_method_section_names_the_certificate_fields_it_does_not_record() -> None:
+    """NIST SP 800-88r2 Sec. 4.6 lists what a certificate records. The ones this
+    report has no field for are named, not silently absent."""
+    standards = build_report(**sample_inputs())["sections"]["method"]["standards"]
+    missing = standards["nist_sp_800_88r2_sec_4_6_fields_not_recorded"]
+    assert "media source" in missing
+    assert any("verification and validation" in item for item in missing)
+    assert "not made by this tool" in standards["verification_and_validation"]
+
+
+def test_dpdp_reference_says_what_the_record_cannot_establish() -> None:
+    references = build_report(**sample_inputs())["sections"]["method"][
+        "regulatory_references"
+    ]
+    (dpdp,) = references
+    assert dpdp["instrument"].endswith("section 8(7)")
+    assert "G.S.R. 843(E)" in dpdp["in_force"]
+    assert len(dpdp["requires_a_person"]) >= 3
+    assert any("8(7)(b)" in item for item in dpdp["requires_a_person"])
+
+
 def test_verification_section_carries_seed_and_formula_not_just_a_number() -> None:
     section = build_report(**sample_inputs())["sections"]["verification"]
     assert section["sample_seed"] == 1515870810
@@ -156,8 +198,8 @@ def test_empty_limitations_print_none_recorded_rather_than_disappearing() -> Non
 
 def test_limitations_are_carried_verbatim_and_unedited() -> None:
     wordy = (
-        "DOD_5220_22_M_3PASS is a legacy method, superseded by NIST SP 800-88 "
-        "Rev.1, and on flash media it is actively harmful."
+        "DOD_5220_22_M_3PASS is a legacy method: NIST SP 800-88r2 states that "
+        "multi-pass overwrite is not needed, and on flash media it is harmful."
     )
     inputs = sample_inputs(limitations=[wordy, "second"])
     section = build_report(**inputs)["sections"]["limitations"]

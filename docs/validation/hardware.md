@@ -529,8 +529,9 @@ pattern the erase wrote, verified across the whole address space and again after
 a power cycle. Purge was never claimed and is not reachable here.
 
 What the elision changed is the **method statement**. Run 2's report named
-`SINGLE_PASS_OVERWRITE` for what the device performed as a deallocate, and NIST
-SP 800-88 Rev.1 does not recognise a deallocate as a sanitization method. Run 3
+`SINGLE_PASS_OVERWRITE` for a write the device never performed, and overwrite
+means replacing the data with non-sensitive data (NIST SP 800-88r2 Sec. 3.1.1;
+this citation was updated on 2026-09-14 from the since-withdrawn r1). Run 3
 writes `0xA5`, which this controller has to program, so the method named is the
 method performed.
 
@@ -1074,8 +1075,10 @@ A quick format on this media **does not sanitize anything**. Every byte of 225.8
 MiB of planted data was still there afterwards. Sanctum recovered only 10 files
 because 902 of them were random noise with no structure to recognise; a real
 volume holds documents, and a signature carver over that image would return most
-of them. **Quick format is not a Clear, not a Purge, and not any part of NIST SP
-800-88.** If a report is ever asked whether a formatted volume is sanitized, this
+of them. **Quick format is not a clear and not a purge:** NIST SP 800-88r2
+Sec. 3.1.1 defines clear over all user-addressable storage locations, and this
+format left 225.8 MiB of them holding planted data. If a report is ever asked
+whether a formatted volume is sanitized, this
 run is the evidence that the answer is no.
 
 ### Precision: what the extra candidates are
@@ -1167,6 +1170,14 @@ media, which is exactly what `docs/performance/calibration.md` measured on the
 synthetic corpus. **The score weights do not need revisiting**, and the
 `fs_metadata` weight that the calibration deliberately held at 1500 is vindicated
 by this run rather than challenged by it.
+
+> **Note added 2026-09-14.** Every Phase B figure here was measured on the carve
+> pipeline as it stood on 2026-09-05, which called the signature carver alone.
+> Batch 2 then routed `api/carve_job.py` through `carve_structures` — format
+> parsers and bifragment reassembly — which is the pipeline the calibration
+> measured and the one that ships. The conclusion above is therefore agreement
+> between two different pipelines, not a real-media measurement of the shipped
+> one. That measurement is the next hardware run.
 
 LOW also behaved as designed: 9 candidates, 0 true, which is the bucket the
 report tells an examiner to skip.

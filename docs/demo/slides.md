@@ -52,7 +52,7 @@ primitive. No authentication scheme we could ship would make that a good trade."
 
 ## 3 · The three modules
 
-> # 970
+> # 1211
 > **Tests passing, 12 skipped — and nine defects that none of them caught.**
 > *`make test`; the nine are on slide 6*
 
@@ -115,10 +115,12 @@ then tell you the four things that success does not cover. That is the product."
 - Calibration found three shipped defects on the way: `parse_zip`, `parse_pdf`
   merging two PDFs into one HIGH-scored false positive, and the entropy
   component being awarded to candidates holding **zero bytes**.
-- **Then real media agreed.** Across three Phase B passes on a USB stick,
-  **HIGH was 30 candidates and 30 true positives — 100.00% precision**, the same
-  figure the synthetic corpus produced. **Not one false positive reached HIGH**,
-  including 27 signature hits manufactured out of 236 MB of pseudo-random filler.
+- **Then real media agreed — on the pre-Batch-2 pipeline.** Across three Phase B
+  passes on a USB stick, **HIGH was 30 candidates and 30 true positives — 100.00%
+  precision**, the same figure the synthetic corpus produced. **Not one false
+  positive reached HIGH**, including 27 signature hits manufactured out of 236 MB
+  of pseudo-random filler. Those passes ran before structure carving was wired
+  in; the shipped pipeline has not yet been measured on real media.
 - Where real media went further than the corpus could: **inside MEDIUM the score
   does not rank truth.** 906 correct recoveries scored 0.5500 and a false
   positive scored 0.6000. The bucket floor separates them; the number within the
@@ -126,8 +128,9 @@ then tell you the four things that success does not cover. That is the product."
   that.
 
 **Say:** "The row that looks best is the one to distrust. We published the sweep
-so you can check that yourselves — and then real hardware returned the same HIGH
-precision the corpus predicted."
+so you can check that yourselves — and real hardware returned the same HIGH
+precision the corpus predicted, on the pipeline before structure carving went in.
+The shipped one is the next hardware run."
 
 ---
 
@@ -198,7 +201,7 @@ talk."
   on the volume can detect it**.
 - A software write block is a claim about a flag. SG_IO and ATA pass-through go
   straight through it. **Use a hardware write blocker for evidence.**
-- `docs/limitations.md` is 495 lines and is the document we are proudest of.
+- `docs/limitations.md` is 614 lines and is the document we are proudest of.
 
 **Say:** "If a guarantee cannot be made, the report says so. That is the first
 line of our design document."
@@ -214,9 +217,11 @@ line of our design document."
 > *`docs/validation/hardware.md`, "100% recall is a statement about a contiguous
 > population"*
 
-- **Phase B is done.** Three passes on a real USB stick: FAT32 delete, exFAT
-  delete, FAT32 quick format. 456/456 and 460/460 byte-exact. Six acquisitions,
-  zero bad sectors. **No false positive reached HIGH in any pass — 30 for 30.**
+- **Phase B ran, on the pre-Batch-2 pipeline.** Three passes on a real USB stick:
+  FAT32 delete, exFAT delete, FAT32 quick format. 456/456 and 460/460 byte-exact.
+  Six acquisitions, zero bad sectors. **No false positive reached HIGH in any
+  pass — 30 for 30.** Structure carving and reassembly were wired in afterwards;
+  the shipped pipeline has no real-media figures yet.
 - **The weakness that replaces "no real-media runs" is narrower and worse.**
   A freshly populated volume is contiguous by construction, so `contiguity_assumed`
   — the caveat we print on every FAT candidate — was never tested against the
@@ -257,7 +262,7 @@ not do than one that tells you it did everything."
 ## Build notes
 
 - **One number per slide, and never repeat one.** The numbers above are chosen
-  to be non-overlapping: 3.6×, 1, 970, `high`, 1500, 512, 19.6 s, 0.0%, 0.
+  to be non-overlapping: 3.6×, 1, 1211, `high`, 1500, 512, 19.6 s, 0.0%, 0.
 - Source line under every number, in the file path form used above. A panel that
   can check a number trusts the ones it does not check.
 - No screenshots of code. One screenshot maximum, and it is the residual-risk

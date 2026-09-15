@@ -42,7 +42,7 @@ import structlog
 
 from core.device import guard, hidden_areas, media
 from core.device._sysio import SystemProbe
-from core.device.capabilities import recommend_method
+from core.device.capabilities import purge_mechanisms, recommend_method
 from core.device.enumerate import get_device
 from core.erase import calibrate as calibrate_mod
 from core.erase import patterns as pattern_mod
@@ -123,11 +123,12 @@ DEFAULT_SECTOR_BYTES = 512
 ATA_RECOVERY_PASSWORD = "SanctumForensics"
 
 _LEGACY_DOD_WARNING = (
-    "DOD_5220_22_M_3PASS is a legacy method, superseded by NIST SP 800-88 "
-    "Rev.1. It provides no measurable benefit over a single pass on any drive "
-    "manufactured after 2001, and on flash media it is actively harmful: each "
-    "extra pass consumes program/erase cycles without reaching remapped or "
-    "over-provisioned blocks."
+    "DOD_5220_22_M_3PASS is a legacy method. NIST SP 800-88r2 (September 2025) "
+    "states that multi-pass overwrite is not needed for clear, and calls the "
+    "DoD 5220.22-M pass-count language obsolete (Appendix D). This tool "
+    "measures no benefit over a single pass, and on flash media it is actively "
+    "harmful: each extra pass consumes program/erase cycles without reaching "
+    "remapped or over-provisioned blocks."
 )
 
 #: Methods executed by drive firmware, which cover the full media including any
@@ -216,7 +217,7 @@ def select_method(
     Args:
         device: The target, used for media-specific warnings.
         capabilities: Probed capability for that device.
-        target_level: The NIST SP 800-88 Rev.1 level being asked for.
+        target_level: The NIST SP 800-88r2 sanitization method being asked for.
         requested: A method the operator named explicitly. Only the two software
             methods may be requested; firmware methods are capability-selected.
 
@@ -260,11 +261,15 @@ def select_method(
         )
         return requested, limitations
 
+    # On flash an enhanced erase is a Clear mechanism whether frozen or not, so
+    # the freeze is not what stands between this drive and a Purge, and saying
+    # it is would send the operator to power-cycle for nothing.
     frozen_blocks_purge = (
         target_level is SanitizationLevel.PURGE
         and capabilities.security_frozen
         and capabilities.ata_enhanced_erase
         and SanitizationLevel.PURGE not in capabilities.achievable_levels
+        and not media.is_flash(device)[0]
     )
     if frozen_blocks_purge:
         raise DeviceFrozen(
@@ -274,9 +279,33 @@ def select_method(
             "for."
         )
 
-    method = recommend_method(capabilities, target_level)
+    method = recommend_method(capabilities, target_level, device=device)
     limitations.extend(capabilities.limitations)
     return method, limitations
+
+
+def _achieved_level(
+    job: EraseJob,
+    method: EraseMethod,
+    capabilities: DeviceCapabilities,
+    verification: VerificationResult,
+) -> SanitizationLevel:
+    """The sanitization method a finished or dry-run job may put on its report.
+
+    Purge is claimed only when ``method`` is itself a Purge mechanism for this
+    device, as :func:`core.device.capabilities.purge_mechanisms` decides it.
+    ``select_method`` already refuses to plan anything else, so this is a
+    second check at the point the claim is written, not the first: a report
+    must not say Purge for an enhanced erase on flash, or for a host overwrite
+    passed in through ``EraseJob.method``, whatever path led there.
+    """
+    if not (job.dry_run or verification.passed):
+        return SanitizationLevel.CLEAR
+    if job.level is SanitizationLevel.PURGE and method not in purge_mechanisms(
+        capabilities, job.device
+    ):
+        return SanitizationLevel.CLEAR
+    return job.level
 
 
 # --------------------------------------------------------------------------
@@ -1450,10 +1479,7 @@ def execute(
     )
 
     # ---------------- REPORT ----------------
-    if job.dry_run or verification.passed:
-        achieved = job.level
-    else:
-        achieved = SanitizationLevel.CLEAR
+    achieved = _achieved_level(job, method, capabilities, verification)
     findings: list[ResidualFinding] = []
     if calibration is not None and calibration.elision_detected:
         findings.append(

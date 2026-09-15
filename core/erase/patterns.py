@@ -14,8 +14,8 @@ result that :mod:`core.erase.verify` can actually check. That substitution is
 recorded in ``docs/limitations.md``.
 
 The method is offered only because operators are sometimes required to name it.
-It is superseded by NIST SP 800-88 Rev.1 and buys nothing over a single pass on
-any post-2001 drive.
+NIST SP 800-88r2 states that multi-pass overwrite is not needed for clear and
+calls the DoD 5220.22-M pass-count language obsolete (Appendix D).
 """
 
 from __future__ import annotations
@@ -68,10 +68,11 @@ def select_fills(
     a cell. The medium then reads back as zeros, the verification compares
     against zeros, and both agree about a write that never happened - the one
     pattern the flash translation layer can synthesize for free is the one being
-    checked. Worse, the report names ``SINGLE_PASS_OVERWRITE`` for what the
-    device performed as a deallocate, and NIST does not recognise a deallocate
-    as sanitization. Substituting a non-zero fill is a truthfulness fix before
-    it is a security one.
+    checked. Worse, the report names ``SINGLE_PASS_OVERWRITE`` for a write the
+    device never performed: NIST SP 800-88r2 Sec. 3.1.1 describes overwrite as
+    replacing target data with non-sensitive data, and an elided write replaced
+    nothing. Substituting a non-zero fill is a truthfulness fix before it is a
+    security one.
 
     Measured from the device where possible; falling back to the transport when
     calibration could not run, because a blanket rule is still better than

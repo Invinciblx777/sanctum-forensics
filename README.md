@@ -3,9 +3,10 @@
 SIH 26149 (NTRO). Integrated secure data sanitization and forensic file recovery,
 in one offline tool.
 
-- **M1 Secure Drive Eraser** — capability-driven sanitization. NIST SP 800-88 Rev.1
-  Clear / Purge / Destroy, with the method selected from what the device reported
-  it can do, never from a dropdown.
+- **M1 Secure Drive Eraser** — capability-driven sanitization. Clear / Purge /
+  Destroy as NIST SP 800-88r2 defines them (r1 was withdrawn on 2025-09-26), with
+  the method selected from what the device reported it can do, never from a
+  dropdown.
 - **M2 Secure File & Folder Eraser** — targeted erasure, *document* metadata
   cleansing (EXIF, OOXML `docProps`, PDF info, OLE summary), and an enumeration of
   everything the filesystem kept anyway. Filesystem metadata — MFT resident data,
@@ -25,7 +26,7 @@ forensic report that a third party verifies with a tool they run themselves.
 ## Status
 
 Implemented and under test. `make check` runs ruff, `mypy --strict` and the suite:
-**970 passing, 12 skipped** (the skips need root, a Windows host, or an E01-writing
+**1211 passing, 12 skipped** (the skips need root, a Windows host, or an E01-writing
 libewf build; each names its reason).
 
 Validated against real removable media over six recorded runs — see
@@ -78,7 +79,7 @@ See [`docs/privilege-boundary.md`](docs/privilege-boundary.md).
 | [`docs/user-manual.md`](docs/user-manual.md) | Task-oriented, one section per workflow, for an examiner or administrator who will not read the source. Starting the two processes, both erase workflows, acquisition and recovery, report verification by a third party, reading the ledger, every refusal message with its remediation, and what a cancelled operation leaves. |
 | [`docs/technical.md`](docs/technical.md) | Architecture, module interfaces, threat model, build environment |
 | [`docs/architecture.md`](docs/architecture.md) | Layer map and the invariants each layer holds |
-| [`docs/compliance.md`](docs/compliance.md) | Clause-by-clause mapping to NIST SP 800-88 Rev.1 and IEEE 2883-2022 |
+| [`docs/compliance.md`](docs/compliance.md) | What the tool does against NIST SP 800-88r2, and against Indian instruments (DPDP Act 2023 and Rules 2025, IT Act §43A, CERT-In, IS/ISO/IEC 27040) — including where it does not, and that IEEE 2883-2022 conformance has not been verified |
 | [`docs/limitations.md`](docs/limitations.md) | Every guarantee this tool does not make |
 | [`docs/validation/hardware.md`](docs/validation/hardware.md) | Real-media validation: method, runs, defects found |
 | [`docs/performance/calibration.md`](docs/performance/calibration.md) | How the confidence weights were derived and bounded |

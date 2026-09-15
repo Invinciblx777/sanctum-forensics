@@ -37,8 +37,8 @@ by construction.
 
 | Module | What it does | Vocabulary |
 |---|---|---|
-| **M1 Secure Drive Eraser** | Sanitizes a whole block device, using the mechanism the device reported it can perform | NIST SP 800-88 Rev.1: **Clear**, **Purge** |
-| **M2 Secure File & Folder Eraser** | Overwrites named files and folders, cleanses *document* metadata, and enumerates the filesystem metadata it did **not** cleanse | Clear only |
+| **M1 Secure Drive Eraser** | Sanitizes a whole block device, using the mechanism the device reported it can perform | NIST SP 800-88r2: **Clear**, **Purge** |
+| **M2 Secure File & Folder Eraser** | Overwrites named files and folders, cleanses *document* metadata, and enumerates the filesystem metadata it did **not** cleanse | No sanitization method is claimed: clear covers every user-addressable location of a medium, and a file erase reaches only the named files' extents |
 | **M3 Advanced File Carving & Recovery** | Acquires an image read-only, then recovers objects by filesystem metadata (*undelete*) and by content (*carve*) | read-only throughout |
 
 Two words are used here in one sense each, everywhere:
@@ -49,8 +49,8 @@ Two words are used here in one sense each, everywhere:
 
 ### What this tool does not guarantee
 
-The three sanitization types come from NIST SP 800-88 Rev.1 and the tool uses no
-others. **Clear** overwrites every user-addressable location and resists
+The three sanitization methods come from NIST SP 800-88r2 (September 2025; r1
+was withdrawn on 2025-09-26) and the tool uses no others. **Clear** overwrites every user-addressable location and resists
 keyboard-level recovery. **Purge** uses a mechanism — a firmware sanitize, a
 cryptographic erase — that makes recovery infeasible with laboratory technique.
 **Destroy** is physical: disintegrate, incinerate, pulverize, shred, melt. This
@@ -275,8 +275,8 @@ always achievable on a writable device.
 
 | Reported by | Purge mechanism |
 |---|---|
-| `hdparm -I`, SANITIZE feature set | ATA SANITIZE — block erase, crypto scramble, or overwrite |
-| `hdparm -I`, security block | ATA SECURITY ERASE (enhanced), if security is not frozen |
+| `hdparm -I`, SANITIZE feature set | ATA SANITIZE — block erase or crypto scramble; overwrite on magnetic media only |
+| `hdparm -I`, security block | ATA SECURITY ERASE (enhanced), if security is not frozen, **on magnetic media only** |
 | `nvme id-ctrl`, SANICAP | NVMe SANITIZE (block or crypto); or Format NVM with a crypto setting |
 | `sedutil-cli` | Opal SSC — see the exception below |
 
@@ -1086,8 +1086,9 @@ limitations attached to it before you rely on it.
 **See also**
 [`architecture.md`](architecture.md) (layer map and invariants) ·
 [`privilege-boundary.md`](privilege-boundary.md) (threat model around the root
-process) · [`compliance.md`](compliance.md) (clause-by-clause NIST SP 800-88 Rev.1
-and IEEE 2883-2022 mapping) · [`technical.md`](technical.md) (build environment) ·
+process) · [`compliance.md`](compliance.md) (NIST SP 800-88r2 and Indian
+instruments: what the tool does, what it does not, and what is unverified) ·
+[`technical.md`](technical.md) (build environment) ·
 [`validation/hardware.md`](validation/hardware.md) (real-media runs and the defects
 they found) · [`demo/runbook.md`](demo/runbook.md) (the six-minute demonstration
 script).

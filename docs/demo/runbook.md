@@ -312,9 +312,9 @@ CONTROLLER_WRITE_ELISION   severity HIGH   addressable false
 > [when the finding lands] There it is. Ratio 3.25 against a threshold of 2.0.
 > This controller acknowledges a zero fill at 14.6 megabytes a second and
 > programs a real byte at 4.5. So the tool substitutes `0xA5` for every zero
-> pass — because otherwise we would print the word "overwrite" over something
-> the device performed as a deallocate, and NIST 800-88 does not recognise a
-> deallocate as a sanitization method.
+> pass — because otherwise we would print the word "overwrite" over a write the
+> device never performed, and NIST SP 800-88r2 describes overwrite as replacing
+> the data with something else.
 >
 > Residual risk: **high**. Four factors, all named. HPA and DCO were not probed,
 > because this is behind a USB bridge and a bridge's answer to a SET_MAX query
@@ -480,7 +480,7 @@ recovered its named deleted JPEGs at exactly `10000`.
 | Recovery volume never staged | Run against `testkit/fsimage.py`'s 40 MiB FAT32 image and say: "this is a synthetic filesystem image, not real media." That honesty plays well; hiding it does not. |
 | "Why not an SD card?" | Question 21 in `docs/demo/qa.md`. Structurally identical filesystems, different bridge, and we say we have not measured the bridge. |
 | Carve returns nothing | Show the calibration table instead: `docs/performance/calibration.md`, per-filesystem recall. It is measured and it is checked in. Screenshot fallback: `docs/demo/fallback/recovery.png`. |
-| exFAT row questioned | "50% is one file out of two. It is two data points, not a rate, and the document says so. On real media exFAT was 460 of 460 — and our comparison now refuses to call that a divergence from a baseline of two." |
+| exFAT row questioned | "50% is one file out of two. It is two data points, not a rate, and the document says so. On real media exFAT was 460 of 460, measured before structure carving was wired in — and our comparison now refuses to call that a divergence from a baseline of two." |
 | "Your real recall is 100%, that's not credible" | "It is 100% on a *contiguous* population, and we say so on the slide. Every file was written to a fresh volume in one pass, so nothing was fragmented and the reconstruction that can go wrong never had to guess. That is our biggest open weakness — question 10." |
 
 ---
@@ -607,7 +607,7 @@ mv "$REPORT.bak" "$REPORT"
 
 ---
 
-## 4:15 — 5:00 · Nine defects real hardware found and 970 synthetic tests did not
+## 4:15 — 5:00 · Nine defects real hardware found and 1211 synthetic tests did not
 
 **Do:** slide. No commands.
 
@@ -621,7 +621,7 @@ mv "$REPORT.bak" "$REPORT"
 > the geometry silently shrank to one sector.
 >
 > Nine defects between run one and run three. None of them was caught by the
-> synthetic suite, which was green throughout at 757 tests — 970 today. A loop
+> synthetic suite, which was green throughout at 757 tests — 1211 today. A loop
 > device has no controller, no bridge and no flash translation layer, so three
 > of those defects are physically unreachable on one. Three more needed a step
 > to fail, and on a loop device none does. Two needed two jobs on one ledger.

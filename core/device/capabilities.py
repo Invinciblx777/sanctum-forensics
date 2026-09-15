@@ -22,10 +22,12 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import structlog
 
+from core.device import media
 from core.device._sysio import SystemProbe
 from core.errors import UnsupportedCapability
 from core.models import (
@@ -35,7 +37,13 @@ from core.models import (
     SanitizationLevel,
 )
 
-__all__ = ["probe", "recommend_method"]
+__all__ = [
+    "MAGNETIC_ONLY_PURGE_METHODS",
+    "R1_TABLE_A8_SECURE_ERASE_NOTE",
+    "probe",
+    "purge_mechanisms",
+    "recommend_method",
+]
 
 logger = structlog.get_logger(__name__)
 
@@ -245,49 +253,152 @@ def _probe_sed(device: Device, io: SystemProbe, limitations: list[str]) -> bool:
 # --------------------------------------------------------------------------
 
 
-def _achievable_levels(caps: dict[str, Any]) -> set[SanitizationLevel]:
-    """Compute, never store, the NIST SP 800-88 Rev.1 levels this device can reach.
+#: Verbatim from NIST SP 800-88r1 (withdrawn 2025-09-26), Table A-8, "ATA
+#: Solid State Drives (SSDs)", Notes, printed page 37.
+R1_TABLE_A8_SECURE_ERASE_NOTE = (
+    "Whereas ATA Secure Erase was a Purge mechanism for magnetic media, it is "
+    "only a Clear mechanism for flash memory due to variability in "
+    "implementation and the possibility that sensitive data may remain in areas "
+    "such as spare cells that have been rotated out of use."
+)
 
-    DERIVED RULE — the source prompt was truncated mid-sentence at
-    "PURGE only when a hardware sanitize, enhanced security erase,". Completed
-    from NIST SP 800-88 Rev.1 Appendix A:
+#: Methods that are Purge mechanisms on magnetic media only. On flash neither
+#: counts toward Purge: r1 Table A-8 lists SECURITY ERASE UNIT under Clear for
+#: ATA SSDs, and its ATA SSD Purge options are SANITIZE block erase, SANITIZE
+#: crypto scramble and TCG Opal/Enterprise cryptographic erase - SANITIZE
+#: overwrite is not among them.
+MAGNETIC_ONLY_PURGE_METHODS = frozenset(
+    {EraseMethod.ATA_SECURITY_ERASE_ENHANCED, EraseMethod.ATA_SANITIZE_OVERWRITE}
+)
 
-    * CLEAR  - always reachable: a logical overwrite of the user-addressable
-      area works on any writable block device.
-    * PURGE  - reachable only via a mechanism the media itself implements:
-      ATA SANITIZE, ATA enhanced SECURITY ERASE (blocked while frozen),
-      NVMe sanitize, NVMe Format with cryptographic erase, or Opal
-      cryptographic erase.
-    * DESTROY - never reachable in software; it is physical destruction.
 
-    Change this function if the intended rule differs; nothing else decides it.
+def _purge_candidates(
+    *,
+    ata_sanitize_ops: Sequence[str],
+    ata_enhanced_erase: bool,
+    security_frozen: bool,
+    nvme_sanicap: Mapping[str, Any],
+    is_sed_opal: bool,
+    flash: bool,
+) -> list[EraseMethod]:
+    """Every PURGE mechanism the device offers, strongest and most attested first.
+
+    The one place the Clear/Purge decision is made. The methods are clear, purge
+    and destroy as NIST SP 800-88r2 (September 2025) Sec. 3.1 defines them. r2
+    removed r1's per-media technique tables and defers technique acceptability
+    to IEEE 2883 (Sec. 3.1.2, Sec. 4.4, Appendix D), whose text has not been
+    read. The per-media rule below therefore rests on the withdrawn SP 800-88r1
+    Appendix A tables, adopted here as the organisation's standard until IEEE
+    2883 is checked:
+
+    * Magnetic ATA (r1 Table A-5): SANITIZE overwrite, SANITIZE crypto scramble,
+      SECURITY ERASE UNIT in enhanced mode (not while frozen), Opal/Enterprise
+      cryptographic erase. Table A-5 does not list SANITIZE block erase; it is
+      counted wherever a drive reports it, which a magnetic drive would not
+      normally do.
+    * Flash ATA (r1 Table A-8): SANITIZE block erase, SANITIZE crypto scramble,
+      Opal/Enterprise cryptographic erase. **Not** SECURITY ERASE UNIT, which
+      that table lists under Clear, and not SANITIZE overwrite.
+    * NVMe (r1 Table A-8): Format NVM with cryptographic erase, Opal
+      cryptographic erase; plus NVMe sanitize block and crypto erase, which r1
+      predates and r2 Sec. 3.1.2 names in general terms. NVMe sanitize overwrite
+      has no executable method here and is not counted.
+
+    CLEAR is always reachable (r2 Sec. 3.1.1) and DESTROY never is in software.
     """
-    levels = {SanitizationLevel.CLEAR}
-    nvme = caps.get("nvme_sanicap") or {}
-    purge_paths = (
-        bool(caps.get("ata_sanitize_ops")),
-        bool(caps.get("ata_enhanced_erase")) and not caps.get("security_frozen"),
-        bool(nvme.get("crypto_erase")),
-        bool(nvme.get("block_erase")),
-        bool(nvme.get("overwrite")),
-        bool(nvme.get("fna_crypto_format")),
-        bool(caps.get("is_sed_opal")),
+    nvme = nvme_sanicap
+    available = (
+        ("BLOCK_ERASE_EXT" in ata_sanitize_ops, EraseMethod.ATA_SANITIZE_BLOCK_ERASE),
+        (
+            "CRYPTO_SCRAMBLE_EXT" in ata_sanitize_ops,
+            EraseMethod.ATA_SANITIZE_CRYPTO_SCRAMBLE,
+        ),
+        ("OVERWRITE_EXT" in ata_sanitize_ops, EraseMethod.ATA_SANITIZE_OVERWRITE),
+        (
+            bool(nvme.get("block_erase")) or bool(nvme.get("crypto_erase")),
+            EraseMethod.NVME_SANITIZE_BLOCK,
+        ),
+        (is_sed_opal, EraseMethod.SED_CRYPTO_ERASE),
+        (bool(nvme.get("fna_crypto_format")), EraseMethod.NVME_FORMAT_SES1),
+        (
+            ata_enhanced_erase and not security_frozen,
+            EraseMethod.ATA_SECURITY_ERASE_ENHANCED,
+        ),
     )
-    if any(purge_paths):
+    return [
+        method
+        for present, method in available
+        if present and not (flash and method in MAGNETIC_ONLY_PURGE_METHODS)
+    ]
+
+
+def purge_mechanisms(
+    capabilities: DeviceCapabilities, device: Device
+) -> list[EraseMethod]:
+    """The PURGE mechanisms ``device`` offers, strongest first.
+
+    See ``_purge_candidates`` for the rule and its authority.
+    """
+    return _purge_candidates(
+        ata_sanitize_ops=capabilities.ata_sanitize_ops,
+        ata_enhanced_erase=capabilities.ata_enhanced_erase,
+        security_frozen=capabilities.security_frozen,
+        nvme_sanicap=capabilities.nvme_sanicap,
+        is_sed_opal=capabilities.is_sed_opal,
+        flash=media.is_flash(device)[0],
+    )
+
+
+def _purge_basis_limitations(
+    found: Mapping[str, Any],
+    flash: bool,
+    flash_reason: str,
+    candidates: list[EraseMethod],
+) -> list[str]:
+    """Say, in the capability record, what the Purge decision rested on."""
+    notes: list[str] = []
+    enhanced = bool(found.get("ata_enhanced_erase"))
+    overwrite = "OVERWRITE_EXT" in (found.get("ata_sanitize_ops") or [])
+    if flash and enhanced:
+        notes.append(
+            "The drive supports ATA enhanced SECURITY ERASE, but this device was "
+            f"determined to be flash because {flash_reason}, and on flash that "
+            "command is counted as Clear only, never Purge. Authority: NIST SP "
+            "800-88r1 Table A-8 (ATA SSDs), which lists SECURITY ERASE UNIT under "
+            f'Clear and states: "{R1_TABLE_A8_SECURE_ERASE_NOTE}" r1 was withdrawn '
+            "on 2025-09-26; SP 800-88r2 defers technique acceptability to IEEE "
+            "2883, whose text has not been checked. Purge on this device needs "
+            "ATA SANITIZE block erase or crypto scramble, or an Opal "
+            "cryptographic erase."
+        )
+    if flash and overwrite:
+        notes.append(
+            "The drive reports ATA SANITIZE OVERWRITE_EXT, but this device was "
+            f"determined to be flash because {flash_reason}, and on flash that "
+            "operation is not counted as Purge: NIST SP 800-88r1 Table A-8 gives "
+            "block erase and crypto scramble as the ATA SSD sanitize Purge options, "
+            "not overwrite. r1 is withdrawn and IEEE 2883 has not been checked."
+        )
+    if candidates and candidates[0] is EraseMethod.ATA_SECURITY_ERASE_ENHANCED:
+        notes.append(
+            "Purge on this device would be ATA enhanced SECURITY ERASE, counted as "
+            "Purge because the device was not determined to be flash "
+            f"({flash_reason}). "
+            "The basis is NIST SP 800-88r1 Table A-5 (ATA hard disk drives), which "
+            "was withdrawn on 2025-09-26, applies to legacy magnetic media only, and "
+            "warns that hybrid drives may not be identifiable by the label. SP "
+            "800-88r2 does not name the command, and IEEE 2883 has not been checked. "
+            "r1 also recommends consulting the manufacturer before relying on it."
+        )
+    return notes
+
+
+def _achievable_levels(candidates: list[EraseMethod]) -> set[SanitizationLevel]:
+    """Compute, never store, the sanitization methods this device can reach."""
+    levels = {SanitizationLevel.CLEAR}
+    if candidates:
         levels.add(SanitizationLevel.PURGE)
     return levels
-
-
-#: Ordered PURGE mechanisms, strongest and most directly attested first.
-_PURGE_PREFERENCE: tuple[tuple[str, EraseMethod], ...] = (
-    ("ATA_SANITIZE_BLOCK_ERASE", EraseMethod.ATA_SANITIZE_BLOCK_ERASE),
-    ("ATA_SANITIZE_CRYPTO", EraseMethod.ATA_SANITIZE_CRYPTO_SCRAMBLE),
-    ("ATA_SANITIZE_OVERWRITE", EraseMethod.ATA_SANITIZE_OVERWRITE),
-    ("NVME_SANITIZE_BLOCK", EraseMethod.NVME_SANITIZE_BLOCK),
-    ("SED_CRYPTO", EraseMethod.SED_CRYPTO_ERASE),
-    ("NVME_FORMAT_SES1", EraseMethod.NVME_FORMAT_SES1),
-    ("ATA_ENHANCED", EraseMethod.ATA_SECURITY_ERASE_ENHANCED),
-)
 
 
 def probe(device: Device, io: SystemProbe | None = None) -> DeviceCapabilities:
@@ -312,6 +423,19 @@ def probe(device: Device, io: SystemProbe | None = None) -> DeviceCapabilities:
 
     found["is_sed_opal"] = _probe_sed(device, io, limitations)
 
+    flash, flash_reason = media.is_flash(device)
+    candidates = _purge_candidates(
+        ata_sanitize_ops=list(found.get("ata_sanitize_ops") or []),
+        ata_enhanced_erase=bool(found.get("ata_enhanced_erase")),
+        security_frozen=bool(found.get("security_frozen")),
+        nvme_sanicap=dict(found.get("nvme_sanicap") or {}),
+        is_sed_opal=bool(found.get("is_sed_opal")),
+        flash=flash,
+    )
+    limitations.extend(
+        _purge_basis_limitations(found, flash, flash_reason, candidates)
+    )
+
     caps = DeviceCapabilities(
         ata_security_erase=bool(found.get("ata_security_erase")),
         ata_enhanced_erase=bool(found.get("ata_enhanced_erase")),
@@ -320,7 +444,7 @@ def probe(device: Device, io: SystemProbe | None = None) -> DeviceCapabilities:
         is_sed_opal=bool(found.get("is_sed_opal")),
         security_frozen=bool(found.get("security_frozen")),
         est_erase_seconds=int(found.get("est_erase_seconds") or 0),
-        achievable_levels=_achievable_levels(found),
+        achievable_levels=_achievable_levels(candidates),
         limitations=limitations,
     )
     logger.info(
@@ -334,9 +458,16 @@ def probe(device: Device, io: SystemProbe | None = None) -> DeviceCapabilities:
 
 
 def recommend_method(
-    capabilities: DeviceCapabilities, target_level: SanitizationLevel
+    capabilities: DeviceCapabilities,
+    target_level: SanitizationLevel,
+    *,
+    device: Device,
 ) -> EraseMethod:
     """Pick the strongest achievable method for ``target_level``.
+
+    ``device`` is required, not defaulted: whether a mechanism counts as Purge
+    depends on whether the medium is flash, and a default would silently mean
+    "magnetic".
 
     Raises:
         UnsupportedCapability: ``target_level`` is not in
@@ -359,21 +490,9 @@ def recommend_method(
     if target_level is SanitizationLevel.CLEAR:
         return EraseMethod.SINGLE_PASS_OVERWRITE
 
-    nvme = capabilities.nvme_sanicap
-    available = {
-        "ATA_SANITIZE_BLOCK_ERASE": "BLOCK_ERASE_EXT" in capabilities.ata_sanitize_ops,
-        "ATA_SANITIZE_CRYPTO": "CRYPTO_SCRAMBLE_EXT" in capabilities.ata_sanitize_ops,
-        "ATA_SANITIZE_OVERWRITE": "OVERWRITE_EXT" in capabilities.ata_sanitize_ops,
-        "NVME_SANITIZE_BLOCK": bool(nvme.get("block_erase"))
-        or bool(nvme.get("crypto_erase")),
-        "SED_CRYPTO": capabilities.is_sed_opal,
-        "NVME_FORMAT_SES1": bool(nvme.get("fna_crypto_format")),
-        "ATA_ENHANCED": capabilities.ata_enhanced_erase
-        and not capabilities.security_frozen,
-    }
-    for key, method in _PURGE_PREFERENCE:
-        if available[key]:
-            return method
+    candidates = purge_mechanisms(capabilities, device)
+    if candidates:
+        return candidates[0]
     raise UnsupportedCapability(
         f"{target_level.value} was reported achievable but no mechanism matched.",
         remediation="Re-probe the device; the capability set is inconsistent.",

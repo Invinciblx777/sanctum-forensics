@@ -32,6 +32,7 @@ from typing import Literal
 import structlog
 
 from core.device._sysio import SystemProbe
+from core.device.capabilities import R1_TABLE_A8_SECURE_ERASE_NOTE
 from core.device.media import is_flash
 from core.erase.patterns import SOFTWARE_METHODS, final_pattern
 from core.models import (
@@ -430,6 +431,17 @@ def assess_residual_risk(
             "physical removal on flash: every read is answered by the flash "
             f"translation layer. Determined to be flash because {flash_reason}."
         )
+    enhanced_on_flash = method is EraseMethod.ATA_SECURITY_ERASE_ENHANCED and flash
+    if enhanced_on_flash:
+        factors.append(
+            "ATA enhanced SECURITY ERASE was run on flash media, where it counts "
+            "as Clear only, not Purge. NIST SP 800-88r1 Table A-8 (ATA SSDs): "
+            f'"{R1_TABLE_A8_SECURE_ERASE_NOTE}" r1 was withdrawn on 2025-09-26, '
+            "and SP 800-88r2 defers technique acceptability to IEEE 2883, whose "
+            "text has not been checked. What the firmware did is vendor specific "
+            "and cannot be observed from the host. Determined to be flash because "
+            f"{flash_reason}."
+        )
     if unwritable:
         total = sum(item.length for item in unwritable)
         factors.append(
@@ -499,6 +511,14 @@ def assess_residual_risk(
             "Overwrite on flash cannot reach remapped or over-provisioned "
             "blocks, and no host-side read can establish physical removal. Use "
             "a firmware sanitize or crypto-erase where available."
+        )
+    elif enhanced_on_flash:
+        level = "medium"
+        notes = (
+            "ATA enhanced SECURITY ERASE on flash is a Clear. Spare cells rotated "
+            "out of use may still hold data, and the command's implementation "
+            "varies by vendor. For a Purge use ATA SANITIZE block erase or crypto "
+            "scramble, or an Opal cryptographic erase."
         )
     elif purge_achieved and verification.hw_attested and verification.passed:
         level = "low"
