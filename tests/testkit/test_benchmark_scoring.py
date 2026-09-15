@@ -7,11 +7,12 @@ truth, so each count is known before the scorer runs.
 from __future__ import annotations
 
 import hashlib
+import json
 import random
 from dataclasses import asdict
 from pathlib import Path
 
-from testkit.benchmark import score_run
+from testkit.benchmark import index_outputs, score_run
 from testkit.damage import Truth, TruthObject
 
 
@@ -131,3 +132,17 @@ def test_only_restricts_the_outputs_scored(tmp_path: Path) -> None:
     result = score_run(truth, files, payloads, tool="x", only={"keep.jpg"})
     assert (result.outputs, result.exact) == (1, 1)
     assert result.outcomes["corrupt.pdf"] == "missed"
+
+
+def test_scoring_the_output_index_equals_scoring_the_files(tmp_path: Path) -> None:
+    truth, files, payloads, data = _case(tmp_path)
+    (files / "a.jpg").write_bytes(data["exact"])
+    (files / "b.pdf").write_bytes(data["corrupt"][:3000] + b"x" * 90_000)
+    (files / "nested" / "inner.bin").write_bytes(data["missed"][1000:2000])
+    (files / "audit.txt").write_bytes(data["twin"])
+    index = tmp_path / "outputs.json"
+    index.write_text(json.dumps(index_outputs(files)))
+    from_files = asdict(score_run(truth, files, payloads, tool="t"))
+    from_index = asdict(score_run(truth, index, payloads, tool="t"))
+    assert from_files == from_index
+    assert from_index["exact"] == 1 and from_index["corrupt"] == 1

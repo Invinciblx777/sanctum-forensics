@@ -41,6 +41,7 @@ Never touches a device. Every image is an ordinary file.
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import gzip
 import hashlib
@@ -788,8 +789,48 @@ def _sanctum_worker(image: Path, run_dir: Path, undelete: bool) -> None:
     )
 
 
+#: Per-run record of every output: name, size, SHA-256 and first 64 KiB.
+OUTPUT_INDEX = "outputs.json"
+
+
+def index_outputs(files: Path) -> list[dict[str, Any]]:
+    """What the scorer needs from each output file, without keeping the file.
+
+    Sanctum writes a candidate that no parser could bound as the span to the end
+    of the image, so one run over a 255 MiB volume wrote 2.8 GiB. The scorer
+    reads only an output's digest and its first :data:`_HEAD_BYTES`, so those
+    are recorded and the files can go.
+    """
+    entries: list[dict[str, Any]] = []
+    for path in sorted(item for item in files.rglob("*") if item.is_file()):
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            head = handle.read(_HEAD_BYTES)
+            digest.update(head)
+            size = len(head)
+            for chunk in iter(lambda: handle.read(MIB), b""):
+                digest.update(chunk)
+                size += len(chunk)
+        entries.append(
+            {
+                "path": str(path.relative_to(files)),
+                "name": path.name,
+                "size": size,
+                "sha256": digest.hexdigest(),
+                "head": base64.b64encode(head).decode("ascii"),
+            }
+        )
+    return entries
+
+
 def run_tool(
-    tool: str, image: Path, run_dir: Path, *, foremost: str, timeout: int
+    tool: str,
+    image: Path,
+    run_dir: Path,
+    *,
+    foremost: str,
+    timeout: int,
+    keep_outputs: bool = False,
 ) -> dict[str, Any]:
     """Run one tool over one image with default settings, timed from outside."""
     if run_dir.exists():
@@ -849,7 +890,14 @@ def run_tool(
         "returncode": returncode,
         "timed_out": timed_out,
     }
+    # Indexed after the clock stopped: hashing is the scorer's cost, not the tool's.
+    entries = index_outputs(files)
+    (run_dir / OUTPUT_INDEX).write_text(json.dumps(entries), encoding="utf-8")
+    meta["output_files"] = len(entries)
+    meta["output_bytes"] = sum(int(entry["size"]) for entry in entries)
     (run_dir / "meta.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
+    if not keep_outputs:
+        shutil.rmtree(files)
     return meta
 
 
@@ -860,6 +908,7 @@ def run(
     only: Sequence[str] = (),
     foremost: str = "foremost",
     timeout: int = 3600,
+    keep_outputs: bool = False,
 ) -> None:
     images = work / "images"
     versions = tool_versions(foremost)
@@ -882,6 +931,7 @@ def run(
                 work / "runs" / stem / tool,
                 foremost=foremost,
                 timeout=timeout,
+                keep_outputs=keep_outputs,
             )
             print(  # noqa: T201 - a CLI's progress line
                 f"{stem:<34} {tool:<14} {meta['seconds']:>8.2f}s "
@@ -973,7 +1023,11 @@ def score_run(
     image_path: Path | None = None,
     only: set[str] | None = None,
 ) -> RunScore:
-    """Score every file under ``files`` against ``truth``. The same for every tool."""
+    """Score a tool's outputs against ``truth``. The same for every tool.
+
+    ``files`` is the output directory, or the :data:`OUTPUT_INDEX` written from
+    it; both give the same score.
+    """
     medium = image_path.read_bytes() if image_path is not None else None
     result = RunScore(
         image=truth.image, corpus=truth.corpus, model=truth.model, tool=tool
@@ -991,17 +1045,24 @@ def score_run(
 
     exact: set[str] = set()
     corrupt: set[str] = set()
+    entries = (
+        index_outputs(files)
+        if files.is_dir()
+        else json.loads(files.read_text(encoding="utf-8"))
+    )
     outputs = sorted(
-        path
-        for path in files.rglob("*")
-        if path.is_file()
-        and path.name not in _REPORT_FILES
-        and (only is None or path.name in only)
+        (
+            entry
+            for entry in entries
+            if entry["name"] not in _REPORT_FILES
+            and (only is None or entry["name"] in only)
+        ),
+        key=lambda entry: str(entry["path"]),
     )
     result.outputs = len(outputs)
-    for path in outputs:
-        data = path.read_bytes()
-        matched = by_digest.get(hashlib.sha256(data).hexdigest())
+    for entry in outputs:
+        data = base64.b64decode(entry["head"])
+        matched = by_digest.get(str(entry["sha256"]))
         if matched:
             names = {obj.name for obj in matched}
             if names <= exact:
@@ -1100,8 +1161,13 @@ def score(work: Path) -> list[RunScore]:
             if not (run_dir / "meta.json").exists():
                 continue
             meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+            source = (
+                run_dir / OUTPUT_INDEX
+                if (run_dir / OUTPUT_INDEX).exists()
+                else run_dir / "files"
+            )
             result = score_run(
-                truth, run_dir / "files", payloads, tool=tool, image_path=image_path
+                truth, source, payloads, tool=tool, image_path=image_path
             )
             result.seconds = float(meta["seconds"])
             result.returncode = int(meta["returncode"])
@@ -1119,7 +1185,7 @@ def score(work: Path) -> list[RunScore]:
                 }
                 filtered = score_run(
                     truth,
-                    run_dir / "files",
+                    source,
                     payloads,
                     tool=f"{tool}@HIGH+MEDIUM",
                     image_path=image_path,
@@ -1183,6 +1249,270 @@ def write_csv(scores: Sequence[RunScore], path: Path) -> Path:
     return path
 
 
+# --------------------------------------------------------------------------
+# Report tables
+# --------------------------------------------------------------------------
+
+_SUMMED = (
+    "full",
+    "exact",
+    "corrupt",
+    "missed",
+    "partial",
+    "partial_returned",
+    "partial_exact",
+    "gone",
+    "gone_returned",
+    "unformatted_full",
+    "unformatted_exact",
+    "outputs",
+    "duplicate_outputs",
+    "fp_fragment",
+    "fp_decoy",
+    "fp_ambiguous",
+    "fp_unrelated",
+    "seconds",
+)
+
+LABELS = {
+    "sanctum-carve": "Sanctum, carve only",
+    "photorec": "PhotoRec",
+    "foremost": "Foremost",
+    "sanctum-full": "Sanctum, undelete + carve",
+    "sanctum-carve@HIGH+MEDIUM": "Sanctum carve, HIGH+MEDIUM only",
+    "sanctum-full@HIGH+MEDIUM": "Sanctum full, HIGH+MEDIUM only",
+}
+
+REPORT_GROUPS: tuple[tuple[str, str], ...] = (
+    ("flat-offset1337", "Flat corpus as shipped (objects at byte 1337 + k x 512 KiB)"),
+    (
+        "flat-aligned",
+        "Flat corpus, sector-aligned (objects at byte 4096 + k x 512 KiB)",
+    ),
+    ("filesystem", "Filesystem corpus (13 images, generate_filesystem_corpus)"),
+    ("media", "Benchmark volumes, files written then some deleted (5 volumes)"),
+    ("truncation", "Damage model: truncation (5 volumes)"),
+    ("zeroed_regions", "Damage model: zeroed regions (5 volumes)"),
+    ("metadata_destroyed", "Damage model: filesystem metadata destroyed (5 volumes)"),
+    ("interleaved_overwrite", "Damage model: interleaved overwrite (5 volumes)"),
+)
+
+_HEADER = (
+    "| Row | FULL files | Byte-identical | Corrupt | Missed | Identical / FULL "
+    "| PARTIAL returned | GONE returned | False positives (frag/decoy/amb/unrel) "
+    "| Outputs | Time (s) |"
+)
+_RULE = "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+
+
+def _group_of(item: dict[str, Any]) -> str:
+    if item["corpus"] == "flat":
+        return str(item["image"]).removesuffix(".img")
+    if item["corpus"] == "filesystem":
+        return "filesystem"
+    return "media" if item["model"] == "delete" else str(item["model"])
+
+
+def _sum(rows: Sequence[dict[str, Any]]) -> dict[str, float]:
+    return {key: sum(float(row[key]) for row in rows) for key in _SUMMED}
+
+
+def _table_row(label: str, total: dict[str, float]) -> str:
+    full, exact = int(total["full"]), int(total["exact"])
+    share = f"{100 * exact / full:.1f}%" if full else "-"
+    partial = f"{int(total['partial_returned'])}/{int(total['partial'])}"
+    if total["partial_exact"]:
+        partial += f" ({int(total['partial_exact'])} identical)"
+    fps = [
+        int(total[key])
+        for key in ("fp_fragment", "fp_decoy", "fp_ambiguous", "fp_unrelated")
+    ]
+    return (
+        f"| {label} | {full} | **{exact}** | {int(total['corrupt'])} "
+        f"| {int(total['missed'])} | {share} | {partial} "
+        f"| {int(total['gone_returned'])}/{int(total['gone'])} "
+        f"| {sum(fps)} ({'/'.join(str(n) for n in fps)}) | {int(total['outputs'])} "
+        f"| {total['seconds']:.1f} |"
+    )
+
+
+def _signature_formats(work: Path) -> dict[str, bool]:
+    """Whether each planted format's header is in Sanctum's signature table."""
+    import yaml
+
+    table = yaml.safe_load((REPO / "testkit" / "signatures.yaml").read_text())
+    entries = [
+        (bytes.fromhex(item["header"]), int(item.get("header_offset", 0)))
+        for item in table["signatures"]
+    ]
+    found: dict[str, bool] = {}
+    for path in sorted((work / "images").glob(f"media-*{TRUTH_SUFFIX}")):
+        for obj in load_truth(path).objects:
+            if obj.role != "file" or obj.format in found:
+                continue
+            head = (work / "payloads" / obj.sha256).read_bytes()[:64]
+            found[obj.format] = any(
+                head[offset : offset + len(magic)] == magic for magic, offset in entries
+            )
+    return found
+
+
+def format_report(work: Path) -> str:
+    """Every table the performance evaluation quotes, from ``scores.json``."""
+    scores: list[dict[str, Any]] = json.loads(
+        (work / "scores.json").read_text(encoding="utf-8")
+    )
+    lines: list[str] = []
+    for key, title in REPORT_GROUPS:
+        rows = [item for item in scores if _group_of(item) == key]
+        if not rows:
+            continue
+        images = sorted({str(item["image"]) for item in rows})
+        lines += [f"#### {title}", "", "Images: " + ", ".join(f"`{i}`" for i in images)]
+        lines += ["", _HEADER, _RULE]
+        for tool in COMPARABLE:
+            chosen = [item for item in rows if item["tool"] == tool]
+            if chosen:
+                lines.append(_table_row(LABELS[tool], _sum(chosen)))
+        full = [item for item in rows if item["tool"] == "sanctum-full"]
+        if full:
+            lines.append("| *not a carver's peer:* | | | | | | | | | | |")
+            lines.append(_table_row(LABELS["sanctum-full"], _sum(full)))
+        failed = [
+            f"`{item['tool']}` on `{item['image']}` (exit {item['returncode']}"
+            + (", timed out" if item["timed_out"] else "")
+            + ")"
+            for item in rows
+            if "@" not in str(item["tool"])
+            and (item["returncode"] != 0 or item["timed_out"])
+        ]
+        if failed:
+            lines += ["", "Runs that did not exit 0: " + "; ".join(failed) + "."]
+        lines.append("")
+
+    signature = _signature_formats(work)
+    lines += [
+        "#### By format: benchmark volumes and every damage model (25 images)",
+        "",
+        "Cells are byte-identical / corrupt, over FULL objects of that format.",
+        "",
+        "| Format | Header in Sanctum's table | FULL | Sanctum carve | PhotoRec "
+        "| Foremost | Sanctum full |",
+        "|---|---|---:|---:|---:|---:|---:|",
+    ]
+    formats: dict[str, dict[str, list[int]]] = {}
+    for item in scores:
+        if item["corpus"] != "media" or "@" in str(item["tool"]):
+            continue
+        for fmt, counts in item["formats"].items():
+            cell = formats.setdefault(fmt, {}).setdefault(str(item["tool"]), [0, 0, 0])
+            cell[0] += counts["full"]
+            cell[1] += counts["exact"]
+            cell[2] += counts["corrupt"]
+    for fmt in sorted(formats, key=lambda name: (not signature.get(name, False), name)):
+        cells = formats[fmt]
+        planted = max(cell[0] for cell in cells.values())
+        rendered = [
+            f"{cells[tool][1]}/{cells[tool][2]}" if tool in cells else "-"
+            for tool in ("sanctum-carve", "photorec", "foremost", "sanctum-full")
+        ]
+        lines.append(
+            f"| {fmt} | {'yes' if signature.get(fmt) else 'no'} | {planted} | "
+            + " | ".join(rendered)
+            + " |"
+        )
+    lines.append("")
+
+    lines += [
+        "#### Object by object: who returned a FULL file byte-identical",
+        "",
+        "| Pair | Both | Only Sanctum carve | Only the other tool | Neither |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    outcome: dict[tuple[str, str, str], str] = {}
+    for item in scores:
+        for name, result in item["outcomes"].items():
+            if result in ("exact", "corrupt", "missed"):
+                outcome[(str(item["tool"]), str(item["image"]), name)] = result
+    keys = {(image, name) for (_tool, image, name) in outcome}
+    wins: dict[str, dict[str, list[str]]] = {}
+    for other in ("photorec", "foremost"):
+        tally = {"both": 0, "mine": 0, "theirs": 0, "neither": 0}
+        for image, name in keys:
+            mine = outcome.get(("sanctum-carve", image, name)) == "exact"
+            theirs = outcome.get((other, image, name)) == "exact"
+            if (other, image, name) not in outcome:
+                continue
+            slot = (
+                "both"
+                if mine and theirs
+                else "mine"
+                if mine
+                else ("theirs" if theirs else "neither")
+            )
+            tally[slot] += 1
+            if slot in ("mine", "theirs"):
+                wins.setdefault(other, {}).setdefault(slot, []).append(
+                    f"{image}:{name}"
+                )
+        lines.append(
+            f"| Sanctum carve vs {LABELS[other]} | {tally['both']} | {tally['mine']} "
+            f"| {tally['theirs']} | {tally['neither']} |"
+        )
+    lines.append("")
+    for other, sides in wins.items():
+        for side, items in sides.items():
+            who = "Sanctum carve only" if side == "mine" else f"{LABELS[other]} only"
+            lines.append(
+                f"<details><summary>{who}, against {LABELS[other]}: {len(items)} "
+                "objects</summary>\n\n"
+                + ", ".join(f"`{entry}`" for entry in sorted(items))
+                + "\n\n</details>\n"
+            )
+
+    lines += [
+        "#### Supplementary, not comparable: Sanctum HIGH and MEDIUM only",
+        "",
+        _HEADER,
+        _RULE,
+    ]
+    for tool in ("sanctum-carve@HIGH+MEDIUM", "sanctum-full@HIGH+MEDIUM"):
+        chosen = [item for item in scores if item["tool"] == tool]
+        if chosen:
+            lines.append(_table_row(LABELS[tool] + " (all 40 images)", _sum(chosen)))
+    lines.append("")
+
+    lines += [
+        "#### Every run",
+        "",
+        "| Image | Row | FULL | Identical | Corrupt | Missed | PARTIAL ret. "
+        "| FP | Outputs | Time (s) | Exit |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for item in sorted(
+        scores,
+        key=lambda row: (
+            row["image"],
+            TOOLS.index(str(row["tool"]).split("@")[0]),
+            row["tool"],
+        ),
+    ):
+        if "@" in str(item["tool"]):
+            continue
+        fps = sum(
+            int(item[key])
+            for key in ("fp_fragment", "fp_decoy", "fp_ambiguous", "fp_unrelated")
+        )
+        lines.append(
+            f"| `{item['image']}` | {LABELS[str(item['tool'])]} | {item['full']} "
+            f"| {item['exact']} | {item['corrupt']} | {item['missed']} "
+            f"| {item['partial_returned']}/{item['partial']} | {fps} "
+            f"| {item['outputs']} | {float(item['seconds']):.2f} "
+            f"| {item['returncode']}{' (timeout)' if item['timed_out'] else ''} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1195,9 +1525,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     run_cmd.add_argument("--image", action="append", default=[])
     run_cmd.add_argument("--foremost", default="foremost")
     run_cmd.add_argument("--timeout", type=int, default=3600)
+    run_cmd.add_argument("--keep-outputs", action="store_true")
     score_cmd = sub.add_parser("score")
     score_cmd.add_argument("--work", type=Path, required=True)
     score_cmd.add_argument("--csv", type=Path)
+    report_cmd = sub.add_parser("report")
+    report_cmd.add_argument("--work", type=Path, required=True)
+    report_cmd.add_argument("--out", type=Path, required=True)
     worker = sub.add_parser("sanctum-worker")
     worker.add_argument("image", type=Path)
     worker.add_argument("run_dir", type=Path)
@@ -1219,12 +1553,16 @@ def main(argv: Sequence[str] | None = None) -> None:
             only=args.image,
             foremost=args.foremost,
             timeout=args.timeout,
+            keep_outputs=args.keep_outputs,
         )
     elif args.command == "score":
         scores = score(args.work)
         if args.csv:
             write_csv([item for item in scores if "@" not in item.tool], args.csv)
         print(f"scored {len(scores)} runs")  # noqa: T201 - a CLI
+    elif args.command == "report":
+        args.out.write_text(format_report(args.work), encoding="utf-8")
+        print(f"wrote {args.out}")  # noqa: T201 - a CLI
     else:
         _sanctum_worker(args.image, args.run_dir, undelete=not args.no_undelete)
 
