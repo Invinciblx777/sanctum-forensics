@@ -1464,7 +1464,8 @@ def format_report(work: Path) -> str:
         for side, items in sides.items():
             who = "Sanctum carve only" if side == "mine" else f"{LABELS[other]} only"
             lines.append(
-                f"<details><summary>{who}, against {LABELS[other]}: {len(items)} "
+                f"<details><summary>{who} (Sanctum carve vs {LABELS[other]}): "
+                f"{len(items)} "
                 "objects</summary>\n\n"
                 + ", ".join(f"`{entry}`" for entry in sorted(items))
                 + "\n\n</details>\n"
