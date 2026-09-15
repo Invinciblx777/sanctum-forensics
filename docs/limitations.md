@@ -722,11 +722,19 @@ What the scan reads, and misses:
   text. Each part is inflated 64 KiB at a time and never held whole; a 32 MiB part
   measured 2.37 MiB of peak allocation. Paragraph, cell and row boundaries are
   kept, so two cells never fuse into one number.
-* **PDF:** decoded content streams, skipping image and font streams. Text drawn
+* **PDF:** content streams, skipping image and font streams. Text drawn
   with per-glyph kerning (`[(98765)-20(43210)]TJ`), hex strings or a custom
-  encoding is not reassembled and is missed. So is an encrypted PDF. **Each stream
-  is decoded whole** before the 64 MiB budget is applied, so a compressed stream
-  that inflates far beyond the object's size is held in memory while it is read.
+  encoding is not reassembled and is missed. So is an encrypted PDF. A recovered
+  PDF is untrusted input, so no stream is decoded whole: each stream's raw bytes
+  are read, unfiltered and `FlateDecode` streams are inflated 64 KiB at a time
+  into the counter, and reading stops at the 64 MiB budget. A 1 GiB Flate stream
+  stored in 1 MiB costs +6.7 MiB of peak RSS (it cost +2,050 MiB before this
+  bound). **Streams behind any other filter** (`ASCII85Decode`, `LZWDecode`,
+  `RunLengthDecode`), with a predictor, or in an encrypted file **are not
+  decoded and are missed**; the `basis` counts them. qpdf inflates object and
+  cross-reference streams while it opens a file, so those are measured in the raw
+  bytes first, and a PDF with one that inflates beyond 16 MiB, or that uses a
+  filter whose size cannot be measured, is not opened or scanned at all.
 * **Raw bytes** (`.txt`, `.csv`, SQLite, legacy `.doc` and unclassified objects):
   ASCII/UTF-8 only. UTF-16 text is missed; that covers most legacy `.doc` bodies
   and EVTX. So is a number stored as a binary integer. The false-positive rate on

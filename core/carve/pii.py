@@ -57,6 +57,7 @@ from __future__ import annotations
 import io
 import re
 import zipfile
+import zlib
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
@@ -294,11 +295,6 @@ def count_bytes(data: bytes | memoryview) -> dict[str, int]:
     return count_reader(lambda offset, size: view[offset : offset + size], len(view))
 
 
-def _merge(total: dict[str, int], more: dict[str, int]) -> None:
-    for kind, value in more.items():
-        total[kind] = total.get(kind, 0) + value
-
-
 class _StreamCounter:
     """:func:`count_bytes` over text that arrives in pieces, holding one window.
 
@@ -434,39 +430,148 @@ def _count_ooxml(data: bytes, counts: dict[str, int]) -> int | None:
     return parts
 
 
-def _pdf_streams(data: bytes) -> Iterable[bytes] | None:
-    """Decoded stream bytes of a PDF, or None when pikepdf cannot open it."""
+#: Inflated PDF stream bytes produced per step. A stream is never held whole.
+_PDF_CHUNK_BYTES = 64 * KIB
+
+#: Largest inflated size allowed for an object stream or cross-reference
+#: stream. qpdf inflates these whole while it opens the file, before any budget
+#: here can apply, so they are measured first and the file is not opened if one
+#: is larger. Real object streams are a few MiB at most.
+MAX_PDF_STRUCTURE_BYTES = 16 * MIB
+
+_PDF_STRUCTURAL = re.compile(rb"/Type\s*/(?:ObjStm|XRef)(?![A-Za-z0-9])")
+_PDF_FILTER_NAME = re.compile(rb"/([A-Za-z0-9]+Decode|AHx|A85|LZW|Fl|RL|CCF|DCT)\b")
+
+
+def _inflate_pieces(raw: bytes, limit: int) -> Iterable[bytes]:
+    """Inflate ``raw`` in :data:`_PDF_CHUNK_BYTES` steps, stopping at ``limit``.
+
+    The whole inflated stream never exists at once, which is the point: a
+    compressed stream of a few hundred KiB can inflate to gigabytes. A stream
+    damaged part way yields what inflated before the damage.
+    """
+    inflater = zlib.decompressobj()
+    pending = raw
+    produced = 0
+    while produced < limit:
+        step = min(_PDF_CHUNK_BYTES, limit - produced)
+        try:
+            piece = inflater.decompress(pending, step)
+        except zlib.error:
+            return
+        pending = inflater.unconsumed_tail
+        if not piece:
+            return
+        produced += len(piece)
+        yield piece
+
+
+def _inflates_beyond(raw: bytes, limit: int) -> bool:
+    """True when ``raw`` inflates to more than ``limit`` bytes. Holds one step."""
+    produced = 0
+    for piece in _inflate_pieces(raw, limit + 1):
+        produced += len(piece)
+    return produced > limit
+
+
+def _structure_is_bounded(data: bytes) -> bool:
+    """Whether every object and cross-reference stream inflates within bounds.
+
+    Found in the raw bytes, not through pikepdf, because opening the file is
+    what inflates them. A structural stream behind a filter other than Flate
+    cannot be measured this way, so it is not trusted either.
+    """
+    for match in _PDF_STRUCTURAL.finditer(data):
+        keyword = data.find(b"stream", match.end(), match.end() + 64 * KIB)
+        if keyword == -1:
+            continue
+        dictionary = data[max(0, data.rfind(b"obj", 0, match.start())) : keyword]
+        start = keyword + len(b"stream")
+        if data[start : start + 2] == b"\r\n":
+            start += 2
+        elif data[start : start + 1] in (b"\n", b"\r"):
+            start += 1
+        end = data.find(b"endstream", start)
+        raw = data[start : end if end != -1 else len(data)]
+        filters = {name.group(1) for name in _PDF_FILTER_NAME.finditer(dictionary)}
+        if not filters:
+            continue
+        if filters - {b"FlateDecode", b"Fl"}:
+            return False
+        if _inflates_beyond(raw, MAX_PDF_STRUCTURE_BYTES):
+            return False
+    return True
+
+
+def _count_pdf(data: bytes, counts: dict[str, int]) -> tuple[int, int, bool] | str:
+    """Count identifiers in a PDF's content streams, never holding one whole.
+
+    Returns ``(streams read, streams not decoded, budget reached)``, or the
+    reason nothing was read: the file cannot be opened, or its structure would
+    inflate beyond :data:`MAX_PDF_STRUCTURE_BYTES` while it was being opened.
+
+    Each stream's **raw** bytes are read; its bytes are therefore bounded by the
+    object's own size. Unfiltered streams are counted as they are. A
+    ``FlateDecode`` stream is inflated :data:`_PDF_CHUNK_BYTES` at a time into a
+    streaming counter, so a stream that inflates to gigabytes costs one step of
+    memory and stops at :data:`MAX_EXTRACT_BYTES`. Any other filter, a predictor,
+    or an encrypted file is not decoded, because decoding it would mean handing
+    the whole stream to qpdf; such streams are counted in the second value.
+    """
     import pikepdf
 
+    if not _structure_is_bounded(data):
+        return (
+            "Not scanned: an object or cross-reference stream in the .pdf would "
+            f"inflate beyond {MAX_PDF_STRUCTURE_BYTES // MIB} MiB, or uses a filter "
+            "whose inflated size cannot be measured, and opening the file would "
+            "inflate it whole."
+        )
     try:
         pdf = pikepdf.open(io.BytesIO(data))
     except (pikepdf.PdfError, pikepdf.PasswordError, OSError, ValueError, RuntimeError):
-        return None
+        return "Not scanned: the .pdf container could not be opened."
 
-    def streams() -> Iterable[bytes]:
-        budget = MAX_EXTRACT_BYTES
-        with pdf:
-            for obj in pdf.objects:
-                if budget <= 0:
-                    return
-                if not isinstance(obj, pikepdf.Stream):
-                    continue
-                # Image and font programs are binary, and a JPEG in a PDF is
-                # still JPEG entropy data: the rates that keep images out of
-                # scope apply to it here too.
-                if obj.get("/Subtype") == "/Image" or any(
-                    key in obj for key in ("/Length1", "/Length2", "/Length3")
-                ):
-                    continue
-                try:
-                    raw = obj.read_bytes()
-                except (pikepdf.PdfError, OSError, ValueError, RuntimeError):
-                    continue
-                raw = raw[:budget]
-                budget -= len(raw)
-                yield raw
-
-    return streams()
+    budget = MAX_EXTRACT_BYTES
+    read = skipped = 0
+    with pdf:
+        encrypted = pdf.is_encrypted
+        for obj in pdf.objects:
+            if budget <= 0:
+                break
+            if not isinstance(obj, pikepdf.Stream):
+                continue
+            # Image and font programs are binary, and a JPEG in a PDF is
+            # still JPEG entropy data: the rates that keep images out of
+            # scope apply to it here too.
+            if obj.get("/Subtype") == "/Image" or any(
+                key in obj for key in ("/Length1", "/Length2", "/Length3")
+            ):
+                continue
+            filters = obj.get("/Filter")
+            names = (
+                [str(item) for item in filters]
+                if isinstance(filters, pikepdf.Array)
+                else [] if filters is None else [str(filters)]
+            )
+            parms = obj.get("/DecodeParms")
+            if encrypted or names not in ([], ["/FlateDecode"]) or parms is not None:
+                skipped += 1
+                continue
+            try:
+                raw = obj.read_raw_bytes()
+            except (pikepdf.PdfError, OSError, ValueError, RuntimeError):
+                continue
+            pieces = (
+                _inflate_pieces(raw, budget) if names else iter((raw[:budget],))
+            )
+            stream = _StreamCounter(counts)
+            for piece in pieces:
+                budget -= len(piece)
+                stream.feed(piece)
+            stream.finish()
+            read += 1
+    return read, skipped, budget <= 0
 
 
 @dataclass(frozen=True)
@@ -534,14 +639,21 @@ def scan_content(
             seen = _count_ooxml(blob, counts)
             basis = f"Text of {seen} XML parts, tags removed"
         else:
-            pieces = _pdf_streams(blob)
-            seen = None
-            if pieces is not None:
-                seen = 0
-                for piece in pieces:
-                    seen += 1
-                    _merge(counts, count_bytes(piece))
+            outcome = _count_pdf(blob, counts)
+            if isinstance(outcome, str):
+                return PiiScan(inspected=False, basis=outcome, counts={})
+            seen, skipped, exhausted = outcome
             basis = f"{seen} decoded PDF streams"
+            if skipped:
+                basis += (
+                    f"; {skipped} not decoded (a filter other than FlateDecode,"
+                    " a predictor, or encryption)"
+                )
+            if exhausted:
+                basis += (
+                    f"; stopped at the {MAX_EXTRACT_BYTES // MIB} MiB extraction"
+                    " budget"
+                )
         if seen is None:
             return PiiScan(
                 inspected=False,
