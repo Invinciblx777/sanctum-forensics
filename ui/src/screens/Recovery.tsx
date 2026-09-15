@@ -3,6 +3,14 @@ import { api, RequestFailed, streamJob } from '../lib/api'
 import type { CarveCandidate, JobStatus, Progress } from '../lib/api'
 import { bytes, hex, percent } from '../lib/format'
 import {
+  matchesPii,
+  PII_KINDS,
+  PII_LABELS,
+  piiSummary,
+  piiTotal,
+  sortByPii,
+} from '../lib/triage'
+import {
   Empty,
   ErrorNotice,
   JobId,
@@ -164,6 +172,7 @@ export default function Recovery() {
   const [outDir, setOutDir] = useState('')
   const [undelete, setUndelete] = useState(true)
   const [signatures, setSignatures] = useState(true)
+  const [piiTriage, setPiiTriage] = useState(true)
   const [jobId, setJobId] = useState<string | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
   const [status, setStatus] = useState<JobStatus | null>(null)
@@ -178,26 +187,29 @@ export default function Recovery() {
   const [filterBucket, setFilterBucket] = useState('')
   const [filterSource, setFilterSource] = useState('')
   const [filterFlag, setFilterFlag] = useState('')
+  const [filterPii, setFilterPii] = useState('')
+  const [sortPii, setSortPii] = useState(false)
   const detach = useRef<(() => void) | null>(null)
 
   useEffect(() => () => detach.current?.(), [])
 
   const candidates = (status?.result?.candidates ?? []) as CarveCandidate[]
 
-  const filtered = useMemo(
-    () =>
-      candidates.filter((item) => {
-        if (filterType && item.ext !== filterType) return false
-        if (filterBucket && item.bucket !== filterBucket) return false
-        if (filterSource && item.source !== filterSource) return false
-        if (filterFlag) {
-          const flags = item.flags as unknown as Record<string, boolean>
-          if (!flags[filterFlag]) return false
-        }
-        return true
-      }),
-    [candidates, filterType, filterBucket, filterSource, filterFlag],
-  )
+  const filtered = useMemo(() => {
+    const kept = candidates.filter((item) => {
+      if (filterType && item.ext !== filterType) return false
+      if (filterBucket && item.bucket !== filterBucket) return false
+      if (filterSource && item.source !== filterSource) return false
+      if (filterFlag) {
+        const flags = item.flags as unknown as Record<string, boolean>
+        if (!flags[filterFlag]) return false
+      }
+      return matchesPii(item, filterPii)
+    })
+    return sortPii ? sortByPii(kept) : kept
+  }, [candidates, filterType, filterBucket, filterSource, filterFlag, filterPii, sortPii])
+
+  const withIdentifiers = candidates.filter((item) => piiTotal(item) > 0).length
 
   async function start() {
     setError(null)
@@ -206,6 +218,7 @@ export default function Recovery() {
         image,
         undelete,
         carve_signatures: signatures,
+        pii_triage: piiTriage,
         out_dir: outDir || null,
       })
       setJobId(accepted.job_id)
@@ -278,6 +291,17 @@ export default function Recovery() {
               />
               <span>Signature and structure carve</span>
             </label>
+            <label
+              className="inline"
+              title="Counts identifier shapes in documents, databases and unclassified objects. No value is stored."
+            >
+              <input
+                type="checkbox"
+                checked={piiTriage}
+                onChange={(event) => setPiiTriage(event.target.checked)}
+              />
+              <span>PII triage (counts only)</span>
+            </label>
             <button className="btn primary" disabled={!image} onClick={() => void start()}>
               Scan
             </button>
@@ -345,6 +369,27 @@ export default function Recovery() {
                     <option value="has_embedded_files">embedded files</option>
                     <option value="is_signed">signed</option>
                   </select>
+                  <select
+                    value={filterPii}
+                    onChange={(e) => setFilterPii(e.target.value)}
+                    aria-label="Filter by identifiers found"
+                  >
+                    <option value="">all identifiers</option>
+                    <option value="any">any identifier ({withIdentifiers})</option>
+                    {PII_KINDS.map((kind) => (
+                      <option key={kind} value={kind}>
+                        {PII_LABELS[kind]}
+                      </option>
+                    ))}
+                  </select>
+                  <label className="inline">
+                    <input
+                      type="checkbox"
+                      checked={sortPii}
+                      onChange={(e) => setSortPii(e.target.checked)}
+                    />
+                    <span>most identifiers first</span>
+                  </label>
                 </div>
               }
             >
@@ -363,6 +408,7 @@ export default function Recovery() {
                     <col style={{ width: 92 }} />
                     <col style={{ width: 100 }} />
                     <col style={{ width: 140 }} />
+                    <col style={{ width: 170 }} />
                   </colgroup>
                   <thead>
                     <tr>
@@ -373,6 +419,7 @@ export default function Recovery() {
                       <th>Size</th>
                       <th>Source</th>
                       <th>Confidence</th>
+                      <th>Identifiers</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -408,6 +455,19 @@ export default function Recovery() {
                               basis={percent(item.confidence_bp)}
                               tone={tone}
                             />
+                          </td>
+                          {/* Kinds and counts only: the server sends no value. */}
+                          <td
+                            className="mono"
+                            style={{
+                              color:
+                                piiTotal(item) > 0
+                                  ? 'var(--text-primary)'
+                                  : 'var(--text-muted)',
+                            }}
+                            title={item.pii?.basis}
+                          >
+                            {piiSummary(item)}
                           </td>
                         </tr>
                       )
@@ -481,6 +541,25 @@ export default function Recovery() {
                         ' A cluster inside this file’s span belongs to a live file, so it was definitely fragmented.'}
                     </Notice>
                   )}
+
+                  <div className="col tight">
+                    <span className="stat-label">identifiers (PII triage)</span>
+                    <Evidence
+                      stacked
+                      rows={[
+                        { label: 'Found', value: piiSummary(selected) },
+                        { label: 'How read', value: selected.pii?.basis || 'not scanned' },
+                      ]}
+                    />
+                    {piiTotal(selected) > 0 && (
+                      <Notice tone="info">
+                        A count is a signal to look, not a finding: the detectors
+                        match a shape, and a checksum for Aadhaar and card numbers.
+                        No value was stored. Open the recovered object to see
+                        what was counted.
+                      </Notice>
+                    )}
+                  </div>
 
                   <ScoreBreakdown candidate={selected} />
                   <PreviewPane candidate={selected} />

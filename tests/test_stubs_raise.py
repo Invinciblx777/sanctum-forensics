@@ -37,6 +37,9 @@ IMPLEMENTED = (
     "core.carve.score",
     "core.carve.classify",
     "core.carve.fsaware",
+    # Covered by tests/carve/test_pii_detectors.py and the no-leak test,
+    # tests/api/test_pii_no_leak.py.
+    "core.carve.pii",
     "core.erase.files",
     # Covered by tests/erase/files/test_free_space_gates.py and, on udisks loop
     # volumes, test_free_space_wipe_carve.py.

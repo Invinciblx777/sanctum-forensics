@@ -666,6 +666,75 @@ recorded limitation when a call fails, so the worst case on an untried Windows
 build is a report full of unknowns rather than a false guarantee. The
 NTFS-specific tests skip off Windows with that stated as the reason.
 
+## PII triage counts shapes, stores no values, and reads only some types
+
+`core/carve/pii.py` counts Aadhaar (Verhoeff), PAN, IFSC, Indian mobile, payment
+card (Luhn) and email shapes in each recovered object. The user manual (§6, "PII
+triage") lists the exact patterns.
+
+**Values are never stored.** Each recovered object gets kinds and counts only. No
+matched value, prefix, suffix, mask, hash or offset is written to the report, the
+ledger, the job result or any log. A hash is excluded because an Aadhaar number
+has 10^11 checksum-valid values, which is brute-forced against a SHA-256 in
+minutes. An offset is excluded because, with the recovered object, it gives the
+value back. `tests/api/test_pii_no_leak.py` plants synthetic values in deleted
+files on a FAT32 volume and runs the carve, the SSE stream, report generation and
+verification. It then searches the ledger, the reports (the JSON, and the PDF raw
+and decoded), the job result, the SSE replay, every structlog event at DEBUG,
+stdlib logging, stdout, stderr and every other file under the state and key
+directories. It searches for each value as planted, as bare digits, in UTF-16LE,
+base64, SHA-256/SHA-1/MD5 hex, and as a mask ending in the real last four digits.
+It fails on any match. It was also run with a deliberate leak (a debug log of the
+match) and failed, naming the sink.
+
+**A count is a signal to look, not a finding.** A shape plus a checksum does not
+establish an identifier. One random 12-digit string in ten passes Verhoeff, and
+one random 16-digit string in ten passes Luhn. A 16-digit Aadhaar Virtual ID that
+happens to pass Luhn is counted as a card. International phone numbers,
+non-Indian identity numbers and postal addresses are not detected at all.
+
+**Measured false-positive rates.** Raw bytes, no type gate, data holding no planted
+identifier; hits per MiB:
+
+| Corpus | Size | Aadhaar | PAN | IFSC | Mobile | Card | Email |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Synthetic carving corpus, seed 0 | 12.5 MiB | 0 | 0 | 0 | 0 | 0 | 0 |
+| Filesystem corpus images, seed 0 (13) | 414.0 MiB | 0 | 0 | 0.188 | 0 | 0 | 0 |
+| iPhone camera JPEGs (7) | 13.9 MiB | 0 | 0 | 0 | 0 | 0.072 | 0.144 |
+| iPhone HEIC (6) | 7.8 MiB | 0 | 0 | 0 | 0 | 0 | 0 |
+| Thumbnails and gain maps carved from those photos (19) | 0.87 MiB | 0 | 0 | 0 | 0 | 0 | 0 |
+
+All three JPEG hits are in entropy-coded image data. One card hit is inside a
+secondary (gain-map) image. All 78 IFSC hits are FAT 8.3 directory entries
+(`FILL0001PAD`), a false-positive class that camera names such as `DSCN0001JPG`
+also fall into. Zero means none were seen in that many bytes, not a zero rate.
+These corpora are small, and the photos come from one phone.
+
+**Therefore only documents, databases and unclassified objects are scanned.**
+Images, media, archives and executables are not. Scanned as raw bytes, 2 of the 7
+camera JPEGs measured would have shown an identifier that is not there. A ZIP's
+members are therefore not scanned, and neither is text inside an image, such as a
+photographed ID card.
+
+What the scan reads, and misses:
+
+* **OOXML:** the text of the XML parts, tags removed, capped at 64 MiB of inflated
+  text. Each part is inflated 64 KiB at a time and never held whole; a 32 MiB part
+  measured 2.37 MiB of peak allocation. Paragraph, cell and row boundaries are
+  kept, so two cells never fuse into one number.
+* **PDF:** decoded content streams, skipping image and font streams. Text drawn
+  with per-glyph kerning (`[(98765)-20(43210)]TJ`), hex strings or a custom
+  encoding is not reassembled and is missed. So is an encrypted PDF. **Each stream
+  is decoded whole** before the 64 MiB budget is applied, so a compressed stream
+  that inflates far beyond the object's size is held in memory while it is read.
+* **Raw bytes** (`.txt`, `.csv`, SQLite, legacy `.doc` and unclassified objects):
+  ASCII/UTF-8 only. UTF-16 text is missed; that covers most legacy `.doc` bodies
+  and EVTX. So is a number stored as a binary integer. The false-positive rate on
+  OLE and unclassified binary objects has not been measured.
+* **Objects above 64 MiB:** raw-byte types are scanned through the read-only handle
+  in 1 MiB windows. OOXML and PDF objects that large are not scanned, and their
+  `basis` says so.
+
 ## Platform
 
 Whole-device sanitization is Linux only. `core/erase/drive.py` refuses to import

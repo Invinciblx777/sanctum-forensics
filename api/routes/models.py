@@ -107,6 +107,10 @@ class CarveRequest(BaseModel):
     #: is reassembled and scored MEDIUM at most; nothing else is. See
     #: :mod:`api.carve_job` for the exact scope.
     carve_signatures: bool = True
+    #: Count Aadhaar, PAN, IFSC, mobile, card and email identifiers in each
+    #: document, database or unclassified object. Kinds and counts only: no
+    #: matched value is stored, logged or returned. See :mod:`core.carve.pii`.
+    pii_triage: bool = True
     #: Where recovered objects are written. None means nothing is written and
     #: only the candidate list is returned.
     out_dir: str | None = None

@@ -577,6 +577,77 @@ the signature and structure carvers over the image. The undelete pass also retur
 the allocated/unallocated map, which is reported but deliberately does **not** bound
 the carve — bounding it was measured and loses recall.
 
+### PII triage: which recovered files hold identity or financial data
+
+`pii_triage` (on by default; the *PII triage (counts only)* box on the Recovery
+screen) counts six kinds of identifier in each recovered object, so an examiner
+facing hundreds of files can open the ones holding personal data first. The
+Recovery screen adds an **Identifiers** column (`Aadhaar 1 · PAN 1 · Card 1`,
+`none seen`, or `not scanned`), a filter for *any identifier* or one kind, and a
+*most identifiers first* sort. The report carries the same counts per object and a
+`pii_triage` section with totals.
+
+| Kind | What is matched |
+|---|---|
+| Aadhaar | 12 digits, first digit 2–9, optionally grouped 4-4-4 by one consistent space or hyphen, **Verhoeff checksum valid**. A bare 12-digit run is not counted. |
+| PAN | `AAA?A9999A`, where the fourth letter is one of the holder types `ABCFGHLJPT`. |
+| IFSC | four capitals, a literal `0`, six capitals or digits. |
+| Mobile | ten digits starting 6–9, optionally prefixed `+91` or `0091` with one optional separator. |
+| Card | 13–19 digits, optionally separated by single spaces or hyphens, **Luhn valid**. |
+| Email | a local part of up to 64 characters, `@`, one to four DNS labels and an alphabetic TLD. |
+
+Every kind needs a non-alphanumeric character, or the start or end of the data, on
+both sides, so the middle of a longer run is never counted.
+
+**No value is ever stored.** Not in the report, the ledger, the job result, the
+logs or anywhere else: not the value, not the last four digits, not a hash of it
+(a 12-digit Aadhaar is brute-forced from a hash in minutes), and not its offset
+(an offset plus the recovered file gives the value back, and the report travels
+further than the file). To see what was counted, open the recovered object. It
+already holds the value. `tests/api/test_pii_no_leak.py` plants known values,
+runs the whole pipeline, and fails if any of them appears in any other place the
+product writes.
+
+**A count is a signal to look, not a finding.** The detectors match a shape and,
+for Aadhaar and cards, a checksum. One random 12-digit string in ten passes
+Verhoeff, and one 16-digit string in ten passes Luhn. `Aadhaar 1` means "a
+12-digit number with a valid Aadhaar check digit is in this file". It does not
+mean "this file holds someone's Aadhaar number". `none seen` means none of these
+shapes was found by the method named in the object's `basis`. It does not mean the
+file holds no personal data.
+
+What is scanned, and how:
+
+* **Documents, databases and unclassified objects only.** DOCX/XLSX/PPTX (and
+  macro variants) are scanned as the text of their XML parts with the tags removed.
+  PDF is scanned as its decoded content streams, skipping image and font streams.
+  Everything else in those categories, including `.txt`, `.csv`, SQLite and legacy
+  `.doc`, is scanned as raw bytes.
+* **Images, media, archives and executables are not scanned.** Their bytes produce
+  false matches: on the camera JPEGs in the measurement below, one email-shaped or
+  card-shaped hit per 4.6 MiB, all of them in compressed image data. On a photo
+  collection, that would mark a large share of the photos.
+
+Measured false-positive rates, raw bytes with no type gate, on data holding no
+planted identifier. Figures are hits per MiB:
+
+| Corpus | Size | Aadhaar | PAN | IFSC | Mobile | Card | Email |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Synthetic carving corpus (`generate_corpus`, seed 0) | 12.5 MiB | 0 | 0 | 0 | 0 | 0 | 0 |
+| Filesystem corpus images (13 images, seed 0) | 414.0 MiB | 0 | 0 | 0.188 | 0 | 0 | 0 |
+| Camera JPEGs, iPhone (7 files) | 13.9 MiB | 0 | 0 | 0 | 0 | 0.072 | 0.144 |
+| HEIC, iPhone (6 files) | 7.8 MiB | 0 | 0 | 0 | 0 | 0 | 0 |
+| Thumbnails and gain maps carved from those photos (19 objects) | 0.87 MiB | 0 | 0 | 0 | 0 | 0 | 0 |
+
+A zero here means none were seen in that many bytes, not a rate of zero. The IFSC
+hits are all FAT 8.3 directory names. `FILL0001PAD` has the IFSC shape, and so
+would `DSCN0001JPG`. They are in filesystem metadata, which is not a recovered
+object. With the type gate on the synthetic corpus, 6 of 33 candidates were
+scanned and none produced a hit.
+
+Turn triage off with `"pii_triage": false` if you do not want it. The run records
+the setting in its `carve.start` ledger entry.
+
 ### Confidence buckets: what a bucket does and does not assert
 
 Confidence is the sum of six measured components in basis points — `header`,
@@ -1180,6 +1251,9 @@ here. The entries an operator hits most often:
   answer.
 * **Per-file erasure is usually unverifiable**, and is reported as unverifiable
   rather than as a pass — §5.
+* **A PII count is a signal to look, not a finding.** Triage counts identifier
+  shapes in documents, databases and unclassified objects only. It never stores a
+  value, and `none seen` does not mean a file holds no personal data — §6.
 * **Destroy is not achievable in software** and this tool will not claim it.
 * **The local API has no authentication.** Path confinements bound what an
   unauthenticated local caller can write; they do not stop one from asking. Run it

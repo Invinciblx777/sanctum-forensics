@@ -175,6 +175,38 @@ def _cluster_lookup(
     return cluster_bytes_at
 
 
+def _triage(
+    candidate: CarveCandidate, payload: bytes | None, handle: EvidenceHandle
+) -> CarveCandidate:
+    """Attach PII counts to ``candidate``. Counts and kinds only, never values.
+
+    ``payload`` is the candidate's bytes when the loop already holds them. An
+    object above the in-memory budget is scanned through the read-only handle
+    in windows when its type is scanned as raw bytes; a container that large
+    is not scanned, and says so.
+    """
+    from core.carve.pii import scan_content
+    from core.models import PiiFindings
+
+    def read(offset: int, size: int) -> bytes:
+        return handle.read(candidate.offset + offset, size)
+
+    scan = scan_content(
+        payload,
+        ext=candidate.ext,
+        category=candidate.category,
+        length=candidate.length,
+        read=read if payload is None and not candidate.fragments else None,
+    )
+    return candidate.model_copy(
+        update={
+            "pii": PiiFindings(
+                inspected=scan.inspected, basis=scan.basis, counts=scan.counts
+            )
+        }
+    )
+
+
 def carve_generator(
     image: Path,
     *,
@@ -184,6 +216,7 @@ def carve_generator(
     job_id: str = "carve",
     ledger: Ledger | None = None,
     operator: str = "sanctum",
+    pii_triage: bool = True,
 ) -> Generator[Progress, None, dict[str, Any]]:
     """Run the recovery pipeline over ``image``, yielding progress per stage.
 
@@ -192,7 +225,11 @@ def carve_generator(
             for tests and for library callers; the API always passes one,
             because a recovery nobody can audit is not evidence.
         operator: Recorded as the ledger actor.
+        pii_triage: Count identity and financial identifiers in each object
+            of a scanned category (:mod:`core.carve.pii`). Kinds and counts
+            only; no value is kept anywhere.
     """
+    from core.carve.classify import _read_candidate as read_span
     from core.carve.classify import (
         classify_candidate,
         dedupe,
@@ -203,7 +240,7 @@ def carve_generator(
     from core.carve.fragmentation import read_fragments
     from core.carve.score import resolve_overlaps, score_candidate
     from core.carve.structure import carve_structures
-    from core.carve.validate import validate_candidate
+    from core.carve.validate import MAX_VALIDATE_BYTES, validate_candidate
 
     candidates: list[CarveCandidate] = []
     limitations: list[str] = []
@@ -241,6 +278,7 @@ def carve_generator(
                     "evidence": evidence,
                     "undelete": undelete,
                     "carve_signatures": carve_signatures,
+                    "pii_triage": pii_triage,
                     "out_dir": str(out_dir) if out_dir else "",
                     # Recorded because it changes what the run could have done,
                     # not merely what it did: without an output directory the
@@ -345,14 +383,33 @@ def carve_generator(
                 # reassembled across a fragment gap. Judging them from
                 # offset..offset+length would hand every decoder the right length
                 # of the wrong bytes.
+                shared: bytes | None
                 if recovered_bytes is not None:
+                    shared = recovered_bytes
                     scored = validate_candidate(candidate, data=recovered_bytes)
-                    scored = classify_candidate(scored, data=recovered_bytes)
-                    scored = score_candidate(scored, data=recovered_bytes)
                 else:
+                    # Read once and shared by the classifier, the scorer and PII
+                    # triage, which each used to read the span for themselves.
+                    # validate_candidate still reads its own copy: passing data
+                    # tells it the object is not one span, which would change
+                    # what it reports about absent MPF frames.
+                    shared = (
+                        read_span(candidate, handle)
+                        if candidate.length <= MAX_VALIDATE_BYTES
+                        else None
+                    )
                     scored = validate_candidate(candidate, handle)
+                if shared is not None:
+                    scored = classify_candidate(scored, data=shared)
+                    scored = score_candidate(scored, data=shared)
+                else:
                     scored = classify_candidate(scored, image=handle)
                     scored = score_candidate(scored, image=handle)
+                if pii_triage:
+                    scored = _triage(scored, shared, handle)
+                # Dropped before the next candidate is read: the loop never
+                # holds more than one object's bytes.
+                shared = None
                 judged.append(scored)
                 if index % 25 == 0:
                     phase_reached = "validate"

@@ -452,6 +452,7 @@ def carve_image(
         "image": str(image),
         "undelete": body.undelete,
         "carve_signatures": body.carve_signatures,
+        "pii_triage": body.pii_triage,
         "out_dir": str(out_dir) if out_dir else None,
     }
     registry = services.registry
@@ -471,6 +472,7 @@ def carve_image(
             image,
             undelete=body.undelete,
             carve_signatures=body.carve_signatures,
+            pii_triage=body.pii_triage,
             out_dir=out_dir,
             job_id=job_id,
             ledger=ledger,

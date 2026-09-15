@@ -195,6 +195,7 @@ _SECTION_TITLES = {
     "acquisition_integrity": "3. Evidential Integrity",
     "recovery": "4. Recovery",
     "confidence": "5. Confidence",
+    "pii_triage": "6. PII Triage",
 }
 
 #: Fields rendered in monospace: hashes, serials, paths, and anything an
@@ -619,8 +620,19 @@ def build_carve_report(
     fragmented = 0
     contradicted = 0
     reassembled = 0
+    pii_by_kind: dict[str, int] = {}
+    pii_objects = 0
+    pii_inspected = 0
 
     for item in candidates:
+        pii = item.get("pii") or {}
+        counts = pii.get("counts") or {}
+        if pii.get("inspected"):
+            pii_inspected += 1
+        if counts:
+            pii_objects += 1
+        for kind, value in counts.items():
+            pii_by_kind[str(kind)] = pii_by_kind.get(str(kind), 0) + int(value)
         bucket = str(item.get("bucket", ""))
         buckets[bucket] = buckets.get(bucket, 0) + 1
         source = str(item.get("source", ""))
@@ -691,10 +703,38 @@ def build_carve_report(
                     # somebody else's data. A reader checking the digest has to
                     # know which, so the report has to say.
                     "fragments": item.get("fragments") or [],
+                    # Kinds and counts, never values. Copied field by field
+                    # rather than passed through, so nothing a future scanner
+                    # adds to the candidate reaches a signed document unread.
+                    "pii": {
+                        "inspected": bool((item.get("pii") or {}).get("inspected")),
+                        "basis": str((item.get("pii") or {}).get("basis") or ""),
+                        "counts": {
+                            str(kind): int(value)
+                            for kind, value in (
+                                (item.get("pii") or {}).get("counts") or {}
+                            ).items()
+                        },
+                    },
                 }
                 for item in candidates
             ]
             or [NONE_RECORDED],
+        },
+        "pii_triage": {
+            "objects_inspected": pii_inspected,
+            "objects_with_identifiers": pii_objects,
+            "identifiers_by_kind": pii_by_kind or {"none": 0},
+            "note": (
+                "Counts of Aadhaar (Verhoeff-checked), PAN, IFSC, Indian mobile, "
+                "payment card (Luhn-checked) and email shapes in document, "
+                "database and unclassified objects. No matched value, part of a "
+                "value, hash of a value or offset is recorded anywhere: open the "
+                "recovered object to see what was counted. A count is a signal to "
+                "look, not a finding. Images, media, archives and executables are "
+                "not scanned, because the detectors' false-positive rate on their "
+                "bytes is measured and too high; see docs/limitations.md."
+            ),
         },
         "confidence": {
             "by_bucket": buckets or {"none": 0},

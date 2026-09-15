@@ -31,6 +31,7 @@ __all__ = [
     "Validation",
     "CarveCategory",
     "CarveFlags",
+    "PiiFindings",
     "MacTimestamps",
     "CarveFragment",
     "CarveCandidate",
@@ -434,6 +435,26 @@ class CarveFlags(BaseModel):
     inspected: bool = False
 
 
+class PiiFindings(BaseModel):
+    """Personal-data triage for one recovered object: kinds and counts only.
+
+    **No matched value is ever stored here, nor any part, mask, hash or offset
+    of one.** An examiner who needs the value opens the recovered object, which
+    already holds it; this record exists to say which objects to open first.
+    See :mod:`core.carve.pii` for why each of those is excluded.
+
+    A count is a signal to look, not a finding: the detectors match a shape
+    and, for Aadhaar and card numbers, a checksum. ``inspected`` False means
+    nobody looked, and says nothing about what the object holds.
+    """
+
+    inspected: bool = False
+    #: How the bytes were read, or why they were not.
+    basis: str = ""
+    #: Kind -> number of matches. Kinds with no match are absent.
+    counts: dict[str, int] = {}
+
+
 class MacTimestamps(BaseModel):
     """Filesystem MAC timestamps carried by a surviving metadata record.
 
@@ -524,6 +545,8 @@ class CarveCandidate(BaseModel):
     overlaps_with: int | None = None
     category: CarveCategory = "unknown"
     flags: CarveFlags = CarveFlags()
+    #: Identity and financial identifier counts. Never the values.
+    pii: PiiFindings = PiiFindings()
     #: Every other offset the identical content was found at, ascending. The
     #: candidate itself carries the first one in ``offset``.
     duplicate_offsets: list[int] = []

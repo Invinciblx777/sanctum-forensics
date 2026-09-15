@@ -338,6 +338,17 @@ export interface CarveFlags {
   inspected: boolean
 }
 
+/**
+ * Identity and financial identifier counts for one object (core/models.py
+ * PiiFindings). Kinds and counts only: the server never sends a value, a part
+ * of one, or where it was.
+ */
+export interface PiiFindings {
+  inspected: boolean
+  basis: string
+  counts: Record<string, number>
+}
+
 export interface CarveFragment {
   offset: number
   length: number
@@ -370,6 +381,8 @@ export interface CarveCandidate {
   overlaps_with: number | null
   category: string
   flags: CarveFlags
+  /** Absent from a result produced before PII triage existed. */
+  pii?: PiiFindings
   duplicate_offsets: number[]
   fs_type: string
   contiguity_assumed: boolean
@@ -462,5 +475,6 @@ export interface CarveBody {
   image: string
   undelete: boolean
   carve_signatures: boolean
+  pii_triage: boolean
   out_dir: string | null
 }
