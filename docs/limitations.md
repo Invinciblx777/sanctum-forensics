@@ -49,8 +49,12 @@ On a device whose controller does not program zeros, both zero passes become
 loses the character/complement/character shape, which is worth less than passes
 that actually reach the medium. The plan records the fill bytes and the reason.
 
-The method is offered only because operators are sometimes contractually
-required to name it. NIST SP 800-88r2 (September 2025) states that multi-pass
+The engine implements the method because operators are sometimes contractually
+required to name it. It is **not offered in the UI or the API**: the erase request
+carries a level only, so a screen control naming DoD could not be honoured, and an
+earlier build that showed one produced a certificate contradicting the confirmation
+dialog. It is reachable only by calling `core/erase/drive.py:execute` with
+`EraseJob.method` set. NIST SP 800-88r2 (September 2025) states that multi-pass
 overwrite is not needed for clear and calls the DoD 5220.22-M pass-count language
 obsolete (Appendix D); for SSDs with over-provisioning it says such practices
 should be avoided, as very little confidentiality protection is achieved

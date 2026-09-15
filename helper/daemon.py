@@ -148,18 +148,30 @@ def _op_enumerate_devices(params: dict[str, Any]) -> dict[str, Any]:
     three, and a per-device probe would mean N+1 socket calls for a screen that
     refreshes.
     """
-    from core.device import capabilities, hidden_areas
+    from core.device import capabilities, hidden_areas, media
     from core.device.enumerate import enumerate_devices
+    from core.erase import drive
 
     include_virtual = bool(params.get("include_virtual", False))
     found: list[dict[str, Any]] = []
     for device in enumerate_devices(include_virtual=include_virtual):
         entry: dict[str, Any] = {"device": device.model_dump(mode="json")}
+        # The flash determination the engine uses, so no screen has to infer
+        # it from `rotational`, which a USB bridge leaves set on a flash stick.
+        flash, flash_reason = media.is_flash(device)
+        entry["media"] = {"flash": flash, "reason": flash_reason}
         try:
             probed = capabilities.probe(device)
             entry["capabilities"] = probed.model_dump(mode="json")
+            # What an erase of this device would run, per level, from the same
+            # selection the job makes. The Sanitize screen shows this instead of
+            # offering a method the engine would override.
+            entry["erase_preview"] = drive.preview(device, probed).model_dump(
+                mode="json"
+            )
         except SanctumError as exc:
             entry["capabilities"] = None
+            entry["erase_preview"] = None
             entry["capability_error"] = exc.message
         try:
             hidden = hidden_areas.detect_hidden_areas(device)

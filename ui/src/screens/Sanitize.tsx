@@ -1,6 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, RequestFailed, streamJob } from '../lib/api'
-import type { Capabilities, DeviceRow, JobStatus, Progress } from '../lib/api'
+import type { DeviceRow, JobStatus, Level, Progress } from '../lib/api'
+import {
+  contradiction,
+  defaultLevel,
+  eraseBody,
+  flashOf,
+  methodLabel,
+  planFor,
+  runnable,
+} from '../lib/erasePlan'
 import { bytes, duration, exactBytes } from '../lib/format'
 import {
   Chip,
@@ -24,168 +33,24 @@ import type { Tone } from '../components/widgets'
  * operator who reads it as equivalent to Purge has been misled by the
  * interface rather than by the drive.
  */
-function levelTone(level: 'CLEAR' | 'PURGE'): Tone {
+function levelTone(level: Level): Tone {
   return level === 'PURGE' ? 'success' : 'warning'
 }
 
-interface MethodOption {
-  id: string
-  label: string
-  level: 'CLEAR' | 'PURGE'
-  available: boolean
-  legacy?: boolean
-  /**
-   * Set when the *product* cannot run this method, whatever the drive reports.
-   *
-   * Distinct from `available: false` on its own, which means the hardware said
-   * no. An operator needs to be able to tell "your drive does not support this"
-   * from "this build does not implement it", because only the second is our
-   * fault and only the first is a fact about the device in their hand.
-   */
-  unsupported?: string
-  /** Why this method is or is not available, quoting what was probed. */
-  evidence: string
-}
-
-/**
- * Build the method list from the capability report.
+/*
+ * There is no method chooser on this screen, on purpose.
  *
- * Every entry carries the *evidence* for its own availability, not just the
- * conclusion. "Purge available" tells an operator what the tool decided;
- * "hdparm reported BLOCK_ERASE_EXT in the SANITIZE feature set" tells them why,
- * and only the second can be checked by someone who doubts it.
+ * The engine selects the mechanism from probed capability
+ * (core/erase/drive.py:select_method), and the request carries a level only.
+ * A radio group naming methods let an operator pick DoD 5220.22-M, confirm
+ * "DoD", and receive a single-pass certificate (audit F6). What is shown here
+ * instead is the engine's own answer for this device - computed by
+ * core/erase/drive.py:preview from the same selection call the job makes - so
+ * the operator commits to the method that will run, and the evidence for it.
  */
-export function methodsFor(caps: Capabilities | null): MethodOption[] {
-  const ops = caps?.ata_sanitize_ops ?? []
-  const nvme = (caps?.nvme_sanicap ?? {}) as Record<string, unknown>
-  const frozen = caps?.security_frozen ?? false
-  const purgeReachable = (caps?.achievable_levels ?? []).includes('PURGE')
-
-  return [
-    {
-      id: 'ATA_SANITIZE_BLOCK_ERASE',
-      label: 'ATA SANITIZE — block erase',
-      level: 'PURGE',
-      available: ops.includes('BLOCK_ERASE_EXT'),
-      evidence: ops.includes('BLOCK_ERASE_EXT')
-        ? 'hdparm -I reported BLOCK_ERASE_EXT in the SANITIZE feature set. The ' +
-          'drive erases every block internally, including remapped and ' +
-          'over-provisioned ones a host overwrite cannot address.'
-        : 'BLOCK_ERASE_EXT was not present in the SANITIZE feature set.',
-    },
-    {
-      id: 'ATA_SANITIZE_CRYPTO_SCRAMBLE',
-      label: 'ATA SANITIZE — cryptographic scramble',
-      level: 'PURGE',
-      available: ops.includes('CRYPTO_SCRAMBLE_EXT'),
-      evidence: ops.includes('CRYPTO_SCRAMBLE_EXT')
-        ? 'hdparm -I reported CRYPTO_SCRAMBLE_EXT. The media encryption key is ' +
-          'destroyed, which renders every block unreadable at once.'
-        : 'CRYPTO_SCRAMBLE_EXT was not present in the SANITIZE feature set.',
-    },
-    {
-      id: 'NVME_SANITIZE_BLOCK',
-      label: 'NVMe SANITIZE — block erase',
-      level: 'PURGE',
-      available: Boolean(nvme.block_erase) || Boolean(nvme.crypto_erase),
-      evidence:
-        Boolean(nvme.block_erase) || Boolean(nvme.crypto_erase)
-          ? 'Identify Controller SANICAP reported sanitize support. Note that ' +
-            'NVMe sanitize acts at controller scope: it destroys every ' +
-            'namespace, not only the one named.'
-          : 'SANICAP reported no sanitize support.',
-    },
-    {
-      id: 'SED_CRYPTO_ERASE',
-      label: 'SED cryptographic erase (Opal)',
-      level: 'PURGE',
-      // Never selectable, on any drive. `core/erase/drive.py` needs the PSID
-      // printed on the drive's own label to issue a REVERT, and no PSID is
-      // carried by the request model, the API or the helper - so an Opal drive
-      // that reached this method raised instead of erasing. Offering it while
-      // that is true would be a control that cannot do what it says.
-      available: false,
-      unsupported:
-        'PSID required. The PSID is printed on the drive label and this ' +
-        'build has no way to accept it, so the REVERT cannot be issued.',
-      evidence: caps?.is_sed_opal
-        ? 'sedutil-cli reported an Opal SSC, so the drive itself supports a ' +
-          'cryptographic erase: the data encryption key would be replaced and ' +
-          'the ciphertext on the media would become undecryptable. This build ' +
-          'cannot issue it. Use ATA SANITIZE or NVMe SANITIZE if the drive ' +
-          'reports one; otherwise a single-pass overwrite achieves Clear, not ' +
-          'Purge, and the report will say so.'
-        : 'No Opal self-encrypting drive was reported, and this build could ' +
-          'not issue an Opal revert in any case.',
-    },
-    {
-      id: 'ATA_SECURITY_ERASE_ENHANCED',
-      label: 'ATA SECURITY ERASE (enhanced)',
-      level: 'PURGE',
-      // The engine decides whether this counts as Purge, because only it knows
-      // whether the medium is flash. When it does not reach PURGE the drive's
-      // support is shown as evidence but the option is not offered.
-      available:
-        Boolean(caps?.ata_enhanced_erase) &&
-        !frozen &&
-        purgeReachable,
-      evidence: frozen
-        ? 'The drive reports ATA security as frozen, so no SECURITY command can ' +
-          'be issued. Power-cycle the drive or issue an S3 sleep/wake to clear it.'
-        : !caps?.ata_enhanced_erase
-          ? 'Enhanced erase was not reported.'
-          : purgeReachable
-            ? 'hdparm -I reported enhanced erase support and security is not ' +
-              'frozen. It counts as Purge on magnetic media only; on flash it is ' +
-              'a Clear (NIST SP 800-88r1 Table A-8), and the engine chooses a ' +
-              'sanitize or cryptographic erase there instead.'
-            : 'hdparm -I reported enhanced erase support, but the engine did not ' +
-              'count it as Purge for this device: on flash it is a Clear only ' +
-              '(NIST SP 800-88r1 Table A-8). See the limitations below.',
-    },
-    {
-      id: 'SINGLE_PASS_OVERWRITE',
-      label: 'Single-pass overwrite',
-      level: 'CLEAR',
-      available: true,
-      evidence:
-        'Always available: the host writes a pattern over every addressable ' +
-        'LBA. It cannot reach blocks the flash translation layer has remapped, ' +
-        'over-provisioned capacity, or anything behind an unopened HPA/DCO, so ' +
-        'the result is a Clear and never a Purge.',
-    },
-    {
-      id: 'DOD_5220_22_M_3PASS',
-      label: 'DoD 5220.22-M — 3 pass',
-      level: 'CLEAR',
-      available: true,
-      legacy: true,
-      evidence:
-        'LEGACY. NIST SP 800-88r2 states that multi-pass overwrite is not needed ' +
-        'for clear, and calls the DoD 5220.22-M pass-count language obsolete. ' +
-        'Offered only because operators are sometimes contractually required to ' +
-        'name it. On flash media it is actively harmful: every extra pass burns ' +
-        'program/erase cycles without reaching a single remapped block.',
-    },
-  ]
-}
-
-function autoSelect(options: MethodOption[]): MethodOption {
-  // The same preference order core/device/capabilities.py uses, so the
-  // preselection matches what the engine would choose on its own.
-  return (
-    options.find((item) => item.available && item.level === 'PURGE') ??
-    options.find((item) => item.id === 'SINGLE_PASS_OVERWRITE')!
-  )
-}
 
 export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
-  const options = useMemo(
-    () => methodsFor(selected?.capabilities ?? null),
-    [selected],
-  )
-  const auto = useMemo(() => autoSelect(options), [options])
-  const [chosen, setChosen] = useState(auto.id)
+  const [level, setLevel] = useState<Level>(defaultLevel(selected))
   const [dryRun, setDryRun] = useState(true)
   const [typed, setTyped] = useState('')
   const [confirming, setConfirming] = useState(false)
@@ -199,23 +64,24 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
   } | null>(null)
   const detach = useRef<(() => void) | null>(null)
 
-  useEffect(() => setChosen(auto.id), [auto.id])
+  useEffect(() => setLevel(defaultLevel(selected)), [selected])
   useEffect(() => () => detach.current?.(), [])
 
-  const option = options.find((item) => item.id === chosen) ?? auto
   const device = selected?.device
   const hidden = selected?.hidden_areas
+  const plan = planFor(selected, level)
+  const purge = planFor(selected, 'PURGE')
+  const preview = selected?.erase_preview ?? null
+  const media = flashOf(selected)
+  const canRun = runnable(plan)
 
   async function start() {
-    if (!device) return
+    if (!device || !canRun) return
     setError(null)
     try {
-      const accepted = await api.eraseDrive({
-        path: device.path,
-        level: option.level,
-        dry_run: dryRun,
-        typed_serial: dryRun ? '' : typed,
-      })
+      const accepted = await api.eraseDrive(
+        eraseBody(device.path, level, dryRun, typed),
+      )
       setJobId(accepted.job_id)
       setProgress(null)
       setStatus(null)
@@ -257,6 +123,8 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
   const residualFactors =
     (status?.result?.residual_risk as { factors?: string[] } | undefined)
       ?.factors ?? []
+  const mismatch = contradiction(plan, status?.result)
+  const basis = plan?.method ? methodLabel(plan.method) : 'not reachable'
 
   return (
     <>
@@ -286,69 +154,118 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
 
         <div className="split">
           <div className="col">
-            <Panel title="Method">
+            <Panel
+              title="Level"
+              subtitle="You choose the level. The engine chooses the method from what the device reported."
+            >
               <div className="col">
-                {options.map((item) => (
-                  <label
-                    key={item.id}
-                    className="inline"
-                    style={{
-                      alignItems: 'flex-start',
-                      opacity: item.available ? 1 : 0.45,
-                      cursor: item.available ? 'pointer' : 'not-allowed',
-                    }}
-                  >
-                    <input
-                      type="radio"
-                      name="method"
-                      value={item.id}
-                      checked={chosen === item.id}
-                      disabled={!item.available || running}
-                      onChange={() => setChosen(item.id)}
-                      style={{ marginTop: 3 }}
-                    />
-                    <span className="col tight">
-                      <span className="row" style={{ gap: 'var(--space-2)' }}>
-                        <strong style={{ color: 'var(--text-primary)' }}>
-                          {item.label}
-                        </strong>
-                        {/* The level is state, so it is a word in a state
-                            colour rather than a chip: the same mark the
-                            Devices screen uses for hidden areas. */}
-                        <span
-                          className={`state-mark is-${levelTone(item.level)}`}
-                        >
-                          {item.level}
+                {(['PURGE', 'CLEAR'] as const).map((item) => {
+                  const itemPlan = planFor(selected, item)
+                  const available = runnable(itemPlan)
+                  return (
+                    <label
+                      key={item}
+                      className="inline"
+                      data-level={item}
+                      style={{
+                        alignItems: 'flex-start',
+                        opacity: available ? 1 : 0.45,
+                        cursor: available ? 'pointer' : 'not-allowed',
+                      }}
+                    >
+                      <input
+                        type="radio"
+                        name="level"
+                        value={item}
+                        checked={level === item}
+                        disabled={!available || running}
+                        onChange={() => setLevel(item)}
+                        style={{ marginTop: 3 }}
+                      />
+                      <span className="col tight">
+                        <span className={`state-mark is-${levelTone(item)}`}>
+                          {item}
                         </span>
-                        {item.unsupported && (
-                          <Chip tone="medium" title={item.unsupported}>
-                            NOT IN THIS BUILD
-                          </Chip>
-                        )}
-                        {item.legacy && (
-                          <Chip tone="high" title="Multi-pass overwrite is not needed for clear: NIST SP 800-88r2">
-                            LEGACY
-                          </Chip>
-                        )}
-                        {item.id === auto.id && (
-                          <Chip tone="accent">auto-selected</Chip>
-                        )}
-                      </span>
-                      {/* The evidence, not the conclusion. */}
-                      <span className="note">{item.evidence}</span>
-                      {/* Visible, not only in the chip's tooltip: a limitation
-                          an operator has to hover to find is one they will
-                          discover from the failure instead. */}
-                      {item.unsupported && (
                         <span className="note">
-                          <strong>Not supported in this build:</strong>{' '}
-                          {item.unsupported}
+                          {itemPlan?.method
+                            ? `Engine would run: ${methodLabel(itemPlan.method)}`
+                            : itemPlan
+                              ? 'Not reachable on this device.'
+                              : 'No plan was received for this level.'}
                         </span>
-                      )}
-                    </span>
-                  </label>
-                ))}
+                      </span>
+                    </label>
+                  )
+                })}
               </div>
+            </Panel>
+
+            <Panel
+              title="What the engine will run"
+              subtitle="Computed from the capability probe by the same selection the job makes."
+            >
+              {!preview ? (
+                <Notice tone="warn">
+                  No erase plan was received for this device
+                  {selected?.capability_error
+                    ? `: the capability probe failed (${selected.capability_error})`
+                    : ''}
+                  . Nothing is predicted, and no erase can be started from this
+                  screen until the device is rescanned.
+                </Notice>
+              ) : plan && plan.reachable && plan.method ? (
+                <div className="col" data-testid="engine-plan">
+                  <Evidence
+                    stacked
+                    rows={[
+                      { label: 'Level', value: plan.level },
+                      {
+                        label: 'Method',
+                        value: `${methodLabel(plan.method)} (${plan.method})`,
+                      },
+                      { label: 'Why', value: plan.justification },
+                      {
+                        label: 'Medium',
+                        value: `${preview.flash ? 'Flash' : 'Not flash'}: ${preview.flash_reason}`,
+                      },
+                    ]}
+                  />
+                  <div className="col tight">
+                    <strong>Probed evidence</strong>
+                    <ul className="limitations">
+                      {plan.evidence.map((line) => (
+                        <li key={line}>{line}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  {preview.purge_mechanisms.length > 1 && level === 'PURGE' && (
+                    <p className="note">
+                      Other Purge mechanisms the device reported, in the
+                      engine&apos;s order:{' '}
+                      {preview.purge_mechanisms.slice(1).map(methodLabel).join(', ')}
+                      . The first is the one that runs.
+                    </p>
+                  )}
+                  {!plan.executable && (
+                    <Notice tone="danger">
+                      <strong>This build cannot issue this method.</strong>{' '}
+                      {plan.not_executable_reason}
+                    </Notice>
+                  )}
+                </div>
+              ) : (
+                <Notice tone="warn">
+                  {plan?.refusal || 'This level is not reachable on this device.'}{' '}
+                  {plan?.remediation}
+                </Notice>
+              )}
+
+              {preview && purge && !purge.reachable && (
+                <div className="col tight" style={{ marginTop: 'var(--space-3)' }}>
+                  <strong>For Purge this device would need</strong>
+                  <span className="note">{preview.purge_requires}</span>
+                </div>
+              )}
             </Panel>
 
             <Panel title="Run">
@@ -377,7 +294,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
                 <div className="row">
                   <button
                     className={dryRun ? 'btn primary' : 'btn destructive'}
-                    disabled={running}
+                    disabled={running || !canRun}
                     onClick={() => (dryRun ? void start() : setConfirming(true))}
                   >
                     {dryRun ? 'Run dry run' : 'Erase this device'}
@@ -413,6 +330,11 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
                         {status.remediation}
                       </p>
                     )}
+                    {mismatch && (
+                      <div style={{ marginTop: 'var(--space-2)' }}>
+                        <Notice tone="danger">{mismatch}</Notice>
+                      </div>
+                    )}
                   </div>
                 )}
               </Panel>
@@ -427,16 +349,8 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
             subtitle="What this run can claim, and what it cannot."
           >
             <div className="col">
-              {/* The claim first, at the size the room can read, with the
-                  method it rests on printed under it. Everything below is the
-                  qualification - and a qualification only means something once
-                  the reader knows what is being qualified. */}
-              <Railed tone={levelTone(option.level)}>
-                <Verdict
-                  level={option.level}
-                  basis={option.label}
-                  tone={levelTone(option.level)}
-                />
+              <Railed tone={levelTone(level)}>
+                <Verdict level={level} basis={basis} tone={levelTone(level)} />
               </Railed>
 
               <Evidence
@@ -461,17 +375,26 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
                 ]}
               />
 
-              {option.level === 'CLEAR' && !device.rotational && (
+              {/* The engine's flash determination, not `!rotational`: a USB
+                  bridge leaves that flag set on a flash stick (audit F5). */}
+              {level === 'CLEAR' && media.flash === true && (
                 <Notice tone="warn">
-                  This is flash media and the selected method is a host
+                  This is flash media ({media.reason}) and Clear is a host
                   overwrite. Blocks the FTL has remapped, over-provisioned
                   capacity and anything still in the write cache are not
                   reachable by any write pattern. The result is a{' '}
                   <strong>Clear</strong>, not a Purge.
                 </Notice>
               )}
+              {level === 'CLEAR' && media.flash === null && (
+                <Notice tone="warn">
+                  Whether this device is flash was not determined. If it is, a
+                  host overwrite leaves remapped and over-provisioned blocks
+                  untouched.
+                </Notice>
+              )}
 
-              {hidden && hidden.hidden_bytes > 0 && option.level === 'CLEAR' && (
+              {hidden && hidden.hidden_bytes > 0 && level === 'CLEAR' && (
                 <Notice tone="warn">
                   {bytes(hidden.hidden_bytes)} behind the HPA/DCO are only
                   covered if the unlock succeeds. If it fails, that region is
@@ -479,8 +402,13 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
                 </Notice>
               )}
 
-              {(selected?.capabilities?.limitations ?? []).length > 0 && (
-                <Limitations items={selected!.capabilities!.limitations} />
+              {(plan?.limitations ?? selected?.capabilities?.limitations ?? [])
+                .length > 0 && (
+                <Limitations
+                  items={
+                    plan?.limitations ?? selected?.capabilities?.limitations ?? []
+                  }
+                />
               )}
 
               {residualFactors.length > 0 && (
@@ -491,7 +419,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
         </div>
       </div>
 
-      {confirming && (
+      {confirming && plan?.method && (
         <div className="modal-backdrop" onClick={() => setConfirming(false)}>
           <div
             className="modal"
@@ -504,30 +432,22 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
               Confirm irreversible erasure
             </div>
             <div className="modal-body">
-              {/* The dialog leads with the act and the target, at a size a
-                  second person standing behind the operator can read. The
-                  prose that used to carry this was a paragraph, and a
-                  paragraph is what an operator skips. */}
               <p className="modal-lead">
                 Destroy every byte on{' '}
                 <span className="path">{device.path}</span>
               </p>
 
-              {/* The level the method delivers, rendered exactly as the
-                  Devices screen renders a capability and the residual panel
-                  renders its claim. This is the last screen on which it can
-                  still be wrong for free. */}
-              <Railed tone={levelTone(option.level)}>
-                <Verdict
-                  level={option.level}
-                  basis={option.label}
-                  tone={levelTone(option.level)}
-                />
+              {/* The method named here is the engine's plan, the same value
+                  the certificate will record. It used to be the radio the
+                  operator clicked, which the request never carried. */}
+              <Railed tone={levelTone(level)}>
+                <Verdict level={level} basis={basis} tone={levelTone(level)} />
               </Railed>
 
               <Evidence
                 stacked
                 rows={[
+                  { label: 'Method', value: plan.method, kind: 'mono' },
                   { label: 'Model', value: device.model },
                   { label: 'Capacity', value: exactBytes(device.size_bytes) },
                   { label: 'Serial', value: device.serial, kind: 'serial' },
@@ -546,10 +466,6 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
                 />
               </label>
 
-              {/* Match state is a word in a state colour, not a red sentence.
-                  The sentence stays underneath, because what it says - that
-                  the server checks the device itself - is the reason this gate
-                  is not security theatre. */}
               {typed && (
                 <div className="col tight">
                   <span

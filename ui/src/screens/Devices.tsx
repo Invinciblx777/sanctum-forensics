@@ -2,6 +2,7 @@ import { Fragment, useEffect, useState } from 'react'
 import { api, RequestFailed } from '../lib/api'
 import type { Capabilities, DeviceRow, HiddenAreaReport } from '../lib/api'
 import { bytes, exactBytes } from '../lib/format'
+import { flashOf } from '../lib/erasePlan'
 import { Empty, ErrorNotice, Limitations, Panel, Verdict } from '../components/widgets'
 import type { Tone } from '../components/widgets'
 
@@ -260,9 +261,11 @@ export default function Devices({
                         <td className="mono" title={exactBytes(row.device.size_bytes)}>
                           {bytes(row.device.size_bytes)}
                         </td>
-                        <td className="mono">
+                        {/* The engine's determination, not `rotational`: a USB
+                            bridge leaves that flag set on a flash stick. */}
+                        <td className="mono" title={flashOf(row).reason}>
                           {row.device.transport}
-                          {row.device.rotational ? '' : ' flash'}
+                          {flashOf(row).flash ? ' flash' : ''}
                         </td>
                         <td>
                           <Verdict

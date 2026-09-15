@@ -19,6 +19,8 @@ __all__ = [
     "UnwritableRange",
     "EraseCheckpoint",
     "ErasePlan",
+    "PlannedErase",
+    "ErasePreview",
     "EraseResult",
     "Device",
     "DeviceCapabilities",
@@ -332,6 +334,47 @@ class ErasePlan(BaseModel):
     #: on this device before the run started. A reader should not have to guess
     #: whether an ETA is a manufacturer's number or an observation.
     est_basis: str = ""
+
+
+class PlannedErase(BaseModel):
+    """What the engine would run for one level, computed before any job exists.
+
+    Produced by :func:`core.erase.drive.preview` from the same
+    :func:`core.erase.drive.select_method` call :func:`core.erase.drive.execute`
+    makes, so the screen and the certificate cannot disagree about the method
+    unless the device itself changed between the two probes.
+    """
+
+    level: SanitizationLevel
+    #: False when ``select_method`` refused the level for this device.
+    reachable: bool
+    method: EraseMethod | None = None
+    #: The engine's own sentence for why this method, as the plan records it.
+    justification: str = ""
+    #: The probed facts the choice rests on, one sentence each.
+    evidence: list[str] = []
+    #: False when the method is chosen but this build cannot issue it (an Opal
+    #: revert without a PSID). The job would fail rather than erase.
+    executable: bool = True
+    not_executable_reason: str = ""
+    #: The caveats ``select_method`` attaches, capability limitations included.
+    limitations: list[str] = []
+    #: When unreachable: the refusal the engine raised, and its remediation.
+    refusal: str = ""
+    remediation: str = ""
+
+
+class ErasePreview(BaseModel):
+    """The engine's decision for every level a request can name, per device."""
+
+    flash: bool
+    flash_reason: str
+    #: Every Purge mechanism the device offers, in the engine's preference
+    #: order. The first is the one a Purge request runs.
+    purge_mechanisms: list[EraseMethod] = []
+    #: What this device would have to report for Purge to become reachable.
+    purge_requires: str = ""
+    plans: list[PlannedErase]
 
 
 class EraseResult(BaseModel):

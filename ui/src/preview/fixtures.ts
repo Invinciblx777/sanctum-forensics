@@ -88,6 +88,61 @@ export const DEVICES: DeviceRow[] = [
           'or ATA security command can be issued to the media behind it.',
       ],
     },
+    // Shaped like helper/daemon.py enumerate_devices: rotational is true, as
+    // it is on the real stick, and the engine still calls it flash.
+    media: { flash: true, reason: 'the device is on the usb bus' },
+    erase_preview: {
+      flash: true,
+      flash_reason: 'the device is on the usb bus',
+      purge_mechanisms: [],
+      purge_requires:
+        'ATA SANITIZE block erase or crypto scramble. Enhanced SECURITY ERASE ' +
+        'and SANITIZE overwrite do not count on flash. On the usb bus these ATA ' +
+        'commands usually do not pass the bridge at all; connect the drive ' +
+        'directly to a SATA port and re-probe.',
+      plans: [
+        {
+          level: 'CLEAR',
+          reachable: true,
+          method: 'SINGLE_PASS_OVERWRITE',
+          justification:
+            'SINGLE_PASS_OVERWRITE was selected because no firmware sanitize ' +
+            'mechanism was observed on this device; host overwrite reaches CLEAR.',
+          evidence: [
+            'Clear is always delivered by one host overwrite pass over every ' +
+              'addressable LBA. NIST SP 800-88r2 states that multi-pass ' +
+              'overwrite is not needed for clear.',
+            'The device was determined to be flash because the device is on ' +
+              'the usb bus. A host overwrite cannot reach blocks the flash ' +
+              'translation layer has remapped, over-provisioned capacity, or ' +
+              'the write cache.',
+          ],
+          executable: true,
+          not_executable_reason: '',
+          limitations: [
+            'The USB bridge does not pass ATA pass-through, so no firmware ' +
+              'sanitize or ATA security command can be issued to the media ' +
+              'behind it.',
+          ],
+          refusal: '',
+          remediation: '',
+        },
+        {
+          level: 'PURGE',
+          reachable: false,
+          method: null,
+          justification: '',
+          evidence: [],
+          executable: true,
+          not_executable_reason: '',
+          limitations: [],
+          refusal: 'PURGE is not achievable on this device.',
+          remediation:
+            'Choose one of: CLEAR. To reach PURGE on this media, physical ' +
+            'destruction is the remaining option.',
+        },
+      ],
+    },
     hidden_areas: {
       hpa_present: false,
       dco_present: false,

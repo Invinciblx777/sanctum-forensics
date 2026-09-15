@@ -263,10 +263,34 @@ Use the **Devices** screen to pick a target, then **Sanitize**.
 You choose a *level* — CLEAR or PURGE. The tool chooses the *mechanism*. The
 request the browser sends carries `path`, `level`, `dry_run` and `typed_serial`,
 and has no field for a method at all; `core/erase/drive.py:select_method` reads a
-decision table over what the capability probe returned. The panel that looks like
-a method picker is a capability disclosure with a level selector, and each entry
-carries the evidence for its own availability — hover it and read it, because that
-sentence is the answer to "how do you know?".
+decision table over what the capability probe returned.
+
+There is no method chooser on the Sanitize screen. An earlier build had one: an
+operator could select DoD 5220.22-M, the confirmation dialog said DoD, the request
+carried only the level, and the certificate recorded a single pass. The screen now
+shows, **before you commit**, what the engine will run:
+
+* **Level** — the two levels as radio buttons. A level the engine cannot run on
+  this device is disabled. PURGE is preselected where the engine can run it.
+* **What the engine will run** — the method, by name and identifier; the engine's
+  own justification sentence; whether the device was determined to be flash and
+  the signal that decided it; the probed evidence for the choice (for example
+  *"hdparm -I listed BLOCK_ERASE_EXT in the ATA SANITIZE feature set"*); and, for
+  PURGE, any other Purge mechanisms the device reported, in the engine's order.
+* **For Purge this device would need** — shown when PURGE is unreachable, naming
+  the commands that would make it reachable on this bus and media.
+* **Residual risk** — the capability limitations the probe recorded, and the flash
+  caveat when Clear is chosen on a device the engine determined to be flash.
+
+These come from `core/erase/drive.py:preview`, which the helper computes during the
+device scan by calling the same `select_method` the job calls. The job re-probes the
+device when it starts. If the method it runs differs from the one shown — possible
+only if the device's capabilities changed in between — the Progress panel says so
+in red, and the ledger and certificate record what ran.
+
+**DoD 5220.22-M is not offered in the UI.** The engine still implements it
+(`EraseMethod.DOD_5220_22_M_3PASS`, with its legacy warning), but the API cannot
+carry a method, and a control whose choice is not honoured is worse than no control.
 
 **Clear** is a host-pattern overwrite of every user-addressable location. It is
 always achievable on a writable device.
@@ -288,13 +312,12 @@ so firmware sanitize and secure erase cannot be verified or issued. Only
 overwrite-based CLEAR can be assured."* — which is a statement about the bridge,
 not a claim that the device lacks the feature.
 
-**SED cryptographic erase (Opal) is disabled in this build.** The radio is dimmed
-and carries a `NOT IN THIS BUILD` chip reading *"PSID required. The PSID is
-printed on the drive label and this build has no way to accept it, so the REVERT
-cannot be issued."* On an Opal drive the evidence line says the drive supports it,
-this build cannot issue it, and what to use instead: ATA or NVMe SANITIZE if
-reported, otherwise a single-pass overwrite that **achieves Clear, not Purge, and
-the report will say so.**
+**SED cryptographic erase (Opal) cannot be issued by this build.** It needs the
+PSID printed on the drive label, and the build has no way to accept it. On a drive
+where Opal is the engine's only Purge mechanism, the plan names it and says, in
+red, *"This build cannot issue this method"*, and the PURGE radio is disabled. A
+Clear with a single-pass overwrite remains available and **achieves Clear, not
+Purge; the report will say so.**
 
 ### The two gates
 

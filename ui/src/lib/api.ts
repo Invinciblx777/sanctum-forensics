@@ -199,9 +199,45 @@ export interface HiddenAreaReport {
   hidden_bytes: number
 }
 
+export type Level = 'CLEAR' | 'PURGE'
+
+/** The engine's flash determination (core/device/media.py:is_flash). */
+export interface MediaDetermination {
+  flash: boolean
+  /** The signal that decided it, as a sentence. */
+  reason: string
+}
+
+/** What the engine would run for one level (core/models.py:PlannedErase). */
+export interface PlannedErase {
+  level: Level
+  reachable: boolean
+  method: string | null
+  justification: string
+  evidence: string[]
+  executable: boolean
+  not_executable_reason: string
+  limitations: string[]
+  refusal: string
+  remediation: string
+}
+
+/** core/models.py:ErasePreview, computed by core/erase/drive.py:preview. */
+export interface ErasePreview {
+  flash: boolean
+  flash_reason: string
+  purge_mechanisms: string[]
+  purge_requires: string
+  plans: PlannedErase[]
+}
+
 export interface DeviceRow {
   device: Device
   capabilities: Capabilities | null
+  /** Absent from a helper older than the preview; treated as unknown. */
+  media?: MediaDetermination
+  /** Null when the capability probe failed, so nothing can be predicted. */
+  erase_preview?: ErasePreview | null
   hidden_areas: HiddenAreaReport | null
   capability_error?: string
   hidden_area_error?: string

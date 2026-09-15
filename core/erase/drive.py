@@ -64,8 +64,10 @@ from core.models import (
     EraseMethod,
     ErasePhase,
     ErasePlan,
+    ErasePreview,
     EraseResult,
     HiddenAreaReport,
+    PlannedErase,
     Progress,
     ResidualFinding,
     SanitizationLevel,
@@ -78,6 +80,7 @@ __all__ = [
     "LedgerSink",
     "ChainLedgerSink",
     "select_method",
+    "preview",
     "device_geometry",
     "execute",
     "resume",
@@ -295,6 +298,160 @@ def select_method(
     method = recommend_method(capabilities, target_level, device=device)
     limitations.extend(capabilities.limitations)
     return method, limitations
+
+
+def _method_evidence(
+    method: EraseMethod,
+    capabilities: DeviceCapabilities,
+    flash: bool,
+    flash_reason: str,
+) -> list[str]:
+    """The probed facts that put ``method`` first, one sentence each.
+
+    Stated as what the probe returned rather than as a conclusion, so a reader
+    who doubts the choice has something to check it against.
+    """
+    nvme = capabilities.nvme_sanicap
+    medium = (
+        f"The device was determined to be flash because {flash_reason}."
+        if flash
+        else f"The device was not determined to be flash: {flash_reason}."
+    )
+    if method is EraseMethod.ATA_SANITIZE_BLOCK_ERASE:
+        return [
+            "hdparm -I listed BLOCK_ERASE_EXT in the ATA SANITIZE feature set. "
+            "The drive erases every block internally, including remapped and "
+            "over-provisioned ones a host overwrite cannot address."
+        ]
+    if method is EraseMethod.ATA_SANITIZE_CRYPTO_SCRAMBLE:
+        return [
+            "hdparm -I listed CRYPTO_SCRAMBLE_EXT in the ATA SANITIZE feature "
+            "set, and BLOCK_ERASE_EXT was not listed. The drive replaces its "
+            "media encryption key."
+        ]
+    if method is EraseMethod.ATA_SANITIZE_OVERWRITE:
+        return [
+            "hdparm -I listed OVERWRITE_EXT in the ATA SANITIZE feature set, and "
+            "neither BLOCK_ERASE_EXT nor CRYPTO_SCRAMBLE_EXT was listed.",
+            medium + " SANITIZE overwrite counts as Purge on magnetic media only.",
+        ]
+    if method is EraseMethod.NVME_SANITIZE_BLOCK:
+        reported = [
+            name for name in ("block_erase", "crypto_erase") if nvme.get(name)
+        ]
+        return [
+            "nvme id-ctrl reported SANICAP " + " and ".join(reported) + ". NVMe "
+            "sanitize acts at controller scope: it destroys every namespace on "
+            "the controller, not only the one named."
+        ]
+    if method is EraseMethod.SED_CRYPTO_ERASE:
+        return [
+            "sedutil-cli reported an Opal SSC, and no ATA or NVMe sanitize "
+            "mechanism ranked above it was reported."
+        ]
+    if method is EraseMethod.NVME_FORMAT_SES1:
+        return [
+            "nvme id-ctrl reported cryptographic erase as a Format NVM attribute "
+            "(FNA), and SANICAP reported neither block erase nor crypto erase."
+        ]
+    if method is EraseMethod.ATA_SECURITY_ERASE_ENHANCED:
+        return [
+            "hdparm -I reported enhanced SECURITY ERASE support with security not "
+            "frozen, and no mechanism the engine ranks above it was reported.",
+            medium + " Enhanced erase counts as Purge on magnetic media only.",
+        ]
+    notes = [
+        "Clear is always delivered by one host overwrite pass over every "
+        "addressable LBA. NIST SP 800-88r2 states that multi-pass overwrite is "
+        "not needed for clear."
+    ]
+    if flash:
+        notes.append(
+            medium + " A host overwrite cannot reach blocks the flash translation "
+            "layer has remapped, over-provisioned capacity, or the write cache."
+        )
+    return notes
+
+
+def _purge_requires(device: Device, flash: bool) -> str:
+    """What ``device`` would have to report before Purge became reachable."""
+    opal = (
+        " A TCG Opal cryptographic erase would also count, but this build cannot "
+        "issue one: it has no way to accept the PSID printed on the drive label."
+    )
+    if device.transport == "nvme":
+        return (
+            "NVMe SANITIZE with block erase or crypto erase in SANICAP, or Format "
+            "NVM with cryptographic erase in FNA." + opal
+        )
+    bridge = (
+        f" On the {device.transport} bus these ATA commands usually do not pass "
+        "the bridge at all; connect the drive directly to a SATA port and re-probe."
+        if device.transport in {"usb", "mmc"}
+        else ""
+    )
+    if flash:
+        return (
+            "ATA SANITIZE block erase or crypto scramble. Enhanced SECURITY ERASE "
+            "and SANITIZE overwrite do not count on flash." + bridge + opal
+        )
+    return (
+        "ATA SANITIZE block erase, crypto scramble or overwrite, or enhanced "
+        "SECURITY ERASE with security not frozen." + bridge + opal
+    )
+
+
+def preview(device: Device, capabilities: DeviceCapabilities) -> ErasePreview:
+    """What an erase request would run on ``device``, for each level.
+
+    Calls :func:`select_method` exactly as :func:`execute` does, with no method
+    requested, and records its answer or its refusal. Nothing is opened and
+    nothing is written. The operator sees this before committing; the job
+    re-probes the device and re-runs the same selection, so the two agree
+    unless the device's capabilities changed in between.
+    """
+    flash, flash_reason = media.is_flash(device)
+    plans: list[PlannedErase] = []
+    for level in (SanitizationLevel.CLEAR, SanitizationLevel.PURGE):
+        try:
+            method, limits = select_method(device, capabilities, level)
+        except (DeviceFrozen, UnsupportedCapability) as exc:
+            plans.append(
+                PlannedErase(
+                    level=level,
+                    reachable=False,
+                    limitations=list(capabilities.limitations),
+                    refusal=exc.message,
+                    remediation=exc.remediation,
+                )
+            )
+            continue
+        executable = method is not EraseMethod.SED_CRYPTO_ERASE
+        plans.append(
+            PlannedErase(
+                level=level,
+                reachable=True,
+                method=method,
+                justification=_justify(method, level, device),
+                evidence=_method_evidence(method, capabilities, flash, flash_reason),
+                executable=executable,
+                not_executable_reason=(
+                    ""
+                    if executable
+                    else "An Opal revert needs the PSID printed on the drive "
+                    "label, and this build has no way to accept it. The job "
+                    "would refuse rather than erase."
+                ),
+                limitations=limits,
+            )
+        )
+    return ErasePreview(
+        flash=flash,
+        flash_reason=flash_reason,
+        purge_mechanisms=purge_mechanisms(capabilities, device),
+        purge_requires=_purge_requires(device, flash),
+        plans=plans,
+    )
 
 
 def _achieved_level(
