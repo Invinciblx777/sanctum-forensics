@@ -514,7 +514,9 @@ current data extents and nothing else. It does not reach:
 
 `core/erase/residual.py` enumerates each of these as a named finding with a
 derived severity rather than leaving them out of the report. **The enumeration
-is the deliverable.** A tool that reports "shredded, unrecoverable" is lying; a
+is the deliverable.** A separate free-space wipe now overwrites the blocks a
+volume calls free (next section); every class in the list above is still only
+detected and reported. A tool that reports "shredded, unrecoverable" is lying; a
 tool that reports "overwrote 3 extents, the ext4 journal may retain content, and
 2 snapshots still reference the old extents" is evidence.
 
@@ -522,6 +524,67 @@ That the journal really is a recovery route is not a claim taken on trust here:
 `core/carve/fsaware.py` recovers deleted ext4 content from exactly that
 structure, and `tests/erase/files/test_residual_against_real_filesystems.py`
 pins the two modules to the same mechanism.
+
+### A free-space wipe reaches free blocks and nothing else
+
+`core/erase/freespace.py` fills a mounted volume's free space with `0xA5` through
+files in a directory of its own until `ENOSPC`, then deletes them. What it can be
+trusted with:
+
+**Measured, on udisks loop volumes mounted by the kernel's own drivers.** Six JPEGs
+were planted and deleted, then the recovery pipeline (`api.carve_job`) was run over
+the image before and after the wipe
+(`tests/erase/files/test_free_space_wipe_carve.py`):
+
+| Volume | Recovered before | Recovered after | Raw slices after | Bytes written | Free before (`f_bavail`) | Blocks still free at `ENOSPC` |
+|---|---|---|---|---|---|---|
+| FAT32, 512-byte clusters | 6 of 6 | 0 | 0 | 66,053,120 | 66,056,704 | 0 |
+| FAT32, 4096-byte clusters | 6 of 6 | 0 | 0 | 326,975,488 | 326,979,584 | 0 |
+| exFAT, 4096-byte clusters | 6 of 6 | 0 | 0 | 64,974,848 | 64,978,944 | 0 |
+| exFAT, 32768-byte clusters | 6 of 6 | 0 | 0 | 64,749,568 | 64,782,336 | 0 |
+| ext4, 4096-byte blocks | 6 of 6 | 0 | 0 | 53,805,056 | 53,809,152 | 4,694,016 |
+
+"Raw slices after" counts planted files a 512-byte slice of which was still
+anywhere in the image, whatever the carver made of it. On each volume, the gap
+between free space and bytes written is one cluster: the one the filler
+directory itself took.
+
+What that does not establish:
+
+- **None of it ran on real media.** A loop device has no flash translation layer.
+  On flash the fill reaches the logical blocks the filesystem calls free, and the
+  controller chooses which physical pages receive it (see "Overwrite cannot reach
+  all of a flash device"). No USB stick or SD card run has been recorded.
+- **The fill must reach `ENOSPC`, because every allocator measured here is
+  next-fit.** On each of the five volumes, a file written right after a deletion
+  did not land on the clusters just freed. A partial fill therefore misses the most
+  recently freed space first. A cancelled wipe claims no coverage.
+- **ext4's reserved blocks are not written.** The fill runs unprivileged and stops
+  at `ENOSPC` with the root reserve still free: 4,694,016 bytes on the 64 MiB test
+  volume, reported as `free_blocks_bytes_at_full`. None of the planted content was
+  there in the measured run. The allocator's placement decided that, not the wipe's
+  coverage, and a different history could leave content in those blocks.
+- **Not reached, on any filesystem:** file slack (writing past the end of a file
+  the operator did not name is refused on principle: that file is evidence);
+  deleted directory entries, whose names, sizes and timestamps the undelete pass
+  still reads; journals and filesystem metadata; the filler directory's own
+  clusters. One side effect was measured, and it is not coverage: on FAT32 and
+  exFAT the filler directory's own entry in the volume root was placed in the
+  slots of a deleted root entry, and that one name was gone after the wipe. On
+  ext4 the deleted name was still in its directory block afterwards.
+- **Nothing is read back.** `verified` is always `null`. The carve before and
+  after is test evidence, not something the product does on every run.
+- **Only kernel `vfat`, `exfat` and `ext4` are accepted.** NTFS has not been
+  measured, and neither has FUSE (including `fuse2fs`). Copy-on-write filesystems
+  would write the fill beside old data rather than over it. All are refused. Linux
+  only.
+- **The flash caveat is attached to loop volumes too.** The `trim_likely` probe
+  treats a device that advertises discard as flash, and a loop device does. For
+  these test volumes the caveat is a false positive, and it is reported rather
+  than suppressed.
+- **The integration tests need a desktop session.** udisks attaches and mounts loop
+  devices for the active local user through polkit. Elsewhere (CI, SSH, a
+  container) the tests skip, and they name the reason.
 
 ### A file erase is usually unverifiable, and is reported as unverifiable
 

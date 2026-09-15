@@ -176,6 +176,14 @@ anything**, and the file-erasure report says so in its `scope.standards` field.
 The residual findings (`core/erase/residual.py`) name the other areas the tool
 knows of.
 
+A free-space wipe (`core/erase/freespace.py`) overwrites the blocks a FAT32, exFAT
+or ext4 volume reports as free, and so reaches the content of files deleted before
+it ran. It is also partial sanitization in r2's sense: file slack, deleted
+directory entries, journals, metadata, root-reserved blocks and remapped flash pages
+are outside it. **It is not reported as a clear, a purge or a destroy.** Its result
+lists what it did not reach and sets `verified` to `null`, because it reads nothing
+back.
+
 ### Sec. 4.5 — sanitization assurance
 
 | r2 | This tool |
@@ -428,6 +436,9 @@ not random, and why that is not a security-relevant difference.
 * Verification above 64 GiB is a detection probability, not a proof of absence.
 * A per-file erasure is not a clear, is usually unverifiable, and is reported as
   unverifiable rather than as a pass.
+* A free-space wipe is not a clear of the volume. It reads nothing back, and every
+  result lists the residue it does not reach. It has run only on loop volumes, never
+  on real media.
 * Hidden-area coverage depends on an unlock that can fail; when it fails the
   region is not erased and the report says so.
 * ATA enhanced SECURITY ERASE is counted as purge on magnetic media only, on the

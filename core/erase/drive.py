@@ -243,6 +243,19 @@ def select_method(
                     "choose the mechanism."
                 ),
             )
+        if target_level is not SanitizationLevel.CLEAR:
+            # Refused here, at planning, rather than left to _achieved_level at
+            # the report: a plan for a Purge that is really a host overwrite
+            # would run the whole overwrite before anything said it was not one.
+            raise UnsupportedCapability(
+                f"{requested.value} is a host overwrite and reaches Clear at "
+                f"most; it cannot deliver the {target_level.value} requested.",
+                remediation=(
+                    "Request CLEAR with this method, or request PURGE without "
+                    "naming a method so capability probing chooses one the "
+                    "device implements."
+                ),
+            )
         if requested is EraseMethod.DOD_5220_22_M_3PASS:
             limitations.append(_LEGACY_DOD_WARNING)
             # Not `not device.rotational`: a USB bridge does not clear the

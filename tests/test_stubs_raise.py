@@ -38,6 +38,9 @@ IMPLEMENTED = (
     "core.carve.classify",
     "core.carve.fsaware",
     "core.erase.files",
+    # Covered by tests/erase/files/test_free_space_gates.py and, on udisks loop
+    # volumes, test_free_space_wipe_carve.py.
+    "core.erase.freespace",
     "core.erase.inspect",
     "core.erase.metadata",
     "core.erase.residual",

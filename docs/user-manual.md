@@ -374,14 +374,23 @@ Two options change what is destroyed:
   off, such a file is reported as `HARDLINK_SURVIVES` and its content is left. The
   finding is reported either way.
 
-### The enumeration is the deliverable
+### What is overwritten, and what is only reported
 
-Filesystem metadata is **detected and reported, never cleansed**: resident MFT data,
-the filesystem journal, the USN journal, MFT slack, `$I30` index slack, file slack,
-copy-on-write snapshots, VSS shadow copies, TRIM remapping, compressed
-reallocation, EFS encryption, sparse unwritten regions, likely backup copies. Each
-appears as a residual finding with a severity. The tool tells you what the
-filesystem kept; it does not claim to have removed it.
+**Overwritten:**
+
+* by a file erase: the named file's data, its alternate data streams and extended
+  attribute values, and its document metadata (above);
+* by a free-space wipe (below): the blocks a FAT32, exFAT or ext4 volume reports
+  as free. On those filesystems that is where the content of files deleted earlier
+  lies.
+
+**Detected and reported, never removed:** resident MFT data, the filesystem journal,
+the USN journal, MFT slack, `$I30` index slack, file slack, deleted directory
+entries, copy-on-write snapshots, VSS shadow copies, TRIM remapping, compressed
+reallocation, EFS encryption, sparse unwritten regions, likely backup copies. A file
+erase lists each as a residual finding with a severity; a free-space wipe lists the
+ones it does not reach under `not_reached`. The tool tells you what the filesystem
+kept; it does not claim to have removed it.
 
 **A per-file erase is usually unverifiable, and is reported as unverifiable rather
 than as a pass.** Verification needs a physical extent map, which needs FIEMAP; on a
@@ -393,6 +402,84 @@ filesystem, not a global footnote.
 
 The tool refuses a filesystem root and a protected system location
 (`/`, `/boot`, `/etc`, `/usr`, `/var`, `/System`, `C:\Windows`, …) outright.
+
+### Wipe free space
+
+Deleting a file leaves its content in clusters the filesystem now calls free, and
+the Recovery screen will carve it back. A file erase cannot reach it, because the
+file no longer exists. A free-space wipe does.
+
+Use the **Wipe free space** panel at the foot of the File eraser screen, or
+`POST /jobs/wipe-free-space` with `mount_point`, `dry_run` and `typed_identifier`.
+
+**What it does.** It creates one directory, `.sanctum-freespace-<job id>`, at the
+root of the volume, writes `0xA5` into files inside it until the filesystem answers
+`ENOSPC`, forces each file to disk, then deletes the files and the directory. It
+opens no other file. `ENOSPC` is the normal end of the fill, not an error. The fill
+pattern is non-zero because some flash controllers skip writing zeros (§11).
+
+**What it accepts.** A FAT32 (`vfat`), exFAT or ext4 volume mounted by the Linux
+kernel, named by its **mount point exactly**. A folder inside a volume is refused
+and the answer names the volume's mount point. Any other filesystem is refused with
+`UnsupportedCapability` (HTTP 422), which names the type: NTFS has not been
+measured, copy-on-write filesystems would put the fill beside old data rather than
+over it, and FUSE mounts have not been measured. There is no Windows or macOS
+implementation.
+
+**The gates.**
+
+1. **Dry run is the default.** A dry run identifies the volume, reports its free
+   space and the identifier to type, and writes nothing.
+2. **The system volume is refused outright** (`SystemDiskRefused`, HTTP 409). That
+   means any volume holding `/`, `/boot`, `/boot/efi`, `/etc`, `/home`, `/opt`,
+   `/root`, `/srv`, `/usr` or `/var`, an active swap file, or this deployment's
+   state, ledger, report or key directory. Filling one of those to zero free space
+   can stop the host, or leave the wipe unrecorded.
+3. **A real run needs the volume identifier** (`ConfirmationMismatch`, HTTP 409).
+   The identifier is the filesystem UUID when `/dev/disk/by-uuid` has one for the
+   volume, and the mount point otherwise, exactly as the dry run printed it.
+
+While the wipe runs the volume is full, and anything else writing to it fails with
+"No space left on device".
+
+**What the result reports.**
+
+| Field | Meaning |
+|---|---|
+| `bytes_written` | Bytes of `0xA5` written into the filler files |
+| `free_bytes_before` | Free space an unprivileged writer may allocate (`statvfs` `f_bavail`) |
+| `free_blocks_bytes_before` | Every free block, including those reserved for root (`f_bfree`) |
+| `free_bytes_at_full`, `free_blocks_bytes_at_full` | The same two figures with the volume full |
+| `free_bytes_after` | Free space after the filler was deleted |
+| `stopped_by` | `ENOSPC` normally; anything else is named in `limitations` |
+| `filler_removed` | Whether every filler file and the directory were deleted |
+| `not_reached` | The residue this operation does not touch, always listed |
+| `limitations` | Flash, reserved blocks, blocks still free at the end, errors |
+| `verified` | Always `null`. Nothing is read back, so no pass is claimed. |
+
+`free_blocks_bytes_at_full` is what the fill did **not** write. On ext4 it is the
+root-reserved blocks: 4,694,016 bytes on a 64 MiB test volume.
+
+**What it does not reach**, listed in every result: file slack inside other files'
+last clusters; deleted directory entries (names, sizes and timestamps, which the
+Recovery screen's undelete still lists); filesystem metadata and journals; blocks
+reserved for root; the clusters of its own filler directory; and on flash, pages the
+controller has remapped. On FAT32 and exFAT the filler directory's own entry can
+land in the slots of a deleted entry in the volume root and overwrite that one name.
+That is a side effect, not coverage.
+
+**The ledger** records `erase.freespace.preflight`, `erase.freespace.fill` and
+`erase.freespace.complete`, or `erase.freespace.cancelled`. A cancelled wipe deletes
+its filler before the entry is written, and the entry says that no coverage is
+claimed. **No signed report is generated** for a free-space wipe in this build; the
+ledger entries and the job result are the record.
+
+**Measured.** On udisks loop volumes, six JPEGs were planted and deleted, and the
+Recovery pipeline recovered all six. After the wipe it recovered none, and no
+512-byte slice of any of them remained in the image. This held on FAT32 with
+512-byte and 4096-byte clusters, exFAT with 4096-byte and 32768-byte clusters, and
+ext4 with 4096-byte blocks. It has not been run on a real USB stick or SD card. See
+§11.
 
 ---
 

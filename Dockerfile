@@ -39,9 +39,19 @@ RUN npm run build
 # network, and a font or script fetched from a CDN at load time is both an
 # offline failure and a disclosure. Checked here so the *image* cannot ship one
 # even if a source change introduces it.
-RUN ! grep -rIlE 'https?://(?!127\.0\.0\.1|localhost)' dist/ --include='*.js' \
-        --include='*.css' --include='*.html' -P \
-    || (echo "the UI bundle references an external origin" >&2; exit 1)
+#
+# `-P` alone. This line used to pass `-E` and `-P` together, which grep rejects
+# with "conflicting matchers specified" and exit status 2 - and `!` turned that
+# into success, so the check could never fail. The lookahead excludes loopback
+# and the identifier-only origins tests/api/test_bundle_offline.py justifies:
+# XML namespace URIs and React's error-decoder link, which nothing fetches.
+# grep exits 0 on a match, 1 on none and 2 on an error; only 1 passes.
+RUN set +e; \
+    grep -rIlP 'https?://(?!127\.0\.0\.1|localhost|\[::1\]|www\.w3\.org|react\.dev|reactjs\.org)' \
+        dist/ --include='*.js' --include='*.css' --include='*.html'; \
+    status=$?; \
+    if [ "$status" -eq 0 ]; then echo "the UI bundle references an external origin" >&2; exit 1; fi; \
+    if [ "$status" -ne 1 ]; then echo "the external-origin check itself failed (grep exit $status)" >&2; exit 1; fi
 
 # --------------------------------------------------------------------------
 # Stage 2 - the application
@@ -75,14 +85,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Dependency layer first for cache reuse.
-COPY pyproject.toml constraints.txt README.md ./
-COPY core/ ./core/
-COPY helper/ ./helper/
-COPY api/ ./api/
-COPY testkit/ ./testkit/
-
-RUN pip install --constraint constraints.txt -e ".[dev]"
+# Dependency layer first, and it must not depend on the source. It used to copy
+# core/, helper/, api/ and testkit/ before `pip install`, so every source change
+# invalidated this layer and the next build re-resolved every dependency from
+# the package index - which fails with no network at a venue, and once failed
+# transiently with the network up (STANDARDS_REPORT F20).
+#
+# Only the two files that decide the dependency set are copied. The install
+# needs the package directories and the readme pyproject names to exist, so
+# empty ones stand in. Over empty directories hatchling's editable install adds
+# no path entry at all - measured: the `sanctum` console script then failed with
+# "No module named 'core'" from any directory but /app - so PYTHONPATH below,
+# after the source copy, is what makes the real source importable.
+COPY pyproject.toml constraints.txt ./
+RUN mkdir -p core helper api testkit && touch README.md \
+ && pip install --constraint constraints.txt -e ".[dev]"
 
 # Replace the pip-installed libewf-python with one that can write E01. The
 # script takes the interpreter prefix from $VENV, so pointing it at
@@ -90,12 +107,19 @@ RUN pip install --constraint constraints.txt -e ".[dev]"
 COPY scripts/build-libewf-python.sh ./scripts/
 RUN VENV=/usr/local ./scripts/build-libewf-python.sh
 
-# Prove the two hard-to-build native deps actually import, and that E01 write
-# survived into this layer rather than only into the build script's.
-RUN python -c "import pytsk3, pyewf; print('pytsk3', pytsk3.get_version()); print('pyewf', pyewf.get_version())" \
- && python -c "from core.carve.acquire import e01_write_supported; assert e01_write_supported(), 'E01 write not available'; print('e01_write_supported True')"
-
 COPY . .
+
+# After the source copy, so setting it does not invalidate the dependency layers.
+ENV PYTHONPATH=/app
+
+# Prove the two hard-to-build native deps actually import, and that E01 write
+# survived into this layer rather than only into the build script's. After the
+# source copy, because the second check imports core; it needs no network. The
+# last check runs the console script from outside /app, which is the case the
+# stub-directory install broke and a check run from WORKDIR would not see.
+RUN python -c "import pytsk3, pyewf; print('pytsk3', pytsk3.get_version()); print('pyewf', pyewf.get_version())" \
+ && python -c "from core.carve.acquire import e01_write_supported; assert e01_write_supported(), 'E01 write not available'; print('e01_write_supported True')" \
+ && cd / && sanctum verify-report --help > /dev/null && echo "sanctum console script imports from /"
 
 # The bundle from stage 1, at the path api/main.py:49 looks for. Copied after
 # `COPY . .` so a stale host-built ui/dist cannot win.

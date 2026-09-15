@@ -109,3 +109,8 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
+# pytest keeps the temporary directories of the last three runs by default, and
+# a full run leaves about 2.6 GiB of loop-volume and corpus images in /tmp. Two
+# retained runs plus a live one exceed a 6 GiB per-user tmpfs quota, which is
+# what stopped the standards batch. Keep only what a failed test left.
+tmp_path_retention_policy = "failed"

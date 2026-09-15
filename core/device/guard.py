@@ -14,12 +14,38 @@ accidentally proceed by ignoring a boolean.
 
 from __future__ import annotations
 
+import os
+from collections.abc import Callable, Sequence
+from pathlib import Path
+
 import structlog
 
 from core.errors import ConfirmationMismatch, MountedRefused, SystemDiskRefused
-from core.models import Device
+from core.models import Device, VolumeInfo
 
-__all__ = ["assert_erasable", "assert_serial_confirmed"]
+__all__ = [
+    "SYSTEM_PATHS",
+    "assert_erasable",
+    "assert_serial_confirmed",
+    "assert_volume_confirmed",
+    "assert_volume_wipeable",
+]
+
+#: Directories the running host needs. A volume holding any of them is the
+#: system volume for the purpose of a free-space wipe: filling it to zero free
+#: space can stop the host from writing logs, journals or its own state.
+SYSTEM_PATHS = (
+    "/",
+    "/boot",
+    "/boot/efi",
+    "/etc",
+    "/home",
+    "/opt",
+    "/root",
+    "/srv",
+    "/usr",
+    "/var",
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -88,5 +114,88 @@ def assert_serial_confirmed(device: Device, typed_serial: str) -> None:
         remediation=(
             "This device exposes no serial. Confirm it by typing its full "
             "/dev/disk/by-id path from the capability report instead."
+        ),
+    )
+
+
+def _stat_dev(path: Path) -> int | None:
+    try:
+        return os.stat(path).st_dev
+    except OSError:
+        return None
+
+
+def _swap_files(proc_swaps: Path = Path("/proc/swaps")) -> list[Path]:
+    try:
+        lines = proc_swaps.read_text(encoding="utf-8").splitlines()[1:]
+    except OSError:
+        return []
+    return [Path(line.split()[0]) for line in lines if line.split()]
+
+
+def assert_volume_wipeable(
+    volume: VolumeInfo,
+    *,
+    protected: Sequence[Path] = (),
+    stat_dev: Callable[[Path], int | None] = _stat_dev,
+    swap_files: Callable[[], list[Path]] = _swap_files,
+) -> None:
+    """Raise if filling ``volume`` to zero free space could break the host.
+
+    The test is the device number, not the path: a volume is refused when it
+    holds any of :data:`SYSTEM_PATHS`, any active swap file, or any path in
+    ``protected`` - which callers use for this deployment's own state, ledger
+    and report directories, since a ledger that cannot append would leave the
+    wipe unrecorded.
+
+    Raises:
+        SystemDiskRefused: The volume is the system volume or holds protected
+            state.
+    """
+    checks: list[tuple[Path, str]] = [
+        (Path(item), "a directory the running system needs") for item in SYSTEM_PATHS
+    ]
+    checks += [(item, "an active swap file") for item in swap_files()]
+    checks += [(Path(item), "this deployment's own state") for item in protected]
+    for path, role in checks:
+        if stat_dev(path) == volume.st_dev:
+            logger.warning(
+                "free_space_wipe_refused",
+                mount_point=volume.mount_point,
+                holds=str(path),
+            )
+            raise SystemDiskRefused(
+                f"{volume.mount_point} is the volume holding {path}, {role}. "
+                "Filling it to zero free space can stop the host or this tool "
+                "from writing. Refusing to wipe its free space.",
+                remediation=(
+                    "Wipe free space only on a separate data volume, such as a "
+                    "removable drive mounted on its own."
+                ),
+            )
+
+
+def assert_volume_confirmed(volume: VolumeInfo, typed_identifier: str) -> None:
+    """Raise unless ``typed_identifier`` is the volume's own identifier.
+
+    The identifier is the filesystem UUID when one is known and the mount point
+    otherwise, exactly as the dry run reports it.
+
+    Raises:
+        ConfirmationMismatch: Nothing was typed, or it does not match.
+    """
+    typed = typed_identifier.strip()
+    if typed and typed.casefold() == volume.identifier.strip().casefold():
+        return
+    logger.warning("volume_confirmation_mismatch", mount_point=volume.mount_point)
+    raise ConfirmationMismatch(
+        (
+            "No confirmation value was typed."
+            if not typed
+            else f"Typed value does not identify the volume at {volume.mount_point}."
+        ),
+        remediation=(
+            f"Run a dry run and type the volume identifier it reports "
+            f"({volume.identifier}) exactly. Nothing has been written."
         ),
     )

@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 __all__ = [
     "EraseDriveRequest",
     "EraseFilesRequest",
+    "WipeFreeSpaceRequest",
     "AcquireRequest",
     "CarveRequest",
     "ReportRequest",
@@ -61,6 +62,19 @@ class EraseFilesRequest(BaseModel):
     break_hardlinks: bool = False
     recursive: bool = True
     case_id: str = ""
+    operator: str = "sanctum"
+
+
+class WipeFreeSpaceRequest(BaseModel):
+    """Body for ``POST /jobs/wipe-free-space``."""
+
+    #: The volume's mount point, exactly. A folder inside a volume is refused.
+    mount_point: str
+    #: Gate one.
+    dry_run: bool = True
+    #: Gate two: the volume identifier a dry run reports (the filesystem UUID,
+    #: or the mount point when the volume has none).
+    typed_identifier: str = ""
     operator: str = "sanctum"
 
 

@@ -34,6 +34,7 @@ from api.routes.models import (
     EraseDriveRequest,
     EraseFilesRequest,
     JobAccepted,
+    WipeFreeSpaceRequest,
 )
 from api.sse import SSE_HEADERS, progress_events
 
@@ -258,6 +259,73 @@ def erase_files(
 
     services.registry.submit("erase-files", params, factory, job_id=job_id)
     return _accepted(job_id, "erase-files", body.dry_run)
+
+
+@router.post("/jobs/wipe-free-space", response_model=JobAccepted)
+def wipe_free_space(
+    body: WipeFreeSpaceRequest,
+    services: AppServices = Depends(get_services),
+) -> JobAccepted:
+    """Fill a mounted volume's free space and release it. Simulates by default.
+
+    Unprivileged, like file erasure, so it runs in this process. Every gate runs
+    here, before a job exists: the volume must be a supported filesystem at
+    exactly its mount point, must not be the system volume or hold this
+    deployment's state, and a real run needs the identifier a dry run reports.
+    A refusal is an HTTP error, not a failed job.
+    """
+    from core.device import guard
+    from core.erase.freespace import resolve_volume
+    from core.erase.freespace import wipe_free_space as run_wipe
+    from core.errors import SanctumError
+    from core.ledger.chain import Ledger
+    from core.models import FreeSpaceWipeOptions
+
+    protected = [
+        services.state_dir,
+        services.ledger_root,
+        services.reports_dir,
+        services.key_dir or (services.state_dir / "keys"),
+    ]
+    try:
+        volume = resolve_volume(body.mount_point)
+        guard.assert_volume_wipeable(volume, protected=protected)
+        if not body.dry_run:
+            guard.assert_volume_confirmed(volume, body.typed_identifier)
+    except SanctumError as exc:
+        raise sanctum_error_response(
+            type(exc).__name__, exc.message, exc.remediation
+        ) from exc
+
+    options = FreeSpaceWipeOptions(
+        dry_run=body.dry_run, typed_identifier=body.typed_identifier
+    )
+    job_id = f"wipe-free-space-{uuid.uuid4().hex[:12]}"
+    ledger = Ledger(
+        services.ledger_root,
+        tool_version=services.tool_version,
+        pubkey_fingerprint=_signing_fingerprint(services),
+    )
+
+    def factory() -> Any:
+        return run_wipe(
+            volume.mount_point,
+            options,
+            job_id=job_id,
+            ledger=ledger,
+            operator=body.operator,
+            protected=protected,
+            volume=volume,
+        )
+
+    params = {
+        "mount_point": volume.mount_point,
+        "identifier": volume.identifier,
+        "fs_type": volume.fs_type,
+        "dry_run": body.dry_run,
+    }
+    services.registry.submit("wipe-free-space", params, factory, job_id=job_id)
+    return _accepted(job_id, "wipe-free-space", body.dry_run)
 
 
 # --------------------------------------------------------------------------

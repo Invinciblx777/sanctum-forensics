@@ -55,6 +55,9 @@ __all__ = [
     "FileEraseRecord",
     "FileEraseResult",
     "FileVerificationResult",
+    "VolumeInfo",
+    "FreeSpaceWipeOptions",
+    "FreeSpaceWipeResult",
 ]
 
 
@@ -903,3 +906,79 @@ class FileEraseResult(BaseModel):
             for finding in record.findings
         ]
         return max(found, key=lambda s: order[s]) if found else None
+
+
+# --------------------------------------------------------------------------
+# Free-space wipe (M2)
+# --------------------------------------------------------------------------
+
+
+class VolumeInfo(BaseModel):
+    """A mounted volume a free-space wipe was asked to act on."""
+
+    mount_point: str
+    fs_type: str
+    #: The mount source from /proc/mounts: a block device, or an image path.
+    source: str
+    #: The filesystem UUID from /dev/disk/by-uuid, when one links to the source.
+    fs_uuid: str | None = None
+    #: What the operator types to confirm: the UUID when known, otherwise the
+    #: mount point. Shown by a dry run, never guessable from the request alone.
+    identifier: str
+    #: ``st_dev`` of the mount point, used to refuse the system volume and any
+    #: volume holding this deployment's own state.
+    st_dev: int
+    #: Fundamental block size reported by statvfs.
+    frsize: int
+    #: Whether the backing device is flash that likely remaps writes. ``None``
+    #: means it could not be determined, which is not the same as "no".
+    trim_likely: bool | None = None
+
+
+class FreeSpaceWipeOptions(BaseModel):
+    """Caller policy for a free-space wipe. Both gates default to closed."""
+
+    #: Gate 1. Nothing is written while this is True.
+    dry_run: bool = True
+    #: Gate 2. Must equal the volume's identifier, as a dry run reports it.
+    typed_identifier: str = ""
+
+
+class FreeSpaceWipeResult(BaseModel):
+    """What a free-space wipe wrote, and what it did not reach.
+
+    Every byte count is measured, and every free-space figure is the
+    filesystem's own statvfs answer at that moment. Nothing here says the free
+    space is clean: ``verified`` is always ``None``, because this operation
+    reads nothing back.
+    """
+
+    job_id: str
+    started_at: datetime
+    finished_at: datetime
+    dry_run: bool
+    volume: VolumeInfo
+    fill_byte: int
+    #: Bytes this job wrote into its own filler files.
+    bytes_written: int = 0
+    filler_files: int = 0
+    #: statvfs f_bavail * f_frsize before the fill: what an unprivileged writer
+    #: may allocate.
+    free_bytes_before: int = 0
+    #: statvfs f_bfree * f_frsize before the fill: every free block, including
+    #: those reserved for root.
+    free_blocks_bytes_before: int = 0
+    #: The same two figures with the volume full of filler.
+    free_bytes_at_full: int = 0
+    free_blocks_bytes_at_full: int = 0
+    #: Free blocks after the filler was deleted.
+    free_bytes_after: int = 0
+    #: Why the fill stopped: ``ENOSPC`` is the normal end.
+    stopped_by: str = ""
+    #: Whether every filler file and the filler directory were removed.
+    filler_removed: bool = False
+    #: Residue this operation cannot reach, named rather than implied.
+    not_reached: list[str] = []
+    limitations: list[str] = []
+    #: Always ``None``: no read-back is performed, so no pass is claimed.
+    verified: bool | None = None

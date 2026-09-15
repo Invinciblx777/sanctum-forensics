@@ -126,3 +126,51 @@ def test_capability_limitations_are_carried_into_the_plan() -> None:
     caps = make_caps(limitations=["USB bridge blocks ATA pass-through"])
     _, limits = select_method(make_device(), caps, SanitizationLevel.CLEAR)
     assert "USB bridge blocks ATA pass-through" in limits
+
+
+@pytest.mark.parametrize(
+    "method", [EraseMethod.SINGLE_PASS_OVERWRITE, EraseMethod.DOD_5220_22_M_3PASS]
+)
+@pytest.mark.parametrize(
+    "level", [SanitizationLevel.PURGE, SanitizationLevel.DESTROY]
+)
+def test_a_host_overwrite_is_refused_for_anything_but_clear_at_planning(
+    method: EraseMethod, level: SanitizationLevel
+) -> None:
+    # STANDARDS_REPORT F18: this pairing used to be planned and run, and only
+    # the level written to the report caught it.
+    caps = make_caps(
+        ata_sanitize_ops=["BLOCK_ERASE_EXT"],
+        achievable_levels={SanitizationLevel.CLEAR, SanitizationLevel.PURGE},
+    )
+    with pytest.raises(UnsupportedCapability) as excinfo:
+        select_method(make_device(), caps, level, requested=method)
+    assert "Clear at most" in excinfo.value.message
+
+
+def test_the_write_time_check_still_refuses_a_host_overwrite_purge() -> None:
+    # Defence in depth: whatever reaches the report, a host overwrite is never
+    # recorded as a Purge.
+    from core.erase.drive import _achieved_level
+    from core.models import VerificationResult
+
+    from .conftest import make_job
+
+    verification = VerificationResult.model_validate(
+        {
+            "passed": True,
+            "strategy": "full_read",
+            "bytes_checked": 1,
+            "sample_count": 0,
+            "confidence_bp": 10_000,
+            "failed_offsets": [],
+            "hw_attested": False,
+            "probability_note": "",
+        }
+    )
+    job = make_job(make_device(), level=SanitizationLevel.PURGE, dry_run=False)
+    caps = make_caps(ata_sanitize_ops=["BLOCK_ERASE_EXT"])
+    achieved = _achieved_level(
+        job, EraseMethod.SINGLE_PASS_OVERWRITE, caps, verification
+    )
+    assert achieved is SanitizationLevel.CLEAR

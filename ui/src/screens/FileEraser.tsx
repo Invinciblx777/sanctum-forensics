@@ -1,6 +1,12 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { api, RequestFailed, streamJob } from '../lib/api'
-import type { FileEraseRecord, JobStatus, Progress, ResidualFinding } from '../lib/api'
+import type {
+  FileEraseRecord,
+  FreeSpaceWipeResult,
+  JobStatus,
+  Progress,
+  ResidualFinding,
+} from '../lib/api'
 import { bytes } from '../lib/format'
 import {
   Empty,
@@ -432,7 +438,153 @@ export default function FileEraser() {
             </div>
           </Panel>
         </div>
+
+        <FreeSpacePanel />
       </div>
     </>
   )
 }
+
+/**
+ * Wipe a volume's free space.
+ *
+ * A separate job from the file erase: it names a mount point, not files, and
+ * its second gate is the volume identifier a dry run prints rather than a
+ * checkbox, because it writes every free block of a whole volume.
+ */
+function FreeSpacePanel() {
+  const [mountPoint, setMountPoint] = useState('')
+  const [dryRun, setDryRun] = useState(true)
+  const [typed, setTyped] = useState('')
+  const [progress, setProgress] = useState<Progress | null>(null)
+  const [status, setStatus] = useState<JobStatus | null>(null)
+  const [error, setError] = useState<{
+    message: string
+    kind?: string
+    remediation?: string
+  } | null>(null)
+  const detach = useRef<(() => void) | null>(null)
+
+  useEffect(() => () => detach.current?.(), [])
+
+  async function start() {
+    setError(null)
+    try {
+      const accepted = await api.wipeFreeSpace({
+        mount_point: mountPoint.trim(),
+        dry_run: dryRun,
+        typed_identifier: dryRun ? '' : typed.trim(),
+      })
+      setProgress(null)
+      setStatus(null)
+      detach.current?.()
+      detach.current = streamJob(accepted.job_id, {
+        onProgress: setProgress,
+        onState: setStatus,
+      })
+    } catch (exc) {
+      const failure = exc as RequestFailed
+      setError({
+        message: failure.message,
+        kind: failure.kind,
+        remediation: failure.remediation,
+      })
+    }
+  }
+
+  const result = (status?.result ?? null) as FreeSpaceWipeResult | null
+
+  return (
+    <Panel
+      title="Wipe free space"
+      subtitle="Deleted files whose clusters are now free. FAT32, exFAT and ext4 only."
+    >
+      <div className="col">
+        <ErrorNotice error={error} />
+        <Notice tone="info">
+          Fills every block the filesystem calls free with 0xA5 through files in a
+          directory of its own, until the volume is full, then deletes them. No
+          other file is opened. It does not reach file slack, deleted directory
+          entries, journals, metadata, reserved blocks, or flash pages the
+          controller remapped, and it reads nothing back.
+        </Notice>
+        <div className="row">
+          <input
+            type="text"
+            className="grow"
+            placeholder="/run/media/you/VOLUME (the mount point itself)"
+            value={mountPoint}
+            spellCheck={false}
+            onChange={(event) => setMountPoint(event.target.value)}
+          />
+        </div>
+        <label className="inline">
+          <input
+            type="checkbox"
+            checked={dryRun}
+            onChange={(event) => setDryRun(event.target.checked)}
+          />
+          <span>Dry run — identify the volume and report free space, write nothing</span>
+        </label>
+        {!dryRun && (
+          <>
+            <input
+              type="text"
+              placeholder="Type the volume identifier the dry run reported"
+              value={typed}
+              spellCheck={false}
+              onChange={(event) => setTyped(event.target.value)}
+            />
+            <Notice tone="danger">
+              The volume will be filled to zero free space. Anything writing to it
+              meanwhile will fail with "no space left".
+            </Notice>
+          </>
+        )}
+        <button
+          className={dryRun ? 'btn primary' : 'btn destructive'}
+          disabled={!mountPoint.trim() || (!dryRun && !typed.trim())}
+          onClick={() => void start()}
+        >
+          {dryRun ? 'Simulate free-space wipe' : 'Wipe free space'}
+        </button>
+
+        {progress && !result && (
+          <ProgressView progress={progress} destructive={!dryRun} />
+        )}
+
+        {result && (
+          <div className="col">
+            <Notice tone={result.dry_run ? 'info' : 'warn'}>
+              {result.volume.fs_type} at{' '}
+              <span className="mono">{result.volume.mount_point}</span>, identifier{' '}
+              <strong className="mono">{result.volume.identifier}</strong>.{' '}
+              {result.dry_run
+                ? `${bytes(result.free_bytes_before)} free. Nothing was written.`
+                : `Wrote ${bytes(result.bytes_written)} of 0x${result.fill_byte
+                    .toString(16)
+                    .toUpperCase()} (stopped by ${result.stopped_by}); ` +
+                  `${bytes(result.free_bytes_before)} was free before, ` +
+                  `${bytes(result.free_blocks_bytes_at_full)} of blocks was still free ` +
+                  `when the volume was full. Nothing was read back, so no pass is claimed.`}
+            </Notice>
+            <strong>Not reached</strong>
+            <ul className="limitations">
+              {result.not_reached.map((item, index) => (
+                <li key={index}>{item}</li>
+              ))}
+            </ul>
+            {result.limitations.length > 0 && (
+              <ul className="limitations">
+                {result.limitations.map((item, index) => (
+                  <li key={index}>{item}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </div>
+    </Panel>
+  )
+}
+

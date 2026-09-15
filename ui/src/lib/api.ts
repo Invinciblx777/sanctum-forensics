@@ -79,6 +79,12 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  wipeFreeSpace: (body: WipeFreeSpaceBody) =>
+    request<JobAccepted>('/jobs/wipe-free-space', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
   acquire: (body: AcquireBody) =>
     request<JobAccepted>('/jobs/acquire', {
       method: 'POST',
@@ -375,6 +381,38 @@ export interface EraseFilesBody {
   cleanse_metadata: boolean
   break_hardlinks: boolean
   recursive: boolean
+}
+
+export interface WipeFreeSpaceBody {
+  mount_point: string
+  dry_run: boolean
+  typed_identifier: string
+}
+
+export interface FreeSpaceWipeResult {
+  job_id: string
+  dry_run: boolean
+  volume: {
+    mount_point: string
+    fs_type: string
+    source: string
+    fs_uuid: string | null
+    identifier: string
+    trim_likely: boolean | null
+  }
+  fill_byte: number
+  bytes_written: number
+  filler_files: number
+  free_bytes_before: number
+  free_blocks_bytes_before: number
+  free_bytes_at_full: number
+  free_blocks_bytes_at_full: number
+  free_bytes_after: number
+  stopped_by: string
+  filler_removed: boolean
+  not_reached: string[]
+  limitations: string[]
+  verified: boolean | null
 }
 
 export interface AcquireBody {
