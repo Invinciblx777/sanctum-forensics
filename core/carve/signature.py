@@ -30,7 +30,7 @@ the count is reported rather than hidden.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -49,6 +49,7 @@ __all__ = [
     "build_automaton",
     "scan",
     "carve_signatures",
+    "tar_header_is_valid",
     "CHUNK_BYTES",
     "PARALLEL_FLOOR_BYTES",
     "SIGNATURE_DB_PATH",
@@ -155,12 +156,21 @@ def build_automaton(signatures: Sequence[Signature]) -> Any:
 
     Patterns are stored as latin-1 text because pyahocorasick keys on ``str``.
     The mapping is one-to-one over 0-255, so no byte is lost or aliased.
+
+    **Each pattern carries every signature that declares it.** Two formats can
+    share a header - WebP and WAV are both ``RIFF``, and what separates them is
+    the form type four bytes later, which :func:`_corroborated` checks. Storing
+    one signature per pattern would let the second silently overwrite the
+    first, and the overwritten format would never be found on any image.
     """
     import ahocorasick
 
     automaton = ahocorasick.Automaton()
-    for index, signature in enumerate(signatures):
-        automaton.add_word(signature.header.decode("latin-1"), (index, signature))
+    patterns: dict[str, list[Signature]] = {}
+    for signature in signatures:
+        patterns.setdefault(signature.header.decode("latin-1"), []).append(signature)
+    for pattern, sharing in patterns.items():
+        automaton.add_word(pattern, tuple(sharing))
     automaton.make_automaton()
     return automaton
 
@@ -227,20 +237,21 @@ def _iter_hits(
         if not block:
             break
         haystack = block.decode("latin-1")
-        for last_index, (_, signature) in automaton.iter(haystack):
-            header_at = cursor + last_index - len(signature.header) + 1
-            if header_at < start or header_at >= end:
-                continue
-            key = (header_at, signature.name)
-            if key in seen:
-                continue
-            seen.add(key)
-            yield header_at, signature
+        for last_index, sharing in automaton.iter(haystack):
+            for signature in sharing:
+                header_at = cursor + last_index - len(signature.header) + 1
+                if header_at < start or header_at >= end:
+                    continue
+                key = (header_at, signature.name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                yield header_at, signature
         cursor += length
 
 
-def _corroborated(handle: EvidenceHandle, header_at: int, signature: Signature) -> bool:
-    """Second-stage check for headers too short to be credible on their own.
+def _pe_is_corroborated(handle: EvidenceHandle, header_at: int) -> bool:
+    """A DOS stub whose ``e_lfanew`` really points at a PE signature.
 
     ``4D5A`` is two bytes, so it occurs about once per 32 KiB of random data -
     roughly seventy times in every 4 MiB. Reported unchecked it buries the real
@@ -248,8 +259,6 @@ def _corroborated(handle: EvidenceHandle, header_at: int, signature: Signature) 
     (0x3C), and a real executable has ``PE\\0\\0`` there, so one extra four-byte
     read separates a program from a coincidence.
     """
-    if signature.name != "PE":
-        return True
     stub = handle.read(header_at + 0x3C, 4)
     if len(stub) < 4:
         return False
@@ -257,6 +266,126 @@ def _corroborated(handle: EvidenceHandle, header_at: int, signature: Signature) 
     if e_lfanew <= 0 or e_lfanew > 0x1000:
         return False
     return handle.read(header_at + e_lfanew, 4) == b"PE\x00\x00"
+
+
+#: DIB header sizes a BMP may declare: BITMAPCOREHEADER through
+#: BITMAPV5HEADER. Anything else is not a bitmap this format defines.
+_BMP_DIB_SIZES = frozenset({12, 16, 40, 52, 56, 64, 108, 124})
+
+
+def _bmp_is_corroborated(handle: EvidenceHandle, header_at: int) -> bool:
+    """``BM`` plus three size fields that agree with each other.
+
+    Two bytes match by chance about once per 64 KiB of random data. A real
+    bitmap's file header says how long the file is and where the pixels start,
+    and the DIB header behind it declares its own length; a coincidence gets
+    all three consistent only by accident.
+    """
+    head = handle.read(header_at, 18)
+    if len(head) < 18:
+        return False
+    declared = int.from_bytes(head[2:6], "little")
+    pixels_at = int.from_bytes(head[10:14], "little")
+    dib_size = int.from_bytes(head[14:18], "little")
+    if dib_size not in _BMP_DIB_SIZES:
+        return False
+    if declared < 14 + dib_size or pixels_at < 14 + dib_size:
+        return False
+    return pixels_at <= declared
+
+
+def _riff_form(form: bytes) -> Callable[[EvidenceHandle, int], bool]:
+    """A RIFF container whose form type at byte 8 is ``form``.
+
+    ``RIFF`` is shared by WebP, WAV and AVI, so the four bytes naming the form
+    are what separate them. Without this check one signature would claim every
+    RIFF file for its own format.
+    """
+
+    def check(handle: EvidenceHandle, header_at: int) -> bool:
+        return handle.read(header_at + 8, 4) == form
+
+    return check
+
+
+def _gzip_is_corroborated(handle: EvidenceHandle, header_at: int) -> bool:
+    """A gzip member whose flag byte sets no reserved bit.
+
+    RFC 1952 reserves the top three bits of ``FLG`` and requires them to be
+    zero. It is one byte of check, and it removes most of the random matches
+    the three-byte magic makes on compressed data.
+    """
+    head = handle.read(header_at, 4)
+    return len(head) == 4 and not head[3] & 0xE0
+
+
+#: Where a ustar member header keeps its own checksum and its magic, and how
+#: long a member header is.
+_TAR_CHECKSUM_AT = 148
+_TAR_CHECKSUM_BYTES = 8
+_TAR_MAGIC_AT = 257
+_TAR_BLOCK_BYTES = 512
+
+
+def tar_header_is_valid(block: bytes) -> bool:
+    """Whether a 512-byte ustar header's own checksum verifies.
+
+    Every member header carries the octal sum of its own bytes, computed with
+    the checksum field itself read as eight spaces. Historic writers disagreed
+    on whether the bytes are signed, so both readings are accepted - which is
+    what every tar reader does. This is what makes a five-byte ``ustar`` magic
+    trustworthy: noise does not add up.
+    """
+    if len(block) < _TAR_BLOCK_BYTES:
+        return False
+    field = block[_TAR_CHECKSUM_AT : _TAR_CHECKSUM_AT + _TAR_CHECKSUM_BYTES]
+    digits = field.split(b"\x00")[0].split(b" ")[0]
+    if not digits:
+        return False
+    try:
+        declared = int(digits, 8)
+    except ValueError:
+        return False
+    blanked = (
+        block[:_TAR_CHECKSUM_AT]
+        + b" " * _TAR_CHECKSUM_BYTES
+        + block[_TAR_CHECKSUM_AT + _TAR_CHECKSUM_BYTES : _TAR_BLOCK_BYTES]
+    )
+    unsigned = sum(blanked)
+    signed = sum(byte - 256 if byte > 127 else byte for byte in blanked)
+    return declared in (unsigned, signed)
+
+
+def _tar_is_corroborated(handle: EvidenceHandle, header_at: int) -> bool:
+    """The ``ustar`` magic sits at byte 257 of the block it belongs to."""
+    block_at = header_at - _TAR_MAGIC_AT
+    if block_at < 0:
+        return False
+    return tar_header_is_valid(handle.read(block_at, _TAR_BLOCK_BYTES))
+
+
+#: Signature name -> the check a match must pass before it becomes a candidate.
+#: A name absent here needs no second stage: its magic is long enough, or
+#: distinctive enough, to stand on its own.
+_SECOND_STAGE: dict[str, Callable[[EvidenceHandle, int], bool]] = {
+    "PE": _pe_is_corroborated,
+    "BMP": _bmp_is_corroborated,
+    "WebP": _riff_form(b"WEBP"),
+    "WAV": _riff_form(b"WAVE"),
+    "GZIP": _gzip_is_corroborated,
+    "TAR": _tar_is_corroborated,
+}
+
+
+def _corroborated(handle: EvidenceHandle, header_at: int, signature: Signature) -> bool:
+    """Second-stage check for headers too short to be credible on their own.
+
+    A short magic reported unchecked buries the real findings in noise, and
+    every check here is a handful of bytes read at a fixed place. See
+    :data:`_SECOND_STAGE` for which signatures have one and why.
+    """
+    check = _SECOND_STAGE.get(signature.name)
+    return True if check is None else check(handle, header_at)
 
 
 def _candidate_for(

@@ -39,9 +39,12 @@ import json
 import shutil
 import sqlite3
 import subprocess
+import tarfile
 import time
+import wave
 import xml.etree.ElementTree as ElementTree
 import zipfile
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -65,6 +68,9 @@ __all__ = [
     "OOXML_PARTS",
     "validate_bytes",
     "validate_candidate",
+    "validate_wav",
+    "validate_gzip",
+    "validate_tar",
 ]
 
 logger = structlog.get_logger(__name__)
@@ -99,6 +105,14 @@ MAX_XML_PART_BYTES = 16 * MIB
 #: Cap on the number of archive members walked. An archive claiming millions of
 #: entries costs time long before it costs correctness.
 MAX_ARCHIVE_MEMBERS = 100_000
+
+#: Sample frames read from a WAV per call, and compressed bytes handed to the
+#: gzip decompressor per call. Both bound the transient buffer, not the file.
+WAV_FRAMES_PER_READ = 65_536
+GZIP_BLOCK_BYTES = 64 * 1024
+
+#: One tar member header, and the size of the zero block the format ends with.
+TAR_BLOCK_BYTES = 512
 
 
 @dataclass(frozen=True)
@@ -332,6 +346,31 @@ def validate_image(data: bytes, deadline: _Deadline) -> ValidationReport:
                         "a warning"
                     ),
                     decoder=f"{decoder} + exact scan accounting",
+                )
+        if fmt == "TIFF":
+            # Pillow reads a TIFF's IFD chain and ignores everything after it,
+            # so a candidate holding the image plus sixty megabytes of the rest
+            # of the medium decodes exactly as cleanly as the image alone. The
+            # IFD chain says how far the object reaches, and calling the whole
+            # span valid would claim those other bytes were part of it. Same
+            # reasoning as the exact scan accounting for JPEG above.
+            from core.carve.structure import parse_tiff
+
+            with BytesEvidence(data) as probe:
+                measured = parse_tiff(probe, 0, max_size=len(data))
+            if (
+                measured is not None
+                and measured.validation == "valid"
+                and measured.length < len(data)
+            ):
+                return ValidationReport(
+                    verdict="corrupt",
+                    detail=(
+                        f"TIFF {size[0]}x{size[1]} decoded, but its IFD chain "
+                        f"accounts for {measured.length} of this candidate's "
+                        f"{len(data)} bytes: the rest is not part of the image"
+                    ),
+                    decoder=f"{decoder} + IFD length accounting",
                 )
         return ValidationReport(
             verdict="valid",
@@ -732,6 +771,216 @@ def _ffprobe(
 
 
 # --------------------------------------------------------------------------
+# WAV: the stdlib wave reader
+# --------------------------------------------------------------------------
+
+
+def validate_wav(data: bytes, deadline: _Deadline) -> ValidationReport:
+    """Open with ``wave`` and read every sample frame the header declares.
+
+    Opening alone reads the ``fmt `` chunk, which a file cut in half still has.
+    Reading the frames is what establishes that the ``data`` chunk holds as
+    many bytes as it says. Frames are read and discarded in blocks, so a long
+    recording is never held whole.
+    """
+    decoder = "wave"
+    try:
+        with wave.open(io.BytesIO(data), "rb") as sound:
+            channels = sound.getnchannels()
+            width = sound.getsampwidth()
+            rate = sound.getframerate()
+            frames = sound.getnframes()
+            declared = frames * channels * width
+            read = 0
+            while read < declared:
+                if deadline.expired:
+                    return _unavailable(decoder, deadline.note())
+                block = sound.readframes(WAV_FRAMES_PER_READ)
+                if not block:
+                    break
+                read += len(block)
+    except wave.Error as error:
+        text = str(error).lower()
+        if "unknown format" in text or "compress" in text:
+            # A RIFF/WAVE file this reader cannot decode is not a broken file.
+            return _unavailable(decoder, f"this WAV is not PCM: {error}")
+        return ValidationReport(
+            verdict="corrupt", detail=f"not a readable WAV: {error}", decoder=decoder
+        )
+    except (OSError, ValueError, EOFError) as error:
+        return ValidationReport(
+            verdict="corrupt", detail=f"WAV read failed: {error}", decoder=decoder
+        )
+
+    if read < declared:
+        return ValidationReport(
+            verdict="truncated",
+            detail=(
+                f"the data chunk declares {declared} bytes of samples and "
+                f"{read} are present"
+            ),
+            decoder=decoder,
+        )
+    return ValidationReport(
+        verdict="valid",
+        detail=(
+            f"PCM, {channels} channel(s), {width * 8}-bit, {rate} Hz, "
+            f"{frames} frame(s) fully read"
+        ),
+        decoder=decoder,
+    )
+
+
+# --------------------------------------------------------------------------
+# GZIP
+# --------------------------------------------------------------------------
+
+
+def validate_gzip(data: bytes, deadline: _Deadline) -> ValidationReport:
+    """Inflate the member so zlib checks its CRC and length trailer.
+
+    The output is counted and thrown away a megabyte at a time. A gzip bomb is
+    a small file that inflates to gigabytes, and a carved candidate is exactly
+    the kind of untrusted input that is one.
+    """
+    from core.carve.structure import MAX_INFLATE_BYTES
+
+    decoder = f"zlib {zlib.ZLIB_VERSION}"
+    engine = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    produced = 0
+    position = 0
+    try:
+        while position < len(data) and not engine.eof:
+            if deadline.expired:
+                return _unavailable(decoder, deadline.note())
+            block = data[position : position + GZIP_BLOCK_BYTES]
+            produced += len(engine.decompress(block, MIB))
+            while engine.unconsumed_tail and not engine.eof:
+                if produced > MAX_INFLATE_BYTES:
+                    return _unavailable(
+                        decoder,
+                        f"the member inflates past the {MAX_INFLATE_BYTES} byte "
+                        "budget, so it was not decoded",
+                    )
+                produced += len(engine.decompress(engine.unconsumed_tail, MIB))
+            position += len(block)
+    except zlib.error as error:
+        text = str(error).lower()
+        verdict: Validation = (
+            "truncated" if "incomplete" in text or "unexpected end" in text
+            else "corrupt"
+        )
+        return ValidationReport(
+            verdict=verdict, detail=f"inflate failed: {error}", decoder=decoder
+        )
+
+    if not engine.eof:
+        return ValidationReport(
+            verdict="truncated",
+            detail="the deflate stream does not end within this object",
+            decoder=decoder,
+        )
+    trailing = len(engine.unused_data)
+    note = f"; {trailing} byte(s) follow the member" if trailing else ""
+    return ValidationReport(
+        verdict="valid",
+        detail=(
+            f"inflated to {produced} bytes; zlib verified the CRC and length "
+            f"trailer{note}"
+        ),
+        decoder=decoder,
+    )
+
+
+# --------------------------------------------------------------------------
+# TAR
+# --------------------------------------------------------------------------
+
+
+def validate_tar(data: bytes, deadline: _Deadline) -> ValidationReport:
+    """Walk every member, read its bytes, and require the end-of-archive marker.
+
+    Nothing is ever extracted to disk. The marker matters as much as the
+    members do: a tar has no length field, so an archive cut after a whole
+    member is a sequence of perfectly good members that simply stops, and
+    ``tarfile`` reads it without complaint. Only the two zero blocks the format
+    ends with say that the archive is all here.
+    """
+    decoder = "tarfile"
+    members = 0
+    end_of_members = 0
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as archive:
+            for member in archive:
+                if members >= MAX_ARCHIVE_MEMBERS or deadline.expired:
+                    break
+                members += 1
+                if not member.isfile():
+                    continue
+                stream = archive.extractfile(member)
+                if stream is None:
+                    continue
+                read = 0
+                while True:
+                    block = stream.read(MIB)
+                    if not block:
+                        break
+                    read += len(block)
+                if read < member.size:
+                    return ValidationReport(
+                        verdict="truncated",
+                        detail=(
+                            f"{member.name} declares {member.size} bytes and "
+                            f"{read} are present"
+                        ),
+                        decoder=decoder,
+                    )
+            end_of_members = archive.offset
+    except tarfile.ReadError as error:
+        text = str(error).lower()
+        if "unexpected end" in text or "truncated" in text:
+            return ValidationReport(
+                verdict="truncated",
+                detail=f"the archive ends inside a member: {error}",
+                decoder=decoder,
+            )
+        return ValidationReport(
+            verdict="corrupt",
+            detail=f"not a readable archive: {error}",
+            decoder=decoder,
+        )
+    except (OSError, ValueError, EOFError) as error:
+        return ValidationReport(
+            verdict="corrupt", detail=f"archive read failed: {error}", decoder=decoder
+        )
+
+    if not members:
+        return ValidationReport(
+            verdict="corrupt",
+            detail="no member header in this object is readable",
+            decoder=decoder,
+        )
+    marker = data[end_of_members : end_of_members + TAR_BLOCK_BYTES]
+    if len(marker) < TAR_BLOCK_BYTES or marker.strip(b"\x00"):
+        return ValidationReport(
+            verdict="truncated",
+            detail=(
+                f"{members} member(s) read, and no end-of-archive marker follows "
+                "them: the archive does not end inside this object"
+            ),
+            decoder=decoder,
+        )
+    return ValidationReport(
+        verdict="valid",
+        detail=(
+            f"{members} member(s); every declared size is present and the "
+            "end-of-archive marker follows them"
+        ),
+        decoder=decoder,
+    )
+
+
+# --------------------------------------------------------------------------
 # OLE compound files
 # --------------------------------------------------------------------------
 
@@ -807,6 +1056,9 @@ VALIDATORS: dict[str, Validator] = {
     "pptx": validate_zip,
     "sqlite": validate_sqlite,
     "mp4": validate_mp4,
+    "wav": validate_wav,
+    "gz": validate_gzip,
+    "tar": validate_tar,
     "doc": validate_ole,
 }
 

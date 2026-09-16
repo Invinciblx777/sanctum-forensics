@@ -410,6 +410,56 @@ sector in small files, which is why `candidate.sha256` is computed over the
 same extents `read_recovered()` returns rather than over the bytes TSK hands
 back — the claim is checkable.
 
+## What each carved format's length comes from, and which ones are a guess
+
+A carved object has no filename and no recorded size, so its end is either derived from
+the format's own structure or it is guessed. The difference decides whether the recovered
+file opens, and it is not uniform across the table in `testkit/signatures.yaml`:
+
+| Format | Where the end comes from | Exact? |
+|---|---|---|
+| JPEG | segment walk to the EOI marker | yes |
+| PNG | length-prefixed chunk walk to IEND, every CRC verified | yes |
+| PDF | the last `%%EOF` a `startxref` corroborates | yes |
+| ZIP, DOCX, XLSX | the end-of-central-directory record | yes |
+| SQLite | `page_size` × `page_count` from the header | yes |
+| MP4 | the top-level box sizes | yes |
+| TIFF | the IFD chain and the strip offsets it points at | yes |
+| BMP | the 32-bit file size in the file header | yes |
+| WebP, WAV | the RIFF size field | yes |
+| GZIP | inflating the member, bounded at 256 MiB of output | yes |
+| RTF | counting braces to the one closing the document group | yes |
+| TAR | member headers to the end-of-archive marker | yes, with the caveat below |
+| **HTML** | **the closing `</html>` tag, or the next object** | **no** |
+| GIF | footer search | no |
+| OLE, ELF, PE, RAR, 7z, EVTX | no parser; footer or next-object bound | no |
+
+**HTML is a footer bound and says so.** The format carries no length anywhere, and
+`</html>` is a convention rather than a requirement. A document that ends without one is
+bounded by wherever the next object's header begins, which is an upper bound and not a
+length; the candidate reports `possibly_fragmented` and does not claim an exact length.
+Only the lower-case `<!DOCTYPE html` and `<html>` spellings are matched, so an
+upper-case or mixed-case document is not found at all.
+
+**A tar is returned without its trailing padding, and is therefore usually not
+byte-identical to the file as written.** GNU tar pads an archive to its blocking factor -
+10,240 bytes by default - after the two zero blocks that end it. Those padding bytes are
+zeros, and so are the bytes of the last cluster's slack on every filesystem, so nothing
+in the content distinguishes them. Rounding the length up to a blocking factor would
+return the file exactly and would be an assumption about the writer rather than a
+measurement of the medium, which is the same defect as reading cluster slack as an MP4
+box. The archive therefore ends where the format says it ends. Where the filesystem
+record survives, the undelete pass recovers the tar at its recorded size and this does
+not apply.
+
+**A gzip member that inflates beyond 256 MiB gets no derived length.** Deriving the end
+of a gzip stream means decompressing it, and a carved candidate is exactly the kind of
+untrusted input that is a decompression bomb. The output is counted and discarded, never
+held; past the bound the parser declines and the candidate keeps the scan's bound.
+
+**Two formats share a header.** WebP and WAV are both `RIFF`, and what separates them is
+the form type four bytes later. Both are in the table and both are checked.
+
 ## Bifragment reassembly is narrow, and depends on the volume's cluster size
 
 `core/carve/fragmentation.py` rebuilds a JPEG split into two runs. What it can be

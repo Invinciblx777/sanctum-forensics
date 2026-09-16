@@ -1345,12 +1345,17 @@ def _signature_formats(work: Path) -> dict[str, bool]:
         (bytes.fromhex(item["header"]), int(item.get("header_offset", 0)))
         for item in table["signatures"]
     ]
+    # Enough bytes for the deepest header in the table, not a fixed 64. A tar's
+    # "ustar" magic sits at byte 257 of its first member header, so a 64-byte
+    # read reported every signature past that offset as absent - which would
+    # print "no" in the column that says which formats Sanctum can find.
+    probe_bytes = max(offset + len(magic) for magic, offset in entries)
     found: dict[str, bool] = {}
     for path in sorted((work / "images").glob(f"media-*{TRUTH_SUFFIX}")):
         for obj in load_truth(path).objects:
             if obj.role != "file" or obj.format in found:
                 continue
-            head = (work / "payloads" / obj.sha256).read_bytes()[:64]
+            head = (work / "payloads" / obj.sha256).read_bytes()[:probe_bytes]
             found[obj.format] = any(
                 head[offset : offset + len(magic)] == magic for magic, offset in entries
             )

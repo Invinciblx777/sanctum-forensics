@@ -42,7 +42,12 @@ from core.carve.fragmentation import (
     is_whole_jpeg,
     reassemble_bifragmented_jpeg_runs,
 )
-from core.carve.signature import Signature, load_signatures, scan
+from core.carve.signature import (
+    Signature,
+    load_signatures,
+    scan,
+    tar_header_is_valid,
+)
 from core.models import CarveCandidate
 
 __all__ = [
@@ -55,6 +60,13 @@ __all__ = [
     "parse_sqlite",
     "parse_png",
     "parse_mp4",
+    "parse_tiff",
+    "parse_bmp",
+    "parse_riff",
+    "parse_gzip",
+    "parse_tar",
+    "parse_rtf",
+    "MAX_INFLATE_BYTES",
     "PARSERS",
     "carve_structures",
 ]
@@ -83,6 +95,11 @@ class ParsedObject:
     validation: Validation
     #: What the parser learned that a footer search could not, for the report.
     detail: str = ""
+    #: Set when the header this parse began at is not the start of an object at
+    #: all, but a member inside a larger one beginning at this offset. An
+    #: archive's members each carry the archive's own magic, and reporting one
+    #: object per member describes files that were never on the medium.
+    member_of: int | None = None
 
 
 class _Budget:
@@ -134,14 +151,24 @@ def parse_zip(
     to another one megabytes away. Consistency is what settles it: the central
     directory this record describes must start at ``PK\x01\x02`` and must end
     exactly where the record itself begins.
+
+    **The record's offsets are measured from the archive's first byte, not from
+    where this parse began.** Every member of an archive starts with the same
+    ``PK\x03\x04`` magic, so the scan finds a header at each of them, and a
+    parse beginning at a member used to read the archive's own end record as
+    inconsistent and fall back to a length of "the rest of the image". The
+    central directory ends where its end record begins, and the record says how
+    far that directory sits from the archive's start, so those two numbers
+    locate the archive wherever the parse began - and a parse that began after
+    it is reporting a member, not an object.
     """
     cap = min(start + max_size, handle.size)
     budget = _Budget()
     window = 1 * MIB
     cursor = start
-    end_of_archive: int | None = None
+    archive: tuple[int, int] | None = None
 
-    while cursor < cap and budget.step() and end_of_archive is None:
+    while cursor < cap and budget.step() and archive is None:
         block = _read(handle, cursor, window, cap)
         if not block:
             break
@@ -157,25 +184,37 @@ def parse_zip(
                 end = absolute + 22 + comment_length
                 cd_size = int.from_bytes(trailer[12:16], "little")
                 cd_offset = int.from_bytes(trailer[16:20], "little")
-                cd_start = start + cd_offset
+                archive_start = absolute - cd_size - cd_offset
                 if (
                     end <= cap
-                    and cd_start + cd_size == absolute
+                    and 0 <= archive_start <= start
+                    and _read(handle, archive_start, 4, cap) == b"PK\x03\x04"
                     and (
                         cd_size == 0
-                        or _read(handle, cd_start, 4, cap) == b"PK\x01\x02"
+                        or _read(handle, archive_start + cd_offset, 4, cap)
+                        == b"PK\x01\x02"
                     )
                 ):
-                    end_of_archive = end
+                    archive = (archive_start, end)
                     break
             position = found + 1
         cursor += max(len(block) - len(_EOCD) - 1, 1)
 
-    if end_of_archive is None:
+    if archive is None:
+        # Nothing was derived. Returning a length here would replace the bound
+        # the scan already established - the next header of any type - with a
+        # worse one, so the candidate keeps the scan's answer instead.
+        return None
+    archive_start, end_of_archive = archive
+    if archive_start != start:
         return ParsedObject(
-            length=min(max_size, handle.size - start),
-            validation="truncated",
-            detail="no end-of-central-directory record within max_size",
+            length=0,
+            validation="valid",
+            detail=(
+                f"a local file header inside the archive at byte {archive_start}, "
+                "not the start of an archive"
+            ),
+            member_of=archive_start,
         )
     return ParsedObject(
         length=end_of_archive - start,
@@ -240,11 +279,9 @@ def parse_pdf(
         cursor += max(len(block) - 5, 1)
 
     if not accepted:
-        return ParsedObject(
-            length=min(max_size, handle.size - start),
-            validation="truncated",
-            detail="no %%EOF marker with a corroborating startxref within max_size",
-        )
+        # No revision of this document was corroborated, so no length was
+        # derived. The scan's neighbour bound stands; see :func:`parse_zip`.
+        return None
 
     end = accepted[-1]
     # Consume a trailing newline so the length matches the file on disk.
@@ -443,31 +480,19 @@ def parse_sqlite(
     raw_page_size = int.from_bytes(header[16:18], "big")
     # 1 is the format's escape for 65536, which does not fit the 16-bit field.
     page_size = 65536 if raw_page_size == 1 else raw_page_size
+    # Each of these three is a header this parser cannot turn into a length.
+    # None of them is a reason to claim the rest of the image: the scan's
+    # neighbour bound is always tighter. See :func:`parse_zip`.
     if page_size < 512 or (page_size & (page_size - 1)):
-        return ParsedObject(
-            length=min(max_size, handle.size - start),
-            validation="corrupt",
-            detail=f"page size {page_size} is not a power of two >= 512",
-        )
+        return None
 
     page_count = int.from_bytes(header[28:32], "big")
     if page_count == 0:
-        return ParsedObject(
-            length=min(max_size, handle.size - start),
-            validation="truncated",
-            detail="page count is zero; the header predates any commit",
-        )
+        return None
 
     length = page_size * page_count
     if length > max_size or start + length > handle.size:
-        return ParsedObject(
-            length=min(max_size, handle.size - start),
-            validation="truncated",
-            detail=(
-                f"header declares {length} bytes "
-                f"({page_size} x {page_count}), more than remains"
-            ),
-        )
+        return None
     return ParsedObject(
         length=length,
         validation="valid",
@@ -581,11 +606,31 @@ def parse_mp4(
             size = int.from_bytes(large, "big")
             header_bytes = 16
         elif size == 0:
-            # Legal only as the final box: it means "to end of file".
+            # "To end of file", and legal only as the final box. The bytes
+            # after a file in its last cluster are zeros, and eight zero bytes
+            # read as a box of size 0 with a name of four NULs - which is not a
+            # box. Read that way, every MP4 on a volume became a candidate
+            # running to the end of the image. Either way the walk stops here
+            # and the length is the boxes that actually parsed.
+            if not saw_ftyp:
+                return None
+            if head == bytes(8):
+                return ParsedObject(
+                    length=cursor - start,
+                    validation="valid",
+                    detail=(
+                        "length from walking the top-level box sizes; the data "
+                        f"at byte {cursor - start} is zero fill, not a box"
+                    ),
+                )
             return ParsedObject(
-                length=cap - start,
+                length=cursor - start,
                 validation="truncated",
-                detail=f"box {kind!r} extends to end of data",
+                detail=(
+                    f"box {kind!r} at {cursor} declares size 0, meaning it runs "
+                    "to the end of the data; nothing in the file bounds it, so "
+                    "the length is the boxes that parsed"
+                ),
             )
 
         if size < header_bytes or cursor + size > cap:
@@ -611,6 +656,488 @@ def parse_mp4(
 
 
 # --------------------------------------------------------------------------
+# TIFF
+# --------------------------------------------------------------------------
+
+#: Bytes per TIFF field type, by the code an IFD entry stores. Types above 12
+#: were added by later specifications; an entry using one is stepped over
+#: rather than sized by guesswork.
+_TIFF_TYPE_BYTES = {
+    1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8
+}
+
+#: Tags holding a list of offsets, each paired with the tag holding the
+#: matching list of lengths. This is where a TIFF's pixels actually are: the
+#: IFD chain alone describes a few hundred bytes of a file that is megabytes.
+_TIFF_DATA_TAGS = {
+    273: 279,  # StripOffsets / StripByteCounts
+    324: 325,  # TileOffsets / TileByteCounts
+    513: 514,  # JPEGInterchangeFormat / JPEGInterchangeFormatLength
+}
+
+#: Most strips or tiles one IFD may claim. A corrupt count field would
+#: otherwise ask for a list of four billion offsets.
+_TIFF_MAX_STRIPS = 1_000_000
+
+
+def _tiff_values(
+    handle: EvidenceHandle,
+    entry: bytes,
+    order: Literal["little", "big"],
+    start: int,
+    cap: int,
+) -> list[int]:
+    """The integer list an IFD entry holds, inline when it fits or at its offset."""
+    kind = int.from_bytes(entry[2:4], order)
+    number = int.from_bytes(entry[4:8], order)
+    width = _TIFF_TYPE_BYTES.get(kind)
+    if width is None or width > 4 or number > _TIFF_MAX_STRIPS:
+        return []
+    size = width * number
+    if size <= 4:
+        raw = entry[8 : 8 + size]
+    else:
+        raw = _read(handle, start + int.from_bytes(entry[8:12], order), size, cap)
+    if len(raw) < size:
+        return []
+    return [
+        int.from_bytes(raw[index * width : (index + 1) * width], order)
+        for index in range(number)
+    ]
+
+
+def parse_tiff(
+    handle: EvidenceHandle, start: int, *, max_size: int
+) -> ParsedObject | None:
+    """Walk the IFD chain and every strip of pixels it points at.
+
+    A TIFF has no footer and no field saying how long it is. What it has is a
+    chain of image file directories, each listing where its pixel data sits and
+    how many bytes it occupies, so the object ends at the furthest byte any of
+    those records reaches. Nothing else can say where a TIFF ends - the bytes
+    after one look exactly like the bytes inside it - which is why this format
+    having a signature and no parser produced candidates that ran to the end of
+    the image.
+    """
+    cap = min(start + max_size, handle.size)
+    budget = _Budget()
+    head = _read(handle, start, 8, cap)
+    if len(head) < 8:
+        return None
+    if head[:2] == b"II":
+        order: Literal["little", "big"] = "little"
+    elif head[:2] == b"MM":
+        order = "big"
+    else:
+        return None
+    if int.from_bytes(head[2:4], order) != 42:
+        return None
+
+    end = start + 8
+    next_ifd = int.from_bytes(head[4:8], order)
+    seen: set[int] = set()
+    while next_ifd and budget.step():
+        if next_ifd in seen:
+            break  # a chain pointing back at itself is not a longer file
+        seen.add(next_ifd)
+        directory = start + next_ifd
+        count_bytes = _read(handle, directory, 2, cap)
+        if len(count_bytes) < 2:
+            return _tiff_short(start, end, cap, "the IFD header")
+        entries = int.from_bytes(count_bytes, order)
+        table = _read(handle, directory + 2, entries * 12 + 4, cap)
+        if len(table) < entries * 12 + 4:
+            return _tiff_short(start, end, cap, "an IFD's entry table")
+        end = max(end, directory + 2 + entries * 12 + 4)
+
+        lists: dict[int, list[int]] = {}
+        for index in range(entries):
+            entry = table[index * 12 : index * 12 + 12]
+            tag = int.from_bytes(entry[0:2], order)
+            kind = int.from_bytes(entry[2:4], order)
+            number = int.from_bytes(entry[4:8], order)
+            width = _TIFF_TYPE_BYTES.get(kind)
+            if width is None:
+                continue
+            size = width * number
+            if size > 4:
+                # The value did not fit the entry, so the entry holds its
+                # address and those bytes are part of the file too.
+                end = max(end, start + int.from_bytes(entry[8:12], order) + size)
+            if tag in _TIFF_DATA_TAGS or tag in _TIFF_DATA_TAGS.values():
+                lists[tag] = _tiff_values(handle, entry, order, start, cap)
+
+        for offsets_tag, counts_tag in _TIFF_DATA_TAGS.items():
+            for offset, length in zip(
+                lists.get(offsets_tag, []), lists.get(counts_tag, []), strict=False
+            ):
+                end = max(end, start + offset + length)
+        next_ifd = int.from_bytes(table[entries * 12 : entries * 12 + 4], order)
+
+    if end > cap:
+        return _tiff_short(start, end, cap, "the strips an IFD points at")
+    return ParsedObject(
+        length=end - start,
+        validation="valid",
+        detail="length from the IFD chain and the strip offsets it points at",
+    )
+
+
+def _tiff_short(start: int, end: int, cap: int, what: str) -> ParsedObject:
+    """What to report when the IFD chain reaches past the bytes available."""
+    return ParsedObject(
+        length=min(end, cap) - start,
+        validation="truncated",
+        detail=f"{what} runs past the {cap - start} bytes available",
+    )
+
+
+# --------------------------------------------------------------------------
+# BMP
+# --------------------------------------------------------------------------
+
+
+def parse_bmp(
+    handle: EvidenceHandle, start: int, *, max_size: int
+) -> ParsedObject | None:
+    """The file header's own 32-bit size field, checked against the DIB header."""
+    cap = min(start + max_size, handle.size)
+    head = _read(handle, start, 18, cap)
+    if len(head) < 18 or head[:2] != b"BM":
+        return None
+    declared = int.from_bytes(head[2:6], "little")
+    pixels_at = int.from_bytes(head[10:14], "little")
+    dib_size = int.from_bytes(head[14:18], "little")
+    if declared < 14 + dib_size or pixels_at > declared or declared > max_size:
+        return None
+    if start + declared > cap:
+        return ParsedObject(
+            length=cap - start,
+            validation="truncated",
+            detail=f"the header declares {declared} bytes, more than remains",
+        )
+    return ParsedObject(
+        length=declared,
+        validation="valid",
+        detail=f"length from the {declared}-byte file size in the BMP header",
+    )
+
+
+# --------------------------------------------------------------------------
+# RIFF: WebP and WAV
+# --------------------------------------------------------------------------
+
+
+def parse_riff(
+    handle: EvidenceHandle, start: int, *, max_size: int
+) -> ParsedObject | None:
+    """``RIFF`` plus its size field, which counts everything after those 8 bytes."""
+    cap = min(start + max_size, handle.size)
+    head = _read(handle, start, 12, cap)
+    if len(head) < 12 or head[:4] != b"RIFF":
+        return None
+    declared = int.from_bytes(head[4:8], "little")
+    length = declared + 8
+    if declared < 4 or length > max_size:
+        return None
+    form = head[8:12].decode("latin-1")
+    if start + length > cap:
+        return ParsedObject(
+            length=cap - start,
+            validation="truncated",
+            detail=f"the RIFF size field declares {length} bytes, more than remains",
+        )
+    return ParsedObject(
+        length=length,
+        validation="valid",
+        detail=f"length from the RIFF size field of a {form} container",
+    )
+
+
+# --------------------------------------------------------------------------
+# GZIP
+# --------------------------------------------------------------------------
+
+_GZIP_MAGIC = b"\x1f\x8b\x08"
+
+#: Compressed bytes handed to the decompressor at a time.
+_GZIP_READ_BYTES = 64 * 1024
+
+#: Decompressed bytes produced per call. The output is counted and discarded,
+#: never accumulated, so this bounds the transient allocation rather than the
+#: total.
+_INFLATE_STEP_BYTES = 1 * MIB
+
+#: Most bytes a member may inflate to before this parser gives up on it. A
+#: gzip bomb is a small file that decompresses to gigabytes, and deriving a
+#: length is not worth that much work on a carved candidate.
+MAX_INFLATE_BYTES = 256 * MIB
+
+
+def parse_gzip(
+    handle: EvidenceHandle, start: int, *, max_size: int
+) -> ParsedObject | None:
+    """Inflate the member to find where its compressed stream stops.
+
+    A gzip member has no footer a search can find: its 8-byte trailer is a CRC
+    and a length, and both are arbitrary bytes that occur everywhere, including
+    inside the compressed data itself. The only thing that says where the
+    stream ends is the stream, so it is inflated - the output counted and
+    thrown away, never held, bounded by :data:`MAX_INFLATE_BYTES` - and the end
+    is where the decompressor reports it. Members written one after another are
+    one file, so the walk continues while the next bytes are another header.
+    """
+    cap = min(start + max_size, handle.size)
+    budget = _Budget()
+    cursor = start
+    produced = 0
+    members = 0
+
+    while cursor < cap and budget.step():
+        if _read(handle, cursor, 3, cap) != _GZIP_MAGIC:
+            break
+        engine = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        position = cursor
+        finished = False
+        while position < cap and budget.step():
+            block = _read(handle, position, _GZIP_READ_BYTES, cap)
+            if not block:
+                break
+            try:
+                produced += len(engine.decompress(block, _INFLATE_STEP_BYTES))
+                while engine.unconsumed_tail and not engine.eof:
+                    if produced > MAX_INFLATE_BYTES:
+                        return None
+                    produced += len(
+                        engine.decompress(
+                            engine.unconsumed_tail, _INFLATE_STEP_BYTES
+                        )
+                    )
+            except zlib.error:
+                if not members:
+                    return None
+                break
+            if produced > MAX_INFLATE_BYTES:
+                return None
+            if engine.eof:
+                position += len(block) - len(engine.unused_data)
+                finished = True
+                break
+            position += len(block)
+        if not finished:
+            if not members:
+                return ParsedObject(
+                    length=cap - start,
+                    validation="truncated",
+                    detail="the deflate stream does not end within the data available",
+                )
+            break
+        cursor = position
+        members += 1
+
+    if not members:
+        return None
+    return ParsedObject(
+        length=cursor - start,
+        validation="valid",
+        detail=f"length from inflating {members} gzip member(s)",
+    )
+
+
+# --------------------------------------------------------------------------
+# TAR
+# --------------------------------------------------------------------------
+
+_TAR_BLOCK = 512
+_TAR_SIZE_AT = 124
+_TAR_SIZE_BYTES = 12
+
+
+def _tar_octal(field: bytes) -> int | None:
+    """A ustar numeric field, which is octal digits ended by a NUL or a space."""
+    digits = field.split(b"\x00")[0].split(b" ")[0]
+    if not digits:
+        return 0
+    try:
+        return int(digits, 8)
+    except ValueError:
+        return None
+
+
+def parse_tar(
+    handle: EvidenceHandle, start: int, *, max_size: int
+) -> ParsedObject | None:
+    """Walk 512-byte member headers to the end-of-archive marker.
+
+    **What one tar candidate is.** A tar is a run of members, each a 512-byte
+    header whose own checksum verifies followed by its contents padded to 512,
+    and it has no archive-level length field. One candidate is the whole run,
+    not one per member: a member header is not a file that was on the medium,
+    it is a record inside one that was.
+
+    The archive ends at the marker the format defines, two zero blocks. **The
+    padding a writer adds after that marker is not claimed.** GNU tar pads to
+    its blocking factor, 10,240 bytes by default, and those bytes are zeros -
+    indistinguishable from the zeros of the last cluster's slack. Claiming them
+    would be the same defect as reading cluster slack as an MP4 box. The
+    consequence is stated rather than hidden: an archive its writer padded is
+    returned without that padding, so it is not byte-identical to the file as
+    written, and this parser reports the length it can account for.
+    """
+    cap = min(start + max_size, handle.size)
+    budget = _Budget()
+    cursor = start
+    members = 0
+
+    while cursor < cap and budget.step():
+        block = _read(handle, cursor, _TAR_BLOCK, cap)
+        if len(block) < _TAR_BLOCK:
+            break
+        if not block.strip(b"\x00"):
+            if not members:
+                return None
+            following = _read(handle, cursor + _TAR_BLOCK, _TAR_BLOCK, cap)
+            pair = len(following) == _TAR_BLOCK and not following.strip(b"\x00")
+            end = cursor + _TAR_BLOCK * (2 if pair else 1)
+            return ParsedObject(
+                length=min(end, cap) - start,
+                validation="valid",
+                detail=(
+                    f"length from {members} member header(s) and the "
+                    "end-of-archive marker"
+                ),
+            )
+        if not tar_header_is_valid(block):
+            break
+        size = _tar_octal(block[_TAR_SIZE_AT : _TAR_SIZE_AT + _TAR_SIZE_BYTES])
+        if size is None:
+            break
+        padded = (size + _TAR_BLOCK - 1) // _TAR_BLOCK * _TAR_BLOCK
+        cursor += _TAR_BLOCK + padded
+        members += 1
+
+    if not members:
+        return None
+    if cursor > cap:
+        return ParsedObject(
+            length=cap - start,
+            validation="truncated",
+            detail=f"member {members} runs past the bytes available",
+        )
+    return ParsedObject(
+        length=cursor - start,
+        validation="truncated",
+        detail=(
+            f"{members} member header(s) parsed, and no end-of-archive marker "
+            "follows them: the archive is not complete here"
+        ),
+    )
+
+
+# --------------------------------------------------------------------------
+# RTF
+# --------------------------------------------------------------------------
+
+
+def parse_rtf(
+    handle: EvidenceHandle, start: int, *, max_size: int
+) -> ParsedObject | None:
+    """Count braces to the one that closes the document's outermost group.
+
+    An RTF document is one group: it opens with ``{\\rtf1`` and ends at the
+    brace matching that first one. Groups nest, and a literal brace in the text
+    is written ``\\{``, so the end is found by counting with the escape
+    honoured - not by searching for the last ``}``, which is inside the text as
+    often as it is the end of the file.
+    """
+    cap = min(start + max_size, handle.size)
+    budget = _Budget()
+    if _read(handle, start, 6, cap) != b"{\\rtf1":
+        return None
+
+    depth = 0
+    cursor = start
+    window = 64 * 1024
+    while cursor < cap and budget.step():
+        block = _read(handle, cursor, window, cap)
+        if not block:
+            break
+        index = 0
+        while index < len(block):
+            byte = block[index]
+            if byte == 0x5C:  # a backslash escapes whatever follows it
+                index += 2
+                continue
+            if byte == 0x7B:
+                depth += 1
+            elif byte == 0x7D:
+                depth -= 1
+                if depth == 0:
+                    return ParsedObject(
+                        length=cursor + index + 1 - start,
+                        validation="valid",
+                        detail="length from the brace closing the document group",
+                    )
+            index += 1
+        # ``index`` can end one past the block when its last byte was an escape,
+        # which is exactly where the next read must begin.
+        cursor += max(index, 1)
+
+    return ParsedObject(
+        length=cap - start,
+        validation="truncated",
+        detail=f"the document group is still {depth} deep at the end of the data",
+    )
+
+
+# --------------------------------------------------------------------------
+# HTML
+# --------------------------------------------------------------------------
+
+_HTML_CLOSE = b"</html>"
+
+
+def parse_html(
+    handle: EvidenceHandle, start: int, *, max_size: int
+) -> ParsedObject | None:
+    """Bound the document at its closing tag, with the newline after it.
+
+    **This is a footer bound, not a derived length, and it is reported as
+    one.** HTML carries no length field anywhere, and ``</html>`` is a
+    convention rather than a requirement: a document written without it is left
+    to the bound the scan took from the next object, and says so by declining
+    here. The trailing line terminator is consumed for the same reason
+    :func:`parse_pdf` consumes one - a text file written by an editor ends with
+    it, and a length one byte short is a file that differs from the original.
+    """
+    cap = min(start + max_size, handle.size)
+    budget = _Budget()
+    window = 1 * MIB
+    overlap = len(_HTML_CLOSE) - 1
+    cursor = start
+
+    while cursor < cap and budget.step():
+        block = _read(handle, cursor, window, cap)
+        if not block:
+            break
+        found = block.find(_HTML_CLOSE)
+        if found != -1:
+            end = cursor + found + len(_HTML_CLOSE)
+            tail = _read(handle, end, 2, cap)
+            if tail.startswith(b"\r\n"):
+                end += 2
+            elif tail[:1] in (b"\n", b"\r"):
+                end += 1
+            return ParsedObject(
+                length=end - start,
+                validation="valid",
+                detail="length from the closing </html> tag",
+            )
+        cursor += max(len(block) - overlap, 1)
+    return None
+
+
+# --------------------------------------------------------------------------
 # Dispatch
 # --------------------------------------------------------------------------
 
@@ -623,7 +1150,24 @@ PARSERS = {
     "SQLite": parse_sqlite,
     "PNG": parse_png,
     "MP4": parse_mp4,
+    "TIFF-LE": parse_tiff,
+    "TIFF-BE": parse_tiff,
+    "BMP": parse_bmp,
+    "WebP": parse_riff,
+    "WAV": parse_riff,
+    "GZIP": parse_gzip,
+    "TAR": parse_tar,
+    "RTF": parse_rtf,
+    "HTML": parse_html,
+    "HTML-tag": parse_html,
 }
+
+#: Formats whose objects hold headers of their own format. Every member of an
+#: archive carries the archive's magic, and an HTML document carries ``<html>``
+#: after its doctype. A header of the same format inside an object whose length
+#: a parser derived belongs to that object; reported on its own it is a file
+#: that was never on the medium.
+_SELF_NESTING_EXTS = frozenset({"zip", "tar", "html"})
 
 #: Formats for which bifragment reassembly is attempted. Deliberately one.
 _FRAGMENT_CAPABLE = {"JPEG"}
@@ -656,6 +1200,10 @@ def carve_structures(
     by_ext = _signature_by_ext(signatures)
     by_name = {signature.name: signature for signature in signatures}
     report = scan(image, signatures=signatures)
+    # Where each container format's last derived object ends. A header of the
+    # same format inside that range is one of its members. Candidates arrive in
+    # offset order, so one high-water mark per format is all this needs.
+    covered: dict[str, int] = {}
 
     for candidate in report.candidates:
         signature = by_ext.get(candidate.ext)
@@ -668,14 +1216,28 @@ def carve_structures(
         if parser is None or signature is None:
             yield candidate
             continue
+        if candidate.offset < covered.get(candidate.ext, 0):
+            # Inside an object of this format whose length a parser derived.
+            continue
 
         parsed = parser(image, candidate.offset, max_size=signature.max_size)
         if parsed is None:
             yield candidate
             continue
+        if parsed.member_of is not None:
+            continue
 
         length = parsed.length
         validation = parsed.validation
+        if validation != "valid" and length > candidate.length:
+            # A parse that derived nothing must not claim more than the scan
+            # already established. The scan bounds a footerless object by the
+            # next header of any type; a parser's "the rest of my window" is
+            # never tighter than that, and where an image holds one object of a
+            # format it is the rest of the image.
+            length = candidate.length
+        if candidate.ext in _SELF_NESTING_EXTS and validation == "valid":
+            covered[candidate.ext] = candidate.offset + length
         reassembly_capable = attempt_reassembly and name in _FRAGMENT_CAPABLE
 
         if reassembly_capable and validation == "valid":

@@ -1,6 +1,6 @@
 # Carve confidence calibration
 
-**Run date:** 2026-09-04 · **Corpus seed:** 0 · **Harness:** `testkit/calibrate.py`
+**Run date:** 2026-09-04, re-measured 2026-09-16 · **Corpus seed:** 0 · **Harness:** `testkit/calibrate.py`
 · **Table:** [`calibration.csv`](calibration.csv) · **Chart:** [`calibration.png`](calibration.png)
 
 An uncalibrated score is a number somebody made up. This document records the
@@ -74,19 +74,43 @@ manifest files recovered by the slice, over the 15 that exist.
 |---|---:|---:|---:|---:|
 | HIGH | 13 | 13 | 100.0% | 86.7% |
 | MEDIUM | 2 | 2 | 100.0% | 13.3% |
-| LOW | 18 | 0 | 0.0% | 0.0% |
-| **ALL** | 33 | 15 | 45.5% | **100.0%** |
+| LOW | 6 | 0 | 0.0% | 0.0% |
+| **ALL** | 21 | 15 | 71.4% | **100.0%** |
 
 By source and by decoder verdict:
 
 | dimension | key | n | TP | precision | recall |
 |---|---|---:|---:|---:|---:|
-| source | structure | 30 | 14 | 46.7% | 93.3% |
-| source | signature | 3 | 1 | 33.3% | 6.7% |
+| source | structure | 19 | 14 | 73.7% | 93.3% |
+| source | signature | 2 | 1 | 50.0% | 6.7% |
 | validation | valid | 13 | 13 | 100.0% | 86.7% |
 | validation | decoder_unavailable | 2 | 2 | 100.0% | 13.3% |
 | validation | truncated | 1 | 0 | 0.0% | 0.0% |
-| validation | corrupt | 17 | 0 | 0.0% | 0.0% |
+| validation | corrupt | 5 | 0 | 0.0% | 0.0% |
+
+### What moved when the runaway-length defect was fixed, and what did not
+
+The table above was re-measured on 2026-09-16, after the fixes recorded in
+`BENCHMARK_REPORT_2.md`. **No weight changed, and no threshold changed.** What
+changed is the population being scored:
+
+| Row | Before (2026-09-04) | After (2026-09-16) | Why |
+|---|---:|---:|---|
+| LOW, n | 18 | 6 | Twelve of the LOW candidates were ZIP member headers. Every member of an archive carries `PK\x03\x04`, and each one started a candidate whose parse could not read the archive's end record; they were scored, bucketed LOW and reported. They are not objects, so they are no longer emitted. |
+| ALL, n | 33 | 21 | The same twelve. |
+| ALL, precision | 45.5% | 71.4% | Arithmetic: the same 15 true positives over 12 fewer candidates. |
+| `source,structure` n | 30 | 19 | As above. |
+| `validation,corrupt` n | 17 | 5 | Those member candidates decoded as corrupt, which is what they were. |
+| `format,zip` n | 13 | 2 | Eleven member headers inside two archives. |
+| `format,tiff` n | 2 | 1 | TIFF now has a parser, so one candidate covers the object instead of two spans. |
+| **HIGH and MEDIUM, every column** | — | **unchanged** | 13/13 and 2/2, 100.0% precision each, recall 86.7% and 13.3%. |
+| **ALL, recall** | 100.0% | **100.0%** | Every planted object still comes back byte for byte. |
+
+The two rows the acceptance criteria are stated against - HIGH precision and
+MEDIUM precision - did not move at all, and neither did recall. A carver that
+stops reporting objects that were never on the medium scores better on
+aggregate precision without having been tuned to; that improvement is the
+removal of false candidates, not a change to what the score means.
 
 Per-format rows are in the CSV. The one that matters for reading the rest:
 `zip` shows 13 candidates for 2 true positives, because a signature scan hits

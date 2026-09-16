@@ -1,6 +1,6 @@
 # Recovery benchmark: Sanctum, PhotoRec and Foremost
 
-**Run date:** 2026-09-15 · **Sanctum measured at:** `3c6b303` (`pii-triage-1-3-g3c6b303`, clean tree; `core/` and `api/` are identical to `b5a439a`, the PT4 fix)
+**Run date:** 2026-09-16 (fix6 re-run; the fix5 baseline it is compared against ran 2026-09-15) · **Sanctum measured at:** `hwval-run4-fix6`, clean tree
 · **Harness:** `testkit/benchmark.py`, `testkit/damage.py` · **Table:** [`benchmark.csv`](benchmark.csv)
 · **Host:** one Fedora 44 laptop, Linux 6.19.10, 16 logical CPUs, 14 GiB RAM
 
@@ -17,10 +17,10 @@ was measured. Read [Limits](#limits) before quoting any number.
 
 | Row | Tool and version | How it was run | Settings |
 |---|---|---|---|
-| Sanctum, carve only | Sanctum at `3c6b303` | `api.carve_job.carve_generator(image, undelete=False, out_dir=…)` in a fresh process | Defaults: structure carving, bifragment reassembly, validation, scoring, PII triage on |
+| Sanctum, carve only | Sanctum at `hwval-run4-fix6` | `api.carve_job.carve_generator(image, undelete=False, out_dir=…)` in a fresh process | Defaults: structure carving, bifragment reassembly, validation, scoring, PII triage on |
 | PhotoRec | PhotoRec 7.2 (February 2024), Fedora package `testdisk-7.2-6.fc44.x86_64` | `photorec /log /d <out>/recup /cmd <image> partition_none,wholespace,search` | Default file-type selection. The only option given is scope: the whole image, as one unpartitioned space |
 | Foremost | Foremost 1.5.7, Fedora package `foremost-1.5.7-37.fc44`, **not installed on the host**: the RPM was downloaded with `dnf download` and unpacked into a scratch directory, because installing needs root | `foremost -i <image> -o <out>` | No configuration file, which selects Foremost's built-in type set |
-| Sanctum, undelete + carve | Sanctum at `3c6b303` | `carve_generator(image, undelete=True, out_dir=…)` | Defaults. **Not a peer of the carvers**; see fairness rule 1 |
+| Sanctum, undelete + carve | Sanctum at `hwval-run4-fix6` | `carve_generator(image, undelete=True, out_dir=…)` | Defaults. **Not a peer of the carvers**; see fairness rule 1 |
 
 Scalpel was not measured.
 
@@ -193,17 +193,61 @@ Three things in those manifests that a reader should know:
 
 ## Results
 
+### fix6 against the fix5 baseline
+
+Every table in this section is the **fix6** run, at tag `hwval-run4-fix6`. The fix5
+numbers are kept here as the before column, because the improvement is itself the
+evidence that these were defects rather than tuning: deleting them would remove the
+only proof of that. `hwval-run4-fix5` is tag `c4eb08c`; what changed between the two
+runs is Sanctum and nothing else, and PhotoRec and Foremost re-ran to identical scores
+in every column.
+
+Byte-identical recoveries, carve-only rows:
+
+| Corpus / model | Images | FULL | Sanctum carve fix5 | **Sanctum carve fix6** | PhotoRec | Foremost |
+|---|---:|---:|---:|---:|---:|---:|
+| Flat, shipped (byte 1337 + k x 512 KiB) | 1 | 15 | 15 | **15** | 0 | 7 |
+| Flat, sector-aligned (byte 4096) | 1 | 15 | 15 | **15** | 15 | 7 |
+| Filesystem corpus | 13 | 115 | 112 | **112** | 108 | 99 |
+| Benchmark volumes, undamaged (delete) | 5 | 103 | 56 | **96** | 84 | 47 |
+| Truncation | 5 | 49 | 49 | **49** | 46 | 36 |
+| Zeroed regions | 5 | 89 | 46 | **86** | 73 | 39 |
+| Metadata destroyed | 5 | 102 | 55 | **95** | 84 | 46 |
+| Interleaved overwrite | 5 | 103 | 57 | **97** | 85 | 52 |
+| **25 benchmark volumes** | 25 | 446 | 263 (59.0%) | **423 (94.8%)** | 372 (83.4%) | 220 (49.3%) |
+| **20 damaged volumes** | 20 | 343 | 207 (60.3%) | **327 (95.3%)** | 288 (84.0%) | 173 (50.4%) |
+
+The full pipeline, which is not a carver's peer and is reported against its own carve
+row only: 368 (82.5%) to **432 (96.9%)** over the 25 volumes, 276 to **332** over the
+20 damaged ones.
+
+Other columns, over the 25 benchmark volumes:
+
+| Measure | fix5 | **fix6** |
+|---|---:|---:|
+| Byte-identical, carve only | 263 | **423** |
+| Corrupt | 47 | **23** |
+| Missed | 136 | **0** |
+| Outputs matching no planted file | 252 | **45** |
+| Outputs | 573 | **503** |
+| Wall clock | 2,071.8 s | **170.2 s** |
+| Bytes written, all 40 images | 48.0 GiB | **0.034 GiB** |
+
+What moved, and why, is recorded in `BENCHMARK_REPORT_2.md`: three causes of candidates
+that ran to the end of the image (ZIP member headers, MP4 cluster slack read as a
+size-0 box, TIFF having no parser), and seven formats that had no signature at all.
+
 #### Flat corpus as shipped (objects at byte 1337 + k x 512 KiB)
 
 Images: `flat-offset1337.img`
 
 | Row | FULL files | Byte-identical | Corrupt | Missed | Identical / FULL | PARTIAL returned | GONE returned | False positives (frag/decoy/amb/unrel) | Outputs | Time (s) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Sanctum, carve only | 15 | **15** | 0 | 0 | 100.0% | 2/3 | 0/0 | 15 (12/0/2/1) | 33 | 4.9 |
+| Sanctum, carve only | 15 | **15** | 0 | 0 | 100.0% | 2/3 | 0/0 | 3 (0/0/2/1) | 21 | 0.9 |
 | PhotoRec | 15 | **0** | 0 | 15 | 0.0% | 0/3 | 0/0 | 0 (0/0/0/0) | 0 | 0.0 |
 | Foremost | 15 | **7** | 6 | 2 | 46.7% | 1/3 | 0/0 | 0 (0/0/0/0) | 17 | 0.2 |
 | *not a carver's peer:* | | | | | | | | | | |
-| Sanctum, undelete + carve | 15 | **15** | 0 | 0 | 100.0% | 2/3 | 0/0 | 15 (12/0/2/1) | 33 | 5.0 |
+| Sanctum, undelete + carve | 15 | **15** | 0 | 0 | 100.0% | 2/3 | 0/0 | 3 (0/0/2/1) | 21 | 0.9 |
 
 #### Flat corpus, sector-aligned (objects at byte 4096 + k x 512 KiB)
 
@@ -211,11 +255,11 @@ Images: `flat-aligned.img`
 
 | Row | FULL files | Byte-identical | Corrupt | Missed | Identical / FULL | PARTIAL returned | GONE returned | False positives (frag/decoy/amb/unrel) | Outputs | Time (s) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Sanctum, carve only | 15 | **15** | 0 | 0 | 100.0% | 2/3 | 0/0 | 15 (12/0/2/1) | 33 | 5.0 |
+| Sanctum, carve only | 15 | **15** | 0 | 0 | 100.0% | 2/3 | 0/0 | 3 (0/0/2/1) | 21 | 0.9 |
 | PhotoRec | 15 | **15** | 0 | 0 | 100.0% | 0/3 | 0/0 | 0 (0/0/0/0) | 19 | 0.0 |
 | Foremost | 15 | **7** | 6 | 2 | 46.7% | 1/3 | 0/0 | 0 (0/0/0/0) | 17 | 0.2 |
 | *not a carver's peer:* | | | | | | | | | | |
-| Sanctum, undelete + carve | 15 | **15** | 0 | 0 | 100.0% | 2/3 | 0/0 | 15 (12/0/2/1) | 33 | 5.0 |
+| Sanctum, undelete + carve | 15 | **15** | 0 | 0 | 100.0% | 2/3 | 0/0 | 3 (0/0/2/1) | 21 | 1.0 |
 
 #### Filesystem corpus (13 images, generate_filesystem_corpus)
 
@@ -223,11 +267,11 @@ Images: `fs-damaged-boot.img`, `fs-damaged-parttable.img`, `fs-exfat.img`, `fs-e
 
 | Row | FULL files | Byte-identical | Corrupt | Missed | Identical / FULL | PARTIAL returned | GONE returned | False positives (frag/decoy/amb/unrel) | Outputs | Time (s) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Sanctum, carve only | 115 | **112** | 3 | 0 | 97.4% | 15/15 | 0/0 | 73 (58/0/0/15) | 203 | 63.0 |
+| Sanctum, carve only | 115 | **112** | 3 | 0 | 97.4% | 15/15 | 0/0 | 12 (0/0/0/12) | 142 | 12.1 |
 | PhotoRec | 115 | **108** | 0 | 7 | 93.9% | 0/15 | 0/0 | 0 (0/0/0/0) | 108 | 0.9 |
 | Foremost | 115 | **99** | 5 | 11 | 86.1% | 15/15 | 0/0 | 0 (0/0/0/0) | 119 | 5.1 |
 | *not a carver's peer:* | | | | | | | | | | |
-| Sanctum, undelete + carve | 115 | **114** | 1 | 0 | 99.1% | 15/15 (3 identical) | 0/0 | 84 (58/0/0/26) | 445 | 70.6 |
+| Sanctum, undelete + carve | 115 | **114** | 1 | 0 | 99.1% | 15/15 (3 identical) | 0/0 | 23 (0/0/0/23) | 384 | 19.3 |
 
 #### Benchmark volumes, files written then some deleted (5 volumes)
 
@@ -235,11 +279,11 @@ Images: `media-exfat-255m.img`, `media-ext4-64m.img`, `media-fat32-255m.img`, `m
 
 | Row | FULL files | Byte-identical | Corrupt | Missed | Identical / FULL | PARTIAL returned | GONE returned | False positives (frag/decoy/amb/unrel) | Outputs | Time (s) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Sanctum, carve only | 103 | **56** | 12 | 35 | 54.4% | 0/4 | 0/0 | 54 (50/0/4/0) | 122 | 497.7 |
-| PhotoRec | 103 | **84** | 15 | 4 | 81.6% | 0/4 | 0/0 | 0 (0/0/0/0) | 99 | 0.6 |
+| Sanctum, carve only | 103 | **96** | 7 | 0 | 93.2% | 0/4 | 0/0 | 10 (1/0/4/5) | 113 | 19.8 |
+| PhotoRec | 103 | **84** | 15 | 4 | 81.6% | 0/4 | 0/0 | 0 (0/0/0/0) | 99 | 0.5 |
 | Foremost | 103 | **47** | 20 | 36 | 45.6% | 0/4 | 0/0 | 9 (5/0/4/0) | 76 | 14.1 |
 | *not a carver's peer:* | | | | | | | | | | |
-| Sanctum, undelete + carve | 103 | **92** | 4 | 7 | 89.3% | 2/4 (2 identical) | 0/0 | 55 (50/0/4/1) | 162 | 495.6 |
+| Sanctum, undelete + carve | 103 | **100** | 3 | 0 | 97.1% | 2/4 (2 identical) | 0/0 | 11 (1/0/4/6) | 121 | 21.1 |
 
 #### Damage model: truncation (5 volumes)
 
@@ -247,11 +291,11 @@ Images: `dmg-truncation-exfat-255m.img`, `dmg-truncation-ext4-64m.img`, `dmg-tru
 
 | Row | FULL files | Byte-identical | Corrupt | Missed | Identical / FULL | PARTIAL returned | GONE returned | False positives (frag/decoy/amb/unrel) | Outputs | Time (s) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Sanctum, carve only | 49 | **49** | 0 | 0 | 100.0% | 1/7 | 0/51 | 49 (44/0/4/1) | 99 | 12.8 |
+| Sanctum, carve only | 49 | **49** | 0 | 0 | 100.0% | 2/7 | 0/51 | 10 (0/0/4/6) | 61 | 7.2 |
 | PhotoRec | 49 | **46** | 0 | 3 | 93.9% | 1/7 | 0/51 | 0 (0/0/0/0) | 47 | 0.2 |
 | Foremost | 49 | **36** | 12 | 1 | 73.5% | 0/7 | 0/51 | 4 (0/0/4/0) | 52 | 0.7 |
 | *not a carver's peer:* | | | | | | | | | | |
-| Sanctum, undelete + carve | 49 | **49** | 0 | 0 | 100.0% | 5/7 (2 identical) | 0/51 | 53 (44/0/4/5) | 107 | 13.8 |
+| Sanctum, undelete + carve | 49 | **49** | 0 | 0 | 100.0% | 5/7 (2 identical) | 0/51 | 14 (0/0/4/10) | 69 | 8.1 |
 
 #### Damage model: zeroed regions (5 volumes)
 
@@ -259,11 +303,11 @@ Images: `dmg-zeroed-exfat-255m.img`, `dmg-zeroed-ext4-64m.img`, `dmg-zeroed-fat3
 
 | Row | FULL files | Byte-identical | Corrupt | Missed | Identical / FULL | PARTIAL returned | GONE returned | False positives (frag/decoy/amb/unrel) | Outputs | Time (s) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Sanctum, carve only | 89 | **46** | 12 | 31 | 51.7% | 5/10 | 0/8 | 48 (44/0/4/0) | 111 | 539.4 |
-| PhotoRec | 89 | **73** | 12 | 4 | 82.0% | 0/10 | 0/8 | 0 (0/0/0/0) | 85 | 0.8 |
-| Foremost | 89 | **39** | 19 | 31 | 43.8% | 5/10 | 0/8 | 9 (5/0/4/0) | 72 | 14.2 |
+| Sanctum, carve only | 89 | **86** | 3 | 0 | 96.6% | 5/10 | 0/8 | 8 (0/0/4/4) | 102 | 63.7 |
+| PhotoRec | 89 | **73** | 12 | 4 | 82.0% | 0/10 | 0/8 | 0 (0/0/0/0) | 85 | 0.7 |
+| Foremost | 89 | **39** | 19 | 31 | 43.8% | 5/10 | 0/8 | 9 (5/0/4/0) | 72 | 14.1 |
 | *not a carver's peer:* | | | | | | | | | | |
-| Sanctum, undelete + carve | 89 | **79** | 4 | 6 | 88.8% | 7/10 (2 identical) | 0/8 | 56 (51/0/4/1) | 155 | 544.2 |
+| Sanctum, undelete + carve | 89 | **87** | 2 | 0 | 97.8% | 7/10 (2 identical) | 0/8 | 16 (7/0/4/5) | 114 | 69.9 |
 
 #### Damage model: filesystem metadata destroyed (5 volumes)
 
@@ -271,11 +315,11 @@ Images: `dmg-metadata-exfat-255m.img`, `dmg-metadata-ext4-64m.img`, `dmg-metadat
 
 | Row | FULL files | Byte-identical | Corrupt | Missed | Identical / FULL | PARTIAL returned | GONE returned | False positives (frag/decoy/amb/unrel) | Outputs | Time (s) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Sanctum, carve only | 102 | **55** | 12 | 35 | 53.9% | 0/0 | 0/5 | 46 (46/0/0/0) | 113 | 487.9 |
-| PhotoRec | 102 | **84** | 15 | 3 | 82.4% | 0/0 | 0/5 | 0 (0/0/0/0) | 99 | 0.6 |
+| Sanctum, carve only | 102 | **95** | 7 | 0 | 93.1% | 0/0 | 0/5 | 6 (1/0/0/5) | 108 | 19.7 |
+| PhotoRec | 102 | **84** | 15 | 3 | 82.4% | 0/0 | 0/5 | 0 (0/0/0/0) | 99 | 0.5 |
 | Foremost | 102 | **46** | 20 | 36 | 45.1% | 0/0 | 0/5 | 5 (5/0/0/0) | 71 | 14.1 |
 | *not a carver's peer:* | | | | | | | | | | |
-| Sanctum, undelete + carve | 102 | **55** | 12 | 35 | 53.9% | 0/0 | 0/5 | 46 (46/0/0/0) | 113 | 498.1 |
+| Sanctum, undelete + carve | 102 | **95** | 7 | 0 | 93.1% | 0/0 | 0/5 | 6 (1/0/0/5) | 108 | 19.8 |
 
 #### Damage model: interleaved overwrite (5 volumes)
 
@@ -283,11 +327,11 @@ Images: `dmg-interleave-exfat-255m.img`, `dmg-interleave-ext4-64m.img`, `dmg-int
 
 | Row | FULL files | Byte-identical | Corrupt | Missed | Identical / FULL | PARTIAL returned | GONE returned | False positives (frag/decoy/amb/unrel) | Outputs | Time (s) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Sanctum, carve only | 103 | **57** | 11 | 35 | 55.3% | 5/14 | 0/0 | 55 (51/0/4/0) | 128 | 534.0 |
+| Sanctum, carve only | 103 | **97** | 6 | 0 | 94.2% | 5/14 | 0/0 | 11 (2/0/4/5) | 119 | 59.9 |
 | PhotoRec | 103 | **85** | 14 | 4 | 82.5% | 0/14 | 0/0 | 0 (0/0/0/0) | 99 | 0.7 |
 | Foremost | 103 | **52** | 20 | 31 | 50.5% | 5/14 | 0/0 | 9 (5/0/4/0) | 86 | 14.1 |
 | *not a carver's peer:* | | | | | | | | | | |
-| Sanctum, undelete + carve | 103 | **93** | 3 | 7 | 90.3% | 7/14 (2 identical) | 0/0 | 56 (51/0/4/1) | 172 | 537.4 |
+| Sanctum, undelete + carve | 103 | **101** | 2 | 0 | 98.1% | 7/14 (2 identical) | 0/0 | 12 (2/0/4/6) | 131 | 61.0 |
 
 #### By format: benchmark volumes and every damage model (25 images)
 
@@ -295,52 +339,46 @@ Cells are byte-identical / corrupt, over FULL objects of that format.
 
 | Format | Header in Sanctum's table | FULL | Sanctum carve | PhotoRec | Foremost | Sanctum full |
 |---|---|---:|---:|---:|---:|---:|
+| BMP | yes | 20 | 20/0 | 20/0 | 20/0 | 20/0 |
 | DOCX | yes | 20 | 20/0 | 20/0 | 0/20 | 20/0 |
 | GIF | yes | 24 | 24/0 | 20/0 | 24/0 | 24/0 |
+| GZIP | yes | 20 | 20/0 | 0/20 | 0/0 | 20/0 |
+| HTML | yes | 20 | 20/0 | 20/0 | 0/0 | 20/0 |
 | JPEG | yes | 79 | 79/0 | 69/0 | 69/10 | 79/0 |
-| MP4 | yes | 20 | 0/20 | 20/0 | 20/0 | 12/8 |
+| MP4 | yes | 20 | 20/0 | 20/0 | 20/0 | 20/0 |
 | PDF | yes | 40 | 40/0 | 40/0 | 40/0 | 40/0 |
 | PNG | yes | 51 | 47/4 | 47/0 | 47/0 | 47/4 |
+| RTF | yes | 20 | 20/0 | 20/0 | 0/0 | 20/0 |
 | SQLite | yes | 15 | 12/3 | 12/3 | 0/0 | 12/3 |
-| TIFF | yes | 20 | 0/20 | 0/20 | 0/0 | 12/8 |
+| TAR | yes | 16 | 0/16 | 3/13 | 0/0 | 9/7 |
+| TIFF | yes | 20 | 20/0 | 0/20 | 0/0 | 20/0 |
+| WAV | yes | 20 | 20/0 | 20/0 | 0/20 | 20/0 |
+| WebP | yes | 20 | 20/0 | 20/0 | 0/0 | 20/0 |
 | XLSX | yes | 17 | 17/0 | 17/0 | 0/17 | 17/0 |
 | ZIP | yes | 24 | 24/0 | 24/0 | 0/24 | 24/0 |
-| BMP | no | 20 | 0/0 | 20/0 | 20/0 | 12/0 |
-| GZIP | no | 20 | 0/0 | 0/20 | 0/0 | 12/0 |
-| HTML | no | 20 | 0/0 | 20/0 | 0/0 | 12/0 |
-| RTF | no | 20 | 0/0 | 20/0 | 0/0 | 12/0 |
-| TAR | no | 16 | 0/0 | 3/13 | 0/0 | 9/0 |
-| WAV | no | 20 | 0/0 | 20/0 | 0/20 | 12/0 |
-| WebP | no | 20 | 0/0 | 20/0 | 0/0 | 12/0 |
 
 #### Object by object: who returned a FULL file byte-identical
 
 | Pair | Both | Only Sanctum carve | Only the other tool | Neither |
 |---|---:|---:|---:|---:|
-| Sanctum carve vs PhotoRec | 375 | 36 | 123 | 63 |
-| Sanctum carve vs Foremost | 299 | 112 | 40 | 146 |
+| Sanctum carve vs PhotoRec | 495 | 76 | 3 | 23 |
+| Sanctum carve vs Foremost | 339 | 232 | 0 | 26 |
 
-<details><summary>PhotoRec only (Sanctum carve vs PhotoRec): 123 objects</summary>
+<details><summary>Sanctum carve only (Sanctum carve vs PhotoRec): 76 objects</summary>
 
-`dmg-interleave-exfat-255m.img:clip.mp4`, `dmg-interleave-exfat-255m.img:icon.bmp`, `dmg-interleave-exfat-255m.img:memo.rtf`, `dmg-interleave-exfat-255m.img:page.html`, `dmg-interleave-exfat-255m.img:photo.webp`, `dmg-interleave-exfat-255m.img:voice.wav`, `dmg-interleave-ext4-64m.img:clip.mp4`, `dmg-interleave-ext4-64m.img:icon.bmp`, `dmg-interleave-ext4-64m.img:memo.rtf`, `dmg-interleave-ext4-64m.img:page.html`, `dmg-interleave-ext4-64m.img:photo.webp`, `dmg-interleave-ext4-64m.img:voice.wav`, `dmg-interleave-fat32-255m.img:backup.tar`, `dmg-interleave-fat32-255m.img:clip.mp4`, `dmg-interleave-fat32-255m.img:icon.bmp`, `dmg-interleave-fat32-255m.img:memo.rtf`, `dmg-interleave-fat32-255m.img:page.html`, `dmg-interleave-fat32-255m.img:photo.webp`, `dmg-interleave-fat32-255m.img:voice.wav`, `dmg-interleave-fat32-511m.img:clip.mp4`, `dmg-interleave-fat32-511m.img:icon.bmp`, `dmg-interleave-fat32-511m.img:memo.rtf`, `dmg-interleave-fat32-511m.img:page.html`, `dmg-interleave-fat32-511m.img:photo.webp`, `dmg-interleave-fat32-511m.img:voice.wav`, `dmg-interleave-ntfs-64m.img:clip.mp4`, `dmg-interleave-ntfs-64m.img:icon.bmp`, `dmg-interleave-ntfs-64m.img:memo.rtf`, `dmg-interleave-ntfs-64m.img:page.html`, `dmg-interleave-ntfs-64m.img:photo.webp`, `dmg-interleave-ntfs-64m.img:voice.wav`, `dmg-metadata-exfat-255m.img:clip.mp4`, `dmg-metadata-exfat-255m.img:icon.bmp`, `dmg-metadata-exfat-255m.img:memo.rtf`, `dmg-metadata-exfat-255m.img:page.html`, `dmg-metadata-exfat-255m.img:photo.webp`, `dmg-metadata-exfat-255m.img:voice.wav`, `dmg-metadata-ext4-64m.img:clip.mp4`, `dmg-metadata-ext4-64m.img:icon.bmp`, `dmg-metadata-ext4-64m.img:memo.rtf`, `dmg-metadata-ext4-64m.img:page.html`, `dmg-metadata-ext4-64m.img:photo.webp`, `dmg-metadata-ext4-64m.img:voice.wav`, `dmg-metadata-fat32-255m.img:backup.tar`, `dmg-metadata-fat32-255m.img:clip.mp4`, `dmg-metadata-fat32-255m.img:icon.bmp`, `dmg-metadata-fat32-255m.img:memo.rtf`, `dmg-metadata-fat32-255m.img:page.html`, `dmg-metadata-fat32-255m.img:photo.webp`, `dmg-metadata-fat32-255m.img:voice.wav`, `dmg-metadata-fat32-511m.img:clip.mp4`, `dmg-metadata-fat32-511m.img:icon.bmp`, `dmg-metadata-fat32-511m.img:memo.rtf`, `dmg-metadata-fat32-511m.img:page.html`, `dmg-metadata-fat32-511m.img:photo.webp`, `dmg-metadata-fat32-511m.img:voice.wav`, `dmg-metadata-ntfs-64m.img:clip.mp4`, `dmg-metadata-ntfs-64m.img:icon.bmp`, `dmg-metadata-ntfs-64m.img:memo.rtf`, `dmg-metadata-ntfs-64m.img:page.html`, `dmg-metadata-ntfs-64m.img:photo.webp`, `dmg-metadata-ntfs-64m.img:voice.wav`, `dmg-zeroed-exfat-255m.img:clip.mp4`, `dmg-zeroed-exfat-255m.img:icon.bmp`, `dmg-zeroed-exfat-255m.img:memo.rtf`, `dmg-zeroed-exfat-255m.img:page.html`, `dmg-zeroed-exfat-255m.img:photo.webp`, `dmg-zeroed-exfat-255m.img:voice.wav`, `dmg-zeroed-ext4-64m.img:clip.mp4`, `dmg-zeroed-ext4-64m.img:icon.bmp`, `dmg-zeroed-ext4-64m.img:memo.rtf`, `dmg-zeroed-ext4-64m.img:page.html`, `dmg-zeroed-ext4-64m.img:photo.webp`, `dmg-zeroed-ext4-64m.img:voice.wav`, `dmg-zeroed-fat32-255m.img:clip.mp4`, `dmg-zeroed-fat32-255m.img:icon.bmp`, `dmg-zeroed-fat32-255m.img:memo.rtf`, `dmg-zeroed-fat32-255m.img:page.html`, `dmg-zeroed-fat32-255m.img:photo.webp`, `dmg-zeroed-fat32-255m.img:voice.wav`, `dmg-zeroed-fat32-511m.img:clip.mp4`, `dmg-zeroed-fat32-511m.img:icon.bmp`, `dmg-zeroed-fat32-511m.img:memo.rtf`, `dmg-zeroed-fat32-511m.img:page.html`, `dmg-zeroed-fat32-511m.img:photo.webp`, `dmg-zeroed-fat32-511m.img:voice.wav`, `dmg-zeroed-ntfs-64m.img:clip.mp4`, `dmg-zeroed-ntfs-64m.img:icon.bmp`, `dmg-zeroed-ntfs-64m.img:memo.rtf`, `dmg-zeroed-ntfs-64m.img:page.html`, `dmg-zeroed-ntfs-64m.img:photo.webp`, `dmg-zeroed-ntfs-64m.img:voice.wav`, `media-exfat-255m.img:clip.mp4`, `media-exfat-255m.img:icon.bmp`, `media-exfat-255m.img:memo.rtf`, `media-exfat-255m.img:page.html`, `media-exfat-255m.img:photo.webp`, `media-exfat-255m.img:voice.wav`, `media-ext4-64m.img:clip.mp4`, `media-ext4-64m.img:icon.bmp`, `media-ext4-64m.img:memo.rtf`, `media-ext4-64m.img:page.html`, `media-ext4-64m.img:photo.webp`, `media-ext4-64m.img:voice.wav`, `media-fat32-255m.img:backup.tar`, `media-fat32-255m.img:clip.mp4`, `media-fat32-255m.img:icon.bmp`, `media-fat32-255m.img:memo.rtf`, `media-fat32-255m.img:page.html`, `media-fat32-255m.img:photo.webp`, `media-fat32-255m.img:voice.wav`, `media-fat32-511m.img:clip.mp4`, `media-fat32-511m.img:icon.bmp`, `media-fat32-511m.img:memo.rtf`, `media-fat32-511m.img:page.html`, `media-fat32-511m.img:photo.webp`, `media-fat32-511m.img:voice.wav`, `media-ntfs-64m.img:clip.mp4`, `media-ntfs-64m.img:icon.bmp`, `media-ntfs-64m.img:memo.rtf`, `media-ntfs-64m.img:page.html`, `media-ntfs-64m.img:photo.webp`, `media-ntfs-64m.img:voice.wav`
-
-</details>
-
-<details><summary>Sanctum carve only (Sanctum carve vs PhotoRec): 36 objects</summary>
-
-`dmg-interleave-fat32-255m.img:frag.jpg`, `dmg-interleave-fat32-511m.img:frag.jpg`, `dmg-interleave-ntfs-64m.img:sticker.gif`, `dmg-metadata-fat32-255m.img:frag.jpg`, `dmg-metadata-fat32-511m.img:frag.jpg`, `dmg-truncation-fat32-255m.img:frag.jpg`, `dmg-truncation-fat32-511m.img:frag.jpg`, `dmg-truncation-ntfs-64m.img:sticker.gif`, `dmg-zeroed-fat32-255m.img:frag.jpg`, `dmg-zeroed-fat32-511m.img:frag.jpg`, `dmg-zeroed-ntfs-64m.img:sticker.gif`, `flat-offset1337.img:archive.zip@1574201`, `flat-offset1337.img:budget-macros.docm@2622777`, `flat-offset1337.img:chart.png@5768505`, `flat-offset1337.img:clip.mp4@4195641`, `flat-offset1337.img:contacts.sqlite@3147065`, `flat-offset1337.img:invoice.pdf@6292793`, `flat-offset1337.img:letter.docx@2098489`, `flat-offset1337.img:locked.zip@12059961`, `flat-offset1337.img:messages.sqlite@7341369`, `flat-offset1337.img:photo-with-gps.jpg@1337`, `flat-offset1337.img:screenshot.png@525625`, `flat-offset1337.img:screenshot.png@7865657`, `flat-offset1337.img:screenshot.png@8389945`, `flat-offset1337.img:second-photo.jpg@4719929`, `flat-offset1337.img:sheet.xlsx@6817081`, `flat-offset1337.img:statement.pdf@1049913`, `flat-offset1337.img:sticker.gif@3671353`, `flat-offset1337.img:third-photo.jpg@5244217`, `fs-damaged-parttable.img:holiday.jpg`, `fs-damaged-parttable.img:kept.gif`, `fs-two-partitions.img:holiday.jpg`, `fs-two-partitions.img:kept.gif`, `media-fat32-255m.img:frag.jpg`, `media-fat32-511m.img:frag.jpg`, `media-ntfs-64m.img:sticker.gif`
+`dmg-interleave-exfat-255m.img:notes.gz`, `dmg-interleave-exfat-255m.img:scan.tiff`, `dmg-interleave-ext4-64m.img:notes.gz`, `dmg-interleave-ext4-64m.img:scan.tiff`, `dmg-interleave-fat32-255m.img:frag.jpg`, `dmg-interleave-fat32-255m.img:notes.gz`, `dmg-interleave-fat32-255m.img:scan.tiff`, `dmg-interleave-fat32-511m.img:frag.jpg`, `dmg-interleave-fat32-511m.img:notes.gz`, `dmg-interleave-fat32-511m.img:scan.tiff`, `dmg-interleave-ntfs-64m.img:notes.gz`, `dmg-interleave-ntfs-64m.img:scan.tiff`, `dmg-interleave-ntfs-64m.img:sticker.gif`, `dmg-metadata-exfat-255m.img:notes.gz`, `dmg-metadata-exfat-255m.img:scan.tiff`, `dmg-metadata-ext4-64m.img:notes.gz`, `dmg-metadata-ext4-64m.img:scan.tiff`, `dmg-metadata-fat32-255m.img:frag.jpg`, `dmg-metadata-fat32-255m.img:notes.gz`, `dmg-metadata-fat32-255m.img:scan.tiff`, `dmg-metadata-fat32-511m.img:frag.jpg`, `dmg-metadata-fat32-511m.img:notes.gz`, `dmg-metadata-fat32-511m.img:scan.tiff`, `dmg-metadata-ntfs-64m.img:notes.gz`, `dmg-metadata-ntfs-64m.img:scan.tiff`, `dmg-truncation-fat32-255m.img:frag.jpg`, `dmg-truncation-fat32-511m.img:frag.jpg`, `dmg-truncation-ntfs-64m.img:sticker.gif`, `dmg-zeroed-exfat-255m.img:notes.gz`, `dmg-zeroed-exfat-255m.img:scan.tiff`, `dmg-zeroed-ext4-64m.img:notes.gz`, `dmg-zeroed-ext4-64m.img:scan.tiff`, `dmg-zeroed-fat32-255m.img:frag.jpg`, `dmg-zeroed-fat32-255m.img:notes.gz`, `dmg-zeroed-fat32-255m.img:scan.tiff`, `dmg-zeroed-fat32-511m.img:frag.jpg`, `dmg-zeroed-fat32-511m.img:notes.gz`, `dmg-zeroed-fat32-511m.img:scan.tiff`, `dmg-zeroed-ntfs-64m.img:notes.gz`, `dmg-zeroed-ntfs-64m.img:scan.tiff`, `dmg-zeroed-ntfs-64m.img:sticker.gif`, `flat-offset1337.img:archive.zip@1574201`, `flat-offset1337.img:budget-macros.docm@2622777`, `flat-offset1337.img:chart.png@5768505`, `flat-offset1337.img:clip.mp4@4195641`, `flat-offset1337.img:contacts.sqlite@3147065`, `flat-offset1337.img:invoice.pdf@6292793`, `flat-offset1337.img:letter.docx@2098489`, `flat-offset1337.img:locked.zip@12059961`, `flat-offset1337.img:messages.sqlite@7341369`, `flat-offset1337.img:photo-with-gps.jpg@1337`, `flat-offset1337.img:screenshot.png@525625`, `flat-offset1337.img:screenshot.png@7865657`, `flat-offset1337.img:screenshot.png@8389945`, `flat-offset1337.img:second-photo.jpg@4719929`, `flat-offset1337.img:sheet.xlsx@6817081`, `flat-offset1337.img:statement.pdf@1049913`, `flat-offset1337.img:sticker.gif@3671353`, `flat-offset1337.img:third-photo.jpg@5244217`, `fs-damaged-parttable.img:holiday.jpg`, `fs-damaged-parttable.img:kept.gif`, `fs-two-partitions.img:holiday.jpg`, `fs-two-partitions.img:kept.gif`, `media-exfat-255m.img:notes.gz`, `media-exfat-255m.img:scan.tiff`, `media-ext4-64m.img:notes.gz`, `media-ext4-64m.img:scan.tiff`, `media-fat32-255m.img:frag.jpg`, `media-fat32-255m.img:notes.gz`, `media-fat32-255m.img:scan.tiff`, `media-fat32-511m.img:frag.jpg`, `media-fat32-511m.img:notes.gz`, `media-fat32-511m.img:scan.tiff`, `media-ntfs-64m.img:notes.gz`, `media-ntfs-64m.img:scan.tiff`, `media-ntfs-64m.img:sticker.gif`
 
 </details>
 
-<details><summary>Sanctum carve only (Sanctum carve vs Foremost): 112 objects</summary>
+<details><summary>PhotoRec only (Sanctum carve vs PhotoRec): 3 objects</summary>
 
-`dmg-interleave-exfat-255m.img:archive.zip`, `dmg-interleave-exfat-255m.img:budget.xlsx`, `dmg-interleave-exfat-255m.img:letter.docx`, `dmg-interleave-ext4-64m.img:archive.zip`, `dmg-interleave-ext4-64m.img:budget.xlsx`, `dmg-interleave-ext4-64m.img:letter.docx`, `dmg-interleave-fat32-255m.img:archive.zip`, `dmg-interleave-fat32-255m.img:budget.xlsx`, `dmg-interleave-fat32-255m.img:frag.jpg`, `dmg-interleave-fat32-255m.img:letter.docx`, `dmg-interleave-fat32-511m.img:archive.zip`, `dmg-interleave-fat32-511m.img:budget.xlsx`, `dmg-interleave-fat32-511m.img:frag.jpg`, `dmg-interleave-fat32-511m.img:letter.docx`, `dmg-interleave-ntfs-64m.img:archive.zip`, `dmg-metadata-exfat-255m.img:archive.zip`, `dmg-metadata-exfat-255m.img:budget.xlsx`, `dmg-metadata-exfat-255m.img:contacts.sqlite`, `dmg-metadata-exfat-255m.img:letter.docx`, `dmg-metadata-ext4-64m.img:archive.zip`, `dmg-metadata-ext4-64m.img:budget.xlsx`, `dmg-metadata-ext4-64m.img:letter.docx`, `dmg-metadata-fat32-255m.img:archive.zip`, `dmg-metadata-fat32-255m.img:budget.xlsx`, `dmg-metadata-fat32-255m.img:contacts.sqlite`, `dmg-metadata-fat32-255m.img:frag.jpg`, `dmg-metadata-fat32-255m.img:letter.docx`, `dmg-metadata-fat32-511m.img:archive.zip`, `dmg-metadata-fat32-511m.img:budget.xlsx`, `dmg-metadata-fat32-511m.img:contacts.sqlite`, `dmg-metadata-fat32-511m.img:frag.jpg`, `dmg-metadata-fat32-511m.img:letter.docx`, `dmg-metadata-ntfs-64m.img:archive.zip`, `dmg-metadata-ntfs-64m.img:contacts.sqlite`, `dmg-truncation-exfat-255m.img:archive.zip`, `dmg-truncation-exfat-255m.img:budget.xlsx`, `dmg-truncation-exfat-255m.img:letter.docx`, `dmg-truncation-ext4-64m.img:archive.zip`, `dmg-truncation-ext4-64m.img:letter.docx`, `dmg-truncation-fat32-255m.img:archive.zip`, `dmg-truncation-fat32-255m.img:frag.jpg`, `dmg-truncation-fat32-255m.img:letter.docx`, `dmg-truncation-fat32-511m.img:archive.zip`, `dmg-truncation-fat32-511m.img:frag.jpg`, `dmg-truncation-fat32-511m.img:letter.docx`, `dmg-truncation-ntfs-64m.img:archive.zip`, `dmg-truncation-ntfs-64m.img:contacts.sqlite`, `dmg-zeroed-exfat-255m.img:archive.zip`, `dmg-zeroed-exfat-255m.img:budget.xlsx`, `dmg-zeroed-exfat-255m.img:contacts.sqlite`, `dmg-zeroed-exfat-255m.img:letter.docx`, `dmg-zeroed-ext4-64m.img:archive.zip`, `dmg-zeroed-ext4-64m.img:budget.xlsx`, `dmg-zeroed-ext4-64m.img:letter.docx`, `dmg-zeroed-fat32-255m.img:archive.zip`, `dmg-zeroed-fat32-255m.img:budget.xlsx`, `dmg-zeroed-fat32-255m.img:contacts.sqlite`, `dmg-zeroed-fat32-255m.img:frag.jpg`, `dmg-zeroed-fat32-255m.img:letter.docx`, `dmg-zeroed-fat32-511m.img:archive.zip`, `dmg-zeroed-fat32-511m.img:budget.xlsx`, `dmg-zeroed-fat32-511m.img:contacts.sqlite`, `dmg-zeroed-fat32-511m.img:frag.jpg`, `dmg-zeroed-fat32-511m.img:letter.docx`, `flat-aligned.img:archive.zip@1576960`, `flat-aligned.img:budget-macros.docm@2625536`, `flat-aligned.img:clip.mp4@4198400`, `flat-aligned.img:contacts.sqlite@3149824`, `flat-aligned.img:letter.docx@2101248`, `flat-aligned.img:locked.zip@12062720`, `flat-aligned.img:messages.sqlite@7344128`, `flat-aligned.img:sheet.xlsx@6819840`, `flat-offset1337.img:archive.zip@1574201`, `flat-offset1337.img:budget-macros.docm@2622777`, `flat-offset1337.img:clip.mp4@4195641`, `flat-offset1337.img:contacts.sqlite@3147065`, `flat-offset1337.img:letter.docx@2098489`, `flat-offset1337.img:locked.zip@12059961`, `flat-offset1337.img:messages.sqlite@7341369`, `flat-offset1337.img:sheet.xlsx@6817081`, `fs-damaged-boot.img:18-contacts.sqlite`, `fs-damaged-boot.img:19-messages.sqlite`, `fs-damaged-parttable.img:18-contacts.sqlite`, `fs-damaged-parttable.img:19-messages.sqlite`, `fs-ext2.img:kept.zip`, `fs-ext3.img:kept.zip`, `fs-ext4.img:kept.zip`, `fs-ntfs-reused.img:18-contacts.sqlite`, `fs-ntfs-reused.img:19-messages.sqlite`, `fs-ntfs.img:18-contacts.sqlite`, `fs-ntfs.img:19-messages.sqlite`, `fs-two-partitions.img:18-contacts.sqlite`, `fs-two-partitions.img:19-messages.sqlite`, `media-exfat-255m.img:archive.zip`, `media-exfat-255m.img:budget.xlsx`, `media-exfat-255m.img:contacts.sqlite`, `media-exfat-255m.img:letter.docx`, `media-ext4-64m.img:archive.zip`, `media-ext4-64m.img:budget.xlsx`, `media-ext4-64m.img:letter.docx`, `media-fat32-255m.img:archive.zip`, `media-fat32-255m.img:budget.xlsx`, `media-fat32-255m.img:contacts.sqlite`, `media-fat32-255m.img:frag.jpg`, `media-fat32-255m.img:letter.docx`, `media-fat32-511m.img:archive.zip`, `media-fat32-511m.img:budget.xlsx`, `media-fat32-511m.img:contacts.sqlite`, `media-fat32-511m.img:frag.jpg`, `media-fat32-511m.img:letter.docx`, `media-ntfs-64m.img:archive.zip`, `media-ntfs-64m.img:contacts.sqlite`
+`dmg-interleave-fat32-255m.img:backup.tar`, `dmg-metadata-fat32-255m.img:backup.tar`, `media-fat32-255m.img:backup.tar`
 
 </details>
 
-<details><summary>Foremost only (Sanctum carve vs Foremost): 40 objects</summary>
+<details><summary>Sanctum carve only (Sanctum carve vs Foremost): 232 objects</summary>
 
-`dmg-interleave-exfat-255m.img:clip.mp4`, `dmg-interleave-exfat-255m.img:icon.bmp`, `dmg-interleave-ext4-64m.img:clip.mp4`, `dmg-interleave-ext4-64m.img:icon.bmp`, `dmg-interleave-fat32-255m.img:clip.mp4`, `dmg-interleave-fat32-255m.img:icon.bmp`, `dmg-interleave-fat32-511m.img:clip.mp4`, `dmg-interleave-fat32-511m.img:icon.bmp`, `dmg-interleave-ntfs-64m.img:clip.mp4`, `dmg-interleave-ntfs-64m.img:icon.bmp`, `dmg-metadata-exfat-255m.img:clip.mp4`, `dmg-metadata-exfat-255m.img:icon.bmp`, `dmg-metadata-ext4-64m.img:clip.mp4`, `dmg-metadata-ext4-64m.img:icon.bmp`, `dmg-metadata-fat32-255m.img:clip.mp4`, `dmg-metadata-fat32-255m.img:icon.bmp`, `dmg-metadata-fat32-511m.img:clip.mp4`, `dmg-metadata-fat32-511m.img:icon.bmp`, `dmg-metadata-ntfs-64m.img:clip.mp4`, `dmg-metadata-ntfs-64m.img:icon.bmp`, `dmg-zeroed-exfat-255m.img:clip.mp4`, `dmg-zeroed-exfat-255m.img:icon.bmp`, `dmg-zeroed-ext4-64m.img:clip.mp4`, `dmg-zeroed-ext4-64m.img:icon.bmp`, `dmg-zeroed-fat32-255m.img:clip.mp4`, `dmg-zeroed-fat32-255m.img:icon.bmp`, `dmg-zeroed-fat32-511m.img:clip.mp4`, `dmg-zeroed-fat32-511m.img:icon.bmp`, `dmg-zeroed-ntfs-64m.img:clip.mp4`, `dmg-zeroed-ntfs-64m.img:icon.bmp`, `media-exfat-255m.img:clip.mp4`, `media-exfat-255m.img:icon.bmp`, `media-ext4-64m.img:clip.mp4`, `media-ext4-64m.img:icon.bmp`, `media-fat32-255m.img:clip.mp4`, `media-fat32-255m.img:icon.bmp`, `media-fat32-511m.img:clip.mp4`, `media-fat32-511m.img:icon.bmp`, `media-ntfs-64m.img:clip.mp4`, `media-ntfs-64m.img:icon.bmp`
+`dmg-interleave-exfat-255m.img:archive.zip`, `dmg-interleave-exfat-255m.img:budget.xlsx`, `dmg-interleave-exfat-255m.img:letter.docx`, `dmg-interleave-exfat-255m.img:memo.rtf`, `dmg-interleave-exfat-255m.img:notes.gz`, `dmg-interleave-exfat-255m.img:page.html`, `dmg-interleave-exfat-255m.img:photo.webp`, `dmg-interleave-exfat-255m.img:scan.tiff`, `dmg-interleave-exfat-255m.img:voice.wav`, `dmg-interleave-ext4-64m.img:archive.zip`, `dmg-interleave-ext4-64m.img:budget.xlsx`, `dmg-interleave-ext4-64m.img:letter.docx`, `dmg-interleave-ext4-64m.img:memo.rtf`, `dmg-interleave-ext4-64m.img:notes.gz`, `dmg-interleave-ext4-64m.img:page.html`, `dmg-interleave-ext4-64m.img:photo.webp`, `dmg-interleave-ext4-64m.img:scan.tiff`, `dmg-interleave-ext4-64m.img:voice.wav`, `dmg-interleave-fat32-255m.img:archive.zip`, `dmg-interleave-fat32-255m.img:budget.xlsx`, `dmg-interleave-fat32-255m.img:frag.jpg`, `dmg-interleave-fat32-255m.img:letter.docx`, `dmg-interleave-fat32-255m.img:memo.rtf`, `dmg-interleave-fat32-255m.img:notes.gz`, `dmg-interleave-fat32-255m.img:page.html`, `dmg-interleave-fat32-255m.img:photo.webp`, `dmg-interleave-fat32-255m.img:scan.tiff`, `dmg-interleave-fat32-255m.img:voice.wav`, `dmg-interleave-fat32-511m.img:archive.zip`, `dmg-interleave-fat32-511m.img:budget.xlsx`, `dmg-interleave-fat32-511m.img:frag.jpg`, `dmg-interleave-fat32-511m.img:letter.docx`, `dmg-interleave-fat32-511m.img:memo.rtf`, `dmg-interleave-fat32-511m.img:notes.gz`, `dmg-interleave-fat32-511m.img:page.html`, `dmg-interleave-fat32-511m.img:photo.webp`, `dmg-interleave-fat32-511m.img:scan.tiff`, `dmg-interleave-fat32-511m.img:voice.wav`, `dmg-interleave-ntfs-64m.img:archive.zip`, `dmg-interleave-ntfs-64m.img:memo.rtf`, `dmg-interleave-ntfs-64m.img:notes.gz`, `dmg-interleave-ntfs-64m.img:page.html`, `dmg-interleave-ntfs-64m.img:photo.webp`, `dmg-interleave-ntfs-64m.img:scan.tiff`, `dmg-interleave-ntfs-64m.img:voice.wav`, `dmg-metadata-exfat-255m.img:archive.zip`, `dmg-metadata-exfat-255m.img:budget.xlsx`, `dmg-metadata-exfat-255m.img:contacts.sqlite`, `dmg-metadata-exfat-255m.img:letter.docx`, `dmg-metadata-exfat-255m.img:memo.rtf`, `dmg-metadata-exfat-255m.img:notes.gz`, `dmg-metadata-exfat-255m.img:page.html`, `dmg-metadata-exfat-255m.img:photo.webp`, `dmg-metadata-exfat-255m.img:scan.tiff`, `dmg-metadata-exfat-255m.img:voice.wav`, `dmg-metadata-ext4-64m.img:archive.zip`, `dmg-metadata-ext4-64m.img:budget.xlsx`, `dmg-metadata-ext4-64m.img:letter.docx`, `dmg-metadata-ext4-64m.img:memo.rtf`, `dmg-metadata-ext4-64m.img:notes.gz`, `dmg-metadata-ext4-64m.img:page.html`, `dmg-metadata-ext4-64m.img:photo.webp`, `dmg-metadata-ext4-64m.img:scan.tiff`, `dmg-metadata-ext4-64m.img:voice.wav`, `dmg-metadata-fat32-255m.img:archive.zip`, `dmg-metadata-fat32-255m.img:budget.xlsx`, `dmg-metadata-fat32-255m.img:contacts.sqlite`, `dmg-metadata-fat32-255m.img:frag.jpg`, `dmg-metadata-fat32-255m.img:letter.docx`, `dmg-metadata-fat32-255m.img:memo.rtf`, `dmg-metadata-fat32-255m.img:notes.gz`, `dmg-metadata-fat32-255m.img:page.html`, `dmg-metadata-fat32-255m.img:photo.webp`, `dmg-metadata-fat32-255m.img:scan.tiff`, `dmg-metadata-fat32-255m.img:voice.wav`, `dmg-metadata-fat32-511m.img:archive.zip`, `dmg-metadata-fat32-511m.img:budget.xlsx`, `dmg-metadata-fat32-511m.img:contacts.sqlite`, `dmg-metadata-fat32-511m.img:frag.jpg`, `dmg-metadata-fat32-511m.img:letter.docx`, `dmg-metadata-fat32-511m.img:memo.rtf`, `dmg-metadata-fat32-511m.img:notes.gz`, `dmg-metadata-fat32-511m.img:page.html`, `dmg-metadata-fat32-511m.img:photo.webp`, `dmg-metadata-fat32-511m.img:scan.tiff`, `dmg-metadata-fat32-511m.img:voice.wav`, `dmg-metadata-ntfs-64m.img:archive.zip`, `dmg-metadata-ntfs-64m.img:contacts.sqlite`, `dmg-metadata-ntfs-64m.img:memo.rtf`, `dmg-metadata-ntfs-64m.img:notes.gz`, `dmg-metadata-ntfs-64m.img:page.html`, `dmg-metadata-ntfs-64m.img:photo.webp`, `dmg-metadata-ntfs-64m.img:scan.tiff`, `dmg-metadata-ntfs-64m.img:voice.wav`, `dmg-truncation-exfat-255m.img:archive.zip`, `dmg-truncation-exfat-255m.img:budget.xlsx`, `dmg-truncation-exfat-255m.img:letter.docx`, `dmg-truncation-ext4-64m.img:archive.zip`, `dmg-truncation-ext4-64m.img:letter.docx`, `dmg-truncation-fat32-255m.img:archive.zip`, `dmg-truncation-fat32-255m.img:frag.jpg`, `dmg-truncation-fat32-255m.img:letter.docx`, `dmg-truncation-fat32-511m.img:archive.zip`, `dmg-truncation-fat32-511m.img:frag.jpg`, `dmg-truncation-fat32-511m.img:letter.docx`, `dmg-truncation-ntfs-64m.img:archive.zip`, `dmg-truncation-ntfs-64m.img:contacts.sqlite`, `dmg-zeroed-exfat-255m.img:archive.zip`, `dmg-zeroed-exfat-255m.img:budget.xlsx`, `dmg-zeroed-exfat-255m.img:contacts.sqlite`, `dmg-zeroed-exfat-255m.img:letter.docx`, `dmg-zeroed-exfat-255m.img:memo.rtf`, `dmg-zeroed-exfat-255m.img:notes.gz`, `dmg-zeroed-exfat-255m.img:page.html`, `dmg-zeroed-exfat-255m.img:photo.webp`, `dmg-zeroed-exfat-255m.img:scan.tiff`, `dmg-zeroed-exfat-255m.img:voice.wav`, `dmg-zeroed-ext4-64m.img:archive.zip`, `dmg-zeroed-ext4-64m.img:budget.xlsx`, `dmg-zeroed-ext4-64m.img:letter.docx`, `dmg-zeroed-ext4-64m.img:memo.rtf`, `dmg-zeroed-ext4-64m.img:notes.gz`, `dmg-zeroed-ext4-64m.img:page.html`, `dmg-zeroed-ext4-64m.img:photo.webp`, `dmg-zeroed-ext4-64m.img:scan.tiff`, `dmg-zeroed-ext4-64m.img:voice.wav`, `dmg-zeroed-fat32-255m.img:archive.zip`, `dmg-zeroed-fat32-255m.img:budget.xlsx`, `dmg-zeroed-fat32-255m.img:contacts.sqlite`, `dmg-zeroed-fat32-255m.img:frag.jpg`, `dmg-zeroed-fat32-255m.img:letter.docx`, `dmg-zeroed-fat32-255m.img:memo.rtf`, `dmg-zeroed-fat32-255m.img:notes.gz`, `dmg-zeroed-fat32-255m.img:page.html`, `dmg-zeroed-fat32-255m.img:photo.webp`, `dmg-zeroed-fat32-255m.img:scan.tiff`, `dmg-zeroed-fat32-255m.img:voice.wav`, `dmg-zeroed-fat32-511m.img:archive.zip`, `dmg-zeroed-fat32-511m.img:budget.xlsx`, `dmg-zeroed-fat32-511m.img:contacts.sqlite`, `dmg-zeroed-fat32-511m.img:frag.jpg`, `dmg-zeroed-fat32-511m.img:letter.docx`, `dmg-zeroed-fat32-511m.img:memo.rtf`, `dmg-zeroed-fat32-511m.img:notes.gz`, `dmg-zeroed-fat32-511m.img:page.html`, `dmg-zeroed-fat32-511m.img:photo.webp`, `dmg-zeroed-fat32-511m.img:scan.tiff`, `dmg-zeroed-fat32-511m.img:voice.wav`, `dmg-zeroed-ntfs-64m.img:memo.rtf`, `dmg-zeroed-ntfs-64m.img:notes.gz`, `dmg-zeroed-ntfs-64m.img:page.html`, `dmg-zeroed-ntfs-64m.img:photo.webp`, `dmg-zeroed-ntfs-64m.img:scan.tiff`, `dmg-zeroed-ntfs-64m.img:voice.wav`, `flat-aligned.img:archive.zip@1576960`, `flat-aligned.img:budget-macros.docm@2625536`, `flat-aligned.img:clip.mp4@4198400`, `flat-aligned.img:contacts.sqlite@3149824`, `flat-aligned.img:letter.docx@2101248`, `flat-aligned.img:locked.zip@12062720`, `flat-aligned.img:messages.sqlite@7344128`, `flat-aligned.img:sheet.xlsx@6819840`, `flat-offset1337.img:archive.zip@1574201`, `flat-offset1337.img:budget-macros.docm@2622777`, `flat-offset1337.img:clip.mp4@4195641`, `flat-offset1337.img:contacts.sqlite@3147065`, `flat-offset1337.img:letter.docx@2098489`, `flat-offset1337.img:locked.zip@12059961`, `flat-offset1337.img:messages.sqlite@7341369`, `flat-offset1337.img:sheet.xlsx@6817081`, `fs-damaged-boot.img:18-contacts.sqlite`, `fs-damaged-boot.img:19-messages.sqlite`, `fs-damaged-parttable.img:18-contacts.sqlite`, `fs-damaged-parttable.img:19-messages.sqlite`, `fs-ext2.img:kept.zip`, `fs-ext3.img:kept.zip`, `fs-ext4.img:kept.zip`, `fs-ntfs-reused.img:18-contacts.sqlite`, `fs-ntfs-reused.img:19-messages.sqlite`, `fs-ntfs.img:18-contacts.sqlite`, `fs-ntfs.img:19-messages.sqlite`, `fs-two-partitions.img:18-contacts.sqlite`, `fs-two-partitions.img:19-messages.sqlite`, `media-exfat-255m.img:archive.zip`, `media-exfat-255m.img:budget.xlsx`, `media-exfat-255m.img:contacts.sqlite`, `media-exfat-255m.img:letter.docx`, `media-exfat-255m.img:memo.rtf`, `media-exfat-255m.img:notes.gz`, `media-exfat-255m.img:page.html`, `media-exfat-255m.img:photo.webp`, `media-exfat-255m.img:scan.tiff`, `media-exfat-255m.img:voice.wav`, `media-ext4-64m.img:archive.zip`, `media-ext4-64m.img:budget.xlsx`, `media-ext4-64m.img:letter.docx`, `media-ext4-64m.img:memo.rtf`, `media-ext4-64m.img:notes.gz`, `media-ext4-64m.img:page.html`, `media-ext4-64m.img:photo.webp`, `media-ext4-64m.img:scan.tiff`, `media-ext4-64m.img:voice.wav`, `media-fat32-255m.img:archive.zip`, `media-fat32-255m.img:budget.xlsx`, `media-fat32-255m.img:contacts.sqlite`, `media-fat32-255m.img:frag.jpg`, `media-fat32-255m.img:letter.docx`, `media-fat32-255m.img:memo.rtf`, `media-fat32-255m.img:notes.gz`, `media-fat32-255m.img:page.html`, `media-fat32-255m.img:photo.webp`, `media-fat32-255m.img:scan.tiff`, `media-fat32-255m.img:voice.wav`, `media-fat32-511m.img:archive.zip`, `media-fat32-511m.img:budget.xlsx`, `media-fat32-511m.img:contacts.sqlite`, `media-fat32-511m.img:frag.jpg`, `media-fat32-511m.img:letter.docx`, `media-fat32-511m.img:memo.rtf`, `media-fat32-511m.img:notes.gz`, `media-fat32-511m.img:page.html`, `media-fat32-511m.img:photo.webp`, `media-fat32-511m.img:scan.tiff`, `media-fat32-511m.img:voice.wav`, `media-ntfs-64m.img:archive.zip`, `media-ntfs-64m.img:contacts.sqlite`, `media-ntfs-64m.img:memo.rtf`, `media-ntfs-64m.img:notes.gz`, `media-ntfs-64m.img:page.html`, `media-ntfs-64m.img:photo.webp`, `media-ntfs-64m.img:scan.tiff`, `media-ntfs-64m.img:voice.wav`
 
 </details>
 
@@ -348,351 +386,321 @@ Cells are byte-identical / corrupt, over FULL objects of that format.
 
 | Row | FULL files | Byte-identical | Corrupt | Missed | Identical / FULL | PARTIAL returned | GONE returned | False positives (frag/decoy/amb/unrel) | Outputs | Time (s) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Sanctum carve, HIGH+MEDIUM only (all 40 images) | 591 | **405** | 20 | 166 | 68.5% | 0/56 | 0/64 | 31 (22/0/8/1) | 456 | 2144.7 |
-| Sanctum full, HIGH+MEDIUM only (all 40 images) | 591 | **512** | 12 | 67 | 86.6% | 14/56 (11 identical) | 0/64 | 39 (22/0/8/9) | 581 | 2169.6 |
+| Sanctum carve, HIGH+MEDIUM only (all 40 images) | 591 | **565** | 13 | 13 | 95.6% | 0/56 | 0/64 | 9 (0/0/8/1) | 587 | 184.1 |
+| Sanctum full, HIGH+MEDIUM only (all 40 images) | 591 | **576** | 8 | 7 | 97.5% | 14/56 (11 identical) | 0/64 | 17 (0/0/8/9) | 625 | 201.1 |
 
 #### Every run
 
 | Image | Row | FULL | Identical | Corrupt | Missed | PARTIAL ret. | FP | Outputs | Time (s) | Exit |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `dmg-interleave-exfat-255m.img` | Sanctum, carve only | 21 | 11 | 3 | 7 | 1/2 | 10 | 25 | 117.10 | 0 |
-| `dmg-interleave-exfat-255m.img` | PhotoRec | 21 | 17 | 3 | 1 | 0/2 | 0 | 20 | 0.12 | 0 |
+| `dmg-interleave-exfat-255m.img` | Sanctum, carve only | 21 | 19 | 2 | 0 | 1/2 | 1 | 23 | 12.59 | 0 |
+| `dmg-interleave-exfat-255m.img` | PhotoRec | 21 | 17 | 3 | 1 | 0/2 | 0 | 20 | 0.06 | 0 |
 | `dmg-interleave-exfat-255m.img` | Foremost | 21 | 10 | 4 | 7 | 1/2 | 1 | 16 | 3.12 | 0 |
-| `dmg-interleave-exfat-255m.img` | Sanctum, undelete + carve | 21 | 20 | 1 | 0 | 1/2 | 10 | 36 | 118.34 | 0 |
-| `dmg-interleave-ext4-64m.img` | Sanctum, carve only | 21 | 12 | 2 | 7 | 1/2 | 10 | 25 | 36.15 | 0 |
-| `dmg-interleave-ext4-64m.img` | PhotoRec | 21 | 18 | 3 | 0 | 0/2 | 0 | 21 | 0.06 | 0 |
+| `dmg-interleave-exfat-255m.img` | Sanctum, undelete + carve | 21 | 20 | 1 | 0 | 1/2 | 1 | 26 | 13.34 | 0 |
+| `dmg-interleave-ext4-64m.img` | Sanctum, carve only | 21 | 20 | 1 | 0 | 1/2 | 2 | 24 | 10.59 | 0 |
+| `dmg-interleave-ext4-64m.img` | PhotoRec | 21 | 18 | 3 | 0 | 0/2 | 0 | 21 | 0.12 | 0 |
 | `dmg-interleave-ext4-64m.img` | Foremost | 21 | 11 | 4 | 6 | 1/2 | 1 | 17 | 0.82 | 0 |
-| `dmg-interleave-ext4-64m.img` | Sanctum, undelete + carve | 21 | 12 | 2 | 7 | 1/2 | 11 | 26 | 36.00 | 0 |
-| `dmg-interleave-fat32-255m.img` | Sanctum, carve only | 22 | 13 | 2 | 7 | 1/2 | 10 | 26 | 115.49 | 0 |
+| `dmg-interleave-ext4-64m.img` | Sanctum, undelete + carve | 21 | 20 | 1 | 0 | 1/2 | 3 | 25 | 11.04 | 0 |
+| `dmg-interleave-fat32-255m.img` | Sanctum, carve only | 22 | 21 | 1 | 0 | 1/2 | 1 | 24 | 12.64 | 0 |
 | `dmg-interleave-fat32-255m.img` | PhotoRec | 22 | 19 | 2 | 1 | 0/2 | 0 | 21 | 0.21 | 0 |
 | `dmg-interleave-fat32-255m.img` | Foremost | 22 | 11 | 5 | 6 | 1/2 | 1 | 18 | 3.12 | 0 |
-| `dmg-interleave-fat32-255m.img` | Sanctum, undelete + carve | 22 | 22 | 0 | 0 | 1/2 | 10 | 36 | 116.69 | 0 |
-| `dmg-interleave-fat32-511m.img` | Sanctum, carve only | 22 | 13 | 2 | 7 | 1/2 | 11 | 27 | 237.62 | 0 |
+| `dmg-interleave-fat32-255m.img` | Sanctum, undelete + carve | 22 | 22 | 0 | 0 | 1/2 | 1 | 26 | 12.89 | 0 |
+| `dmg-interleave-fat32-511m.img` | Sanctum, carve only | 22 | 21 | 1 | 0 | 1/2 | 2 | 25 | 14.70 | 0 |
 | `dmg-interleave-fat32-511m.img` | PhotoRec | 22 | 18 | 3 | 1 | 0/2 | 0 | 21 | 0.21 | 0 |
-| `dmg-interleave-fat32-511m.img` | Foremost | 22 | 11 | 5 | 6 | 1/2 | 1 | 18 | 6.18 | 0 |
-| `dmg-interleave-fat32-511m.img` | Sanctum, undelete + carve | 22 | 22 | 0 | 0 | 1/2 | 11 | 37 | 237.83 | 0 |
-| `dmg-interleave-ntfs-64m.img` | Sanctum, carve only | 17 | 8 | 2 | 7 | 1/6 | 14 | 25 | 27.68 | 0 |
+| `dmg-interleave-fat32-511m.img` | Foremost | 22 | 11 | 5 | 6 | 1/2 | 1 | 18 | 6.23 | 0 |
+| `dmg-interleave-fat32-511m.img` | Sanctum, undelete + carve | 22 | 22 | 0 | 0 | 1/2 | 2 | 27 | 13.34 | 0 |
+| `dmg-interleave-ntfs-64m.img` | Sanctum, carve only | 17 | 16 | 1 | 0 | 1/6 | 5 | 23 | 9.38 | 0 |
 | `dmg-interleave-ntfs-64m.img` | PhotoRec | 17 | 13 | 3 | 1 | 0/6 | 0 | 16 | 0.06 | 0 |
 | `dmg-interleave-ntfs-64m.img` | Foremost | 17 | 9 | 2 | 6 | 1/6 | 5 | 17 | 0.82 | 0 |
-| `dmg-interleave-ntfs-64m.img` | Sanctum, undelete + carve | 17 | 17 | 0 | 0 | 3/6 | 14 | 37 | 28.53 | 0 |
-| `dmg-metadata-exfat-255m.img` | Sanctum, carve only | 21 | 11 | 3 | 7 | 0/0 | 10 | 24 | 109.83 | 0 |
-| `dmg-metadata-exfat-255m.img` | PhotoRec | 21 | 17 | 3 | 1 | 0/0 | 0 | 20 | 0.11 | 0 |
+| `dmg-interleave-ntfs-64m.img` | Sanctum, undelete + carve | 17 | 17 | 0 | 0 | 3/6 | 5 | 27 | 10.39 | 0 |
+| `dmg-metadata-exfat-255m.img` | Sanctum, carve only | 21 | 19 | 2 | 0 | 0/0 | 1 | 22 | 4.17 | 0 |
+| `dmg-metadata-exfat-255m.img` | PhotoRec | 21 | 17 | 3 | 1 | 0/0 | 0 | 20 | 0.06 | 0 |
 | `dmg-metadata-exfat-255m.img` | Foremost | 21 | 9 | 4 | 8 | 0/0 | 1 | 14 | 3.12 | 0 |
-| `dmg-metadata-exfat-255m.img` | Sanctum, undelete + carve | 21 | 11 | 3 | 7 | 0/0 | 10 | 24 | 111.52 | 0 |
-| `dmg-metadata-ext4-64m.img` | Sanctum, carve only | 21 | 11 | 3 | 7 | 0/0 | 10 | 24 | 27.89 | 0 |
+| `dmg-metadata-exfat-255m.img` | Sanctum, undelete + carve | 21 | 19 | 2 | 0 | 0/0 | 1 | 22 | 4.18 | 0 |
+| `dmg-metadata-ext4-64m.img` | Sanctum, carve only | 21 | 19 | 2 | 0 | 0/0 | 2 | 23 | 2.12 | 0 |
 | `dmg-metadata-ext4-64m.img` | PhotoRec | 21 | 17 | 4 | 0 | 0/0 | 0 | 21 | 0.06 | 0 |
 | `dmg-metadata-ext4-64m.img` | Foremost | 21 | 10 | 4 | 7 | 0/0 | 1 | 15 | 0.82 | 0 |
-| `dmg-metadata-ext4-64m.img` | Sanctum, undelete + carve | 21 | 11 | 3 | 7 | 0/0 | 10 | 24 | 28.03 | 0 |
-| `dmg-metadata-fat32-255m.img` | Sanctum, carve only | 22 | 13 | 2 | 7 | 0/0 | 10 | 25 | 109.62 | 0 |
+| `dmg-metadata-ext4-64m.img` | Sanctum, undelete + carve | 21 | 19 | 2 | 0 | 0/0 | 2 | 23 | 2.12 | 0 |
+| `dmg-metadata-fat32-255m.img` | Sanctum, carve only | 22 | 21 | 1 | 0 | 0/0 | 1 | 23 | 4.38 | 0 |
 | `dmg-metadata-fat32-255m.img` | PhotoRec | 22 | 19 | 2 | 1 | 0/0 | 0 | 21 | 0.21 | 0 |
 | `dmg-metadata-fat32-255m.img` | Foremost | 22 | 10 | 5 | 7 | 0/0 | 1 | 16 | 3.12 | 0 |
-| `dmg-metadata-fat32-255m.img` | Sanctum, undelete + carve | 22 | 13 | 2 | 7 | 0/0 | 10 | 25 | 113.14 | 0 |
-| `dmg-metadata-fat32-511m.img` | Sanctum, carve only | 22 | 13 | 2 | 7 | 0/0 | 10 | 25 | 230.67 | 0 |
-| `dmg-metadata-fat32-511m.img` | PhotoRec | 22 | 18 | 3 | 1 | 0/0 | 0 | 21 | 0.11 | 0 |
-| `dmg-metadata-fat32-511m.img` | Foremost | 22 | 10 | 5 | 7 | 0/0 | 1 | 16 | 6.23 | 0 |
-| `dmg-metadata-fat32-511m.img` | Sanctum, undelete + carve | 22 | 13 | 2 | 7 | 0/0 | 10 | 25 | 235.52 | 0 |
-| `dmg-metadata-ntfs-64m.img` | Sanctum, carve only | 16 | 7 | 2 | 7 | 0/0 | 6 | 15 | 9.89 | 0 |
+| `dmg-metadata-fat32-255m.img` | Sanctum, undelete + carve | 22 | 21 | 1 | 0 | 0/0 | 1 | 23 | 4.43 | 0 |
+| `dmg-metadata-fat32-511m.img` | Sanctum, carve only | 22 | 21 | 1 | 0 | 0/0 | 1 | 23 | 7.03 | 0 |
+| `dmg-metadata-fat32-511m.img` | PhotoRec | 22 | 18 | 3 | 1 | 0/0 | 0 | 21 | 0.12 | 0 |
+| `dmg-metadata-fat32-511m.img` | Foremost | 22 | 10 | 5 | 7 | 0/0 | 1 | 16 | 6.18 | 0 |
+| `dmg-metadata-fat32-511m.img` | Sanctum, undelete + carve | 22 | 21 | 1 | 0 | 0/0 | 1 | 23 | 7.13 | 0 |
+| `dmg-metadata-ntfs-64m.img` | Sanctum, carve only | 16 | 15 | 1 | 0 | 0/0 | 1 | 17 | 1.97 | 0 |
 | `dmg-metadata-ntfs-64m.img` | PhotoRec | 16 | 13 | 3 | 0 | 0/0 | 0 | 16 | 0.06 | 0 |
 | `dmg-metadata-ntfs-64m.img` | Foremost | 16 | 7 | 2 | 7 | 0/0 | 1 | 10 | 0.82 | 0 |
-| `dmg-metadata-ntfs-64m.img` | Sanctum, undelete + carve | 16 | 7 | 2 | 7 | 0/0 | 6 | 15 | 9.89 | 0 |
-| `dmg-truncation-exfat-255m.img` | Sanctum, carve only | 9 | 9 | 0 | 0 | 1/2 | 10 | 20 | 1.27 | 0 |
+| `dmg-metadata-ntfs-64m.img` | Sanctum, undelete + carve | 16 | 15 | 1 | 0 | 0/0 | 1 | 17 | 1.97 | 0 |
+| `dmg-truncation-exfat-255m.img` | Sanctum, carve only | 9 | 9 | 0 | 0 | 2/2 | 1 | 12 | 1.27 | 0 |
 | `dmg-truncation-exfat-255m.img` | PhotoRec | 9 | 9 | 0 | 0 | 1/2 | 0 | 10 | 0.03 | 0 |
-| `dmg-truncation-exfat-255m.img` | Foremost | 9 | 6 | 3 | 0 | 0/2 | 0 | 9 | 0.06 | 0 |
-| `dmg-truncation-exfat-255m.img` | Sanctum, undelete + carve | 9 | 9 | 0 | 0 | 2/2 | 11 | 22 | 1.52 | 0 |
-| `dmg-truncation-ext4-64m.img` | Sanctum, carve only | 10 | 10 | 0 | 0 | 0/0 | 8 | 18 | 1.27 | 0 |
+| `dmg-truncation-exfat-255m.img` | Foremost | 9 | 6 | 3 | 0 | 0/2 | 0 | 9 | 0.07 | 0 |
+| `dmg-truncation-exfat-255m.img` | Sanctum, undelete + carve | 9 | 9 | 0 | 0 | 2/2 | 2 | 14 | 1.52 | 0 |
+| `dmg-truncation-ext4-64m.img` | Sanctum, carve only | 10 | 10 | 0 | 0 | 0/0 | 1 | 11 | 1.27 | 0 |
 | `dmg-truncation-ext4-64m.img` | PhotoRec | 10 | 10 | 0 | 0 | 0/0 | 0 | 10 | 0.03 | 0 |
-| `dmg-truncation-ext4-64m.img` | Foremost | 10 | 8 | 2 | 0 | 0/0 | 0 | 10 | 0.12 | 0 |
-| `dmg-truncation-ext4-64m.img` | Sanctum, undelete + carve | 10 | 10 | 0 | 0 | 0/0 | 9 | 19 | 1.42 | 0 |
-| `dmg-truncation-fat32-255m.img` | Sanctum, carve only | 11 | 11 | 0 | 0 | 0/0 | 8 | 19 | 1.47 | 0 |
+| `dmg-truncation-ext4-64m.img` | Foremost | 10 | 8 | 2 | 0 | 0/0 | 0 | 10 | 0.11 | 0 |
+| `dmg-truncation-ext4-64m.img` | Sanctum, undelete + carve | 10 | 10 | 0 | 0 | 0/0 | 2 | 12 | 1.47 | 0 |
+| `dmg-truncation-fat32-255m.img` | Sanctum, carve only | 11 | 11 | 0 | 0 | 0/0 | 1 | 12 | 1.47 | 0 |
 | `dmg-truncation-fat32-255m.img` | PhotoRec | 11 | 10 | 0 | 1 | 0/0 | 0 | 10 | 0.03 | 0 |
-| `dmg-truncation-fat32-255m.img` | Foremost | 11 | 8 | 3 | 0 | 0/0 | 0 | 11 | 0.06 | 0 |
-| `dmg-truncation-fat32-255m.img` | Sanctum, undelete + carve | 11 | 11 | 0 | 0 | 0/0 | 8 | 19 | 1.47 | 0 |
-| `dmg-truncation-fat32-511m.img` | Sanctum, carve only | 11 | 11 | 0 | 0 | 0/0 | 8 | 19 | 1.47 | 0 |
+| `dmg-truncation-fat32-255m.img` | Foremost | 11 | 8 | 3 | 0 | 0/0 | 0 | 11 | 0.07 | 0 |
+| `dmg-truncation-fat32-255m.img` | Sanctum, undelete + carve | 11 | 11 | 0 | 0 | 0/0 | 1 | 12 | 1.47 | 0 |
+| `dmg-truncation-fat32-511m.img` | Sanctum, carve only | 11 | 11 | 0 | 0 | 0/0 | 1 | 12 | 1.52 | 0 |
 | `dmg-truncation-fat32-511m.img` | PhotoRec | 11 | 10 | 0 | 1 | 0/0 | 0 | 10 | 0.03 | 0 |
 | `dmg-truncation-fat32-511m.img` | Foremost | 11 | 8 | 3 | 0 | 0/0 | 0 | 11 | 0.03 | 0 |
-| `dmg-truncation-fat32-511m.img` | Sanctum, undelete + carve | 11 | 11 | 0 | 0 | 0/0 | 9 | 20 | 1.72 | 0 |
-| `dmg-truncation-ntfs-64m.img` | Sanctum, carve only | 8 | 8 | 0 | 0 | 0/5 | 15 | 23 | 7.33 | 0 |
+| `dmg-truncation-fat32-511m.img` | Sanctum, undelete + carve | 11 | 11 | 0 | 0 | 0/0 | 2 | 13 | 1.72 | 0 |
+| `dmg-truncation-ntfs-64m.img` | Sanctum, carve only | 8 | 8 | 0 | 0 | 0/5 | 6 | 14 | 1.67 | 0 |
 | `dmg-truncation-ntfs-64m.img` | PhotoRec | 8 | 7 | 0 | 1 | 0/5 | 0 | 7 | 0.03 | 0 |
 | `dmg-truncation-ntfs-64m.img` | Foremost | 8 | 6 | 1 | 1 | 0/5 | 4 | 11 | 0.47 | 0 |
-| `dmg-truncation-ntfs-64m.img` | Sanctum, undelete + carve | 8 | 8 | 0 | 0 | 3/5 | 16 | 27 | 7.63 | 0 |
-| `dmg-zeroed-exfat-255m.img` | Sanctum, carve only | 19 | 10 | 3 | 6 | 1/1 | 10 | 24 | 117.52 | 0 |
-| `dmg-zeroed-exfat-255m.img` | PhotoRec | 19 | 16 | 2 | 1 | 0/1 | 0 | 18 | 0.12 | 0 |
+| `dmg-truncation-ntfs-64m.img` | Sanctum, undelete + carve | 8 | 8 | 0 | 0 | 3/5 | 7 | 18 | 1.92 | 0 |
+| `dmg-zeroed-exfat-255m.img` | Sanctum, carve only | 19 | 18 | 1 | 0 | 1/1 | 1 | 21 | 14.04 | 0 |
+| `dmg-zeroed-exfat-255m.img` | PhotoRec | 19 | 16 | 2 | 1 | 0/1 | 0 | 18 | 0.06 | 0 |
 | `dmg-zeroed-exfat-255m.img` | Foremost | 19 | 8 | 4 | 7 | 1/1 | 1 | 14 | 3.12 | 0 |
-| `dmg-zeroed-exfat-255m.img` | Sanctum, undelete + carve | 19 | 18 | 1 | 0 | 1/1 | 11 | 34 | 119.73 | 0 |
-| `dmg-zeroed-ext4-64m.img` | Sanctum, carve only | 19 | 10 | 3 | 6 | 1/1 | 10 | 24 | 37.15 | 0 |
+| `dmg-zeroed-exfat-255m.img` | Sanctum, undelete + carve | 19 | 18 | 1 | 0 | 1/1 | 2 | 23 | 14.29 | 0 |
+| `dmg-zeroed-ext4-64m.img` | Sanctum, carve only | 19 | 18 | 1 | 0 | 1/1 | 1 | 21 | 11.94 | 0 |
 | `dmg-zeroed-ext4-64m.img` | PhotoRec | 19 | 16 | 3 | 0 | 0/1 | 0 | 19 | 0.12 | 0 |
 | `dmg-zeroed-ext4-64m.img` | Foremost | 19 | 9 | 4 | 6 | 1/1 | 1 | 15 | 0.82 | 0 |
-| `dmg-zeroed-ext4-64m.img` | Sanctum, undelete + carve | 19 | 10 | 3 | 6 | 1/1 | 11 | 25 | 37.75 | 0 |
-| `dmg-zeroed-fat32-255m.img` | Sanctum, carve only | 20 | 12 | 2 | 6 | 1/1 | 10 | 25 | 117.09 | 0 |
+| `dmg-zeroed-ext4-64m.img` | Sanctum, undelete + carve | 19 | 18 | 1 | 0 | 1/1 | 2 | 22 | 12.14 | 0 |
+| `dmg-zeroed-fat32-255m.img` | Sanctum, carve only | 20 | 20 | 0 | 0 | 1/1 | 1 | 22 | 14.25 | 0 |
 | `dmg-zeroed-fat32-255m.img` | PhotoRec | 20 | 17 | 2 | 1 | 0/1 | 0 | 19 | 0.21 | 0 |
 | `dmg-zeroed-fat32-255m.img` | Foremost | 20 | 9 | 5 | 6 | 1/1 | 1 | 16 | 3.12 | 0 |
-| `dmg-zeroed-fat32-255m.img` | Sanctum, undelete + carve | 20 | 20 | 0 | 0 | 1/1 | 11 | 34 | 118.24 | 0 |
-| `dmg-zeroed-fat32-511m.img` | Sanctum, carve only | 20 | 12 | 2 | 6 | 1/1 | 10 | 25 | 247.83 | 0 |
-| `dmg-zeroed-fat32-511m.img` | PhotoRec | 20 | 17 | 2 | 1 | 0/1 | 0 | 19 | 0.21 | 0 |
-| `dmg-zeroed-fat32-511m.img` | Foremost | 20 | 9 | 5 | 6 | 1/1 | 1 | 16 | 6.33 | 0 |
-| `dmg-zeroed-fat32-511m.img` | Sanctum, undelete + carve | 20 | 20 | 0 | 0 | 1/1 | 11 | 34 | 244.48 | 0 |
-| `dmg-zeroed-ntfs-64m.img` | Sanctum, carve only | 11 | 2 | 2 | 7 | 1/6 | 8 | 13 | 19.80 | 0 |
+| `dmg-zeroed-fat32-255m.img` | Sanctum, undelete + carve | 20 | 20 | 0 | 0 | 1/1 | 2 | 23 | 14.55 | 0 |
+| `dmg-zeroed-fat32-511m.img` | Sanctum, carve only | 20 | 20 | 0 | 0 | 1/1 | 1 | 22 | 16.40 | 0 |
+| `dmg-zeroed-fat32-511m.img` | PhotoRec | 20 | 17 | 2 | 1 | 0/1 | 0 | 19 | 0.16 | 0 |
+| `dmg-zeroed-fat32-511m.img` | Foremost | 20 | 9 | 5 | 6 | 1/1 | 1 | 16 | 6.18 | 0 |
+| `dmg-zeroed-fat32-511m.img` | Sanctum, undelete + carve | 20 | 20 | 0 | 0 | 1/1 | 2 | 23 | 17.10 | 0 |
+| `dmg-zeroed-ntfs-64m.img` | Sanctum, carve only | 11 | 10 | 1 | 0 | 1/6 | 4 | 16 | 7.03 | 0 |
 | `dmg-zeroed-ntfs-64m.img` | PhotoRec | 11 | 7 | 3 | 1 | 0/6 | 0 | 10 | 0.11 | 0 |
 | `dmg-zeroed-ntfs-64m.img` | Foremost | 11 | 4 | 1 | 6 | 1/6 | 5 | 11 | 0.82 | 0 |
-| `dmg-zeroed-ntfs-64m.img` | Sanctum, undelete + carve | 11 | 11 | 0 | 0 | 3/6 | 12 | 28 | 23.97 | 0 |
-| `flat-aligned.img` | Sanctum, carve only | 15 | 15 | 0 | 0 | 2/3 | 15 | 33 | 4.98 | 0 |
+| `dmg-zeroed-ntfs-64m.img` | Sanctum, undelete + carve | 11 | 11 | 0 | 0 | 3/6 | 8 | 23 | 11.79 | 0 |
+| `flat-aligned.img` | Sanctum, carve only | 15 | 15 | 0 | 0 | 2/3 | 3 | 21 | 0.92 | 0 |
 | `flat-aligned.img` | PhotoRec | 15 | 15 | 0 | 0 | 0/3 | 0 | 19 | 0.03 | 0 |
 | `flat-aligned.img` | Foremost | 15 | 7 | 6 | 2 | 1/3 | 0 | 17 | 0.17 | 0 |
-| `flat-aligned.img` | Sanctum, undelete + carve | 15 | 15 | 0 | 0 | 2/3 | 15 | 33 | 4.98 | 0 |
-| `flat-offset1337.img` | Sanctum, carve only | 15 | 15 | 0 | 0 | 2/3 | 15 | 33 | 4.93 | 0 |
+| `flat-aligned.img` | Sanctum, undelete + carve | 15 | 15 | 0 | 0 | 2/3 | 3 | 21 | 0.97 | 0 |
+| `flat-offset1337.img` | Sanctum, carve only | 15 | 15 | 0 | 0 | 2/3 | 3 | 21 | 0.92 | 0 |
 | `flat-offset1337.img` | PhotoRec | 15 | 0 | 0 | 15 | 0/3 | 0 | 0 | 0.03 | 0 |
 | `flat-offset1337.img` | Foremost | 15 | 7 | 6 | 2 | 1/3 | 0 | 17 | 0.17 | 0 |
-| `flat-offset1337.img` | Sanctum, undelete + carve | 15 | 15 | 0 | 0 | 2/3 | 15 | 33 | 4.98 | 0 |
-| `fs-damaged-boot.img` | Sanctum, carve only | 17 | 17 | 0 | 0 | 3/3 | 11 | 31 | 6.63 | 0 |
+| `flat-offset1337.img` | Sanctum, undelete + carve | 15 | 15 | 0 | 0 | 2/3 | 3 | 21 | 0.92 | 0 |
+| `fs-damaged-boot.img` | Sanctum, carve only | 17 | 17 | 0 | 0 | 3/3 | 1 | 21 | 1.02 | 0 |
 | `fs-damaged-boot.img` | PhotoRec | 17 | 17 | 0 | 0 | 0/3 | 0 | 17 | 0.03 | 0 |
-| `fs-damaged-boot.img` | Foremost | 17 | 15 | 0 | 2 | 3/3 | 0 | 18 | 0.31 | 0 |
-| `fs-damaged-boot.img` | Sanctum, undelete + carve | 17 | 17 | 0 | 0 | 3/3 | 11 | 31 | 6.83 | 0 |
-| `fs-damaged-parttable.img` | Sanctum, carve only | 20 | 20 | 0 | 0 | 3/3 | 12 | 35 | 17.00 | 0 |
+| `fs-damaged-boot.img` | Foremost | 17 | 15 | 0 | 2 | 3/3 | 0 | 18 | 0.32 | 0 |
+| `fs-damaged-boot.img` | Sanctum, undelete + carve | 17 | 17 | 0 | 0 | 3/3 | 1 | 21 | 1.07 | 0 |
+| `fs-damaged-parttable.img` | Sanctum, carve only | 20 | 20 | 0 | 0 | 3/3 | 1 | 24 | 1.62 | 0 |
 | `fs-damaged-parttable.img` | PhotoRec | 20 | 18 | 0 | 2 | 0/3 | 0 | 18 | 0.11 | 0 |
 | `fs-damaged-parttable.img` | Foremost | 20 | 18 | 0 | 2 | 3/3 | 0 | 21 | 0.87 | 0 |
-| `fs-damaged-parttable.img` | Sanctum, undelete + carve | 20 | 20 | 0 | 0 | 3/3 | 12 | 35 | 17.05 | 0 |
-| `fs-exfat.img` | Sanctum, carve only | 3 | 2 | 1 | 0 | 0/0 | 0 | 3 | 0.47 | 0 |
+| `fs-damaged-parttable.img` | Sanctum, undelete + carve | 20 | 20 | 0 | 0 | 3/3 | 1 | 24 | 1.62 | 0 |
+| `fs-exfat.img` | Sanctum, carve only | 3 | 2 | 1 | 0 | 0/0 | 0 | 3 | 0.52 | 0 |
 | `fs-exfat.img` | PhotoRec | 3 | 2 | 0 | 1 | 0/0 | 0 | 2 | 0.06 | 0 |
-| `fs-exfat.img` | Foremost | 3 | 2 | 0 | 1 | 0/0 | 0 | 2 | 0.17 | 0 |
-| `fs-exfat.img` | Sanctum, undelete + carve | 3 | 2 | 1 | 0 | 0/0 | 0 | 4 | 0.52 | 0 |
-| `fs-ext2.img` | Sanctum, carve only | 3 | 2 | 1 | 0 | 0/0 | 4 | 7 | 2.17 | 0 |
+| `fs-exfat.img` | Foremost | 3 | 2 | 0 | 1 | 0/0 | 0 | 2 | 0.16 | 0 |
+| `fs-exfat.img` | Sanctum, undelete + carve | 3 | 2 | 1 | 0 | 0/0 | 0 | 4 | 0.57 | 0 |
+| `fs-ext2.img` | Sanctum, carve only | 3 | 2 | 1 | 0 | 0/0 | 1 | 4 | 0.77 | 0 |
 | `fs-ext2.img` | PhotoRec | 3 | 2 | 0 | 1 | 0/0 | 0 | 2 | 0.07 | 0 |
-| `fs-ext2.img` | Foremost | 3 | 1 | 2 | 0 | 0/0 | 0 | 3 | 0.16 | 0 |
-| `fs-ext2.img` | Sanctum, undelete + carve | 3 | 3 | 0 | 0 | 0/0 | 4 | 7 | 2.07 | 0 |
-| `fs-ext3.img` | Sanctum, carve only | 3 | 2 | 1 | 0 | 0/0 | 4 | 7 | 2.02 | 0 |
-| `fs-ext3.img` | PhotoRec | 3 | 2 | 0 | 1 | 0/0 | 0 | 2 | 0.06 | 0 |
-| `fs-ext3.img` | Foremost | 3 | 1 | 2 | 0 | 0/0 | 0 | 3 | 0.17 | 0 |
-| `fs-ext3.img` | Sanctum, undelete + carve | 3 | 3 | 0 | 0 | 0/0 | 4 | 7 | 1.87 | 0 |
-| `fs-ext4.img` | Sanctum, carve only | 3 | 3 | 0 | 0 | 0/0 | 4 | 7 | 1.72 | 0 |
+| `fs-ext2.img` | Foremost | 3 | 1 | 2 | 0 | 0/0 | 0 | 3 | 0.17 | 0 |
+| `fs-ext2.img` | Sanctum, undelete + carve | 3 | 3 | 0 | 0 | 0/0 | 1 | 4 | 0.67 | 0 |
+| `fs-ext3.img` | Sanctum, carve only | 3 | 2 | 1 | 0 | 0/0 | 1 | 4 | 0.77 | 0 |
+| `fs-ext3.img` | PhotoRec | 3 | 2 | 0 | 1 | 0/0 | 0 | 2 | 0.07 | 0 |
+| `fs-ext3.img` | Foremost | 3 | 1 | 2 | 0 | 0/0 | 0 | 3 | 0.16 | 0 |
+| `fs-ext3.img` | Sanctum, undelete + carve | 3 | 3 | 0 | 0 | 0/0 | 1 | 4 | 0.67 | 0 |
+| `fs-ext4.img` | Sanctum, carve only | 3 | 3 | 0 | 0 | 0/0 | 1 | 4 | 0.52 | 0 |
 | `fs-ext4.img` | PhotoRec | 3 | 3 | 0 | 0 | 0/0 | 0 | 3 | 0.03 | 0 |
 | `fs-ext4.img` | Foremost | 3 | 2 | 1 | 0 | 0/0 | 0 | 3 | 0.16 | 0 |
-| `fs-ext4.img` | Sanctum, undelete + carve | 3 | 3 | 0 | 0 | 0/0 | 5 | 8 | 1.72 | 0 |
+| `fs-ext4.img` | Sanctum, undelete + carve | 3 | 3 | 0 | 0 | 0/0 | 2 | 5 | 0.57 | 0 |
 | `fs-fat32-neighbours.img` | Sanctum, carve only | 3 | 3 | 0 | 0 | 0/0 | 1 | 4 | 0.82 | 0 |
-| `fs-fat32-neighbours.img` | PhotoRec | 3 | 3 | 0 | 0 | 0/0 | 0 | 3 | 0.12 | 0 |
+| `fs-fat32-neighbours.img` | PhotoRec | 3 | 3 | 0 | 0 | 0/0 | 0 | 3 | 0.11 | 0 |
 | `fs-fat32-neighbours.img` | Foremost | 3 | 3 | 0 | 0 | 0/0 | 0 | 3 | 0.36 | 0 |
-| `fs-fat32-neighbours.img` | Sanctum, undelete + carve | 3 | 3 | 0 | 0 | 0/0 | 5 | 83 | 2.92 | 0 |
-| `fs-fat32-plain.img` | Sanctum, carve only | 3 | 3 | 0 | 0 | 0/0 | 1 | 4 | 0.77 | 0 |
+| `fs-fat32-neighbours.img` | Sanctum, undelete + carve | 3 | 3 | 0 | 0 | 0/0 | 5 | 83 | 3.07 | 0 |
+| `fs-fat32-plain.img` | Sanctum, carve only | 3 | 3 | 0 | 0 | 0/0 | 1 | 4 | 0.82 | 0 |
 | `fs-fat32-plain.img` | PhotoRec | 3 | 3 | 0 | 0 | 0/0 | 0 | 3 | 0.06 | 0 |
 | `fs-fat32-plain.img` | Foremost | 3 | 3 | 0 | 0 | 0/0 | 0 | 3 | 0.52 | 0 |
-| `fs-fat32-plain.img` | Sanctum, undelete + carve | 3 | 3 | 0 | 0 | 0/0 | 1 | 4 | 0.82 | 0 |
-| `fs-fat32.img` | Sanctum, carve only | 3 | 3 | 0 | 0 | 0/0 | 1 | 4 | 0.77 | 0 |
-| `fs-fat32.img` | PhotoRec | 3 | 3 | 0 | 0 | 0/0 | 0 | 3 | 0.12 | 0 |
+| `fs-fat32-plain.img` | Sanctum, undelete + carve | 3 | 3 | 0 | 0 | 0/0 | 1 | 4 | 0.92 | 0 |
+| `fs-fat32.img` | Sanctum, carve only | 3 | 3 | 0 | 0 | 0/0 | 1 | 4 | 0.87 | 0 |
+| `fs-fat32.img` | PhotoRec | 3 | 3 | 0 | 0 | 0/0 | 0 | 3 | 0.11 | 0 |
 | `fs-fat32.img` | Foremost | 3 | 3 | 0 | 0 | 0/0 | 0 | 3 | 0.36 | 0 |
-| `fs-fat32.img` | Sanctum, undelete + carve | 3 | 3 | 0 | 0 | 0/0 | 6 | 161 | 4.92 | 0 |
-| `fs-ntfs-reused.img` | Sanctum, carve only | 17 | 17 | 0 | 0 | 3/3 | 11 | 31 | 6.58 | 0 |
+| `fs-fat32.img` | Sanctum, undelete + carve | 3 | 3 | 0 | 0 | 0/0 | 6 | 161 | 5.28 | 0 |
+| `fs-ntfs-reused.img` | Sanctum, carve only | 17 | 17 | 0 | 0 | 3/3 | 1 | 21 | 1.02 | 0 |
 | `fs-ntfs-reused.img` | PhotoRec | 17 | 17 | 0 | 0 | 0/3 | 0 | 17 | 0.03 | 0 |
 | `fs-ntfs-reused.img` | Foremost | 17 | 15 | 0 | 2 | 3/3 | 0 | 18 | 0.32 | 0 |
-| `fs-ntfs-reused.img` | Sanctum, undelete + carve | 17 | 17 | 0 | 0 | 3/3 | 12 | 33 | 7.28 | 0 |
-| `fs-ntfs.img` | Sanctum, carve only | 17 | 17 | 0 | 0 | 3/3 | 11 | 31 | 6.63 | 0 |
+| `fs-ntfs-reused.img` | Sanctum, undelete + carve | 17 | 17 | 0 | 0 | 3/3 | 2 | 23 | 1.17 | 0 |
+| `fs-ntfs.img` | Sanctum, carve only | 17 | 17 | 0 | 0 | 3/3 | 1 | 21 | 1.02 | 0 |
 | `fs-ntfs.img` | PhotoRec | 17 | 17 | 0 | 0 | 0/3 | 0 | 17 | 0.03 | 0 |
 | `fs-ntfs.img` | Foremost | 17 | 15 | 0 | 2 | 3/3 | 0 | 18 | 0.32 | 0 |
-| `fs-ntfs.img` | Sanctum, undelete + carve | 17 | 17 | 0 | 0 | 3/3 | 11 | 32 | 6.78 | 0 |
-| `fs-quick-formatted.img` | Sanctum, carve only | 3 | 3 | 0 | 0 | 0/0 | 1 | 4 | 0.77 | 0 |
+| `fs-ntfs.img` | Sanctum, undelete + carve | 17 | 17 | 0 | 0 | 3/3 | 1 | 22 | 1.17 | 0 |
+| `fs-quick-formatted.img` | Sanctum, carve only | 3 | 3 | 0 | 0 | 0/0 | 1 | 4 | 0.82 | 0 |
 | `fs-quick-formatted.img` | PhotoRec | 3 | 3 | 0 | 0 | 0/0 | 0 | 3 | 0.06 | 0 |
 | `fs-quick-formatted.img` | Foremost | 3 | 3 | 0 | 0 | 0/0 | 0 | 3 | 0.52 | 0 |
-| `fs-quick-formatted.img` | Sanctum, undelete + carve | 3 | 3 | 0 | 0 | 0/0 | 1 | 4 | 0.77 | 0 |
-| `fs-two-partitions.img` | Sanctum, carve only | 20 | 20 | 0 | 0 | 3/3 | 12 | 35 | 16.65 | 0 |
+| `fs-quick-formatted.img` | Sanctum, undelete + carve | 3 | 3 | 0 | 0 | 0/0 | 1 | 4 | 0.82 | 0 |
+| `fs-two-partitions.img` | Sanctum, carve only | 20 | 20 | 0 | 0 | 3/3 | 1 | 24 | 1.57 | 0 |
 | `fs-two-partitions.img` | PhotoRec | 20 | 18 | 0 | 2 | 0/3 | 0 | 18 | 0.12 | 0 |
 | `fs-two-partitions.img` | Foremost | 20 | 18 | 0 | 2 | 3/3 | 0 | 21 | 0.87 | 0 |
-| `fs-two-partitions.img` | Sanctum, undelete + carve | 20 | 20 | 0 | 0 | 3/3 | 12 | 36 | 17.10 | 0 |
-| `media-exfat-255m.img` | Sanctum, carve only | 21 | 11 | 3 | 7 | 0/0 | 10 | 24 | 110.93 | 0 |
-| `media-exfat-255m.img` | PhotoRec | 21 | 17 | 3 | 1 | 0/0 | 0 | 20 | 0.11 | 0 |
+| `fs-two-partitions.img` | Sanctum, undelete + carve | 20 | 20 | 0 | 0 | 3/3 | 1 | 25 | 1.77 | 0 |
+| `media-exfat-255m.img` | Sanctum, carve only | 21 | 19 | 2 | 0 | 0/0 | 1 | 22 | 4.12 | 0 |
+| `media-exfat-255m.img` | PhotoRec | 21 | 17 | 3 | 1 | 0/0 | 0 | 20 | 0.06 | 0 |
 | `media-exfat-255m.img` | Foremost | 21 | 9 | 4 | 8 | 0/0 | 1 | 14 | 3.12 | 0 |
-| `media-exfat-255m.img` | Sanctum, undelete + carve | 21 | 20 | 1 | 0 | 0/0 | 10 | 34 | 108.82 | 0 |
-| `media-ext4-64m.img` | Sanctum, carve only | 21 | 11 | 3 | 7 | 0/0 | 10 | 24 | 27.78 | 0 |
-| `media-ext4-64m.img` | PhotoRec | 21 | 17 | 4 | 0 | 0/0 | 0 | 21 | 0.06 | 0 |
+| `media-exfat-255m.img` | Sanctum, undelete + carve | 21 | 20 | 1 | 0 | 0/0 | 1 | 24 | 4.42 | 0 |
+| `media-ext4-64m.img` | Sanctum, carve only | 21 | 19 | 2 | 0 | 0/0 | 2 | 23 | 2.12 | 0 |
+| `media-ext4-64m.img` | PhotoRec | 21 | 17 | 4 | 0 | 0/0 | 0 | 21 | 0.07 | 0 |
 | `media-ext4-64m.img` | Foremost | 21 | 10 | 4 | 7 | 0/0 | 1 | 15 | 0.82 | 0 |
-| `media-ext4-64m.img` | Sanctum, undelete + carve | 21 | 11 | 3 | 7 | 0/0 | 11 | 25 | 28.43 | 0 |
-| `media-fat32-255m.img` | Sanctum, carve only | 22 | 13 | 2 | 7 | 0/0 | 10 | 25 | 108.07 | 0 |
+| `media-ext4-64m.img` | Sanctum, undelete + carve | 21 | 19 | 2 | 0 | 0/0 | 3 | 24 | 2.32 | 0 |
+| `media-fat32-255m.img` | Sanctum, carve only | 22 | 21 | 1 | 0 | 0/0 | 1 | 23 | 4.37 | 0 |
 | `media-fat32-255m.img` | PhotoRec | 22 | 19 | 2 | 1 | 0/0 | 0 | 21 | 0.21 | 0 |
 | `media-fat32-255m.img` | Foremost | 22 | 10 | 5 | 7 | 0/0 | 1 | 16 | 3.12 | 0 |
-| `media-fat32-255m.img` | Sanctum, undelete + carve | 22 | 22 | 0 | 0 | 0/0 | 10 | 34 | 109.81 | 0 |
-| `media-fat32-511m.img` | Sanctum, carve only | 22 | 13 | 2 | 7 | 0/0 | 10 | 25 | 230.75 | 0 |
-| `media-fat32-511m.img` | PhotoRec | 22 | 18 | 3 | 1 | 0/0 | 0 | 21 | 0.11 | 0 |
-| `media-fat32-511m.img` | Foremost | 22 | 10 | 5 | 7 | 0/0 | 1 | 16 | 6.17 | 0 |
-| `media-fat32-511m.img` | Sanctum, undelete + carve | 22 | 22 | 0 | 0 | 0/0 | 10 | 34 | 228.28 | 0 |
-| `media-ntfs-64m.img` | Sanctum, carve only | 17 | 8 | 2 | 7 | 0/4 | 14 | 24 | 20.14 | 0 |
-| `media-ntfs-64m.img` | PhotoRec | 17 | 13 | 3 | 1 | 0/4 | 0 | 16 | 0.06 | 0 |
+| `media-fat32-255m.img` | Sanctum, undelete + carve | 22 | 22 | 0 | 0 | 0/0 | 1 | 24 | 4.67 | 0 |
+| `media-fat32-511m.img` | Sanctum, carve only | 22 | 21 | 1 | 0 | 0/0 | 1 | 23 | 7.08 | 0 |
+| `media-fat32-511m.img` | PhotoRec | 22 | 18 | 3 | 1 | 0/0 | 0 | 21 | 0.12 | 0 |
+| `media-fat32-511m.img` | Foremost | 22 | 10 | 5 | 7 | 0/0 | 1 | 16 | 6.23 | 0 |
+| `media-fat32-511m.img` | Sanctum, undelete + carve | 22 | 22 | 0 | 0 | 0/0 | 1 | 24 | 7.28 | 0 |
+| `media-ntfs-64m.img` | Sanctum, carve only | 17 | 16 | 1 | 0 | 0/4 | 5 | 22 | 2.07 | 0 |
+| `media-ntfs-64m.img` | PhotoRec | 17 | 13 | 3 | 1 | 0/4 | 0 | 16 | 0.07 | 0 |
 | `media-ntfs-64m.img` | Foremost | 17 | 8 | 2 | 7 | 0/4 | 5 | 15 | 0.82 | 0 |
-| `media-ntfs-64m.img` | Sanctum, undelete + carve | 17 | 17 | 0 | 0 | 2/4 | 14 | 35 | 20.26 | 0 |
+| `media-ntfs-64m.img` | Sanctum, undelete + carve | 17 | 17 | 0 | 0 | 2/4 | 5 | 25 | 2.37 | 0 |
 
 #### What "corrupt" means, output by output
 
-Over all 40 images. An output counted *corrupt* is attributed to a FULL planted file
-but is not identical to it. Classified by comparing the output's recorded first 64 KiB
-and its size with the planted file. JPEG rows whose outputs agree only in the first 163
-bytes (the header every Pillow q95 JPEG shares) are left out: they are an artefact of
-this classification, which reads only stored payloads, not of the scorer.
+Over all 40 images. An output counted *corrupt* is attributed to a FULL planted file but
+is not identical to it. Classified by comparing the output's recorded first 64 KiB and
+its size with the planted file. JPEG rows whose outputs agree only in the first 163 bytes
+(the header every Pillow q95 JPEG shares) are left out: they are an artefact of this
+classification, which reads only stored payloads, not of the scorer.
 
 | Row | Format | How the output differs | Outputs |
 |---|---|---|---:|
 | Foremost | DOCX, XLSX, ZIP | the whole file, then **1 extra byte** | 24, 19, 31 |
 | Foremost | WAV | correct prefix, **8 bytes short** | 20 |
-| Foremost | JPEG (`frag.jpg`) | head + the gap's bytes: first 64 KiB agree, then foreign data | 10 |
+| Foremost | JPEG (`frag.jpg`) | head + the gap's bytes | 10 |
 | PhotoRec | GZIP | the whole file, then block padding (3,316 B file, 172,032 B output) | 20 |
 | PhotoRec | TIFF | the whole file, then block padding (49,292 → 53,248 B) | 20 |
-| PhotoRec | TAR | the whole file, then padding (10); correct prefix, short (3, ext4 sparse file) | 13 |
+| PhotoRec | TAR | the whole file, then padding (10); correct prefix, short (3, ext4 sparse) | 13 |
 | All four rows | SQLite (ext4 `contacts.sqlite`) | 4096 B of the file were holes on ext4; a raw read puts other bytes there | 3 each |
-| Sanctum carve, Sanctum full | MP4 | the whole 4,132 B file, then **the rest of the image** (up to 263,958,528 B) | 20 |
-| Sanctum carve, Sanctum full | TIFF | the whole 49,292 B file, then **the rest of the image** | 20 |
-| Sanctum carve / full | PNG (exFAT `shot.png`, 28 runs) | first cluster right, then the next cluster on the medium | 5 / 9 |
-| Sanctum carve, Sanctum full | PDF (flat corpus) | 180 B agree; bounded by a later object | 2 |
+| **Sanctum carve** | **TAR** | **the archive, ending at its end-of-archive marker, without the padding its writer added past it** | **16** |
+| Sanctum carve / full | PNG (exFAT `shot.png`, 28 runs) | first cluster right, then the next cluster on the medium | 4 / 4 |
 
-Strict byte-identity is the only success in the tables above. A reader who would accept
-a whole file followed by padding would move Foremost's 74 archives, PhotoRec's 53
-GZIP/TIFF/TAR files and Sanctum's 40 MP4/TIFF files into the success column — but
-Sanctum's 40 carry **up to 252 MiB each** of bytes that are not the file.
+**At fix5 this table carried two more Sanctum rows, and they are the reason for this
+batch:** MP4 and TIFF, 20 outputs each, described as "the whole file, then **the rest of
+the image** (up to 263,958,528 B)". Both are now returned byte-identical.
+
+Strict byte-identity is the only success in the tables above. A reader who would accept a
+whole file followed by padding would move Foremost's 74 archives and PhotoRec's 53
+GZIP/TIFF/TAR files into the success column. Sanctum's 16 TAR outputs are the opposite
+case — a file that is *short* of the original by its writer's padding, never longer — and
+the reasoning for refusing to claim those bytes is in `BENCHMARK_REPORT_2.md` §2.
 
 ## Where Sanctum wins, where it loses, where the three are equivalent
 
-All comparisons in this section are between the three carve-only rows. Totals are
-over the 25 benchmark volumes (5 undamaged + 20 damaged), 446 FULL files, unless a
-corpus is named.
+All comparisons are between the three carve-only rows, over the 25 benchmark volumes
+(446 FULL files) unless a corpus is named.
 
-**Byte-identical recoveries, 25 volumes:**
+| Row | Byte-identical / 446 FULL | False positives | Wall time |
+|---|---:|---:|---:|
+| Sanctum, carve only | **423 (94.8%)** | 45 | 170.2 s |
+| PhotoRec | 372 (83.4%) | 0 | 2.5 s |
+| Foremost | 220 (49.3%) | 36 | 57.1 s |
 
-| Row | Byte-identical / 446 FULL | Signature formats, 310 FULL | Formats without a Sanctum signature, 136 FULL | False positives | Wall time |
-|---|---:|---:|---:|---:|---:|
-| Sanctum, carve only | **263 (59.0%)** | 263 | 0 | 252 | 2,071.8 s |
-| PhotoRec | **372 (83.4%)** | 269 | 103 | 0 | 2.9 s |
-| Foremost | **220 (49.3%)** | 200 | 20 | 36 | 57.2 s |
+At fix5 the same three rows were 263, 372 and 220. Only Sanctum changed.
 
 ### Where Sanctum loses
 
-1. **Against PhotoRec, overall and on every damage model.** 263 against 372 over 25
-   volumes; 207 against 288 over the 20 damaged volumes. Object by object over all 40
-   images, PhotoRec returned 123 FULL files identical that Sanctum did not, and Sanctum
-   36 that PhotoRec did not.
-2. **Formats with no signature.** BMP, WebP, WAV, HTML, RTF, GZIP and TAR: Sanctum
-   carve 0 of 136. PhotoRec returned 103 identical (all BMP, WebP, WAV, HTML and RTF;
-   3 TAR; its GZIP, TIFF and most TAR outputs carry padding). Foremost returned BMP
-   only (20). This is 120 of PhotoRec's 123 object-level wins.
-3. **MP4, a format Sanctum has a signature and a parser for.** Sanctum 0 of 20; PhotoRec
-   and Foremost 20 of 20. The parser reads the zero bytes after the file in its last
-   cluster as an ISO-BMFF box of size 0 — "extends to end of file" — and the candidate
-   runs to the end of the image. See finding B2 in `BENCHMARK_REPORT.md`.
-4. **TIFF.** No tool returned a TIFF identical. PhotoRec's 20 are the file plus block
-   padding; Sanctum's 20 are the file plus the rest of the image, because TIFF has a
-   signature and no structure parser.
-5. **False positives and output volume.** Sanctum's carve returned 252 outputs matching no
-   planted file on the 25 volumes (235 of them fragments: headers inside a planted file,
-   mostly ZIP members), PhotoRec 0, Foremost 36. Over all 40 images Sanctum wrote
-   **48.0 GiB** of output; PhotoRec and Foremost wrote 0.03 GiB each. On one 255 MiB
-   FAT32 volume Sanctum wrote 2,750 MiB in 25 files: nine ZIP member headers inside
-   `archive.zip` and `budget.xlsx`, the MP4 and the TIFF were each written as the span
-   to the end of the image. The HIGH+MEDIUM view (supplementary table) removes most of
-   them but also 166 of 591 FULL files.
-6. **Time.** 2,071.8 s against 2.9 s (PhotoRec) and 57.2 s (Foremost) on the same 25
-   volumes. See [Time](#time).
+1. **TAR: 0 of 16 byte-identical, against PhotoRec's 3.** The only format where PhotoRec
+   returns a file Sanctum does not, and the only three objects in its "only PhotoRec"
+   column (`backup.tar` on three FAT32 images). Sanctum returns all 16 as *corrupt*: the
+   archive without the padding its writer added past the end-of-archive marker. Those
+   bytes are zeros, and so is the last cluster's slack, so nothing in the content
+   separates them; claiming them would be an assumption about the writer's blocking
+   factor. See `BENCHMARK_REPORT_2.md` §2 and finding B16.
+2. **PNG: 47 of 51.** The four misses are exFAT's `shot.png`, stored in 28 runs.
+   Reassembly handles exactly two.
+3. **SQLite: 12 of 15.** The three misses are ext4's sparse `contacts.sqlite`, which no
+   raw read of the medium can reproduce. PhotoRec scores 12 of 15 for the same reason.
+4. **Time: 170.2 s against PhotoRec's 2.5 s — still about 68x.** Down from roughly 700x,
+   and still a Python carver against a C one.
+5. **False positives: 45 against PhotoRec's 0**, and 503 outputs against 429. Down from
+   252, but PhotoRec returns nothing that was not planted and Sanctum returns 45 things
+   that were not.
+6. **On metadata destroyed the product still equals its carver: 95 and 95.** Undelete
+   adds nothing where no filesystem metadata survives, and that is the damage model the
+   problem statement describes most closely.
 
 ### Where Sanctum wins
 
-1. **A file in two runs.** `frag.jpg`, one JPEG split around a live 64 KiB pad on both
-   FAT32 volumes, in every image where it is FULL: Sanctum carve 10 of 10 identical,
-   scored MEDIUM as designed; PhotoRec 0 of 10 (not returned); Foremost 0 of 10 (head
-   plus the pad's bytes). This is the only structural capability measured here that
-   neither other tool has.
-2. **Against Foremost, on containers.** ZIP 24, DOCX 20, XLSX 17 and SQLite 12
-   identical against Foremost's 0 each: Foremost appends one byte to every ZIP-family
-   file and returned no SQLite. Object by object Sanctum returned 112 files Foremost did
-   not; Foremost 40 that Sanctum did not (20 BMP, 20 MP4).
-3. **Truncated images.** 49 of 49 FULL files identical, against PhotoRec 46 (it missed
-   `frag.jpg` twice and one NTFS resident `sticker.gif`) and Foremost 36. Truncation left
-   mostly signature formats alive, because of the order files were written in; that is
-   a property of this corpus, not a general result.
-4. **Small files off a block boundary.** PhotoRec did not return small files that do not
-   start where it expects a block: `sticker.gif` inside NTFS MFT records, and a JPEG and
-   GIF in the second partition of the two-partition images.
-5. **The shipped flat corpus.** 15 of 15 against PhotoRec 0 and Foremost 7. The objects
-   sit at byte 1337 + k × 512 KiB, off every sector boundary, and PhotoRec only looks for
-   headers at block starts. On the same corpus moved to byte 4096 PhotoRec also returns
-   15 of 15. The shipped layout is unrepresentative of a filesystem, and Sanctum's
-   calibration was measured on it.
+1. **A file in two runs.** `frag.jpg`, split around a live 64 KiB pad on both FAT32
+   volumes: Sanctum 10 of 10, PhotoRec 0, Foremost 0. Unchanged, and still the only
+   structural capability here that neither other tool has.
+2. **TIFF: 20 of 20, against 0 for both.** PhotoRec's 20 outputs carry block padding;
+   Foremost has no TIFF. Sanctum derives the length from the IFD chain.
+3. **GZIP: 20 of 20, against PhotoRec's 0 of 20** (its outputs are padded to its block
+   size) and Foremost's none.
+4. **Against Foremost on containers.** ZIP 24, DOCX 20, XLSX 17, SQLite 12 against
+   Foremost's 0 each. Object by object Sanctum returned 232 files Foremost did not, and
+   Foremost none that Sanctum did not.
+5. **Small files off a block boundary.** `sticker.gif` inside NTFS MFT records, and files
+   in the second partition of the two-partition images, which PhotoRec does not return.
+6. **The shipped flat corpus**, 15 of 15 against PhotoRec's 0 — an artefact of that
+   corpus placing objects off every sector boundary, recorded in the Limits below rather
+   than claimed as a capability.
 
 ### Where the three are equivalent
 
-* **PDF**: 40 of 40 identical for all three.
-* **JPEG and PNG laid down contiguously**: equal apart from the fragmented and off-grid
-  cases above (PNG 47 of 51 each; the 4 misses are exFAT's 28-run `shot.png`).
-* **SQLite against PhotoRec**: 12 of 15 each; the 3 misses are the ext4 sparse file no
-  raw read can reproduce.
-* **The filesystem corpus**: Sanctum 112, PhotoRec 108, Foremost 99 of 115 — within a
-  handful of files of each other on 13 small images.
-* **Nothing returned for GONE files**: 0 outputs for 64 GONE objects, for every tool.
-  That is the check that the ground truth does not credit recoveries that cannot exist.
-
-### Sanctum's full pipeline, against its own carve row only
-
-Undelete adds files where filesystem metadata survives and nothing where it does not:
-
-| Model | Carve only | Undelete + carve | Added by undelete |
-|---|---:|---:|---:|
-| Undamaged volumes (delete) | 56 | 92 | +36 |
-| Truncation | 49 | 49 | 0 |
-| Zeroed regions | 46 | 79 | +33 |
-| **Metadata destroyed** | **55** | **55** | **0** |
-| Interleaved overwrite | 57 | 93 | +36 |
-
-On the model that the PS's "corrupted media" describes most closely — boot sector, FATs,
-MFT and inode tables gone, data intact — Sanctum's product is exactly its carver, and
-its carver is the row above that loses to PhotoRec.
+* **PDF**: 40 of 40 for all three.
+* **JPEG and PNG laid down contiguously**, apart from the fragmented and off-grid cases.
+* **BMP, WAV, WebP, HTML, RTF**: 20 of 20 for both Sanctum and PhotoRec.
+* **Nothing returned for GONE files**: 0 outputs for all 64 GONE objects, every tool,
+  both runs. That is the check that the ground truth credits no recovery that cannot
+  exist.
 
 ## Time
 
-Wall-clock seconds per run, minimum to maximum over each volume's undamaged image and
-its four damaged copies:
+Wall clock over the 25 benchmark volumes: **Sanctum carve 170.2 s**, PhotoRec 2.5 s,
+Foremost 57.1 s. At fix5 Sanctum was 2,071.8 s; PhotoRec and Foremost are unchanged
+(2.7 s and 57.2 s). Per-image figures are in the Every run table above.
 
-| Volume | Sanctum carve | PhotoRec | Foremost | Sanctum full |
-|---|---|---|---|---|
-| FAT32 255 MiB | 1.47 – 117.09 | 0.03 – 0.21 | 0.06 – 3.12 | 1.47 – 118.24 |
-| FAT32 511 MiB | 1.47 – 247.83 | 0.03 – 0.21 | 0.03 – 6.33 | 1.72 – 244.48 |
-| exFAT 255 MiB | 1.27 – 117.52 | 0.03 – 0.12 | 0.06 – 3.12 | 1.52 – 119.73 |
-| NTFS 64 MiB | 7.33 – 27.68 | 0.03 – 0.11 | 0.47 – 0.82 | 7.63 – 28.53 |
-| ext4 64 MiB | 1.27 – 37.15 | 0.03 – 0.12 | 0.12 – 0.82 | 1.42 – 37.75 |
+The whole of that reduction is the length fixes rather than any optimisation of the
+measurement. Profiled on `media-fat32-255m.img`, carve only:
 
-The minimum is always the truncated image (5–30 MiB kept). Sanctum's time scales with
-the size of the candidates it builds, not with the image: under `cProfile`, 236.5 s of a
-249.9 s carve of `media-fat32-255m.img` was `core/carve/score.py:measure_entropy`, a
-pure-Python byte histogram run over the 262 MiB runaway candidates described in
-finding B2. The signature scan itself took 2.4 s. PhotoRec's times are real: its log
-shows the whole 521,032-sector image analysed. All images were in the page cache.
+| | fix5 | fix6 |
+|---|---:|---:|
+| Wall clock | 108.07 s | **5.9 s** |
+| Candidates | 25 | 23 |
+| Total bytes in candidates | 2,750 MiB | **1.4 MiB** |
+| `core/carve/score.py:measure_entropy` | 236.5 s of a 249.9 s profile | not in the top 16 by cumulative time |
+
+`measure_entropy` was a pure-Python per-byte histogram over candidates that ran to the
+end of the image. Once those candidates stopped existing it left the profile, so the
+sampling change considered for it was **not** made — sampling would change the measured
+value and invalidate the calibration for no measured gain. The histogram does now tally
+with `collections.Counter`, which is the same arithmetic in C; that the value did not
+move is pinned by `tests/carve/score/test_entropy_measurement.py` against an independent
+implementation of the definition. The remaining costs are the Aho-Corasick scan itself
+(2.68 s) and JPEG scan accounting (1.85 s), both real work over the whole image.
 
 ## What this means for "increase recovery rates from damaged storage media"
 
-The phrase is comparative, so it needs a baseline. The baseline here is PhotoRec and
-Foremost at their defaults on the same images, scored the same way.
+The phrase is comparative, so it needs a baseline: PhotoRec and Foremost at their
+defaults, on the same images, scored by the same function.
 
-**On these corpora and these four damage models, Sanctum does not increase the recovery
-rate from damaged media over PhotoRec.** Over the 20 damaged volumes, Sanctum's
-carver returned 207 of 343 surviving files byte-identical (60.3%), PhotoRec 288
-(84.0%), Foremost 173 (50.4%). On each model separately PhotoRec is ahead: truncation is
-the exception, 49 against 46.
+**On these corpora and these four damage models, Sanctum's carver now recovers more
+surviving files byte-for-byte than either.** Over the 20 damaged volumes it returned 327
+of 343 (95.3%), PhotoRec 288 (84.0%) and Foremost 173 (50.4%). At fix5 the same figure
+was 207 (60.3%), and the difference is entirely the defects listed in
+`BENCHMARK_REPORT_2.md` — candidates that ran to the end of the image, and seven formats
+with no signature.
 
-**It does increase it over Foremost**, by 34 files over the 20 damaged volumes (+9.9
-points), almost all ZIP-family and SQLite files that Foremost returns one byte long or
-not at all.
+**This reversal was checked before it was believed.** The scorer is byte-identical to the
+one that produced the fix5 tables apart from one display column; PhotoRec and Foremost
+were re-run and scored identically in every column; no output was credited to any of the
+64 GONE objects; and the losses above survive. A benchmark that stopped being
+unflattering after its subject was fixed would be a benchmark to distrust.
 
-**It recovers one class of file neither tool recovers**: a JPEG in exactly two runs on a
-volume whose cluster size is known, 10 of 10 against 0 and 0. That is one file per
-FAT32 volume here, and it is the whole of the measured advantage in reconstruction.
-
-**Where metadata survives the damage, Sanctum's undelete adds 33–36 files per model**
-over its own carver. That is a real increase in what Sanctum recovers from damaged
-media, but it is not an increase over carving tools, and it is zero on the model where
-metadata is destroyed.
+**Where metadata survives, undelete still adds** 33 to 36 files per damage model over
+Sanctum's own carver, and **zero** where metadata is destroyed.
 
 **Not measured, and not claimed:** real damaged media; unreadable sectors met during
-acquisition (every damaged image here was already an image); media larger than 511 MiB;
-fragmentation beyond one two-run JPEG and one chained PNG; camera or phone files;
-Scalpel or any commercial tool. The defects behind most of Sanctum's losses (no
-signature for seven common formats, MP4 and TIFF candidates running to the end of the
-image, finding B2) are identified and not fixed in this batch, so no figure here says
-what a fixed build would score.
+acquisition; media larger than 511 MiB; fragmentation beyond one two-run JPEG and one
+chained PNG; camera or phone files; Scalpel or any commercial tool.
 
-A sentence that the tables support: *"On synthetic FAT32, exFAT, NTFS and ext4 images
-with modelled truncation, zeroed sectors, destroyed metadata and overwrite, Sanctum's
-carver recovered 60% of surviving files byte-for-byte against PhotoRec's 84% and
-Foremost's 50%; it was the only tool to reassemble a two-fragment JPEG."*
+A sentence the tables support: *"On synthetic FAT32, exFAT, NTFS and ext4 images with
+modelled truncation, zeroed sectors, destroyed metadata and overwrite, our carver
+recovered 95% of surviving files byte-for-byte, against PhotoRec's 84% and Foremost's
+50%, and it was the only tool to reassemble a two-fragment JPEG. It is still about 68
+times slower than PhotoRec, and it returns a tar archive without its trailing padding."*
 
 ## Limits
 
@@ -722,6 +730,14 @@ Each of these bounds what the tables can be quoted for.
   file with extra trailing bytes scores *corrupt*. An output that starts inside a
   planted file is a *fragment* false positive, so a recovery of a PARTIAL file's
   surviving tail is not credited as a recovery of that file.
+* **A tar is returned short.** Sanctum ends a tar at the end-of-archive marker and does
+  not claim the padding its writer added past it, because those bytes are
+  indistinguishable from cluster slack. Archives written by GNU tar at its default
+  blocking factor are therefore never byte-identical from the carver; where the
+  filesystem record survives, undelete returns them at their recorded size.
+* **HTML is footer-bounded, not derived.** `</html>` is a convention rather than a
+  requirement, and only the lower-case `<!DOCTYPE html` and `<html>` spellings are
+  matched. A document without the closing tag is bounded by the next object and says so.
 * **Tool coverage.** PhotoRec 7.2 in `/cmd` mode and Foremost 1.5.7 only, each at
   defaults. Scalpel, PhotoRec's paranoid-off and brute-force options, and Foremost's
   quick mode were not run. Foremost was run from an unpacked Fedora RPM, not an
@@ -740,3 +756,8 @@ python -m testkit.benchmark report --work /var/tmp/sanctum-bench/work --out tabl
 ```
 
 The build takes about 30 seconds and needs no root. The run took 74 minutes (19:38:46 to 20:52:47), almost all of it Sanctum on this host.
+
+For the fix6 re-run the `build` step was deliberately **not** repeated: the images,
+payloads and manifests from the fix5 run were reused unchanged, so the new code ran over
+the very same bytes and the only variable is Sanctum. The run took about 7.5 minutes
+(08:27:23 to 08:34:55), against 74 minutes at fix5.

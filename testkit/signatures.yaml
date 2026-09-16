@@ -175,3 +175,93 @@ signatures:
     max_size: 268435456
     min_size: 8
     notes: "Big-endian variant."
+
+  - name: BMP
+    ext: bmp
+    mime: image/bmp
+    header: "424D"
+    max_size: 268435456
+    min_size: 54
+    notes: >-
+      "BM", two bytes, so it matches by chance about once per 64 KiB of random
+      data. A candidate is only made when the 32-bit file size at offset 2, the
+      pixel-data offset at 10 and the DIB header size at 14 agree with each
+      other. The exact length is that file size field.
+
+  - name: WebP
+    ext: webp
+    mime: image/webp
+    header: "52494646"
+    max_size: 268435456
+    min_size: 20
+    notes: >-
+      RIFF container. "RIFF" alone is shared with WAV and AVI, so the form type
+      at offset 8 must read "WEBP". Length is 8 plus the RIFF size field.
+
+  - name: WAV
+    ext: wav
+    mime: audio/x-wav
+    header: "52494646"
+    max_size: 4294967296
+    min_size: 44
+    notes: >-
+      The same RIFF header as WebP; the form type at offset 8 must read "WAVE".
+      Length is 8 plus the RIFF size field.
+
+  - name: GZIP
+    ext: gz
+    mime: application/gzip
+    header: "1F8B08"
+    max_size: 4294967296
+    min_size: 20
+    notes: >-
+      Magic plus compression method 8, deflate; no other method was ever
+      assigned. There is no footer to search for - the 8-byte trailer is a CRC
+      and a length, both arbitrary bytes - so the end comes from inflating the
+      member under a byte cap.
+
+  - name: TAR
+    ext: tar
+    mime: application/x-tar
+    header: "7573746172"
+    header_offset: 257
+    max_size: 4294967296
+    min_size: 1024
+    notes: >-
+      "ustar" at byte 257 of a 512-byte member header. The header's own octal
+      checksum at offset 148 is verified before a candidate is made, which is
+      what keeps a five-byte magic from matching noise. One candidate is the
+      whole run of members, not one per member.
+
+  - name: RTF
+    ext: rtf
+    mime: application/rtf
+    header: "7B5C72746631"
+    max_size: 268435456
+    min_size: 16
+    notes: >-
+      "{\\rtf1". The document is a single brace group, so its end is the brace
+      that closes the first one - counted, not searched for.
+
+  - name: HTML
+    ext: html
+    mime: text/html
+    header: "3C21444F43545950452068746D6C"
+    footer: "3C2F68746D6C3E"
+    max_size: 67108864
+    min_size: 32
+    notes: >-
+      "<!DOCTYPE html", lower case. HTML carries no length field and has no
+      required footer: "</html>" is a convention, and a document that ends
+      without one is bounded by the next object instead and says so. Upper and
+      mixed-case doctypes are missed.
+
+  - name: HTML-tag
+    ext: html
+    mime: text/html
+    header: "3C68746D6C3E"
+    footer: "3C2F68746D6C3E"
+    max_size: 67108864
+    min_size: 32
+    notes: >-
+      "<html>", for a document with no doctype. Same bounding caveat as HTML.

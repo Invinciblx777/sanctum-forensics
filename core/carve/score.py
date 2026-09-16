@@ -60,6 +60,7 @@ the number rather than assert the conclusion.
 from __future__ import annotations
 
 import math
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -143,16 +144,25 @@ ENTROPY_PROFILES: dict[str, EntropyProfile] = {
     "mp4": "high",
     "7z": "high",
     "rar": "high",
+    "webp": "high",
+    "gz": "high",
     "txt": "low",
     "xml": "low",
     "html": "low",
     "csv": "low",
     "bmp": "low",
+    "rtf": "low",
     "pdf": "mixed",
     "doc": "mixed",
     "elf": "mixed",
     "exe": "mixed",
     "tiff": "mixed",
+    # Neither of these has a single expectation, and saying so is the honest
+    # entry. Uncompressed PCM is as random as what was recorded - silence is
+    # near zero bits per byte and noise is near eight - and a tar is whatever
+    # its members are, text and compressed files alike.
+    "wav": "mixed",
+    "tar": "mixed",
     # Measured, not assumed: a database page is text rows and padding, and an
     # event log is repeated record templates. Both sit near 3 bits/byte.
     "sqlite": "low",
@@ -281,15 +291,16 @@ def measure_entropy(
         chunk = data[start : start + window]
         if not chunk:
             break
-        counts = [0] * 256
-        for byte in chunk:
-            counts[byte] += 1
         size = len(chunk)
         entropy = 0.0
-        for count in counts:
-            if count:
-                share = count / size
-                entropy -= share * math.log2(share)
+        # Counter tallies a bytes object in C. The histogram this replaced was
+        # a pure-Python ``for byte in chunk`` loop, and it was 236.5 s of a
+        # 249.9 s profiled carve. The returned value is unchanged: the same
+        # counts, the same logarithms, the same rounding - a byte that never
+        # occurred contributed nothing to the sum before and is absent now.
+        for count in Counter(chunk).values():
+            share = count / size
+            entropy -= share * math.log2(share)
         millibits = int(round(entropy * 1000))
         totals += millibits
         windows += 1
