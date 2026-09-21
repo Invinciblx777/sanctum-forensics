@@ -250,6 +250,32 @@ def options_from_preview(
     return options, verification
 
 
+def _inconclusive_options(exc: SanctumError) -> tuple[list[SanitizeOption], str]:
+    """What a device whose capability probe failed can be offered: nothing.
+
+    A probe that did not complete establishes nothing, so no method is
+    predicted and the failure travels as the reason. This is what an
+    unprivileged process sees for every device, because ATA and NVMe
+    pass-through need the privileged helper.
+    """
+    return (
+        [
+            SanitizeOption(
+                level=level,
+                title=_option_title(level, None),
+                status=CapabilityStatus.INCONCLUSIVE,
+                why=(
+                    "The capability probe did not complete, so no method is "
+                    f"predicted: {exc.message}"
+                ),
+                remediation=exc.remediation,
+            )
+            for level in ("PURGE", "CLEAR")
+        ],
+        "",
+    )
+
+
 class LinuxAdapter(BaseAdapter):
     """Linux: lsblk/sysfs discovery, the validated whole-drive engine."""
 
@@ -452,7 +478,14 @@ class LinuxAdapter(BaseAdapter):
             from core.device.enumerate import get_device
 
             core_device = get_device(device.id, self._system_probe())
-        probed = capabilities.probe(core_device)
+        try:
+            probed = capabilities.probe(core_device)
+        except SanctumError as exc:
+            # Routine, not exceptional: an unprivileged process cannot issue
+            # ATA or NVMe pass-through, so every device probes this way until
+            # the helper is running. The assessment says INCONCLUSIVE rather
+            # than failing the request that asked for it.
+            return _inconclusive_options(exc)
         return options_from_preview(
             drive.preview(core_device, probed), core_device.size_bytes
         )

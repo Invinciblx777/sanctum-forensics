@@ -138,6 +138,9 @@ class PlatformInfo(BaseModel):
     app_version: str
     #: True inside a packaged build (PyInstaller); False from a source checkout.
     packaged: bool = False
+    #: What this build is, from ``build_info.json`` written at package time.
+    #: Empty from a source checkout, where there is no build to identify.
+    build: dict[str, str] = Field(default_factory=dict)
     #: ``sys.platform`` verbatim, so a reader can check the mapping.
     sys_platform: str
 

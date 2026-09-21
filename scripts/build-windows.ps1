@@ -33,12 +33,19 @@ npm run build; if ($LASTEXITCODE) { throw "UI build failed" }
 Pop-Location
 
 Write-Host "==> Build environment"
-& $Python $PythonArgs -m venv $Venv
+# `py -3.11` needs its selector argument; a direct interpreter path must not
+# be handed an empty string, which it would read as a script name.
+$pyArgs = @()
+if ($Python -eq "py" -and $PythonArgs) { $pyArgs = @($PythonArgs) }
+& $Python @pyArgs -m venv $Venv
 $Py = Join-Path $Venv "Scripts\python.exe"
 & $Py -m pip install --quiet --upgrade pip
 & $Py -m pip install --quiet --constraint constraints.txt ".[build,desktop]"
 if ($LASTEXITCODE) { throw "pip install failed" }
 $Version = & $Py -c "import importlib.metadata as m; print(m.version('sanctum-forensics'))"
+
+Write-Host "==> Build metadata"
+& $Py packaging\build_info.py
 
 Write-Host "==> Icons"
 & $Py packaging\make_icons.py build\icons

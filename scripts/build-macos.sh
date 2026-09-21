@@ -29,6 +29,9 @@ echo "==> Build environment"
 "$VENV/bin/python" -m pip install --quiet --constraint constraints.txt ".[build,desktop]"
 VERSION="$("$VENV/bin/python" -c 'import importlib.metadata as m; print(m.version("sanctum-forensics"))')"
 
+echo "==> Build metadata"
+"$VENV/bin/python" packaging/build_info.py
+
 echo "==> Icons"
 "$VENV/bin/python" packaging/make_icons.py build/icons
 

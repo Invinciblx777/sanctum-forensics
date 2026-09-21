@@ -39,3 +39,4 @@ docs/validation/results-*/
 docs/demo/fallback/*
 !docs/demo/fallback/README.md
 docs/validation/results-*/keys/*.key.pem
+core/platform/build_info.json

@@ -10,6 +10,7 @@ never guessed.
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import sys
@@ -23,6 +24,7 @@ from core.platform.model import PlatformFamily, PlatformInfo, PrivilegeState
 __all__ = [
     "APP_NAME",
     "app_version",
+    "build_info",
     "family",
     "platform_info",
     "privilege_state",
@@ -89,6 +91,22 @@ def linux_pretty_name(os_release: str | None) -> str:
     return "Linux"
 
 
+def build_info(path: Path | None = None) -> dict[str, str]:
+    """What ``packaging/build_info.py`` recorded when this build was made.
+
+    Empty from a source checkout: there is no build to identify, and an
+    invented commit would be worse than none.
+    """
+    target = path or Path(__file__).with_name("build_info.json")
+    try:
+        loaded = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return (
+        {str(k): str(v) for k, v in loaded.items()} if isinstance(loaded, dict) else {}
+    )
+
+
 def platform_info() -> PlatformInfo:
     """Describe this host."""
     fam = family()
@@ -105,6 +123,7 @@ def platform_info() -> PlatformInfo:
             app_version=app_version(),
             packaged=packaged,
             sys_platform=sys.platform,
+            build=build_info(),
         )
     if fam == "macos":
         release = platform.mac_ver()[0]
@@ -117,6 +136,7 @@ def platform_info() -> PlatformInfo:
             app_version=app_version(),
             packaged=packaged,
             sys_platform=sys.platform,
+            build=build_info(),
         )
     os_release: str | None
     try:
@@ -132,6 +152,7 @@ def platform_info() -> PlatformInfo:
         app_version=app_version(),
         packaged=packaged,
         sys_platform=sys.platform,
+        build=build_info(),
     )
 
 

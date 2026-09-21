@@ -33,6 +33,7 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
+from pathlib import Path
 from typing import Any
 
 __all__ = ["main", "free_loopback_port", "session_url", "wait_for_health"]
@@ -84,7 +85,29 @@ def _serve(port: int, token: str, stop: threading.Event) -> Any:
 
 
 def _open_window(url: str, stop: threading.Event) -> None:
-    """A native webview if one is bundled, otherwise the default browser."""
+    """A native webview if one is bundled, otherwise the default browser.
+
+    ``SANCTUM_URL_FILE`` writes the session URL to a file and opens nothing.
+    It exists for the packaged smoke test, which has no desktop to open a
+    window on; the file holds a token for this launch only, it is written
+    with owner-only permissions, and the app still refuses every request that
+    does not carry the cookie that URL sets.
+    """
+    url_file = os.environ.get("SANCTUM_URL_FILE", "")
+    if url_file:
+        target = Path(url_file)
+        target.write_text(url, encoding="utf-8")
+        try:
+            target.chmod(0o600)
+        except OSError:  # pragma: no cover - filesystem without POSIX modes
+            pass
+        print(f"{TITLE} session URL written to {target}", file=sys.stderr)
+        try:
+            while not stop.wait(0.5):
+                pass
+        except KeyboardInterrupt:
+            stop.set()
+        return
     if os.environ.get("SANCTUM_BROWSER") != "1":
         try:
             import webview  # type: ignore[import-not-found]

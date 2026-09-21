@@ -37,6 +37,12 @@ datas = [(str(UI_DIST), "ui/dist")]
 RECORD = ROOT / "core" / "platform" / "validation_record.json"
 if RECORD.is_file():
     datas.append((str(RECORD), "core/platform"))
+# What this build is: version, commit, platform, architecture, date, runtime
+# versions (packaging/build_info.py). Missing from an ad-hoc build, and the
+# app then shows no build identity rather than an invented one.
+BUILD_INFO = ROOT / "core" / "platform" / "build_info.json"
+if BUILD_INFO.is_file():
+    datas.append((str(BUILD_INFO), "core/platform"))
 datas += collect_data_files("reportlab")
 datas += copy_metadata("sanctum-forensics")
 
