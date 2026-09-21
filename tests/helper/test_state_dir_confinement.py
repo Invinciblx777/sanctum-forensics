@@ -207,8 +207,9 @@ def test_a_refused_path_comes_back_as_an_error_frame_and_the_daemon_survives(
     ``serve_forever`` and stop the helper for every operator on the box.
     """
     # Short path: AF_UNIX socket names are capped near 108 bytes, and pytest's
-    # tmp_path is longer than that on this tree.
-    socket_dir = Path(tempfile.mkdtemp(prefix="/tmp/sanctum-conf-"))
+    # tmp_path is longer than that on this tree. `/tmp` was hardcoded here,
+    # which on Windows resolves to C:\\tmp and does not exist.
+    socket_dir = Path(tempfile.mkdtemp(prefix="snc-"))
     socket_path = socket_dir / "h.sock"
 
     try:

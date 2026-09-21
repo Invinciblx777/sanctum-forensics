@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import sys
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,12 @@ from core.errors import EvidenceIntegrityError, UnsupportedCapability
 from core.ledger.chain import ChainStatus, Ledger
 
 MIB = 1024 * 1024
+
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="software write-block probing uses fcntl (BLKROGET); POSIX-only",
+)
 
 
 def _payload(size: int) -> bytes:

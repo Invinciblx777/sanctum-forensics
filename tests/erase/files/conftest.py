@@ -93,6 +93,11 @@ def sparse_file(real_fs_dir: Path) -> Path:
         handle.seek(4 << 20)
         handle.write(b"tail")
     stat = os.stat(target)
+    if not hasattr(stat, "st_blocks"):
+        pytest.skip(
+            "st_blocks is POSIX-only; NTFS sparseness is covered by "
+            "tests/platform/test_windows_filesystem.py"
+        )
     if stat.st_blocks * 512 >= stat.st_size:
         pytest.skip(f"{target} was not allocated sparsely on this filesystem")
     return target

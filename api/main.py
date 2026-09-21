@@ -26,8 +26,11 @@ Run with ``python -m api.main`` or
 from __future__ import annotations
 
 import os
+import secrets
+import sys
 import traceback
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +43,7 @@ from api.deps import AppServices, default_services, signing_key_limitations
 from api.routes import all_routers
 from api.security import install as install_security
 
-__all__ = ["create_app", "run", "UI_DIST", "LOOPBACK_HOST"]
+__all__ = ["create_app", "run", "dev_session_token", "UI_DIST", "LOOPBACK_HOST"]
 
 logger = structlog.get_logger(__name__)
 
@@ -236,13 +239,61 @@ def create_app(
     return app
 
 
+def dev_session_token(
+    environ: Mapping[str, str] | None = None,
+) -> tuple[str, str]:
+    """The token ``python -m api.main`` serves with, and how it was decided.
+
+    The development server used to have no session protection at all: it bound
+    loopback, and every other process and account on the machine could drive
+    it, including the endpoints that erase files. Loopback is not an
+    authorisation boundary on a shared machine.
+
+    So it now behaves like the packaged app by default - a token per start,
+    printed as the one URL that opens it. Two escape hatches, both explicit:
+    ``SANCTUM_SESSION_TOKEN`` supplies your own (for a script that needs a
+    stable one), and ``SANCTUM_DEV_INSECURE=1`` turns it off and says loudly
+    what that means.
+    """
+    env: Mapping[str, str] = os.environ if environ is None else environ
+    if env.get("SANCTUM_DEV_INSECURE") == "1":
+        return "", "insecure"
+    existing = (env.get("SANCTUM_SESSION_TOKEN") or "").strip()
+    if existing:
+        return existing, "environment"
+    return secrets.token_urlsafe(32), "generated"
+
+
 def run() -> None:  # pragma: no cover - the process entry point
-    """Serve on loopback only."""
+    """Serve on loopback only, with a session token unless told otherwise."""
     import uvicorn
 
     port = int(os.environ.get("SANCTUM_PORT", DEFAULT_PORT))
+    token, basis = dev_session_token()
+    banner = [
+        "",
+        "  Sanctum development server",
+        f"  Address     http://{LOOPBACK_HOST}:{port}  (loopback only; never 0.0.0.0)",
+    ]
+    if token:
+        banner += [
+            f"  Open this   http://{LOOPBACK_HOST}:{port}/session/{token}",
+            "  Session     one token for this run"
+            + (" (from SANCTUM_SESSION_TOKEN)" if basis == "environment" else ""),
+            "              every request without its cookie is refused",
+        ]
+    else:
+        banner += [
+            "  Session     OFF (SANCTUM_DEV_INSECURE=1)",
+            "  WARNING     any process or account on this machine can drive",
+            "              this server, including the endpoints that erase",
+            "              files. Development machines only.",
+        ]
+    banner.append("")
+    print("\n".join(banner), file=sys.stderr)
+
     uvicorn.run(
-        create_app(),  # reads SANCTUM_SESSION_TOKEN; see api.security
+        create_app(session_token=token),
         host=LOOPBACK_HOST,
         port=port,
         log_level="info",

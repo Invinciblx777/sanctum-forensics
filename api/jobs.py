@@ -99,6 +99,12 @@ class JobRecord:
             "job_id": self.job_id,
             "kind": self.kind,
             "state": self.state,
+            # Terminal *and* written to the chain. `state` flips a moment
+            # earlier, inside the worker loop, so a client that asked for a
+            # report the instant it saw "complete" could beat the job.outcome
+            # append and be told the job is unknown. Seen on the Windows CI
+            # runner, where that window is wide enough to lose.
+            "settled": self.settled.is_set(),
             "params": _redact(self.params),
             "progress_count": len(self.progress),
             "dropped_progress": self.dropped,

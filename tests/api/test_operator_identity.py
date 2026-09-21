@@ -49,6 +49,12 @@ def _run_acquire(client: TestClient, tmp_path: Path, operator: str) -> str:
 # --------------------------------------------------------------------------
 
 
+def _own_uid() -> int:
+    """This process's uid, or ``-1`` on Windows, which has no such number."""
+    getuid = getattr(os, "getuid", None)
+    return int(getuid()) if getuid is not None else -1
+
+
 def test_the_helper_answers_whoami_from_its_own_uid_not_the_request() -> None:
     """A caller that names a uid, a username or a basis does not get it back."""
     helper = InProcessHelper()
@@ -63,8 +69,8 @@ def test_the_helper_answers_whoami_from_its_own_uid_not_the_request() -> None:
         },
     )
 
-    assert answer["uid"] == os.getuid()
-    assert answer["username"] != "root" or os.getuid() == 0
+    assert answer["uid"] == _own_uid()
+    assert answer["username"] != "root" or _own_uid() == 0
     assert answer["basis"] != "trust me"
 
 
@@ -161,7 +167,13 @@ def test_the_identity_claims_an_account_and_not_a_person(
 ) -> None:
     identity = resolve(services)
 
-    assert f"uid {identity.uid}" in identity.actor
+    # Windows has no numeric uid and the helper reports -1 rather than
+    # inventing one, so the actor names the account instead of printing a uid
+    # that does not exist. Either way the string says it is an account.
+    if identity.uid < 0:
+        assert identity.actor.endswith("(Windows account)")
+    else:
+        assert f"uid {identity.uid}" in identity.actor
     assert "LOCAL ACCOUNT, NOT A PERSON" in identity.as_dict()["limitation"]
 
 
@@ -184,7 +196,7 @@ def test_an_unreachable_helper_degrades_and_says_so_rather_than_trusting_input(
 
     assert isinstance(identity, Identity)
     assert identity.trusted is False
-    assert identity.uid == os.getuid()
+    assert identity.uid == _own_uid()
     assert "not confirmed by a privileged process" in identity.basis
 
 

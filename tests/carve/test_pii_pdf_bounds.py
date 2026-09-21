@@ -24,10 +24,16 @@ import sys
 import zlib
 from pathlib import Path
 
+import pytest
 from core.carve import pii
 
 REPO = Path(__file__).resolve().parents[2]
 MIB = 1024 * 1024
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the memory bound is measured with resource.getrusage; POSIX-only",
+)
 
 
 def _verhoeff_complete(stem: str) -> str:

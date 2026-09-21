@@ -118,7 +118,7 @@ def engine(monkeypatch: pytest.MonkeyPatch) -> FakeEngine:
 
 
 def test_an_operation_longer_than_the_old_deadline_completes_and_says_so(
-    tmp_path: Path, engine: FakeEngine, monkeypatch: pytest.MonkeyPatch
+    short_socket_dir: Path, engine: FakeEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The single most important assertion in this file.
 
@@ -129,7 +129,7 @@ def test_an_operation_longer_than_the_old_deadline_completes_and_says_so(
     failure that had not happened, about a drive it was still wiping.
     """
     monkeypatch.setattr("helper.daemon.READ_TIMEOUT_SECONDS", FAST_DEADLINE)
-    socket_path = tmp_path / "helper.sock"
+    socket_path = short_socket_dir / "h.sock"
 
     with running_daemon(socket_path):
         client = HelperClient(str(socket_path), idle_timeout=FAST_DEADLINE)
@@ -148,10 +148,10 @@ def test_an_operation_longer_than_the_old_deadline_completes_and_says_so(
 
 
 def test_progress_arrives_while_the_operation_is_still_running(
-    tmp_path: Path, engine: FakeEngine
+    short_socket_dir: Path, engine: FakeEngine
 ) -> None:
     """A live bar, not a replay. The engine is still going when we see record 1."""
-    socket_path = tmp_path / "helper.sock"
+    socket_path = short_socket_dir / "h.sock"
 
     with running_daemon(socket_path):
         client = HelperClient(str(socket_path), idle_timeout=5.0)
@@ -168,7 +168,7 @@ def test_progress_arrives_while_the_operation_is_still_running(
 
 
 def test_a_quiet_phase_is_kept_alive_by_heartbeats_not_failed(
-    tmp_path: Path, engine: FakeEngine, monkeypatch: pytest.MonkeyPatch
+    short_socket_dir: Path, engine: FakeEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Whole phases yield nothing, and none of them is a hung helper.
 
@@ -177,7 +177,7 @@ def test_a_quiet_phase_is_kept_alive_by_heartbeats_not_failed(
     be the thirty-second bug with a larger number.
     """
     monkeypatch.setattr("helper.daemon.HEARTBEAT_SECONDS", 0.05)
-    socket_path = tmp_path / "helper.sock"
+    socket_path = short_socket_dir / "h.sock"
 
     with running_daemon(socket_path):
         client = HelperClient(str(socket_path), idle_timeout=FAST_DEADLINE)
@@ -192,14 +192,14 @@ def test_a_quiet_phase_is_kept_alive_by_heartbeats_not_failed(
     assert result["finished"] is True
 
 
-def test_a_helper_that_stops_speaking_is_still_detected(tmp_path: Path) -> None:
+def test_a_helper_that_stops_speaking_is_still_detected(short_socket_dir: Path) -> None:
     """The deadline removal must not make a dead helper look like a slow one.
 
     Nothing is served here at all: a socket that accepts and then says nothing
     is exactly what a wedged daemon looks like from the client's side, and the
     client has to give up on it rather than wait for a wipe that is not running.
     """
-    socket_path = tmp_path / "helper.sock"
+    socket_path = short_socket_dir / "h.sock"
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(str(socket_path))
     server.listen(1)
@@ -232,10 +232,10 @@ def test_a_helper_that_stops_speaking_is_still_detected(tmp_path: Path) -> None:
 
 
 def test_closing_the_client_stream_stops_the_engine(
-    tmp_path: Path, engine: FakeEngine
+    short_socket_dir: Path, engine: FakeEngine
 ) -> None:
     """Cancel reaches across the socket, or the button on the screen lies."""
-    socket_path = tmp_path / "helper.sock"
+    socket_path = short_socket_dir / "h.sock"
 
     with running_daemon(socket_path):
         client = HelperClient(str(socket_path), idle_timeout=5.0)
@@ -249,19 +249,17 @@ def test_closing_the_client_stream_stops_the_engine(
 
 
 def test_a_client_that_disappears_stops_the_engine_too(
-    tmp_path: Path, engine: FakeEngine
+    short_socket_dir: Path, engine: FakeEngine
 ) -> None:
     """A caller that will never read the answer is not a reason to keep wiping."""
-    socket_path = tmp_path / "helper.sock"
+    socket_path = short_socket_dir / "h.sock"
 
     with running_daemon(socket_path):
         conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         conn.settimeout(5.0)
         conn.connect(str(socket_path))
         conn.sendall(
-            rpc.encode_request(
-                "fake_engine", {"records": 500, "step": 0.01}, req_id=1
-            )
+            rpc.encode_request("fake_engine", {"records": 500, "step": 0.01}, req_id=1)
         )
         assert engine.started.wait(timeout=5.0)
         conn.recv(65536)  # let at least one frame be written before leaving
@@ -277,10 +275,10 @@ def test_a_client_that_disappears_stops_the_engine_too(
 
 
 def test_a_non_streaming_call_still_gets_one_answer(
-    tmp_path: Path, engine: FakeEngine
+    short_socket_dir: Path, engine: FakeEngine
 ) -> None:
     """``call`` discards progress and returns the result, as it always did."""
-    socket_path = tmp_path / "helper.sock"
+    socket_path = short_socket_dir / "h.sock"
 
     with running_daemon(socket_path):
         client = HelperClient(str(socket_path), idle_timeout=5.0)

@@ -299,6 +299,13 @@ def test_adapter_for_every_family_is_constructible() -> None:
     assert adapter_for("other").whole_drive_unavailable_reason()
 
 
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason=(
+        "the container guard is the Linux adapter's; off Linux the whole-drive "
+        "engine is already unavailable for a different, earlier reason"
+    ),
+)
 def test_inside_a_container_whole_drive_is_refused_not_guessed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

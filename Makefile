@@ -61,8 +61,13 @@ check: lint typecheck test
 # document names. Without these uvicorn serves its own default, 8000.
 SANCTUM_PORT ?= 8787
 
+# `python -m api.main`, not `uvicorn --reload`: the entry point is what prints
+# the session URL this run is reachable at, and what refuses every request
+# that does not carry its cookie. For an auto-reloading server without that
+# protection, run uvicorn yourself with SANCTUM_DEV_INSECURE=1 and read the
+# warning it prints.
 run:
-	$(PY) -m uvicorn api.main:create_app --factory --reload --host 127.0.0.1 --port $(SANCTUM_PORT)
+	$(PY) -m api.main
 
 docker:
 	docker build -t sanctum-forensics .

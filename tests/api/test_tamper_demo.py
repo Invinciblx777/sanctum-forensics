@@ -12,6 +12,7 @@ Two claims, and the second is the one that has to be tested hardest:
 from __future__ import annotations
 
 import hashlib
+import time
 from pathlib import Path
 
 from api.deps import AppServices
@@ -19,9 +20,16 @@ from fastapi.testclient import TestClient
 
 
 def _tree_digest(root: Path) -> str:
-    """One digest over every file under ``root``, path and content."""
+    """One digest over every *stored* file under ``root``, path and content.
+
+    Staging files (``.<digest>.partial``) are skipped: they are a blob write
+    in flight, not ledger content, and one can be renamed away between the
+    listing and the read.
+    """
     digest = hashlib.sha256()
     for path in sorted(p for p in root.rglob("*") if p.is_file()):
+        if path.name.startswith(".") and path.name.endswith(".partial"):
+            continue
         digest.update(str(path.relative_to(root)).encode("utf-8"))
         digest.update(path.read_bytes())
     return digest.hexdigest()
@@ -36,9 +44,13 @@ def _busy_chain(client: TestClient, tmp_path: Path, runs: int = 3) -> None:
             json={"source": str(source), "dest": f"t{index}.dd"},
         )
         job_id = accepted.json()["job_id"]
-        for _ in range(600):
-            if client.get(f"/jobs/{job_id}").json()["state"] != "running":
-                break
+        # Until it has *settled*: a job that is merely terminal may still have
+        # a blob write in flight, and this test then hashes a tree that is
+        # still being written.
+        deadline = time.monotonic() + 30
+        while not client.get(f"/jobs/{job_id}").json()["settled"]:
+            assert time.monotonic() < deadline, "the acquisition never settled"
+            time.sleep(0.01)
 
 
 def test_the_demonstration_breaks_a_copy_and_reports_the_exact_sequence(

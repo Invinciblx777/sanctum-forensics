@@ -263,10 +263,26 @@ def test_a_worker_that_raises_returns_a_failed_record_instead(
     """
     good = real_fs_dir / "ordinary.bin"
     good.write_bytes(b"x" * 128)
+    # A directory *this platform* protects: "/usr" resolves to C:\usr on
+    # Windows, which exists nowhere and fails as ENOENT rather than being
+    # refused, so the gate this test is about never ran there.
+    from core.platform.host import family
+    from core.platform.paths import protected_prefixes
+
+    protected = next(
+        Path(item)
+        for item in protected_prefixes(family())
+        # Not the filesystem root (refused by a different branch, with a
+        # different sentence) and not a symlink (/bin is one on Fedora, and a
+        # link is refused as a link before the protected list is consulted).
+        if Path(item).is_dir()
+        and Path(item).parent != Path(item)
+        and not Path(item).is_symlink()
+    )
 
     _, result = drain(
         erase_paths(
-            [good, Path("/usr"), good.parent / "second.bin"],
+            [good, protected, good.parent / "second.bin"],
             real_erase(workers=1, recursive=False),
             job_id="raising",
             ledger=_sink(tmp_path),
@@ -277,7 +293,7 @@ def test_a_worker_that_raises_returns_a_failed_record_instead(
     protected = result.records[1]
     assert protected.ok is False
     assert protected.error_kind == "SystemDiskRefused"
-    assert "protected system location" in (protected.error or "")
+    assert "Refusing to erase" in (protected.error or "")
     assert result.records[0].ok, "the first file must still have been erased"
 
 
@@ -305,6 +321,8 @@ def test_a_directory_that_cannot_be_scanned_does_not_abort_the_walk(
     finally:
         os.chmod(blocked, stat.S_IRWXU)
 
+    if not hasattr(os, "geteuid"):
+        pytest.skip("POSIX mode bits do not block a read on Windows")
     if os.geteuid() == 0:
         pytest.skip("running as root, which reads a 0o000 directory anyway")
 

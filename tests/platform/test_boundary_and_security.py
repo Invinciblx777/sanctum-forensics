@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -233,6 +234,14 @@ def test_a_reparse_attribute_alone_marks_a_directory_as_a_link() -> None:
     assert _stat_is_link_or_reparse(link) is True  # type: ignore[arg-type]
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "simulated here through the stat check; Windows runs the real thing "
+        "in tests/platform/test_windows_filesystem.py, where a DirEntry's "
+        "st_ino is 0 and this simulation cannot work"
+    ),
+)
 def test_a_folder_erase_does_not_descend_through_a_junction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -310,3 +319,100 @@ def test_quit_is_refused_unless_the_launcher_started_the_app(tmp_path: Path) -> 
         client.cookies.set(SESSION_COOKIE, "t" * 43)
         assert client.post("/app/quit").json() == {"quitting": True}
     assert stop.is_set()
+
+
+# --------------------------------------------------------------------------
+# Session protection, in depth
+# --------------------------------------------------------------------------
+
+
+def test_the_development_server_protects_itself_by_default() -> None:
+    """Loopback is not an authorisation boundary on a shared machine."""
+    from api.main import dev_session_token
+
+    generated, basis = dev_session_token({})
+    assert basis == "generated"
+    assert len(generated) >= 32
+    assert dev_session_token({})[0] != generated, "a token per start, not a constant"
+
+    supplied, basis = dev_session_token({"SANCTUM_SESSION_TOKEN": "mine"})
+    assert (supplied, basis) == ("mine", "environment")
+
+    off, basis = dev_session_token({"SANCTUM_DEV_INSECURE": "1"})
+    assert (off, basis) == ("", "insecure")
+
+
+@pytest.mark.parametrize(
+    ("cookie", "expected"),
+    [
+        (None, 401),
+        ("", 401),
+        ("wrong-token-entirely", 401),
+        ("t" * 42, 401),
+        ("T" * 43, 401),
+    ],
+)
+def test_every_wrong_session_cookie_is_refused(
+    tmp_path: Path, cookie: str | None, expected: int
+) -> None:
+    token = "t" * 43
+    with TestClient(_app(tmp_path, token), base_url=LOOPBACK_BASE_URL) as client:
+        if cookie is not None:
+            client.cookies.set(SESSION_COOKIE, cookie)
+        for path in ("/health", "/platform", "/devices", "/ledger/verify"):
+            assert client.get(path).status_code == expected, path
+        assert (
+            client.post("/jobs/erase-files", json={"paths": []}).status_code == expected
+        )
+
+
+def test_a_token_from_a_previous_launch_does_not_open_the_next_one(
+    tmp_path: Path,
+) -> None:
+    """Each launch mints its own; a stale URL from a closed window is useless."""
+    first, second = "a" * 43, "b" * 43
+    with TestClient(_app(tmp_path, first), base_url=LOOPBACK_BASE_URL) as client:
+        client.cookies.set(SESSION_COOKIE, first)
+        assert client.get("/health").status_code == 200
+
+    with TestClient(
+        _app(tmp_path / "next", second), base_url=LOOPBACK_BASE_URL
+    ) as client:
+        client.cookies.set(SESSION_COOKIE, first)
+        assert client.get("/health").status_code == 401
+        assert (
+            client.get(f"/session/{first}", follow_redirects=False).status_code == 403
+        )
+        client.cookies.set(SESSION_COOKIE, second)
+        assert client.get("/health").status_code == 200
+
+
+def test_a_cross_origin_page_cannot_use_the_session(tmp_path: Path) -> None:
+    """The cookie is SameSite=Strict, and the Host check is the other half.
+
+    A page on another origin cannot make the browser send this cookie, and a
+    rebinding page that reaches the port arrives with its own Host and is
+    refused before routing - both checked here.
+    """
+    token = "c" * 43
+    with TestClient(_app(tmp_path, token), base_url=LOOPBACK_BASE_URL) as client:
+        opened = client.get(f"/session/{token}", follow_redirects=False)
+        assert "samesite=strict" in opened.headers["set-cookie"].lower()
+
+        client.cookies.set(SESSION_COOKIE, token)
+        rebinding = client.get(
+            "/devices",
+            headers={"Host": "attacker.example", "Origin": "http://attacker.example"},
+        )
+        assert rebinding.status_code == 400
+        assert rebinding.json()["kind"] == "HostRefused"
+
+
+def test_the_session_link_is_the_only_way_in(tmp_path: Path) -> None:
+    token = "d" * 43
+    with TestClient(_app(tmp_path, token), base_url=LOOPBACK_BASE_URL) as client:
+        assert client.get("/session/", follow_redirects=False).status_code == 403
+        assert client.get("/session/x", follow_redirects=False).status_code == 403
+        assert (
+            client.get(f"/session/{token}", follow_redirects=False).status_code == 303
+        )

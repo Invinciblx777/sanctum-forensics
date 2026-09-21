@@ -80,8 +80,10 @@ def _acquire_job(client: TestClient, tmp_path: Path, name: str) -> str:
     assert accepted.status_code == 200, accepted.text
     job_id: str = accepted.json()["job_id"]
     deadline = time.monotonic() + 30
-    while client.get(f"/jobs/{job_id}").json()["state"] == "running":
-        assert time.monotonic() < deadline
+    # `settled`, not `state`: the outcome entry these tests read is appended
+    # after the state flips. See JobRecord.settled.
+    while not client.get(f"/jobs/{job_id}").json()["settled"]:
+        assert time.monotonic() < deadline, "the job never settled"
         time.sleep(0.01)
     return job_id
 
