@@ -117,7 +117,11 @@ def test_a_carve_job_completes_while_another_thread_hammers_the_chain(
         for entry in chain.entries()
         if chain.params_of(entry).get("job_id") == job_id
     ]
-    assert mine == ["carve.start", "carve.complete"]
+    # job.outcome is appended by the registry once the job is terminal, which
+    # is what lets a report survive a restart (api/durable.py). It is written
+    # under the same contention as the engine's own two entries, so it belongs
+    # in this assertion rather than being filtered out of it.
+    assert mine == ["carve.start", "carve.complete", "job.outcome"]
     assert chain.verify(check_blobs=True).status is ChainStatus.VALID
 
 

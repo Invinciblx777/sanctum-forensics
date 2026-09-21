@@ -184,18 +184,43 @@ def _max_pattern_length(signatures: Sequence[Signature]) -> int:
 # --------------------------------------------------------------------------
 
 
+#: Formats whose objects legitimately contain a header of their own format:
+#: every archive member carries the archive's magic, an HTML document carries
+#: ``<html>`` after its doctype, and a JPEG carries an EXIF thumbnail with its
+#: own SOI. For these a same-format header inside the object is part of it, so
+#: it cannot bound the footer search. Every other footered format's header
+#: starting a new object means the previous one has ended.
+_NESTING_EXTS = frozenset({"zip", "tar", "html", "jpg", "docx", "xlsx", "pptx"})
+
+
 def _find_footer(
-    handle: EvidenceHandle, signature: Signature, start: int
+    handle: EvidenceHandle,
+    signature: Signature,
+    start: int,
+    *,
+    stop_at: int | None = None,
 ) -> int | None:
     """Locate the end of the object, searching no further than ``max_size``.
 
     Returns the offset just past the footer, or ``None`` when no footer was
     found inside the cap. ``None`` does not mean "discard": an object whose
     footer was overwritten is still recoverable and still evidence.
+
+    ``stop_at`` is where the next header of the *same* non-nesting format
+    begins. The search stops there, because a footer beyond it belongs to that
+    object. Without this, a truncated PDF whose ``%%EOF`` was lost ran on to the
+    next PDF's ``%%EOF`` megabytes away; the decoder, which repairs from any
+    trailer it can find, then called the span valid and it scored HIGH. That
+    was measured on the 7 GiB validation image (``docs/validation/
+    large-image.md``) and never on the small corpora, where every object sat
+    512 KiB from its neighbour.
     """
     if signature.footer is None:
         return None
     limit = min(start + signature.max_size, handle.size)
+    if stop_at is not None and stop_at > start:
+        # The footer may straddle nothing past the next object's first byte.
+        limit = min(limit, stop_at)
     window = 1 * MIB
     overlap = len(signature.footer) - 1
     cursor = start
@@ -394,6 +419,7 @@ def _candidate_for(
     signature: Signature,
     *,
     next_header_at: int,
+    next_same_header_at: int | None = None,
 ) -> CarveCandidate | None:
     """Build a candidate from a header hit, bounding it by footer or neighbour.
 
@@ -407,7 +433,14 @@ def _candidate_for(
     if object_start < 0:
         return None
 
-    footer_end = _find_footer(handle, signature, object_start)
+    footer_end = _find_footer(
+        handle,
+        signature,
+        object_start,
+        stop_at=(
+            None if signature.ext in _NESTING_EXTS else next_same_header_at
+        ),
+    )
     if footer_end is not None:
         length = footer_end - object_start
         validation: str = "valid"
@@ -481,10 +514,23 @@ def scan(
         hits.append((header_at, signature))
 
     hits.sort(key=lambda item: item[0])
+    # For each hit, where the next header of the same format begins, computed
+    # in one backward pass rather than a search per hit.
+    next_same: list[int | None] = [None] * len(hits)
+    seen: dict[str, int] = {}
+    for index in range(len(hits) - 1, -1, -1):
+        header_at, signature = hits[index]
+        start_of = header_at - signature.header_offset
+        next_same[index] = seen.get(signature.ext)
+        seen[signature.ext] = start_of
     for index, (header_at, signature) in enumerate(hits):
         next_at = hits[index + 1][0] if index + 1 < len(hits) else handle.size
         candidate = _candidate_for(
-            handle, header_at, signature, next_header_at=next_at
+            handle,
+            header_at,
+            signature,
+            next_header_at=next_at,
+            next_same_header_at=next_same[index],
         )
         if candidate is None:
             report.suppressed_too_small += 1

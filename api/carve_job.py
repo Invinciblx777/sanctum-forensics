@@ -92,6 +92,8 @@ came out, digest first.
 from __future__ import annotations
 
 import hashlib
+import shutil
+import tempfile
 from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -103,7 +105,12 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance only
     from core.carve.evidence import EvidenceHandle
     from core.ledger.chain import Ledger
 
-__all__ = ["carve_generator", "CARVE_PHASES", "IDENTITY_SAMPLE_BYTES"]
+__all__ = [
+    "carve_generator",
+    "CARVE_PHASES",
+    "IDENTITY_SAMPLE_BYTES",
+    "SpillStore",
+]
 
 logger = structlog.get_logger(__name__)
 
@@ -112,6 +119,101 @@ CARVE_PHASES = ("open", "undelete", "signatures", "validate", "score", "write")
 
 #: Bytes read from each end of the image to identify it in the ledger.
 IDENTITY_SAMPLE_BYTES = 1024 * 1024
+
+
+class SpillStore:
+    """Candidate bytes on disk instead of in the process, for the whole run.
+
+    Why this exists
+    ---------------
+    The pipeline holds bytes for every candidate whose content is **not** one
+    span on the medium: a filesystem file stored in several extents, and a
+    bifragmented JPEG reassembled across a gap. Those used to accumulate in a
+    dictionary that lived for the length of the run, so a seven-gigabyte image
+    with a few thousand fragmented objects put a few gigabytes of recovered
+    content in the API process and kept it there until the carve returned. On a
+    forensic image that is not a leak, it is the design being wrong at scale.
+
+    Each payload is now written out as soon as it is produced and read back one
+    at a time, so the pipeline's peak is **one object's bytes**, not the sum of
+    every fragmented object's.
+
+    What it guarantees
+    ------------------
+    * **Bounded memory.** :meth:`put` takes bytes and drops them; :meth:`get`
+      returns exactly one payload to a caller that drops it before asking for
+      the next. Nothing here holds a reference to a payload between calls.
+    * **Deterministic naming.** The filename is the SHA-256 of
+      ``"<source>:<offset>"``, so the same candidate lands on the same name on
+      every run, and a name is never built from anything an evidence image
+      supplied. A filesystem record's ``original_name`` comes off the seized
+      disk and is never part of a path here.
+    * **No traversal.** The name is 64 hex characters by construction. There is
+      no separator to escape and no component to walk with, so confinement is a
+      property of the naming rather than a check that could be forgotten.
+    * **Cleanup on every exit.** :meth:`close` removes the directory, and
+      :func:`carve_generator` calls it from a ``finally`` that covers the
+      success path, the failure path and ``GeneratorExit`` - which is the
+      cancel button. A cancelled carve leaves no spilled content behind.
+
+    ``root`` is the API's own work directory, inside the configured state
+    directory rather than the system temp directory: a deployment that confines
+    everything the tool writes to one tree should not have this one exception,
+    and an operator asking what the tool wrote should have one place to look.
+    """
+
+    def __init__(self, root: Path, *, job_id: str) -> None:
+        root.mkdir(parents=True, exist_ok=True)
+        # mkdtemp rather than a directory named after the job: two runs of the
+        # same job id would otherwise share a directory, and the second one's
+        # cleanup would delete the first one's spill.
+        self.directory = Path(
+            tempfile.mkdtemp(prefix=f"carve-{job_id}-", dir=str(root))
+        )
+        self._keys: set[tuple[str, int]] = set()
+
+    @staticmethod
+    def _name(key: tuple[str, int]) -> str:
+        source, offset = key
+        return hashlib.sha256(f"{source}:{offset}".encode()).hexdigest()
+
+    def path_for(self, key: tuple[str, int]) -> Path:
+        return self.directory / self._name(key)
+
+    def put(self, key: tuple[str, int], payload: bytes) -> None:
+        """Spill one candidate's bytes and forget them."""
+        self.path_for(key).write_bytes(payload)
+        self._keys.add(key)
+
+    def has(self, key: tuple[str, int]) -> bool:
+        return key in self._keys
+
+    def get(self, key: tuple[str, int]) -> bytes | None:
+        """Read one payload back, or ``None`` if it was never spilled."""
+        if key not in self._keys:
+            return None
+        try:
+            return self.path_for(key).read_bytes()
+        except OSError:
+            return None
+
+    def copy_to(self, key: tuple[str, int], destination: Path) -> int:
+        """Copy a spilled payload to its recovered-object path, streaming.
+
+        ``shutil.copyfile`` rather than ``write_bytes(get(key))``: the write
+        phase would otherwise reload every fragmented object into memory at the
+        exact moment the run is at its largest.
+        """
+        shutil.copyfile(self.path_for(key), destination)
+        return destination.stat().st_size
+
+    def __len__(self) -> int:
+        return len(self._keys)
+
+    def close(self) -> None:
+        """Remove the spill directory. Safe to call more than once."""
+        shutil.rmtree(self.directory, ignore_errors=True)
+        self._keys.clear()
 
 
 def _identity_digest(handle: EvidenceHandle) -> dict[str, Any]:
@@ -217,6 +319,8 @@ def carve_generator(
     ledger: Ledger | None = None,
     operator: str = "sanctum",
     pii_triage: bool = True,
+    work_dir: Path | None = None,
+    case_id: str = "",
 ) -> Generator[Progress, None, dict[str, Any]]:
     """Run the recovery pipeline over ``image``, yielding progress per stage.
 
@@ -228,6 +332,14 @@ def carve_generator(
         pii_triage: Count identity and financial identifiers in each object
             of a scanned category (:mod:`core.carve.pii`). Kinds and counts
             only; no value is kept anywhere.
+        work_dir: Where candidate bytes are spilled instead of being held in
+            memory for the length of the run. See :class:`SpillStore`. ``None``
+            falls back to the system temp directory, which is for library
+            callers; the API passes its own work directory so everything the
+            tool writes stays inside the configured state tree.
+        case_id: Recorded in this run's chain entries so the case screen can
+            find them. Empty means the run is not filed against a case, which
+            is legal and is what a quick look at an image is.
     """
     from core.carve.classify import _read_candidate as read_span
     from core.carve.classify import (
@@ -251,7 +363,14 @@ def carve_generator(
     # carver reassembled across a gap. Keyed by (source, offset) because an
     # undelete record and a carved header can legitimately land on the same
     # offset and mean different objects.
-    payloads: dict[tuple[str, int], bytes] = {}
+    #
+    # Spilled to disk rather than held: this used to be a dict of bytes that
+    # lived for the whole run, which put every fragmented object's content in
+    # the process at once. See SpillStore.
+    payloads = SpillStore(
+        Path(work_dir) if work_dir is not None else Path(tempfile.gettempdir()),
+        job_id=job_id,
+    )
     # (start, end, cluster bytes) for every volume whose filesystem the undelete
     # pass opened. The carver has no filesystem context of its own, and a
     # reassembled object's runs can only be on its volume's cluster grid.
@@ -262,281 +381,304 @@ def carve_generator(
     phase_reached = "open"
     bytes_scanned = 0
 
-    with open_evidence(image) as handle:
-        evidence = {
-            "path": str(image),
-            "size_bytes": handle.size,
-            "format": type(handle).__name__,
-            "identity": _identity_digest(handle),
-        }
-        if ledger is not None:
-            ledger.append(
-                actor=operator,
-                operation="carve.start",
-                params={
-                    "job_id": job_id,
-                    "evidence": evidence,
-                    "undelete": undelete,
-                    "carve_signatures": carve_signatures,
-                    "pii_triage": pii_triage,
-                    "out_dir": str(out_dir) if out_dir else "",
-                    # Recorded because it changes what the run could have done,
-                    # not merely what it did: without an output directory the
-                    # pipeline lists candidates and writes nothing.
-                    "writes_recovered_objects": out_dir is not None,
-                },
-                result={},
-            )
+    try:
+        with open_evidence(image) as handle:
+            evidence = {
+                "path": str(image),
+                "size_bytes": handle.size,
+                "format": type(handle).__name__,
+                "identity": _identity_digest(handle),
+            }
+            if ledger is not None:
+                ledger.append(
+                    actor=operator,
+                    operation="carve.start",
+                    params={
+                        "job_id": job_id,
+                        "case_id": case_id,
+                        "evidence": evidence,
+                        "undelete": undelete,
+                        "carve_signatures": carve_signatures,
+                        "pii_triage": pii_triage,
+                        "out_dir": str(out_dir) if out_dir else "",
+                        # Recorded because it changes what the run could have done,
+                        # not merely what it did: without an output directory the
+                        # pipeline lists candidates and writes nothing.
+                        "writes_recovered_objects": out_dir is not None,
+                    },
+                    result={},
+                )
 
-        try:
-            phase_reached = "open"
-            yield _progress(
-                job_id, "open", 0, f"opened {image.name} ({handle.size} bytes)",
-                total=handle.size,
-            )
-
-            if undelete:
-                from core.carve.fsaware import read_recovered, undelete_report
-
-                report = undelete_report(handle)
-                limitations.extend(report.limitations)
-                partitions = [
-                    {
-                        "index": item.index,
-                        "offset": item.offset,
-                        "length": item.length,
-                        "description": item.description,
-                        "fs_type": item.fs_type,
-                        "cluster_bytes": item.cluster_bytes,
-                    }
-                    for item in report.partitions
-                ]
-                volumes = [
-                    (item.offset, item.offset + item.length, item.cluster_bytes)
-                    for item in report.partitions
-                    if item.cluster_bytes
-                ]
-                unallocated_bytes = sum(item.length for item in report.unallocated)
-                for item in report.files:
-                    payload = read_recovered(handle, item)
-                    payloads[(item.candidate.source, item.candidate.offset)] = payload
-                    candidates.append(item.candidate)
-                phase_reached = "undelete"
+            try:
+                phase_reached = "open"
                 yield _progress(
-                    job_id,
-                    "undelete",
-                    3000,
-                    f"{len(report.files)} entries from filesystem metadata; "
-                    f"{unallocated_bytes} bytes unallocated",
+                    job_id, "open", 0, f"opened {image.name} ({handle.size} bytes)",
                     total=handle.size,
                 )
 
-            if carve_signatures:
-                # carve_structures runs the signature scan itself and then hands
-                # each hit to the parser for its format, so this is a replacement
-                # for carve_signatures and never an addition to it: calling both
-                # would find every object twice. A hit whose format has no parser,
-                # or whose parse declines, is yielded unchanged with
-                # source="signature", so nothing the signature carver found is
-                # lost by going through here.
-                #
-                # This is the same call testkit/calibrate.py makes, which is what
-                # makes the measured weights in core/carve/score.py describe the
-                # pipeline the product actually runs.
-                carved = list(
-                    carve_structures(handle, cluster_bytes_at=_cluster_lookup(volumes))
-                )
-                # One uninterrupted pass with no yield inside it: by the time this
-                # line runs the scan covered the whole image, and before it, none.
-                bytes_scanned = handle.size
-                candidates.extend(carved)
-                derived = sum(1 for item in carved if item.source == "structure")
-                # A reassembled bifragmented object is two runs with a gap between
-                # them, so its bytes cannot be re-read from offset..offset+length
-                # either. read_fragments walks the runs the carver recorded, which
-                # are the same runs its sha256 was computed over.
-                reassembled_count = 0
-                for rebuilt in carved:
-                    if rebuilt.fragments:
-                        payloads[(rebuilt.source, rebuilt.offset)] = read_fragments(
-                            handle, rebuilt.fragments
+                if undelete:
+                    from core.carve.fsaware import read_recovered, undelete_report
+
+                    report = undelete_report(handle)
+                    limitations.extend(report.limitations)
+                    partitions = [
+                        {
+                            "index": item.index,
+                            "offset": item.offset,
+                            "length": item.length,
+                            "description": item.description,
+                            "fs_type": item.fs_type,
+                            "cluster_bytes": item.cluster_bytes,
+                        }
+                        for item in report.partitions
+                    ]
+                    volumes = [
+                        (item.offset, item.offset + item.length, item.cluster_bytes)
+                        for item in report.partitions
+                        if item.cluster_bytes
+                    ]
+                    unallocated_bytes = sum(item.length for item in report.unallocated)
+                    for item in report.files:
+                        # Written out and dropped inside the loop, so the peak is
+                        # one recovered file rather than every recovered file.
+                        payloads.put(
+                            (item.candidate.source, item.candidate.offset),
+                            read_recovered(handle, item),
                         )
-                        reassembled_count += 1
-                phase_reached = "signatures"
-                yield _progress(
-                    job_id,
-                    "signatures",
-                    6000,
-                    f"{len(carved)} candidates over {handle.size} bytes; "
-                    f"{derived} had their length derived by a format parser; "
-                    f"{reassembled_count} reassembled across a fragment gap",
-                    done=handle.size,
-                    total=handle.size,
-                )
-
-            judged: list[CarveCandidate] = []
-            for index, candidate in enumerate(candidates):
-                recovered_bytes = payloads.get((candidate.source, candidate.offset))
-                # Candidates whose content is not one span carry their bytes here:
-                # fs_metadata files stored in several extents (see
-                # core.carve.fsaware.read_recovered) and structure candidates
-                # reassembled across a fragment gap. Judging them from
-                # offset..offset+length would hand every decoder the right length
-                # of the wrong bytes.
-                shared: bytes | None
-                if recovered_bytes is not None:
-                    shared = recovered_bytes
-                    scored = validate_candidate(candidate, data=recovered_bytes)
-                else:
-                    # Read once and shared by the classifier, the scorer and PII
-                    # triage, which each used to read the span for themselves.
-                    # validate_candidate still reads its own copy: passing data
-                    # tells it the object is not one span, which would change
-                    # what it reports about absent MPF frames.
-                    shared = (
-                        read_span(candidate, handle)
-                        if candidate.length <= MAX_VALIDATE_BYTES
-                        else None
-                    )
-                    scored = validate_candidate(candidate, handle)
-                if shared is not None:
-                    scored = classify_candidate(scored, data=shared)
-                    scored = score_candidate(scored, data=shared)
-                else:
-                    scored = classify_candidate(scored, image=handle)
-                    scored = score_candidate(scored, image=handle)
-                if pii_triage:
-                    scored = _triage(scored, shared, handle)
-                # Dropped before the next candidate is read: the loop never
-                # holds more than one object's bytes.
-                shared = None
-                judged.append(scored)
-                if index % 25 == 0:
-                    phase_reached = "validate"
+                        candidates.append(item.candidate)
+                    phase_reached = "undelete"
                     yield _progress(
                         job_id,
-                        "validate",
-                        6000 + 2000 * index // max(len(candidates), 1),
-                        f"validated {index}/{len(candidates)}",
+                        "undelete",
+                        3000,
+                        f"{len(report.files)} entries from filesystem metadata; "
+                        f"{unallocated_bytes} bytes unallocated",
                         total=handle.size,
                     )
 
-            resolved = dedupe(resolve_overlaps(judged))
-            phase_reached = "score"
-            yield _progress(
-                job_id, "score", 9000, f"{len(resolved)} candidates after dedupe",
-                total=handle.size,
-            )
-
-            if out_dir is not None:
-                # Candidates whose bytes travelled with them are written here:
-                # write_recovered re-reads offset..offset+length, which is the
-                # wrong bytes for a file the filesystem stored in several extents.
-                reassembled = [
-                    item
-                    for item in resolved
-                    if (item.source, item.offset) in payloads
-                ]
-                contiguous = [
-                    item
-                    for item in resolved
-                    if (item.source, item.offset) not in payloads
-                ]
-
-                out_dir.mkdir(parents=True, exist_ok=True)
-                for candidate in reassembled:
-                    name = output_filename(candidate)
-                    try:
-                        destination = out_dir / name
-                        destination.write_bytes(
-                            payloads[(candidate.source, candidate.offset)]
+                if carve_signatures:
+                    # carve_structures runs the signature scan itself and then hands
+                    # each hit to the parser for its format, so this is a replacement
+                    # for carve_signatures and never an addition to it: calling both
+                    # would find every object twice. A hit whose format has no parser,
+                    # or whose parse declines, is yielded unchanged with
+                    # source="signature", so nothing the signature carver found is
+                    # lost by going through here.
+                    #
+                    # This is the same call testkit/calibrate.py makes, which is what
+                    # makes the measured weights in core/carve/score.py describe the
+                    # pipeline the product actually runs.
+                    carved = list(
+                        carve_structures(
+                            handle, cluster_bytes_at=_cluster_lookup(volumes)
                         )
-                        written.append(str(destination))
-                    except OSError as exc:
-                        limitations.append(
-                            f"Recovered object {name} could not be written: {exc}"
-                        )
-                try:
-                    for record in write_recovered(contiguous, handle, out_dir):
-                        written.append(str(record["path"]))
-                except (OSError, ValueError) as exc:
-                    limitations.append(f"Recovered objects could not be written: {exc}")
+                    )
+                    # One uninterrupted pass with no yield inside it: by the time this
+                    # line runs the scan covered the whole image, and before it, none.
+                    bytes_scanned = handle.size
+                    candidates.extend(carved)
+                    derived = sum(1 for item in carved if item.source == "structure")
+                    # A reassembled bifragmented object is two runs with a gap between
+                    # them, so its bytes cannot be re-read from offset..offset+length
+                    # either. read_fragments walks the runs the carver recorded, which
+                    # are the same runs its sha256 was computed over.
+                    reassembled_count = 0
+                    for rebuilt in carved:
+                        if rebuilt.fragments:
+                            payloads.put(
+                                (rebuilt.source, rebuilt.offset),
+                                read_fragments(handle, rebuilt.fragments),
+                            )
+                            reassembled_count += 1
+                    phase_reached = "signatures"
+                    yield _progress(
+                        job_id,
+                        "signatures",
+                        6000,
+                        f"{len(carved)} candidates over {handle.size} bytes; "
+                        f"{derived} had their length derived by a format parser; "
+                        f"{reassembled_count} reassembled across a fragment gap",
+                        done=handle.size,
+                        total=handle.size,
+                    )
 
-                phase_reached = "write"
+                judged: list[CarveCandidate] = []
+                for index, candidate in enumerate(candidates):
+                    recovered_bytes = payloads.get((candidate.source, candidate.offset))
+                    # Read back one at a time and dropped at the bottom of the
+                    # loop body, which is what keeps the pipeline's peak at one
+                    # object rather than the whole spill.
+                    # Candidates whose content is not one span carry their bytes here:
+                    # fs_metadata files stored in several extents (see
+                    # core.carve.fsaware.read_recovered) and structure candidates
+                    # reassembled across a fragment gap. Judging them from
+                    # offset..offset+length would hand every decoder the right length
+                    # of the wrong bytes.
+                    shared: bytes | None
+                    if recovered_bytes is not None:
+                        shared = recovered_bytes
+                        scored = validate_candidate(candidate, data=recovered_bytes)
+                    else:
+                        # Read once and shared by the classifier, the scorer and PII
+                        # triage, which each used to read the span for themselves.
+                        # validate_candidate still reads its own copy: passing data
+                        # tells it the object is not one span, which would change
+                        # what it reports about absent MPF frames.
+                        shared = (
+                            read_span(candidate, handle)
+                            if candidate.length <= MAX_VALIDATE_BYTES
+                            else None
+                        )
+                        scored = validate_candidate(candidate, handle)
+                    if shared is not None:
+                        scored = classify_candidate(scored, data=shared)
+                        scored = score_candidate(scored, data=shared)
+                    else:
+                        scored = classify_candidate(scored, image=handle)
+                        scored = score_candidate(scored, image=handle)
+                    if pii_triage:
+                        scored = _triage(scored, shared, handle)
+                    # Dropped before the next candidate is read: the loop never
+                    # holds more than one object's bytes.
+                    shared = None
+                    judged.append(scored)
+                    if index % 25 == 0:
+                        phase_reached = "validate"
+                        yield _progress(
+                            job_id,
+                            "validate",
+                            6000 + 2000 * index // max(len(candidates), 1),
+                            f"validated {index}/{len(candidates)}",
+                            total=handle.size,
+                        )
+
+                resolved = dedupe(resolve_overlaps(judged))
+                phase_reached = "score"
                 yield _progress(
-                    job_id, "write", 10_000, f"wrote {len(written)} objects",
+                    job_id, "score", 9000, f"{len(resolved)} candidates after dedupe",
                     total=handle.size,
                 )
-        except GeneratorExit:
-            # The caller closed this generator: an operator pressed Cancel, or
-            # the client went away. Every stage stops at a yield, so no object
-            # is half-written - but objects already in out_dir are on disk, and
-            # carve.start is in the chain with nothing after it. Recorded before
-            # the exception continues, for the reason acquire.cancelled is
-            # (core/carve/acquire.py): output nobody can account for is worse
-            # than no output.
-            #
-            # No progress is yielded here and none can be: a generator that
-            # yields while closing raises RuntimeError.
-            if ledger is not None:
-                _record_cancelled_carve(
-                    ledger,
-                    job_id=job_id,
-                    operator=operator,
-                    evidence=evidence,
-                    phase_reached=phase_reached,
-                    bytes_scanned=bytes_scanned,
-                    raw_candidates=len(candidates),
-                    out_dir=out_dir,
-                    written=written,
-                )
-            raise
 
-    logger.info(
-        "carve_complete",
-        image=str(image),
-        candidates=len(resolved),
-        written=len(written),
-    )
-    serialised = [item.model_dump(mode="json") for item in resolved]
+                if out_dir is not None:
+                    # Candidates whose bytes travelled with them are written here:
+                    # write_recovered re-reads offset..offset+length, which is the
+                    # wrong bytes for a file the filesystem stored in several extents.
+                    reassembled = [
+                        item
+                        for item in resolved
+                        if payloads.has((item.source, item.offset))
+                    ]
+                    contiguous = [
+                        item
+                        for item in resolved
+                        if not payloads.has((item.source, item.offset))
+                    ]
 
-    if ledger is not None:
-        from core.ledger.canon import canonical_bytes
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    for candidate in reassembled:
+                        name = output_filename(candidate)
+                        try:
+                            destination = out_dir / name
+                            # Streamed from the spill file rather than reloaded:
+                            # the write phase is where the old design peaked.
+                            payloads.copy_to(
+                                (candidate.source, candidate.offset), destination
+                            )
+                            written.append(str(destination))
+                        except OSError as exc:
+                            limitations.append(
+                                f"Recovered object {name} could not be written: {exc}"
+                            )
+                    try:
+                        for record in write_recovered(contiguous, handle, out_dir):
+                            written.append(str(record["path"]))
+                    except (OSError, ValueError) as exc:
+                        limitations.append(
+                            f"Recovered objects could not be written: {exc}"
+                        )
 
-        buckets: dict[str, int] = {}
-        for candidate in resolved:
-            buckets[candidate.bucket] = buckets.get(candidate.bucket, 0) + 1
-        # The digest covers the candidate list itself, so a report quoting these
-        # findings can be checked against the entry rather than trusted. Counts
-        # alone would let the list be edited without breaking anything.
-        findings_sha256 = hashlib.sha256(
-            canonical_bytes({"candidates": serialised})
-        ).hexdigest()
-        ledger.append(
-            actor=operator,
-            operation="carve.complete",
-            params={
-                "job_id": job_id,
-                "evidence": evidence,
-                "candidates": len(resolved),
-                "by_confidence": buckets,
-                "partitions": len(partitions),
-                "unallocated_bytes": unallocated_bytes,
-                "written": len(written),
-                "limitations": limitations,
-            },
-            result={"findings_sha256": findings_sha256},
+                    phase_reached = "write"
+                    yield _progress(
+                        job_id, "write", 10_000, f"wrote {len(written)} objects",
+                        total=handle.size,
+                    )
+            except GeneratorExit:
+                # The caller closed this generator: an operator pressed Cancel, or
+                # the client went away. Every stage stops at a yield, so no object
+                # is half-written - but objects already in out_dir are on disk, and
+                # carve.start is in the chain with nothing after it. Recorded before
+                # the exception continues, for the reason acquire.cancelled is
+                # (core/carve/acquire.py): output nobody can account for is worse
+                # than no output.
+                #
+                # No progress is yielded here and none can be: a generator that
+                # yields while closing raises RuntimeError.
+                if ledger is not None:
+                    _record_cancelled_carve(
+                        ledger,
+                        job_id=job_id,
+                        operator=operator,
+                        evidence=evidence,
+                        phase_reached=phase_reached,
+                        bytes_scanned=bytes_scanned,
+                        raw_candidates=len(candidates),
+                        out_dir=out_dir,
+                        written=written,
+                    )
+                raise
+
+        logger.info(
+            "carve_complete",
+            image=str(image),
+            candidates=len(resolved),
+            written=len(written),
         )
+        serialised = [item.model_dump(mode="json") for item in resolved]
 
-    return {
-        "image": str(image),
-        "evidence": evidence,
-        "candidates": serialised,
-        "partitions": partitions,
-        "unallocated_bytes": unallocated_bytes,
-        "written": written,
-        "limitations": limitations,
-    }
+        if ledger is not None:
+            from core.ledger.canon import canonical_bytes
+
+            buckets: dict[str, int] = {}
+            for candidate in resolved:
+                buckets[candidate.bucket] = buckets.get(candidate.bucket, 0) + 1
+            # The digest covers the candidate list itself, so a report quoting these
+            # findings can be checked against the entry rather than trusted. Counts
+            # alone would let the list be edited without breaking anything.
+            findings_sha256 = hashlib.sha256(
+                canonical_bytes({"candidates": serialised})
+            ).hexdigest()
+            ledger.append(
+                actor=operator,
+                operation="carve.complete",
+                params={
+                    "job_id": job_id,
+                    "case_id": case_id,
+                    "evidence": evidence,
+                    "candidates": len(resolved),
+                    "by_confidence": buckets,
+                    "partitions": len(partitions),
+                    "unallocated_bytes": unallocated_bytes,
+                    "written": len(written),
+                    "limitations": limitations,
+                },
+                result={"findings_sha256": findings_sha256},
+            )
+
+        return {
+            "image": str(image),
+            "evidence": evidence,
+            "candidates": serialised,
+            "partitions": partitions,
+            "unallocated_bytes": unallocated_bytes,
+            "written": written,
+            "limitations": limitations,
+        }
+    finally:
+        # Covers the success path, any exception, and GeneratorExit - which is
+        # the Cancel button. A cancelled or failed carve leaves no spilled
+        # recovered content behind, which matters more here than in an ordinary
+        # temp-file cleanup: the spill holds content carved out of evidence.
+        payloads.close()
 
 
 def _record_cancelled_carve(

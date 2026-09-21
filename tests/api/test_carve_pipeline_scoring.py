@@ -287,10 +287,14 @@ def test_the_pipeline_calls_carve_structures_and_not_both_carvers() -> None:
     import api.carve_job as carve_job
 
     source = Path(carve_job.__file__).read_text(encoding="utf-8")
+    # Whitespace-normalised, so wrapping the call across lines to stay inside
+    # the line-length limit does not read as removing it. The guard is about
+    # which carver is called, not about how the call is formatted.
+    flattened = " ".join(source.split())
 
     assert "from core.carve.structure import carve_structures" in source
     # Batch 7 passes the undelete pass's cluster sizes as a keyword argument.
-    assert "carve_structures(handle," in source
+    assert "carve_structures( handle, cluster_bytes_at=" in flattened
     assert "import carve_signatures" not in source, (
         "both carvers are wired in; carve_structures already runs the scan"
     )

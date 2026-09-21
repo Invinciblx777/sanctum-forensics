@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
+from unittest import mock
 
 import pytest
 
@@ -77,18 +78,23 @@ def run_carve(
     module.carve_generator = generator  # type: ignore[attr-defined]
     package = ModuleType("api")
     package.__path__ = []  # type: ignore[attr-defined]
-    sys.modules.setdefault("api", package)
-    sys.modules["api.carve_job"] = module
-
-    harness.cmd_carve(
-        SimpleNamespace(
-            image="unused.dd",
-            manifest=str(manifest_path),
-            filesystem="fat32",
-            damage=damage,
-            out_dir=None,
+    # Scoped, not assigned. This used to write the stub into sys.modules and
+    # leave it there, so every later test in the same process that started a
+    # carve ran this fake instead - it went unnoticed only because the tests
+    # that carve for real happened to sort earlier.
+    replacements: dict[str, Any] = {"api.carve_job": module}
+    if "api" not in sys.modules:
+        replacements["api"] = package
+    with mock.patch.dict(sys.modules, replacements):
+        harness.cmd_carve(
+            SimpleNamespace(
+                image="unused.dd",
+                manifest=str(manifest_path),
+                filesystem="fat32",
+                damage=damage,
+                out_dir=None,
+            )
         )
-    )
     result: dict[str, Any] = json.loads(capsys.readouterr().out)
     return result
 

@@ -108,17 +108,40 @@ def test_dest_is_confined_too(daemon: HelperDaemon, tmp_path: Path) -> None:
         daemon.apply_policy({"dest": "/etc/planted.dd"})
 
 
-def test_an_unconfined_daemon_passes_the_request_through_unchanged() -> None:
+def test_an_unconfined_daemon_confines_no_path(tmp_path: Path) -> None:
     """The in-process helper holds no privilege, so there is nothing to confine.
 
     It runs as the operator already, so a path it accepts is a path the caller
-    could have written to directly, and stamping an owner uid would be handing
-    a file to the person who already owns it.
+    could have written to directly. Every path parameter therefore survives
+    untouched, which is the property this test exists for.
     """
     unconfined = HelperDaemon(operator_uid=os.getuid(), state_dir=None)
     params = {"ledger_root": "/tmp/anywhere", "dest": "/tmp/out.dd"}
 
-    assert unconfined.apply_policy(params) == params
+    applied = unconfined.apply_policy(params)
+
+    assert applied["ledger_root"] == "/tmp/anywhere"
+    assert applied["dest"] == "/tmp/out.dd"
+
+
+def test_identity_is_stamped_even_when_nothing_is_confined() -> None:
+    """The identity fields are policy, not confinement, so they are always set.
+
+    ``whoami`` is answered from ``owner_uid`` and ``identity_basis``, and both
+    are written here on every request regardless of whether a state directory
+    exists. If they were only stamped on the confined path, the in-process
+    deployment would answer from whatever the caller sent - which is the exact
+    spoof the trusted-identity work removed.
+    """
+    unconfined = HelperDaemon(operator_uid=os.getuid(), state_dir=None)
+
+    applied = unconfined.apply_policy(
+        {"owner_uid": 0, "identity_basis": "trust me"}
+    )
+
+    assert applied["owner_uid"] == os.getuid()
+    assert applied["identity_basis"] != "trust me"
+    assert "in-process" in applied["identity_basis"]
 
 
 # --------------------------------------------------------------------------

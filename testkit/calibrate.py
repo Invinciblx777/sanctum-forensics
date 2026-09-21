@@ -57,6 +57,10 @@ __all__ = [
     "write_csv",
     "write_chart",
     "calibrate",
+    "PooledCalibration",
+    "measure_pooled",
+    "calibrate_pooled",
+    "format_per_seed",
     "FilesystemRow",
     "WeightTrial",
     "FilesystemCalibration",
@@ -328,6 +332,149 @@ def calibrate(
     )
 
 
+@dataclass(frozen=True)
+class PooledCalibration:
+    """Several seeds' runs, measured as one population.
+
+    Why pooling rather than averaging: precision is a ratio of counts, and the
+    mean of per-seed ratios is not the ratio of the pooled counts unless every
+    seed produced the same number of candidates - which they do not, because a
+    different seed plants different objects. Pooling the candidates and
+    measuring once gives the figure an examiner would compute from the raw
+    data, which is the figure the document has to carry.
+    """
+
+    seeds: tuple[int, ...]
+    #: Per-seed rows, kept so a reader can see the spread and not only the
+    #: pooled number. A single outlying seed is a fact about the measurement.
+    per_seed: dict[int, list[BucketRow]]
+    rows: list[BucketRow]
+    candidate_count: int
+    recoverable_count: int
+    csv_path: Path
+    chart_path: Path | None
+
+    def bucket(self, name: str) -> BucketRow:
+        for row in self.rows:
+            if row.dimension == "bucket" and row.key == name:
+                return row
+        raise KeyError(name)
+
+
+def measure_pooled(
+    runs: Sequence[tuple[Sequence[CarveCandidate], CorpusManifest]],
+) -> list[BucketRow]:
+    """Measure several corpus runs as one population.
+
+    Each run has its own manifest, so the truth set is the union of every run's
+    recoverable digests and the recall denominator is the total across runs. A
+    digest is globally unique - it is the SHA-256 of the planted bytes - so the
+    union is well defined and a file planted by two seeds is counted once.
+    """
+    truth: set[str] = set()
+    for _, manifest in runs:
+        truth |= manifest.recoverable_digests
+    candidates: list[CarveCandidate] = []
+    for run_candidates, _ in runs:
+        candidates.extend(run_candidates)
+
+    total = len(truth)
+    rows = [
+        _row(
+            "bucket",
+            bucket,
+            [c for c in candidates if c.bucket == bucket],
+            truth,
+            total,
+        )
+        for bucket in BUCKETS
+    ]
+    rows.append(_row("bucket", "ALL", candidates, truth, total))
+    for dimension, attribute in (
+        ("format", "ext"),
+        ("source", "source"),
+        ("validation", "validation"),
+    ):
+        for key in sorted({str(getattr(item, attribute)) for item in candidates}):
+            rows.append(
+                _row(
+                    dimension,
+                    key,
+                    [c for c in candidates if str(getattr(c, attribute)) == key],
+                    truth,
+                    total,
+                )
+            )
+    return rows
+
+
+def calibrate_pooled(
+    corpus_dir: Path,
+    out_dir: Path = DEFAULT_OUT_DIR,
+    *,
+    seeds: Sequence[int],
+    chart: bool = True,
+    weights: ScoreWeights = WEIGHTS,
+) -> PooledCalibration:
+    """Run the sweep over several seeds and measure them as one population.
+
+    The single-seed :func:`calibrate` measured 24 planted objects, which is
+    enough to show the buckets are ordered and too few to say what HIGH is
+    worth: one decoy landing in the wrong bucket moves precision by four
+    points. Each seed plants a different set at different offsets, so N seeds
+    is N times the population over the same pipeline, with no change to the
+    scoring code and nothing hand-picked.
+
+    Each seed gets its own corpus directory, so a run is reproducible from the
+    seed list alone and two seeds cannot overwrite each other's image.
+    """
+    runs: list[tuple[list[CarveCandidate], CorpusManifest]] = []
+    per_seed: dict[int, list[BucketRow]] = {}
+    for seed in seeds:
+        seed_dir = Path(corpus_dir) / f"seed-{seed}"
+        manifest = generate_corpus(seed_dir, seed=seed)
+        candidates = run_pipeline(seed_dir, manifest, weights=weights)
+        runs.append((candidates, manifest))
+        per_seed[seed] = measure(candidates, manifest)
+
+    rows = measure_pooled(runs)
+    csv_path = write_csv(rows, Path(out_dir) / "calibration-pooled.csv")
+    chart_path = (
+        write_chart(rows, Path(out_dir) / "calibration-pooled.png") if chart else None
+    )
+    truth: set[str] = set()
+    for _, manifest in runs:
+        truth |= manifest.recoverable_digests
+    return PooledCalibration(
+        seeds=tuple(seeds),
+        per_seed=per_seed,
+        rows=rows,
+        candidate_count=sum(len(candidates) for candidates, _ in runs),
+        recoverable_count=len(truth),
+        csv_path=csv_path,
+        chart_path=chart_path,
+    )
+
+
+def format_per_seed(pooled: PooledCalibration) -> str:
+    """Per-seed HIGH-bucket precision and recall, so the spread is visible.
+
+    A pooled number with no spread beside it invites the reader to assume the
+    seeds agreed. Sometimes they do not, and that is a measurement too.
+    """
+    header = f"{'seed':>6}{'n':>6}{'TP':>5}{'HIGH prec':>12}{'ALL recall':>12}"
+    lines = [header, "-" * len(header)]
+    for seed in pooled.seeds:
+        rows = pooled.per_seed[seed]
+        high = next(r for r in rows if r.dimension == "bucket" and r.key == "HIGH")
+        every = next(r for r in rows if r.dimension == "bucket" and r.key == "ALL")
+        lines.append(
+            f"{seed:>6}{every.count:>6}{every.true_positives:>5}"
+            f"{high.precision_bp / 100:>11.1f}%{every.recall_bp / 100:>11.1f}%"
+        )
+    return "\n".join(lines)
+
+
 def format_table(rows: Sequence[BucketRow]) -> str:
     """Render the measured rows as fixed-width text, for a commit message."""
     header = (
@@ -363,6 +510,18 @@ def main() -> None:
     )
     parser.add_argument("--no-chart", action="store_true")
     parser.add_argument(
+        "--seeds",
+        type=str,
+        default="",
+        help=(
+            "comma-separated seeds to pool into one population, e.g. "
+            "0,1,2,3,4,5,6,7. Each seed plants a different corpus, and the "
+            "candidates are measured together: a larger population over the "
+            "same pipeline, with nothing hand-picked. Writes "
+            "calibration-pooled.csv beside the single-seed table."
+        ),
+    )
+    parser.add_argument(
         "--filesystems",
         action="store_true",
         help=(
@@ -383,6 +542,27 @@ def main() -> None:
         print()  # noqa: T201
         print(format_weight_sweep(filesystems.sweep))  # noqa: T201
         print(f"\nwrote {filesystems.csv_path}")  # noqa: T201
+        return
+
+    if args.seeds:
+        seeds = [int(part) for part in args.seeds.split(",") if part.strip()]
+        pooled = calibrate_pooled(
+            args.corpus_dir,
+            args.out_dir,
+            seeds=seeds,
+            chart=not args.no_chart,
+        )
+        print(format_per_seed(pooled))  # noqa: T201 - a CLI
+        print()  # noqa: T201
+        print(format_table(pooled.rows))  # noqa: T201
+        print(  # noqa: T201
+            f"\npooled {pooled.candidate_count} candidates over "
+            f"{len(pooled.seeds)} seeds against {pooled.recoverable_count} "
+            "recoverable objects"
+        )
+        print(f"wrote {pooled.csv_path}")  # noqa: T201
+        if pooled.chart_path is not None:
+            print(f"wrote {pooled.chart_path}")  # noqa: T201
         return
 
     result = calibrate(

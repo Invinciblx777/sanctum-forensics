@@ -811,6 +811,28 @@ def validate_wav(data: bytes, deadline: _Deadline) -> ValidationReport:
         return ValidationReport(
             verdict="corrupt", detail=f"WAV read failed: {error}", decoder=decoder
         )
+    except RuntimeError as error:
+        # `wave` raises a **bare** RuntimeError - no message, no subclass - from
+        # its internal Chunk.seek when a chunk header declares a size the file
+        # does not have (CPython Lib/wave.py:155). It is not documented and it
+        # is not a wave.Error, so the handlers above do not catch it, and it
+        # escaped this function into the carve pipeline: a malformed RIFF
+        # header on a seized disk crashed the whole recovery job.
+        #
+        # Found by testkit/fuzz.py, seed 0, category "hostile size field"; the
+        # regression is tests/carve/test_validate_malformed.py.
+        #
+        # Caught narrowly here rather than broadly upstream: this is one known
+        # standard-library behaviour on one decoder, and a blanket RuntimeError
+        # handler around every validator would swallow genuine bugs in ours.
+        return ValidationReport(
+            verdict="corrupt",
+            detail=(
+                "not a readable WAV: a chunk header declares more bytes than "
+                f"the object holds ({type(error).__name__} from the wave module)"
+            ),
+            decoder=decoder,
+        )
 
     if read < declared:
         return ValidationReport(

@@ -154,12 +154,28 @@ def make_gif(size: int = 48) -> bytes:
     return buffer.getvalue()
 
 
+#: Every archive member is stamped with this time instead of "now".
+#: ``ZipFile.writestr`` records the current local time in each header, so the
+#: same seed produced a different ZIP, DOCX and XLSX digest on every run, and
+#: members identical across seeds (the OOXML packages carry no seeded content)
+#: coincided or not depending on the wall clock. The pooled calibration's
+#: recoverable total moved between 70 and 73 across two runs of the same seeds
+#: for exactly that reason. The DOS epoch is the earliest time the format holds.
+FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
+
+
+def _member(name: str) -> zipfile.ZipInfo:
+    info = zipfile.ZipInfo(name, date_time=FIXED_ZIP_TIME)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    return info
+
+
 def make_zip(rng: random.Random, entries: int = 4) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         for index in range(entries):
             archive.writestr(
-                f"file{index}.txt", f"payload {index} {rng.random()}\n" * 60
+                _member(f"file{index}.txt"), f"payload {index} {rng.random()}\n" * 60
             )
     return buffer.getvalue()
 
@@ -169,22 +185,24 @@ def make_docx(*, macros: bool = False) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(
-            "[Content_Types].xml",
+            _member("[Content_Types].xml"),
             '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org'
             '/package/2006/content-types"><Default Extension="xml" '
             'ContentType="application/xml"/></Types>',
         )
         archive.writestr(
-            "word/document.xml",
+            _member("word/document.xml"),
             '<?xml version="1.0"?><w:document xmlns:w="http://schemas.'
             'openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r>'
             "<w:t>sanctum</w:t></w:r></w:p></w:body></w:document>",
         )
-        archive.writestr("docProps/core.xml", "<coreProperties/>")
+        archive.writestr(_member("docProps/core.xml"), "<coreProperties/>")
         if macros:
             # Bytes, not a real VBA project: the flag is set from the part's
             # presence, and nothing in this codebase ever executes it.
-            archive.writestr("word/vbaProject.bin", b"\xd0\xcf\x11\xe0" + b"\x00" * 512)
+            archive.writestr(
+                _member("word/vbaProject.bin"), b"\xd0\xcf\x11\xe0" + b"\x00" * 512
+            )
     return buffer.getvalue()
 
 
@@ -193,18 +211,18 @@ def make_xlsx() -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(
-            "[Content_Types].xml",
+            _member("[Content_Types].xml"),
             '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org'
             '/package/2006/content-types"><Default Extension="xml" '
             'ContentType="application/xml"/></Types>',
         )
         archive.writestr(
-            "xl/workbook.xml",
+            _member("xl/workbook.xml"),
             '<?xml version="1.0"?><workbook xmlns="http://schemas.'
             'openxmlformats.org/spreadsheetml/2006/main"><sheets><sheet '
             'name="Sheet1" sheetId="1"/></sheets></workbook>',
         )
-        archive.writestr("docProps/core.xml", "<coreProperties/>")
+        archive.writestr(_member("docProps/core.xml"), "<coreProperties/>")
     return buffer.getvalue()
 
 

@@ -5,7 +5,9 @@ import type {
   ReportCheck,
   ReportResult,
   ReportVerification,
+  TamperDemo,
 } from '../lib/api'
+import { useCase } from '../lib/caseContext'
 import { timestamp } from '../lib/format'
 import {
   Empty,
@@ -95,11 +97,85 @@ function summarise(verification: ReportVerification): {
   return { word, tone: 'success', note: 'Every check ran and every check passed.' }
 }
 
+/**
+ * The tamper demonstration, rendered from the real verifier's two verdicts.
+ *
+ * Nothing here is animated and nothing is simulated. The server copies this
+ * host's chain to a scratch directory, changes one field of one entry in the
+ * copy, hands the copy to `Ledger.verify` - the same call that guards the live
+ * chain - and deletes the copy. Both verdicts below came back from that call.
+ */
+function TamperPanel({ demo }: { demo: TamperDemo }) {
+  return (
+    <div className="col loose" data-testid="tamper-demo">
+      <div className="split">
+        <Railed tone="success">
+          <Verdict
+            level={`BEFORE: ${demo.before.status}`}
+            basis={`${demo.before.entry_count} entries`}
+            tone="success"
+          />
+          <span className="note">{demo.before.explanation}</span>
+        </Railed>
+
+        <Railed tone="destructive">
+          <Verdict
+            level={`AFTER: ${demo.after.status}`}
+            basis={
+              demo.after.first_broken_seq !== null
+                ? `first broken sequence: #${demo.after.first_broken_seq}`
+                : 'no break located'
+            }
+            tone="destructive"
+          />
+          <span className="note">{demo.after.explanation}</span>
+        </Railed>
+      </div>
+
+      <Evidence
+        stacked
+        rows={[
+          { label: 'Record altered', value: `#${demo.tampered_seq}`, kind: 'mono' },
+          { label: 'Field', value: demo.field, kind: 'mono' },
+          { label: 'Was', value: demo.original_value, kind: 'mono' },
+          { label: 'Changed to', value: demo.modified_value, kind: 'mono' },
+          {
+            label: 'Failure kind',
+            value: demo.after.failure_kind ?? 'none',
+            kind: 'mono',
+          },
+          {
+            label: 'Still verified',
+            value:
+              demo.after.verified_through !== null &&
+              demo.after.verified_through !== undefined
+                ? `entries 0..${demo.after.verified_through}`
+                : 'none',
+            kind: 'mono',
+          },
+          {
+            label: 'Unverifiable after the break',
+            value: String(demo.after.unverifiable_count ?? 0),
+            kind: 'mono',
+          },
+        ]}
+      />
+
+      <Notice tone={demo.production_ledger_modified ? 'danger' : 'ok'}>
+        {demo.note}
+      </Notice>
+    </div>
+  )
+}
+
 export default function Audit() {
+  const { openCase } = useCase()
   const [chain, setChain] = useState<LedgerVerification | null>(null)
   const [jobId, setJobId] = useState('')
   const [caseId, setCaseId] = useState('')
-  const [operator, setOperator] = useState('sanctum')
+  const [operator, setOperator] = useState('')
+  const [demo, setDemo] = useState<TamperDemo | null>(null)
+  const [demoSeq, setDemoSeq] = useState('')
   const [report, setReport] = useState<ReportResult | null>(null)
   const [verification, setVerification] = useState<ReportVerification | null>(null)
   const [error, setError] = useState<{
@@ -125,6 +201,32 @@ export default function Audit() {
   useEffect(() => {
     void refresh()
   }, [])
+
+  // The open case pre-fills the field rather than replacing it: a report can
+  // legitimately be generated for a job run before the case existed, and the
+  // operator decides which case it documents.
+  useEffect(() => {
+    if (openCase) setCaseId(openCase.case_id)
+  }, [openCase?.case_id])
+
+  async function simulateTamper() {
+    setError(null)
+    try {
+      const parsed = Number.parseInt(demoSeq, 10)
+      setDemo(await api.tamperDemo(Number.isNaN(parsed) ? undefined : parsed))
+      // Re-read the live chain afterwards, on screen, so the claim that it was
+      // not touched is something a viewer watches rather than is told.
+      await refresh()
+    } catch (exc) {
+      const failure = exc as RequestFailed
+      setDemo(null)
+      setError({
+        message: failure.message,
+        kind: failure.kind,
+        remediation: failure.remediation,
+      })
+    }
+  }
 
   async function generate() {
     setError(null)
@@ -198,9 +300,11 @@ export default function Audit() {
                   everything after it is not.
                 </p>
               )}
-              {chain.root && (
-                <Evidence rows={[{ label: 'Store', value: chain.root, kind: 'path' }]} />
-              )}
+              {/* The store's host path is deliberately not rendered. It is in
+                  the API response for the console and the runbook, but this
+                  screen is projected in demos, and the layout of the host's
+                  filesystem is not something a viewer needs to verify the
+                  chain. */}
             </div>
           </Panel>
         )}
@@ -278,6 +382,43 @@ export default function Audit() {
           )}
         </Panel>
 
+        <Panel
+          title="Tamper simulation"
+          subtitle="Runs the real verifier against a scratch copy. The live chain is never opened for writing."
+          actions={
+            <div className="row" style={{ gap: 'var(--space-2)' }}>
+              <input
+                type="text"
+                value={demoSeq}
+                spellCheck={false}
+                placeholder="entry # (optional)"
+                style={{ width: 150 }}
+                onChange={(event) => setDemoSeq(event.target.value)}
+              />
+              <button
+                className="btn"
+                disabled={!chain || chain.entry_count < 2}
+                onClick={() => void simulateTamper()}
+              >
+                Simulate tampering
+              </button>
+            </div>
+          }
+        >
+          {demo ? (
+            <TamperPanel demo={demo} />
+          ) : (
+            <Empty>
+              Press <strong>Simulate tampering</strong>. The server copies this
+              chain to a scratch directory, changes one field of one entry in
+              the copy, and hands the copy to the same verification call that
+              guards the live chain. The copy is deleted before the answer comes
+              back, and the live chain is left byte for byte as it was &mdash;
+              the panel above is re-read afterwards so you can watch that hold.
+            </Empty>
+          )}
+        </Panel>
+
         <div className="split">
           {verification && summary ? (
             <Panel
@@ -293,6 +434,14 @@ export default function Audit() {
                   />
                 </Railed>
                 <p className="note">{summary.note}</p>
+                {!verification.ledger_digest_matches && (
+                  <Notice tone="danger">
+                    The file checked is <strong>not</strong> the bytes the
+                    ledger recorded when this job&apos;s report was generated.
+                    The checks above describe whatever file is on disk now,
+                    not the report this job produced.
+                  </Notice>
+                )}
 
                 {/* Each check reported on its own. Reducing them to one boolean
                     would hide the difference between "the bytes changed" and
@@ -350,14 +499,22 @@ export default function Audit() {
                 />
               </label>
               <label>
-                Operator
+                Operator label (optional)
                 <input
                   type="text"
                   value={operator}
                   spellCheck={false}
+                  placeholder="your own label for this run"
                   onChange={(event) => setOperator(event.target.value)}
                 />
               </label>
+              <p className="note-faint">
+                This is a <strong>label</strong>, not an identity. The actor in
+                the ledger is the operating-system account that ran the
+                operation, resolved by the privileged helper from the uid it was
+                started with and never from anything this browser sends.
+                Whatever is typed here is kept beside it and marked as typed.
+              </p>
               <div className="row">
                 <button
                   className="btn primary"
@@ -372,31 +529,86 @@ export default function Audit() {
               </div>
 
               {report && (
-                <div className="col tight">
+                <div className="col tight" data-testid="report-panel">
+                  {/* The report as a thing you can open, not a path you have
+                      to find in a file manager. Every link goes through the
+                      artifact endpoint, which serves only the configured
+                      reports directory - so no host path is on screen and none
+                      needs to be. */}
+                  <Railed tone={summary ? summary.tone : 'success'}>
+                    <Verdict
+                      level="REPORT"
+                      basis={`signed \u00b7 ${report.sha256.slice(0, 16)}\u2026`}
+                      tone={summary ? summary.tone : 'success'}
+                    />
+                  </Railed>
+
                   <Evidence
                     stacked
                     rows={[
+                      { label: 'Case', value: report.case_id, kind: 'mono' },
                       {
-                        label: 'JSON (authoritative)',
-                        value: report.json_path,
-                        kind: 'path',
+                        label: 'Generated',
+                        value: timestamp(report.generated_at),
                       },
                       {
-                        label: 'PDF (rendering)',
-                        value: report.pdf_path,
-                        kind: 'path',
+                        label: 'SHA-256 (JSON, authoritative)',
+                        value: report.sha256,
+                        kind: 'hash',
                       },
                       {
-                        label: 'Fingerprint',
+                        label: 'Signing key',
                         value: report.pubkey_fingerprint,
                         kind: 'hash',
                       },
+                      {
+                        label: 'Chain',
+                        value: chain
+                          ? `${chain.status} \u00b7 ${chain.entry_count} entries`
+                          : 'not read',
+                      },
+                      {
+                        label: 'Verification',
+                        value: summary
+                          ? summary.word
+                          : 'not run \u2014 press Verify',
+                      },
                     ]}
                   />
+
+                  <div className="row wrap" style={{ gap: 'var(--space-2)' }}>
+                    <a
+                      className="btn"
+                      href={report.pdf_url}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open PDF
+                    </a>
+                    <a className="btn" href={`${report.pdf_url}?download=true`}>
+                      Download PDF
+                    </a>
+                    <a
+                      className="btn"
+                      href={report.json_url}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      View JSON
+                    </a>
+                    <a className="btn" href={`${report.json_url}?download=true`}>
+                      Download JSON
+                    </a>
+                    <button className="btn primary" onClick={() => void verify()}>
+                      Verify
+                    </button>
+                  </div>
+
                   <Notice tone="info">
                     The JSON is authoritative and the PDF is not: the signature
                     covers the canonical JSON bytes, and the PDF is a rendering
-                    for a human.
+                    for a human. Both describe the same operation, and the PDF
+                    carries the JSON&apos;s digest so the pair can be matched.
                   </Notice>
                 </div>
               )}
