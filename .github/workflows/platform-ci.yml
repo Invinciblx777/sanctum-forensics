@@ -70,10 +70,13 @@ jobs:
       - name: UI bundle (the offline-serving tests read it)
         working-directory: ui
         run: npm ci --no-audit --no-fund && npm run build
-      - name: Full Python suite on this platform
-        run: python -m pytest -o addopts="" -q
+      # Before the suite: the adapter evidence is the point of this job, and a
+      # failing test elsewhere must not cost us the record of what the
+      # adapter did on this runner.
       - name: Platform adapter against this runner's real disks
         run: python scripts/platform_smoke.py --out platform-smoke-${{ matrix.name }}.json
+      - name: Full Python suite on this platform
+        run: python -m pytest -o addopts="" -q
       - name: Record the suites and features this platform validated
         if: always()
         run: >

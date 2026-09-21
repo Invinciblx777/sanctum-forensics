@@ -20,12 +20,21 @@ kernel's implementation of chown.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 from core.ledger._ownership import hand_over, hand_over_fd, makedirs_owned
 from core.ledger.chain import ChainStatus, Ledger
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "POSIX file ownership: core.ledger._ownership is a documented no-op "
+        "on Windows, where the model is ACLs rather than uid/gid"
+    ),
+)
 
 
 class RecordingChown:

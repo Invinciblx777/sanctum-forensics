@@ -11,9 +11,11 @@ writes, and a file exercises the same loop.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from unittest import mock
 
+import pytest
 from core.erase import calibrate
 from core.erase.calibrate import (
     ELISION_RATIO_THRESHOLD,
@@ -34,6 +36,15 @@ MEASURED = CalibrationResult(
     nonzero_seconds=1886.75,
     ratio=1886.75 / 521.5,
     sample_bytes=7759462400,
+)
+
+
+pytestmark = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason=(
+        "write-elision calibration measures O_DIRECT/O_SYNC writes to a block "
+        "device, and is part of the Linux-only whole-drive engine"
+    ),
 )
 
 

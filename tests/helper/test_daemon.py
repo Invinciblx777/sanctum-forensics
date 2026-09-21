@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,16 @@ import pytest
 from helper.daemon import OPERATIONS, HelperDaemon, InProcessHelper
 
 from helper import rpc
+
+
+def _uid() -> int:
+    """This process's uid, or ``-1`` on Windows, which has no such number.
+
+    The daemon takes an operator uid because SO_PEERCRED compares one; on a
+    platform without either, the value is only an identifier it carries.
+    """
+    getuid = getattr(os, "getuid", None)
+    return int(getuid()) if getuid is not None else -1
 
 
 def test_the_operation_allowlist_is_closed() -> None:
@@ -38,7 +49,7 @@ def test_the_operation_allowlist_is_closed() -> None:
         "acquire_image",
     }
 
-    daemon = HelperDaemon(operator_uid=os.getuid())
+    daemon = HelperDaemon(operator_uid=_uid())
     with pytest.raises(KeyError, match="not an allowed helper operation"):
         daemon._dispatch("rm -rf /", {})
     with pytest.raises(KeyError):
@@ -47,7 +58,7 @@ def test_the_operation_allowlist_is_closed() -> None:
 
 def test_an_unknown_method_comes_back_as_an_error_frame_not_a_traceback() -> None:
     """A traceback from a root process describes the host to the caller."""
-    daemon = HelperDaemon(operator_uid=os.getuid())
+    daemon = HelperDaemon(operator_uid=_uid())
     reply = daemon.handle_frame(
         rpc.encode_request("not_a_real_operation", {}, req_id=1)
     )
@@ -59,7 +70,7 @@ def test_an_unknown_method_comes_back_as_an_error_frame_not_a_traceback() -> Non
 
 
 def test_a_malformed_frame_is_answered_rather_than_crashing_the_daemon() -> None:
-    daemon = HelperDaemon(operator_uid=os.getuid())
+    daemon = HelperDaemon(operator_uid=_uid())
     reply = json.loads(daemon.handle_frame(b"{not json"))
     assert "error" in reply
 
@@ -89,6 +100,14 @@ def _device(serial: str = "SYN-1") -> Any:
     )
 
 
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason=(
+        "run_erase reaches the Linux whole-drive engine; on Windows and macOS "
+        "the adapter refuses it before anything is opened, which "
+        "tests/platform/ pins"
+    ),
+)
 def test_run_erase_defaults_to_a_dry_run_when_the_flag_is_absent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -147,7 +166,7 @@ def test_run_erase_defaults_to_a_dry_run_when_the_flag_is_absent(
     monkeypatch.setattr("core.device.capabilities.probe", lambda device: None)
     monkeypatch.setattr(drive_mod, "execute", fake_execute)
 
-    daemon = HelperDaemon(operator_uid=os.getuid())
+    daemon = HelperDaemon(operator_uid=_uid())
     answer = daemon._dispatch(
         "run_erase",
         {
@@ -161,6 +180,14 @@ def test_run_erase_defaults_to_a_dry_run_when_the_flag_is_absent(
     assert answer["result"]["dry_run"] is True
 
 
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason=(
+        "run_erase reaches the Linux whole-drive engine; on Windows and macOS "
+        "the adapter refuses it before anything is opened, which "
+        "tests/platform/ pins"
+    ),
+)
 def test_run_erase_refuses_a_mismatched_serial_behind_the_boundary(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -183,7 +210,7 @@ def test_run_erase_refuses_a_mismatched_serial_behind_the_boundary(
         "core.device.enumerate.get_device", lambda path: _device("ACTUAL-SERIAL")
     )
 
-    daemon = HelperDaemon(operator_uid=os.getuid())
+    daemon = HelperDaemon(operator_uid=_uid())
     with pytest.raises(ConfirmationMismatch) as caught:
         daemon._dispatch(
             "run_erase",
@@ -223,6 +250,14 @@ def _serial_less_device() -> Any:
     )
 
 
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason=(
+        "run_erase reaches the Linux whole-drive engine; on Windows and macOS "
+        "the adapter refuses it before anything is opened, which "
+        "tests/platform/ pins"
+    ),
+)
 def test_a_device_with_no_serial_is_confirmed_by_its_by_id_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -244,7 +279,7 @@ def test_a_device_with_no_serial_is_confirmed_by_its_by_id_path(
         "core.device.enumerate.get_device", lambda path: _serial_less_device()
     )
 
-    daemon = HelperDaemon(operator_uid=os.getuid())
+    daemon = HelperDaemon(operator_uid=_uid())
     with pytest.raises(Exception) as caught:  # noqa: B017 - the kind is the assertion
         daemon._dispatch(
             "run_erase",
@@ -263,6 +298,14 @@ def test_a_device_with_no_serial_is_confirmed_by_its_by_id_path(
     )
 
 
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason=(
+        "run_erase reaches the Linux whole-drive engine; on Windows and macOS "
+        "the adapter refuses it before anything is opened, which "
+        "tests/platform/ pins"
+    ),
+)
 def test_a_serial_less_device_still_refuses_a_wrong_confirmation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -273,7 +316,7 @@ def test_a_serial_less_device_still_refuses_a_wrong_confirmation(
         "core.device.enumerate.get_device", lambda path: _serial_less_device()
     )
 
-    daemon = HelperDaemon(operator_uid=os.getuid())
+    daemon = HelperDaemon(operator_uid=_uid())
     for typed in ("", "not-the-by-id-path", "/dev/fake"):
         with pytest.raises(ConfirmationMismatch):
             daemon._dispatch(
@@ -308,12 +351,16 @@ def test_the_helper_does_not_reimplement_the_confirmation_rule() -> None:
     assert "typed_serial != device.serial" not in adapter_source
 
 
-def test_the_socket_is_created_owner_only(tmp_path: Path) -> None:
-    """Mode 0600, set after bind because the umask applies during it."""
+def test_the_socket_is_created_owner_only(short_socket_dir: Path) -> None:
+    """Mode 0600, set after bind because the umask applies during it.
+
+    ``short_socket_dir`` rather than ``tmp_path``: an AF_UNIX path is capped
+    near 104 bytes on macOS, where pytest's temporary directory is longer.
+    """
     import stat
 
-    socket_path = tmp_path / "helper.sock"
-    daemon = HelperDaemon(operator_uid=os.getuid(), socket_path=str(socket_path))
+    socket_path = short_socket_dir / "h.sock"
+    daemon = HelperDaemon(operator_uid=_uid(), socket_path=str(socket_path))
     try:
         daemon.bind()
         mode = stat.S_IMODE(socket_path.stat().st_mode)
