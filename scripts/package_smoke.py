@@ -25,6 +25,7 @@ fails loudly.
 from __future__ import annotations
 
 import argparse
+import http.client
 import http.cookiejar
 import json
 import os
@@ -81,7 +82,9 @@ class Client:
         except urllib.error.HTTPError as exc:
             raw = exc.read().decode("utf-8", "replace")
             return exc.code, (json.loads(raw) if raw.startswith(("{", "[")) else raw)
-        except urllib.error.URLError as exc:
+        except (urllib.error.URLError, http.client.RemoteDisconnected) as exc:
+            # A server that is shutting down closes the connection instead of
+            # answering; the caller decides whether that is a failure.
             return 0, str(exc)
 
 
@@ -277,7 +280,9 @@ def run(executable: Path, argv_extra: list[str]) -> dict[str, Any]:
 
         code, _ = client.request("/app/quit", method="POST", cookies=False)
         record("quit refused without the session", code == 401, code)
-        client.request("/app/quit", method="POST")
+        # A quit that drops the connection is a quit; the app is stopping.
+        quit_code, _ = client.request("/app/quit", method="POST")
+        record("quit accepted", quit_code in (200, 0), quit_code)
         try:
             process.wait(timeout=30)
             record("app exited on quit", True, process.returncode)

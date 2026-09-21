@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+from core.platform.host import build_info
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -178,6 +179,9 @@ def create_app(
             "tool_version": state.tool_version,
             "state_dir": str(state.state_dir),
             "ui_bundled": UI_DIST.is_dir(),
+            # What this build is, from packaging/build_info.py. Empty from a
+            # source checkout, where there is no build to identify.
+            "build": build_info(),
             "launcher": getattr(app.state, "quit_event", None) is not None,
             "session_protected": bool(
                 session_token
