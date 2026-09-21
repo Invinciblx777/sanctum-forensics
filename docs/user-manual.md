@@ -175,7 +175,27 @@ SANCTUM_KEY_PASSPHRASE='<your passphrase>' \
 .venv/bin/python -m api.main
 ```
 
-It binds `127.0.0.1:8787` and nothing else. Open `http://127.0.0.1:8787`.
+It binds `127.0.0.1:8787` and nothing else, and it prints the one URL that
+opens it:
+
+```
+  Sanctum development server
+  Address     http://127.0.0.1:8787  (loopback only; never 0.0.0.0)
+  Open this   http://127.0.0.1:8787/session/<token>
+  Session     one token for this run
+              every request without its cookie is refused
+```
+
+**Open the `/session/<token>` line.** It sets an `HttpOnly`, `SameSite=Strict`
+cookie for that run; every request without it gets 401, and every request
+addressed to a name other than `127.0.0.1`, `localhost` or `[::1]` gets 400.
+Loopback alone is not an authorisation boundary: on a shared machine, any
+other account can reach a loopback port.
+
+A new token is minted each start. To script against the API, set
+`SANCTUM_SESSION_TOKEN` yourself and send `Cookie: sanctum_session=<token>`.
+`SANCTUM_DEV_INSECURE=1` turns the session off entirely, prints a warning
+saying so, and is for a single-user development machine only.
 
 | Variable | What happens without it |
 |---|---|
@@ -183,11 +203,14 @@ It binds `127.0.0.1:8787` and nothing else. Open `http://127.0.0.1:8787`.
 | `SANCTUM_STATE_DIR` | The state directory defaults to `~/.local/share/sanctum`. Your ledger, reports, evidence and recovered objects go there instead of where you meant. |
 | `SANCTUM_KEY_PASSPHRASE` | Report signing refuses to write or read an unprotected key. In a terminal you are prompted; with no TTY the report fails with `KeyPassphraseMissing`. |
 | `SANCTUM_PORT` | Defaults to `8787`. |
+| `SANCTUM_SESSION_TOKEN` | A fresh token is generated for each run and printed. Set it to script against the API. |
+| `SANCTUM_DEV_INSECURE` | With `=1` the session check is off and the server says so loudly. Any local process can then drive it, including the endpoints that erase files. |
 
 ### The one check to run before anything matters
 
 ```bash
-curl -s http://127.0.0.1:8787/health | python3 -m json.tool
+curl -s --cookie "sanctum_session=$SANCTUM_SESSION_TOKEN" \
+     http://127.0.0.1:8787/health | python3 -m json.tool
 ```
 
 Started **without** a helper socket, it answers like this — and this is the state
@@ -225,8 +248,10 @@ If the limitation is present when a report is generated, it is copied into the
 report's limitations section, so a report produced in this state says so on its
 face.
 
-> `make run` is a developer convenience and starts uvicorn on **port 8000**, not
-> 8787, and ignores `SANCTUM_PORT`. Use `python -m api.main` for anything real.
+> `make run` is `python -m api.main` and honours `SANCTUM_PORT`. It used to be
+> a bare `uvicorn --reload` on port 8000 with no session protection; the entry
+> point is what prints the session URL and refuses anything without its
+> cookie, so that is what the target runs.
 
 ### One more thing, before the first job
 

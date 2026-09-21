@@ -745,6 +745,11 @@ that change what an operator can do:
   never elevates, so unelevated erases are reported *not verified*.
 - **diskutil reports no serial numbers.** macOS devices are identified by BSD
   name, size and media UUID.
+- **The development server is loopback-only and session-protected**, like the
+  packaged app: `python -m api.main` prints a `/session/<token>` URL and
+  refuses anything without that cookie. `SANCTUM_DEV_INSECURE=1` disables the
+  check for a single-user development machine and prints a warning; there is
+  no configuration that binds anything other than `127.0.0.1`.
 - **Containers.** Inside a container the host's root, mounts and swap are
   invisible while `/sys` still lists the host's disks, so the system disk
   cannot be identified. Whole-drive work is refused there unless

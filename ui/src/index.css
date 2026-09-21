@@ -950,3 +950,37 @@ details.tech > .tech-body { display: flex; flex-direction: column; gap: 14px; }
   .flow-steps { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .answers { grid-template-columns: 1fr; }
 }
+
+/* Capability rows: label, status, and a plain-English "Why?" that opens
+   underneath. The reason is the point of the screen, so it is one click away
+   and never behind a hover. */
+.cap-rows { display: flex; flex-direction: column; }
+.cap-row {
+  display: grid;
+  grid-template-columns: 1fr max-content max-content;
+  gap: var(--space-3);
+  align-items: baseline;
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--rule);
+}
+.cap-row-label { font-size: var(--type-md); color: var(--text-primary); }
+.cap-row-why {
+  padding: var(--space-2) 0 var(--space-3);
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: 100ch;
+}
+.link-button {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-size: var(--type-sm);
+  color: var(--text-secondary);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.link-button:hover { color: var(--text-primary); }
+.link-button:focus-visible { outline: 2px solid var(--text-primary); outline-offset: 2px; }

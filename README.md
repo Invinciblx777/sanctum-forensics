@@ -79,8 +79,12 @@ Run the local control surface. It binds `127.0.0.1` only, serves its own bundled
 assets, and makes no network call of any kind:
 
 ```bash
-make run            # http://127.0.0.1:8787
+make run            # prints http://127.0.0.1:8787/session/<token> - open that
 ```
+
+The server mints a session token per run and refuses every request without its
+cookie, and every request addressed to a non-loopback name. The packaged
+desktop app does the same and opens the window on that URL itself.
 
 Whole-device operations need the privileged helper; everything else runs unprivileged.
 See [`docs/privilege-boundary.md`](docs/privilege-boundary.md).
@@ -153,7 +157,8 @@ write E01 does not get built.
 Confirm both after starting it:
 
 ```bash
-curl -s http://127.0.0.1:8787/health        # "ui_bundled": true
+curl -s --cookie "sanctum_session=$SANCTUM_SESSION_TOKEN" \
+  http://127.0.0.1:8787/health             # "ui_bundled": true
 docker exec <container> python -c \
     "from core.carve.acquire import e01_write_supported; print(e01_write_supported())"
 ```

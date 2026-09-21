@@ -729,6 +729,17 @@ export const PLATFORM: PlatformStatus = {
     machine: 'AMD64',
     app_version: '0.0.0',
     packaged: true,
+    build: {
+      version: '0.0.0',
+      commit: '705429b0f1a2',
+      platform: 'win32',
+      architecture: 'AMD64',
+      build_date: '2026-09-21T18:41:02Z',
+      python: '3.11.9',
+      node: 'v22.23.1',
+      builder: 'GitHub Actions run 35645670025',
+      signed: 'no',
+    },
     sys_platform: 'win32',
   },
   privilege: {

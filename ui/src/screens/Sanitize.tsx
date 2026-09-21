@@ -505,7 +505,11 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
     !assessment ||
     (assessment.headline !== 'NOT AVAILABLE' &&
       runnableStatus(assessment.recommended?.status))
-  const finished = Boolean(status && status.state !== 'running')
+  // `settled`, not just terminal: the job's outcome has reached the chain, so
+  // the certificate can be built from it.
+  const finished = Boolean(
+    status && status.state !== 'running' && status.settled !== false,
+  )
   const verificationResult =
     (status?.result?.verification as EraseVerification | undefined) ?? null
   const step = currentStep({

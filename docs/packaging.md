@@ -56,7 +56,7 @@ suite and bundling the result (see *Validation record* below).
 
 | Platform | Installed | From source (developer) |
 |---|---|---|
-| Linux | `./Sanctum-<ver>-x86_64.AppImage` (or `--appimage-extract-and-run` without FUSE); `.deb`: `sudo apt install ./sanctum_<ver>_amd64.deb`, then *Sanctum* in the app menu or `sanctum` | `make run`, then open http://127.0.0.1:8787; or `python -m api.desktop` |
+| Linux | `./Sanctum-<ver>-x86_64.AppImage` (or `--appimage-extract-and-run` without FUSE); `.deb`: `sudo apt install ./sanctum_<ver>_amd64.deb`, then *Sanctum* in the app menu or `sanctum` | `make run`, then open the `/session/<token>` URL it prints; or `python -m api.desktop` |
 | Windows | Run `SanctumSetup.exe`, then *Sanctum* in the Start menu | `py -3.11 -m venv .venv; .venv\Scripts\python -m pip install -c constraints.txt -e .[dev]; .venv\Scripts\python -m api.desktop` |
 | macOS | Open `Sanctum.dmg`, drag *Sanctum* to Applications, open it (right-click > Open the first time: the build is unsigned) | `python3.11 -m venv .venv && .venv/bin/pip install -c constraints.txt -e .[dev] && .venv/bin/python -m api.desktop` |
 

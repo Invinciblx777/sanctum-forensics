@@ -250,6 +250,14 @@ function RegisterEvidence({
   )
 }
 
+/** The last component of a path: the exhibit's name, not the host's layout. */
+function sourceName(source: string): string {
+  const cleaned = (source || '').replace(/[\\/]+$/, '')
+  const cut = Math.max(cleaned.lastIndexOf('/'), cleaned.lastIndexOf('\\'))
+  return cut >= 0 ? cleaned.slice(cut + 1) : cleaned
+}
+
+
 export default function Cases() {
   const { cases, openCase, select, refresh, loading } = useCase()
   const [detail, setDetail] = useState<CaseDetail | null>(null)
@@ -455,36 +463,59 @@ export default function Cases() {
                       one below, or run an acquisition with this case selected.
                     </Empty>
                   ) : (
-                    <table className="itable">
-                      <thead>
-                        <tr>
-                          <th>Exhibit</th>
-                          <th>Source</th>
-                          <th>Type</th>
-                          <th>Source hash</th>
-                          <th>State</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {detail.evidence.map((item) => (
-                          <tr key={item.evidence_id} className="irow is-compact">
-                            <td className="mono">{item.evidence_id}</td>
-                            <td className="path">{item.source || '—'}</td>
-                            <td className="mono">{item.media_type}</td>
-                            <td>
-                              {item.source_hash ? (
-                                <Hash value={item.source_hash} />
-                              ) : (
-                                <span style={{ color: 'var(--text-muted)' }}>
-                                  not recorded
-                                </span>
-                              )}
-                            </td>
-                            <td className="mono">{item.state}</td>
+                    <>
+                      <table className="itable">
+                        <thead>
+                          <tr>
+                            <th>Exhibit</th>
+                            <th>Source</th>
+                            <th>Type</th>
+                            <th>Source hash</th>
+                            <th>State</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody>
+                          {detail.evidence.map((item) => (
+                            <tr key={item.evidence_id} className="irow is-compact">
+                              <td className="mono">{item.evidence_id}</td>
+                              {/* The exhibit's own name, not where this host
+                                  keeps it. The full path identifies the
+                                  examiner's machine rather than the evidence,
+                                  and this screen is what gets projected; it is
+                                  under Technical details below, and in the
+                                  signed report either way. */}
+                              <td title={item.source}>
+                                {sourceName(item.source) || '—'}
+                              </td>
+                              <td className="mono">{item.media_type}</td>
+                              <td>
+                                {item.source_hash ? (
+                                  <Hash value={item.source_hash} />
+                                ) : (
+                                  <span style={{ color: 'var(--text-muted)' }}>
+                                    not recorded
+                                  </span>
+                                )}
+                              </td>
+                              <td className="mono">{item.state}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      <details className="tech">
+                        <summary>Technical details: full source paths</summary>
+                        <div className="tech-body">
+                          <Evidence
+                            stacked
+                            rows={detail.evidence.map((item) => ({
+                              label: item.evidence_id,
+                              value: item.source || 'not recorded',
+                              kind: 'path',
+                            }))}
+                          />
+                        </div>
+                      </details>
+                    </>
                   )}
                 </div>
               )}

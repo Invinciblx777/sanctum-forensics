@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import socket
+import sys
 import threading
 import time
 from collections.abc import Generator, Iterator
@@ -49,6 +50,17 @@ from helper import rpc
 # bounded by these, so the whole module costs a few seconds.
 STEP_SECONDS = 0.02
 FAST_DEADLINE = 0.3
+
+
+pytestmark = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason=(
+        "the helper daemon serves a Unix socket and authenticates every peer "
+        "with SO_PEERCRED, which is Linux-only; helper/__main__.py refuses to "
+        "start elsewhere rather than serve unauthenticated. The in-process "
+        "helper is covered on every platform."
+    ),
+)
 
 
 @contextmanager

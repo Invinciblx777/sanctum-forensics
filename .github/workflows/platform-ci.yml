@@ -74,9 +74,12 @@ jobs:
         run: python -m pytest -o addopts="" -q
       - name: Platform adapter against this runner's real disks
         run: python scripts/platform_smoke.py --out platform-smoke-${{ matrix.name }}.json
-      - name: Record the suites this platform passed
+      - name: Record the suites and features this platform validated
         if: always()
-        run: python scripts/record_platform_validation.py file_erase api --out validation-${{ matrix.name }}.json
+        run: >
+          python scripts/record_platform_validation.py file_erase api
+          --smoke platform-smoke-${{ matrix.name }}.json
+          --out validation-${{ matrix.name }}.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

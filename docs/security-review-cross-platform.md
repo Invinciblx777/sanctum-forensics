@@ -68,10 +68,12 @@ listed with what was done; residual risks are listed as such.
 
 ## Residual risks (not fixed, stated)
 
-- **Development mode has no session token.** `make run` / `python -m
-  api.main` still accept any local process that sends a loopback `Host`.
-  That is the historical behaviour and is intended for a single-user
-  development machine; the packaged app always uses a token.
+- **`SANCTUM_DEV_INSECURE=1` turns the development session off.** It is
+  explicit, it prints a warning naming what it allows, and it is the only way
+  to run without a token. (Fixed since the first version of this review: the
+  development server used to have no session protection at all, and
+  `python -m api.main` now mints a token per start and prints the one URL
+  that opens it.)
 - **The session cookie is not `Secure`.** It is sent over plain HTTP on
   loopback and never leaves the machine; there is no TLS to require.
 - **File-erase TOCTOU.** Between the `lstat` that decides a path is not a link

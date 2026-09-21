@@ -228,10 +228,7 @@ def create_app(
             app shell rather than a 404.
             """
             candidate = (UI_DIST / path).resolve()
-            if (
-                candidate.is_file()
-                and UI_DIST.resolve() in candidate.parents
-            ):
+            if candidate.is_file() and UI_DIST.resolve() in candidate.parents:
                 return FileResponse(candidate)
             return FileResponse(UI_DIST / "index.html")
 
@@ -273,7 +270,8 @@ def run() -> None:  # pragma: no cover - the process entry point
     banner = [
         "",
         "  Sanctum development server",
-        f"  Address     http://{LOOPBACK_HOST}:{port}  (loopback only; never 0.0.0.0)",
+        f"  Address     http://{LOOPBACK_HOST}:{port}  (loopback only; never a "
+        "wildcard address)",
     ]
     if token:
         banner += [

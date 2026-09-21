@@ -263,7 +263,14 @@ def test_a_protected_system_directory_is_refused() -> None:
     from core.platform.paths import protected_prefixes
 
     protected = [
-        Path(item) for item in protected_prefixes(family()) if Path(item).exists()
+        Path(item)
+        for item in protected_prefixes(family())
+        # A symlinked protected directory (/bin on Ubuntu and Fedora) is
+        # refused as a link, in a record rather than a raise, by an earlier
+        # branch; this test is about the protected list itself.
+        if Path(item).is_dir()
+        and not Path(item).is_symlink()
+        and Path(item).parent != Path(item)
     ]
     assert protected, "this platform protects nothing, which cannot be right"
     for candidate in protected[:3]:

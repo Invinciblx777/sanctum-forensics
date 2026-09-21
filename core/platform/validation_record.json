@@ -22,15 +22,15 @@
         "state": "PASS"
       },
       "file_erase": {
-        "commit": "20a6439508e0+dirty",
+        "commit": "8fa20ecc101c+dirty",
         "counts": {
           "errors": 0,
-          "failed": 0,
-          "passed": 241,
-          "skipped": 2
+          "failed": 1,
+          "passed": 249,
+          "skipped": 22
         },
-        "date": "2026-09-21T17:36:51Z",
-        "exit_code": 0,
+        "date": "2026-09-21T19:43:01Z",
+        "exit_code": 1,
         "os": "Linux 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026",
         "paths": [
           "tests/erase/files",
@@ -38,7 +38,7 @@
         ],
         "python": "3.11.16",
         "runner": "developer machine (Linux 6.19.10-300.fc44.x86_64)",
-        "state": "PASS"
+        "state": "FAIL"
       },
       "recovery": {
         "commit": "20a6439508e0+dirty",

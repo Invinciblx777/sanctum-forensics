@@ -11,12 +11,20 @@ summary of what those rows can say on each OS, and why.
 
 ## Legend
 
+Four states, kept apart on purpose. Collapsing them is how a matrix starts
+lying.
+
 | Word | Meaning |
 |---|---|
-| **FULL** | Implemented on this platform, run on this platform, and exercised against real media or a real OS where that applies. Documented limits still apply. |
-| **PARTIAL** | Implemented and run, with a material gap named in the cell. |
-| **UNVERIFIED** | Implemented, tested on other hosts from fixtures or type-checked for this platform, but never executed on this platform in recorded validation. The app shows these as *Unverified*, not as supported. |
-| **UNSUPPORTED** | No implementation on this platform. The app refuses with a reason and performs nothing. |
+| **VALIDATED** | Executed on that operating system and recorded: the test suites and the adapter smoke run on a real runner of that OS (`platform-ci`), or on real media where the cell says so. |
+| **PARTIAL** | Validated, with a material gap named in the cell. |
+| **UNVERIFIED** | Code exists and is type-checked and fixture-tested, but that environment has not executed it. The app shows *Unverified*, never *Supported*. |
+| **UNSUPPORTED** | Deliberately unavailable there. The app refuses with a reason and performs nothing. |
+| **HARDWARE-UNVERIFIED** | The software path is validated, but no physical device of that kind has ever been through it. See [`validation/hardware-platform-matrix.md`](validation/hardware-platform-matrix.md). |
+
+CI runs on virtual machines with virtual disks. **CI-validated is not
+hardware-validated**, and no row here claims a physical device unless
+`docs/validation/hardware.md` records one.
 
 ## Matrix
 

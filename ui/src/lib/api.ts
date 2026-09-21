@@ -342,6 +342,8 @@ export interface PlatformInfo {
   machine: string
   app_version: string
   packaged: boolean
+  /** What the build recorded about itself; empty from a source checkout. */
+  build: Record<string, string>
   sys_platform: string
 }
 
@@ -480,6 +482,12 @@ export interface JobStatus {
   job_id: string
   kind: string
   state: string
+  /**
+   * Terminal *and* written to the chain. `state` flips a moment earlier, so a
+   * certificate asked for on `state` alone can race the ledger append and be
+   * refused as an unknown job. Absent from an older server: treated as settled.
+   */
+  settled?: boolean
   params: Record<string, unknown>
   progress_count: number
   dropped_progress: number

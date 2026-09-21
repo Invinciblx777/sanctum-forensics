@@ -21,6 +21,7 @@ fails on a permission error.
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 import threading
 from collections.abc import Iterator
@@ -31,6 +32,16 @@ import pytest
 from helper.daemon import HelperClient, HelperDaemon
 
 from helper import rpc
+
+pytestmark = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason=(
+        "the helper daemon serves a Unix socket and authenticates every peer "
+        "with SO_PEERCRED, which is Linux-only; helper/__main__.py refuses to "
+        "start elsewhere rather than serve unauthenticated. The in-process "
+        "helper is covered on every platform."
+    ),
+)
 
 
 @pytest.fixture

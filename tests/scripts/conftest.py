@@ -31,6 +31,8 @@ _LINUX_HARNESS = frozenset(
         "test_probe_write_block",
         "test_fragment_plant",
         "test_manifest_keying",
+        "test_compare_baseline",
+        "test_record_code",
     }
 )
 
