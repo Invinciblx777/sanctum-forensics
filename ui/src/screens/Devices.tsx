@@ -338,8 +338,11 @@ export default function Devices({
           )}
         </Panel>
 
+        {/* On Windows and macOS these carry the platform's own reason - the
+            probe is not offered there at all - so the panel is titled for
+            what it actually lists rather than implying a failure. */}
         {rows.some((row) => row.capability_error || row.hidden_area_error) && (
-          <Panel title="Probes that did not complete">
+          <Panel title="What was not probed on this computer, and why">
             <ul className="limitations">
               {rows.flatMap((row) =>
                 [row.capability_error, row.hidden_area_error]
