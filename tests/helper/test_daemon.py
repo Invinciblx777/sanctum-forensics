@@ -20,10 +20,21 @@ def test_the_operation_allowlist_is_closed() -> None:
     names an operation, and the name is a lookup key in this table.
     """
     assert set(OPERATIONS) == {
+        # Identity. Answered from the uid the daemon was started with and never
+        # from the request, which is what stops a client naming its own
+        # operator; see api/identity.py.
+        "whoami",
         "enumerate_devices",
+        # Read-only: the platform matrix, and one device re-read and assessed.
+        # Both are answered by this host's platform adapter.
+        "platform_status",
+        "assess_device",
         "probe_capabilities",
         "detect_hidden_areas",
         "run_erase",
+        # Continues an interrupted overwrite from its recorded checkpoint. It
+        # writes to the medium, so it keeps both destructive gates.
+        "resume_erase",
         "acquire_image",
     }
 
@@ -283,12 +294,18 @@ def test_the_helper_does_not_reimplement_the_confirmation_rule() -> None:
     A second comparison here is a second place the rule can be fixed in one
     spot and left wrong in the other, which is exactly what happened.
     """
+    import core.platform.linux as linux_adapter
     import helper.daemon as daemon_module
 
-    source = Path(daemon_module.__file__).read_text(encoding="utf-8")
+    helper_source = Path(daemon_module.__file__).read_text(encoding="utf-8")
+    # The destructive path lives in the platform adapter now; the helper
+    # delegates to it and must not grow a second comparison of its own.
+    adapter_source = Path(linux_adapter.__file__).read_text(encoding="utf-8")
 
-    assert "guard.assert_serial_confirmed(device, typed_serial)" in source
-    assert "typed_serial != device.serial" not in source
+    assert "guard.assert_serial_confirmed(device, typed_serial)" in adapter_source
+    assert "execute_drive_sanitization(params)" in helper_source
+    assert "typed_serial != device.serial" not in helper_source
+    assert "typed_serial != device.serial" not in adapter_source
 
 
 def test_the_socket_is_created_owner_only(tmp_path: Path) -> None:

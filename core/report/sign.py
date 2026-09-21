@@ -112,8 +112,8 @@ def _prompt_passphrase(path: Path) -> str:
     return getpass.getpass(f"Passphrase for signing key {path}: ")
 
 
-def _passphrase(path: Path) -> bytes:
-    value = os.environ.get(PASSPHRASE_ENV) or _prompt_passphrase(path)
+def _passphrase(path: Path, explicit: str | None = None) -> bytes:
+    value = explicit or os.environ.get(PASSPHRASE_ENV) or _prompt_passphrase(path)
     if not value:
         raise KeyPassphraseMissing(
             f"No passphrase available for {path} ({PASSPHRASE_ENV} is unset and "
@@ -158,11 +158,17 @@ def key_file_for(path: Path | str) -> Path:
     return candidate
 
 
-def load_or_create_key(path: Path | str) -> Ed25519PrivateKey:
+def load_or_create_key(
+    path: Path | str, passphrase: str | None = None
+) -> Ed25519PrivateKey:
     """Load the Ed25519 private key at ``path``, generating it on first use.
 
     Args:
         path: The key file, or a directory to hold it. See :func:`key_file_for`.
+        passphrase: Typed by the operator in the desktop app, which has no
+            terminal to prompt on and no environment the operator set. Used
+            for this call only and never stored. When omitted, the
+            environment and then an interactive prompt are tried, as before.
 
     Raises:
         KeyPathUnusable: The resolved key path is not a regular file.
@@ -175,12 +181,12 @@ def load_or_create_key(path: Path | str) -> Ed25519PrivateKey:
         raise KeyPathUnusable(
             f"{key_path} is not a regular file, so it cannot hold a signing key."
         )
-    passphrase = _passphrase(key_path)
+    passphrase_bytes = _passphrase(key_path, passphrase)
 
     if key_path.exists():
         _assert_safe_permissions(key_path)
         loaded = serialization.load_pem_private_key(
-            key_path.read_bytes(), password=passphrase
+            key_path.read_bytes(), password=passphrase_bytes
         )
         if not isinstance(loaded, Ed25519PrivateKey):
             raise ValueError(f"{key_path} does not hold an Ed25519 private key")
@@ -190,7 +196,7 @@ def load_or_create_key(path: Path | str) -> Ed25519PrivateKey:
     pem = private.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.BestAvailableEncryption(passphrase),
+        encryption_algorithm=serialization.BestAvailableEncryption(passphrase_bytes),
     )
     key_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

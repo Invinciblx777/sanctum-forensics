@@ -21,6 +21,8 @@ from pathlib import Path
 #: core.erase.drive is listed because its Linux-only import guard makes it
 #: unimportable here; tests/erase/ covers it on Linux.
 IMPLEMENTED = (
+    # Covered by tests/api/test_cases.py.
+    "core.cases",
     "core.device",
     "core.erase.calibrate",
     "core.erase.patterns",
@@ -49,6 +51,8 @@ IMPLEMENTED = (
     "core.erase.residual",
     "core.erase.sink",
     "core.erase._platform",
+    # Covered by tests/platform/ (adapters from fixtures on every host).
+    "core.platform",
 )
 
 

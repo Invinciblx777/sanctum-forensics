@@ -27,7 +27,7 @@ endif
 # deletes the venv, and on Windows a running python.exe cannot delete itself.
 HOST_PY ?= python
 
-.PHONY: install test lint typecheck check run docker clean
+.PHONY: install test lint typecheck check run docker clean package-linux package-linux-portable validation-record
 
 install:
 	$(BOOTSTRAP_PY) -m venv $(VENV)
@@ -46,6 +46,8 @@ lint:
 typecheck:
 	$(PY) -m mypy --strict core/ helper/ api/
 	$(PY) -m mypy --strict --platform win32 core/erase/_platform/win.py
+	$(PY) -m mypy --strict --platform win32 core/platform api/security.py api/deps.py core/erase/files.py
+	$(PY) -m mypy --strict --platform darwin core/platform
 
 # No -q here: pyproject's addopts already sets it, and a second -q suppresses
 # the summary line, hiding the pass and skip counts.
@@ -70,3 +72,15 @@ clean:
 	[shutil.rmtree(p, ignore_errors=True) for p in ('$(VENV)', '.pytest_cache', '.mypy_cache', '.ruff_cache', 'build', 'dist')]; \
 	[shutil.rmtree(p, ignore_errors=True) for p in pathlib.Path('.').rglob('__pycache__')]; \
 	[shutil.rmtree(p, ignore_errors=True) for p in pathlib.Path('.').glob('*.egg-info')]"
+
+# Desktop packages. Windows and macOS: scripts/build-windows.ps1 and
+# scripts/build-macos.sh on those machines; see docs/packaging.md.
+package-linux:
+	bash scripts/build-linux.sh
+
+package-linux-portable:
+	bash scripts/build-linux-portable.sh
+
+# Run this platform's suites and record the result for the capability matrix.
+validation-record:
+	$(PY) scripts/record_platform_validation.py

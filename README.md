@@ -26,13 +26,26 @@ forensic report that a third party verifies with a tool they run themselves.
 ## Status
 
 Implemented and under test. `make check` runs ruff, `mypy --strict` and the suite:
-**1211 passing, 12 skipped** (the skips need root, a Windows host, or an E01-writing
-libewf build; each names its reason).
+**1529 passing, 13 skipped, 0 failing** as of 2026-09-21 (the skips need root, a
+Windows host, or an E01-writing libewf build; each names its reason). The UI has
+its own 26 unit tests (`cd ui && npm test`). Validation results — a 7 GiB carve, a
+fuzz pass, the pooled calibration — are summarised in
+[`docs/validation/final-sih-readiness.md`](docs/validation/final-sih-readiness.md).
 
 Validated against real removable media over six recorded runs — see
 [`docs/validation/hardware.md`](docs/validation/hardware.md), which includes the run
 where the erase covered 512 bytes of a 7.76 GB device and printed `COMPLETE`, the
 eight other defects that run found, and the fixes.
+
+## Platforms
+
+One product with a native adapter per OS (`core/platform/`). Linux has the
+full engine, including whole-drive Clear and firmware Purge. Windows and macOS
+discover and assess devices, erase files and folders, and issue certificates;
+they refuse whole-drive sanitization with the reason rather than offering
+something unvalidated. Packaged as an AppImage/`.deb`, `SanctumSetup.exe` and
+`Sanctum.dmg` — see [`docs/platform-support.md`](docs/platform-support.md) for
+exactly what each platform does, and what has not been run on it.
 
 ## What it does not claim
 
@@ -81,10 +94,21 @@ See [`docs/privilege-boundary.md`](docs/privilege-boundary.md).
 | [`docs/architecture.md`](docs/architecture.md) | Layer map and the invariants each layer holds |
 | [`docs/compliance.md`](docs/compliance.md) | What the tool does against NIST SP 800-88r2, and against Indian instruments (DPDP Act 2023 and Rules 2025, IT Act §43A, CERT-In, IS/ISO/IEC 27040) — including where it does not, and that IEEE 2883-2022 conformance has not been verified |
 | [`docs/limitations.md`](docs/limitations.md) | Every guarantee this tool does not make |
+| [`docs/platform-support.md`](docs/platform-support.md) | Linux / Windows / macOS capability matrix: FULL, PARTIAL, UNVERIFIED, UNSUPPORTED, each traced to code |
+| [`docs/packaging.md`](docs/packaging.md) | Building and running the AppImage, `.deb`, `SanctumSetup.exe` and `Sanctum.dmg`; signing status |
+| [`docs/validation/platform-matrix.md`](docs/validation/platform-matrix.md) | What ran on which platform, and what is NOT RUN |
+| [`docs/security-review-cross-platform.md`](docs/security-review-cross-platform.md) | Review of the adapters, launcher, API front door and installers |
 | [`docs/validation/hardware.md`](docs/validation/hardware.md) | Real-media validation: method, runs, defects found |
 | [`docs/performance/calibration.md`](docs/performance/calibration.md) | How the confidence weights were derived and bounded |
 | [`docs/performance/acquisition.md`](docs/performance/acquisition.md) | Acquisition throughput against `ewfacquire` |
 | [`docs/privilege-boundary.md`](docs/privilege-boundary.md) | The single root process and what it will accept |
+| [`docs/threat-model.md`](docs/threat-model.md) | Assets, trust boundaries, each threat with its control, its test, and its limit |
+| [`docs/supported-formats.md`](docs/supported-formats.md) | Generated from the signature table and parser/decoder registries; a test fails if it drifts |
+| [`docs/performance/calibration-pooled.md`](docs/performance/calibration-pooled.md) | Eight-seed pooled re-run of the confidence calibration |
+| [`docs/performance/benchmark.md`](docs/performance/benchmark.md) | Recovery benchmark against PhotoRec and Foremost |
+| [`docs/validation/large-image.md`](docs/validation/large-image.md) | 7 GiB carve: wall clock, peak memory, throughput, false positives |
+| [`docs/validation/fuzz.md`](docs/validation/fuzz.md) | Bounded fuzz pass over every structure parser and decoder |
+| [`docs/validation/final-sih-readiness.md`](docs/validation/final-sih-readiness.md) | What is implemented, what is measured, what is not verified |
 
 `CLAUDE.md` holds the non-negotiables every change is checked against.
 

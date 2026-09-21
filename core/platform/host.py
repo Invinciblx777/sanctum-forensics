@@ -1,0 +1,188 @@
+"""Host facts: which OS this is, which build of the app, and what it may do.
+
+Each answer comes from the OS, not from a table keyed on ``sys.platform``:
+the Windows name is read from the build number the kernel reports, the macOS
+version from ``platform.mac_ver``, the Linux distribution from
+``/etc/os-release``, and privilege from ``geteuid`` or ``IsUserAnAdmin``. When
+a call fails the answer is ``unknown`` with the failure in ``basis``; it is
+never guessed.
+"""
+
+from __future__ import annotations
+
+import os
+import platform
+import sys
+from importlib import metadata
+from pathlib import Path
+
+import structlog
+
+from core.platform.model import PlatformFamily, PlatformInfo, PrivilegeState
+
+__all__ = [
+    "APP_NAME",
+    "app_version",
+    "family",
+    "platform_info",
+    "privilege_state",
+    "windows_product_name",
+    "linux_pretty_name",
+]
+
+logger = structlog.get_logger(__name__)
+
+APP_NAME = "Sanctum"
+_DIST_NAME = "sanctum-forensics"
+
+#: Windows 11 kept the 10.0 kernel version; the build number is what separates
+#: them. 22000 is the first Windows 11 release build.
+_WINDOWS_11_FIRST_BUILD = 22000
+
+
+def family(sys_platform: str | None = None) -> PlatformFamily:
+    """Map ``sys.platform`` onto the four families the adapters implement."""
+    value = sys_platform if sys_platform is not None else sys.platform
+    if value.startswith("linux"):
+        return "linux"
+    if value == "win32":
+        return "windows"
+    if value == "darwin":
+        return "macos"
+    return "other"
+
+
+def app_version() -> str:
+    """The installed distribution's version, or ``0.0.0`` from a raw checkout."""
+    try:
+        return metadata.version(_DIST_NAME)
+    except metadata.PackageNotFoundError:
+        return "0.0.0"
+
+
+def windows_product_name(release: str, version: str) -> str:
+    """``Windows 11`` or ``Windows 10`` from ``platform.win32_ver``.
+
+    ``platform.release()`` returns ``10`` on Windows 11 under many Python
+    builds, so the build number is authoritative.
+    """
+    try:
+        build = int(version.split(".")[2]) if version.count(".") >= 2 else 0
+    except ValueError:
+        build = 0
+    if release in {"10", "11"} and build >= _WINDOWS_11_FIRST_BUILD:
+        return "Windows 11"
+    if release:
+        return f"Windows {release}"
+    return "Windows"
+
+
+def linux_pretty_name(os_release: str | None) -> str:
+    """``PRETTY_NAME`` from ``/etc/os-release``, or ``Linux``."""
+    if not os_release:
+        return "Linux"
+    for line in os_release.splitlines():
+        if line.startswith("PRETTY_NAME="):
+            value = line.split("=", 1)[1].strip().strip('"').strip("'")
+            if value:
+                return value
+    return "Linux"
+
+
+def platform_info() -> PlatformInfo:
+    """Describe this host."""
+    fam = family()
+    machine = platform.machine()
+    packaged = bool(getattr(sys, "frozen", False))
+    if fam == "windows":
+        release, version, _csd, _ptype = platform.win32_ver()
+        return PlatformInfo(
+            family=fam,
+            os_name=windows_product_name(release, version),
+            os_version=release,
+            os_build=version,
+            machine=machine,
+            app_version=app_version(),
+            packaged=packaged,
+            sys_platform=sys.platform,
+        )
+    if fam == "macos":
+        release = platform.mac_ver()[0]
+        return PlatformInfo(
+            family=fam,
+            os_name=f"macOS {release}".strip(),
+            os_version=release,
+            os_build=platform.release(),
+            machine=machine,
+            app_version=app_version(),
+            packaged=packaged,
+            sys_platform=sys.platform,
+        )
+    os_release: str | None
+    try:
+        os_release = Path("/etc/os-release").read_text(encoding="utf-8")
+    except OSError:
+        os_release = None
+    return PlatformInfo(
+        family=fam,
+        os_name=linux_pretty_name(os_release) if fam == "linux" else platform.system(),
+        os_version=platform.release(),
+        os_build=platform.release(),
+        machine=machine,
+        app_version=app_version(),
+        packaged=packaged,
+        sys_platform=sys.platform,
+    )
+
+
+def _windows_is_admin() -> tuple[bool | None, str]:
+    """``shell32.IsUserAnAdmin``: whether this token is elevated."""
+    try:
+        import ctypes
+
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:
+            return None, "ctypes.windll is unavailable, so elevation is unknown"
+        return bool(windll.shell32.IsUserAnAdmin()), "shell32.IsUserAnAdmin()"
+    except (OSError, AttributeError) as exc:
+        return None, f"IsUserAnAdmin could not be called ({exc})"
+
+
+def privilege_state(
+    *, helper: str = "in-process", helper_basis: str = ""
+) -> PrivilegeState:
+    """Whether this process is elevated, and how privileged work is reached."""
+    fam = family()
+    helper_mode = helper if helper in {"socket", "in-process", "none"} else "none"
+    if fam == "windows":
+        elevated, basis = _windows_is_admin()
+        return PrivilegeState(
+            level=(
+                "administrator"
+                if elevated
+                else "standard"
+                if elevated is False
+                else "unknown"
+            ),
+            elevated=elevated,
+            basis=basis,
+            helper=helper_mode,
+            helper_basis=helper_basis,
+        )
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None:
+        return PrivilegeState(
+            level="unknown",
+            elevated=None,
+            basis="os.geteuid is unavailable on this platform",
+            helper=helper_mode,
+            helper_basis=helper_basis,
+        )
+    euid = int(geteuid())
+    return PrivilegeState(
+        level="root" if euid == 0 else "standard",
+        elevated=euid == 0,
+        basis=f"os.geteuid() returned {euid}",
+        helper=helper_mode,
+        helper_basis=helper_basis,
+    )

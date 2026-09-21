@@ -20,6 +20,10 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 __all__ = [
+    "CaseCreateRequest",
+    "EvidenceAttachRequest",
+    "TamperDemoRequest",
+    "ResumeEraseRequest",
     "EraseDriveRequest",
     "EraseFilesRequest",
     "WipeFreeSpaceRequest",
@@ -28,6 +32,53 @@ __all__ = [
     "ReportRequest",
     "JobAccepted",
 ]
+
+
+class CaseCreateRequest(BaseModel):
+    """Body for ``POST /cases``.
+
+    There is no ``created_by``. The author is the trusted local identity the
+    helper resolves, and a field here would be a second, spoofable source for
+    the one value a chain of custody exists to record.
+    """
+
+    case_id: str = Field(min_length=1, max_length=64)
+    title: str = Field(default="", max_length=200)
+    description: str = Field(default="", max_length=4000)
+
+
+class EvidenceAttachRequest(BaseModel):
+    """Body for ``POST /cases/{case_id}/evidence``.
+
+    Registration only: this records that an exhibit exists and what its hashes
+    are. Nothing here opens a device or reads an image - acquisition is a job,
+    with its own read-only path and its own chain entries.
+    """
+
+    evidence_id: str = Field(min_length=1, max_length=64)
+    #: Free text describing where the exhibit came from.
+    source: str = Field(default="", max_length=500)
+    media_type: str = Field(default="image", max_length=64)
+    acquired_at: str = Field(default="", max_length=64)
+    #: The hash recorded at acquisition, if there is one.
+    source_hash: str = Field(default="", max_length=128)
+    #: The hash a later read-back produced, if one was done.
+    verification_hash: str = Field(default="", max_length=128)
+    state: str = Field(default="registered", max_length=32)
+
+
+class TamperDemoRequest(BaseModel):
+    """Body for ``POST /ledger/tamper-demo``.
+
+    ``seq`` names the entry to alter **in the scratch copy**. The production
+    chain is never opened for writing by this endpoint; see
+    :func:`api.routes.audit.tamper_demo`.
+    """
+
+    #: Which entry to corrupt in the copy. Defaults to the middle of the chain,
+    #: which is the interesting case: it shows both the intact prefix and the
+    #: unverifiable suffix.
+    seq: int | None = None
 
 
 class EraseDriveRequest(BaseModel):
@@ -118,11 +169,27 @@ class CarveRequest(BaseModel):
     operator: str = "sanctum"
 
 
+class ResumeEraseRequest(BaseModel):
+    """Body for ``POST /jobs/{job_id}/resume``.
+
+    Both gates again. A resume writes to the medium and is not a lesser
+    operation than the run it continues.
+    """
+
+    dry_run: bool = True
+    typed_serial: str = ""
+    operator: str = "sanctum"
+
+
 class ReportRequest(BaseModel):
     """Body for ``POST /reports/{job_id}``."""
 
     case_id: str = ""
     operator: str = "sanctum"
+    #: The signing-key passphrase, for the desktop app, which has no terminal
+    #: and no environment the operator set. Used to open the key for this one
+    #: request; never logged, never stored, never echoed into the report.
+    key_passphrase: str = Field(default="", repr=False)
 
 
 class JobAccepted(BaseModel):

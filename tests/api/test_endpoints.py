@@ -17,7 +17,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from api.deps import AppServices
 from fastapi.testclient import TestClient
+
+from tests._loopback import LOOPBACK_BASE_URL
 
 from .conftest import RecordingHelper
 
@@ -74,7 +77,9 @@ def test_devices_reports_helper_failure_as_a_limitation_not_a_500(
         state_dir=tmp_path / "state",
     )
     broken.prepare()
-    with TestClient(create_app(services=broken, serve_ui=False)) as probe:
+    with TestClient(
+        create_app(services=broken, serve_ui=False), base_url=LOOPBACK_BASE_URL
+    ) as probe:
         answer = probe.get("/devices")
 
     assert answer.status_code == 200
@@ -331,3 +336,48 @@ def test_the_app_is_configured_for_loopback_only() -> None:
     assert "0.0.0.0" not in source, (
         "binding a wildcard address would make this a remote wipe primitive"
     )
+
+
+# --------------------------------------------------------------------------
+# The unhandled-exception handler discloses nothing about this host
+# --------------------------------------------------------------------------
+
+
+def test_an_unanticipated_failure_returns_an_incident_id_and_not_the_message(
+    services: AppServices,
+) -> None:
+    """The body used to be ``f"{type(exc).__name__}: {exc}"``.
+
+    The exceptions that reach this handler are the ones nobody anticipated, and
+    their messages quote host paths: "[Errno 13] Permission denied:
+    '/var/lib/sanctum/ledger/chain.jsonl'". An error a layer *did* anticipate
+    carries a remediation its author wrote and is returned verbatim long before
+    it could get here, so reaching this handler means there is no such sentence
+    to pass through.
+    """
+    from api.main import create_app
+    from fastapi.testclient import TestClient
+
+    app = create_app(services=services, serve_ui=False)
+
+    @app.get("/boom-for-the-test")
+    def _boom() -> dict[str, str]:
+        raise OSError(
+            "[Errno 13] Permission denied: '/var/lib/sanctum/secret/chain.jsonl'"
+        )
+
+    with TestClient(
+        app, raise_server_exceptions=False, base_url=LOOPBACK_BASE_URL
+    ) as client:
+        answer = client.get("/boom-for-the-test")
+
+    assert answer.status_code == 500
+    body = answer.json()
+    assert "/var/lib/sanctum" not in answer.text
+    assert "Permission denied" not in answer.text
+    assert "Errno" not in answer.text
+    assert body["kind"] == "InternalError"
+    # The operator is given the string to grep the server log for.
+    assert len(body["incident"]) == 12
+    assert body["incident"] in body["error"]
+    assert body["incident"] in body["remediation"]

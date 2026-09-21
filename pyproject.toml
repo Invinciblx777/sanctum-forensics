@@ -49,8 +49,19 @@ dev = [
     "types-PyYAML==6.0.12.20260815",
 ]
 
+# Desktop packaging only. `desktop` gives the packaged app a native window
+# (WebView2 on Windows, WKWebView on macOS); without it the launcher opens the
+# default browser. `build` is the freezer the scripts/build-* scripts run.
+desktop = [
+    "pywebview==6.2.1",
+]
+build = [
+    "pyinstaller==6.22.3",
+]
+
 [project.scripts]
 sanctum = "core.report.cli:main"
+sanctum-desktop = "api.desktop:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["core", "helper", "api", "testkit"]

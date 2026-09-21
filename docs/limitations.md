@@ -710,11 +710,49 @@ own schedule, and the limitation is recorded on the record.
 ### The Windows backend is untested on this build
 
 `core/erase/_platform/win.py` is written against the Win32 API and is
-type-checked as Windows in a second mypy pass, but no test has executed it: this
-project's CI host is Linux. Every method degrades to an honest unknown plus a
-recorded limitation when a call fails, so the worst case on an untried Windows
-build is a report full of unknowns rather than a false guarantee. The
-NTFS-specific tests skip off Windows with that stated as the reason.
+type-checked as Windows in a second mypy pass, but no recorded run has executed
+it on Windows: this project's development host is Linux. The Windows CI job
+(`.github/workflows/platform-ci.yml`) is configured to run the file-erase suite
+on an NTFS runner and record the result; until that record exists, the app's
+own capability screen shows file erase on Windows as **Unverified**, not as
+supported. Every method degrades to an honest unknown plus a recorded
+limitation when a call fails, so the worst case on an untried Windows build is
+a report full of unknowns rather than a false guarantee.
+
+## Platform differences
+
+The full matrix is [`platform-support.md`](platform-support.md). The limits
+that change what an operator can do:
+
+- **Whole-drive sanitization is Linux-only.** Windows and macOS discover and
+  assess devices and refuse whole-drive work with the reason, performing
+  nothing. No raw-disk writer has been written and validated for either, and
+  the tool does not offer one it cannot verify. Use the Linux AppImage on the
+  same hardware (from a live USB for an internal disk).
+- **Firmware Purge has never run on hardware**, on any platform. It is
+  selected from probed capability and dispatched on Linux; that path is
+  UNVERIFIED.
+- **APFS, Btrfs, ReFS and F2FS are copy-on-write.** A file erase on them
+  removes the file and reports residuals; it cannot destroy the old blocks and
+  is never reported as verified.
+- **macOS internal storage** is purged by macOS's own *Erase All Content and
+  Settings* (Apple silicon, T2), which destroys the storage keys. The app
+  names that path and does not perform or verify it.
+- **Windows and macOS discovery are UNVERIFIED.** The parsers are tested from
+  captured `Get-Disk` and `diskutil` output on Linux; they have not been run
+  against a real Windows or macOS disk set.
+- **Windows file verification needs elevation** (raw volume read); the app
+  never elevates, so unelevated erases are reported *not verified*.
+- **diskutil reports no serial numbers.** macOS devices are identified by BSD
+  name, size and media UUID.
+- **Containers.** Inside a container the host's root, mounts and swap are
+  invisible while `/sys` still lists the host's disks, so the system disk
+  cannot be identified. Whole-drive work is refused there unless
+  `SANCTUM_ALLOW_CONTAINER_DEVICES=1` is set for a container that was given
+  exactly the target device.
+- **Hardware validation of this change: none.** No designated disposable media
+  was used; no device was written. See
+  [`validation/platform-matrix.md`](validation/platform-matrix.md).
 
 ## PII triage counts shapes, stores no values, and reads only some types
 
@@ -793,6 +831,47 @@ What the scan reads, and misses:
   in 1 MiB windows. OOXML and PDF objects that large are not scanned, and their
   `basis` says so.
 
+## The operator identity is a local account, not a person
+
+The ledger's `actor` is resolved server-side by the privileged helper from the
+uid it was started with (`api/identity.py`, `helper/daemon.py:_op_whoami`). A
+client can no longer write an arbitrary name into it. What that establishes is
+**which operating-system account** ran the operation. It does not establish who
+was at the keyboard, and on a shared account it does not distinguish two people.
+With no helper socket configured the identity is the API process's own uid and
+its basis sentence says so. A label an examiner types is recorded beside the
+identity and marked `[label: …]`; it is not verified.
+
+## Reports rebuilt after a restart carry no progress trace
+
+A finished job's result is written into the chain as a `job.outcome` entry, so
+`POST /reports/{job_id}` works after the API restarts (`api/durable.py`). The
+result object is byte-identical — it is content-addressed — but the per-record
+progress stream never entered the chain and is absent, and the report's
+limitations say it was rebuilt. A job that never reached a terminal state (the
+process was killed mid-run) has no outcome entry and still cannot be reported.
+
+## Spilled carve bytes are deleted, not sanitized
+
+During a carve, fragmented and multi-extent objects are spilled to
+`<state>/work/` and removed on success, failure and cancel
+(`api/carve_job.py:SpillStore`). Removal is `unlink`. On flash media the bytes
+may persist physically until the FTL reclaims them. Keep the state directory on
+an encrypted volume if recovered content is sensitive.
+
+## The case document is an index
+
+`<state>/cases/*.json` is ordinary mutable JSON. It groups operations and
+reports for the UI and proves nothing; the hash chain is the record, and the
+case screen's integrity verdict is always the chain's. Editing a case document
+changes the grouping, not the evidence.
+
+## The API has no authentication
+
+It binds `127.0.0.1` only. Any local account that can reach that port can drive
+it. Run it on a single-user examination workstation. See
+[`threat-model.md`](threat-model.md#local-multi-user-threat).
+
 ## Platform
 
 Whole-device sanitization is Linux only. `core/erase/drive.py` refuses to import
@@ -800,6 +879,16 @@ elsewhere rather than offer a shim that would have to fake `O_DIRECT` alignment,
 `BLKGETSIZE64` and ATA/NVMe pass-through. On Windows, use WSL2 with
 `usbipd-win`, or a Linux VM with the controller passed through.
 `core/erase/files.py` stays cross-platform.
+
+**The Windows file-erasure backend (`core/erase/_platform/win.py`) is
+type-checked under `--platform win32` and has not been executed on a Windows
+host in this project's recorded validation.** Its behaviour on NTFS alternate
+data streams, the USN journal and Windows file locking is implemented from
+documentation and is unverified.
+
+**E01 limits.** Acquisition to E01 is uncompressed (see above). E01 reading
+depends on the `libewf-python` build; the tests that need an E01-writing build
+are among the suite's skips and name their reason.
 
 ## Destroy
 

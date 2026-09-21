@@ -26,6 +26,8 @@ Run with ``python -m api.main`` or
 from __future__ import annotations
 
 import os
+import traceback
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +38,7 @@ from fastapi.staticfiles import StaticFiles
 
 from api.deps import AppServices, default_services, signing_key_limitations
 from api.routes import all_routers
+from api.security import install as install_security
 
 __all__ = ["create_app", "run", "UI_DIST", "LOOPBACK_HOST"]
 
@@ -75,8 +78,13 @@ def create_app(
     services: AppServices | None = None,
     state_dir: Path | None = None,
     serve_ui: bool = True,
+    session_token: str | None = None,
 ) -> FastAPI:
-    """Build and return the configured FastAPI application."""
+    """Build and return the configured FastAPI application.
+
+    ``session_token`` defaults to ``SANCTUM_SESSION_TOKEN``, which only the
+    desktop launcher sets. See :mod:`api.security`.
+    """
     app = FastAPI(
         title="Sanctum Forensics",
         version="0.0.0",
@@ -95,6 +103,17 @@ def create_app(
     for router in all_routers():
         app.include_router(router)
 
+    # Registered before the header middleware so it runs *inside* it: a
+    # refusal still carries the security headers.
+    install_security(
+        app,
+        session_token=(
+            session_token
+            if session_token is not None
+            else os.environ.get("SANCTUM_SESSION_TOKEN", "")
+        ),
+    )
+
     @app.middleware("http")
     async def _security_headers(request: Request, call_next: Any) -> Any:
         response = await call_next(request)
@@ -104,18 +123,47 @@ def create_app(
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
-        # A traceback never reaches the client. It would describe this host's
-        # filesystem layout to whatever is on the other end of the socket.
+        # Neither the traceback nor the message reaches the client.
+        #
+        # The traceback never did. The *message* used to: the body was
+        # f"{type(exc).__name__}: {exc}", and the exceptions that reach this
+        # handler are the ones nobody anticipated - an OSError whose str() is
+        # "[Errno 13] Permission denied: '/var/lib/sanctum/ledger/chain.jsonl'",
+        # a KeyError naming an internal field, a pikepdf error quoting a path
+        # inside the evidence tree. Every one of those describes this host to
+        # whatever opened the socket. An error a layer *did* anticipate carries
+        # a remediation its author wrote and is returned verbatim by
+        # sanctum_error_response long before it could arrive here; reaching
+        # this handler means no such sentence exists, so there is nothing to
+        # pass through and an incident id is the honest thing to hand back.
+        #
+        # The full message and type are logged server-side, against that id, so
+        # the operator loses nothing but the person reading the response is not
+        # told the filesystem layout.
+        incident = uuid.uuid4().hex[:12]
         logger.warning(
-            "api_unhandled", path=request.url.path, error=str(exc),
+            "api_unhandled",
+            incident=incident,
+            path=request.url.path,
+            error=str(exc),
             kind=type(exc).__name__,
+            traceback=traceback.format_exc(limit=8),
         )
         return JSONResponse(
             status_code=500,
             content={
-                "error": f"{type(exc).__name__}: {exc}",
-                "kind": type(exc).__name__,
-                "remediation": "Check the API log for the failing request.",
+                "error": (
+                    "The request failed for a reason this layer did not "
+                    f"anticipate. Incident {incident}."
+                ),
+                "kind": "InternalError",
+                "incident": incident,
+                "remediation": (
+                    "The failure was logged on the server with this incident "
+                    f"id. Search the API log for {incident!r} to see what went "
+                    "wrong; the message is withheld here because an "
+                    "unanticipated error usually quotes a host path."
+                ),
             },
         )
 
@@ -127,10 +175,37 @@ def create_app(
             "tool_version": state.tool_version,
             "state_dir": str(state.state_dir),
             "ui_bundled": UI_DIST.is_dir(),
+            "launcher": getattr(app.state, "quit_event", None) is not None,
+            "session_protected": bool(
+                session_token
+                if session_token is not None
+                else os.environ.get("SANCTUM_SESSION_TOKEN", "")
+            ),
             # Computed per request: the key and the chain can both come into
             # existence after startup, and the second one is permanent.
             "limitations": state.limitations + signing_key_limitations(state),
         }
+
+    @app.post("/app/quit")
+    def quit_app() -> dict[str, Any]:
+        """Stop a launcher-started app. Refused everywhere else.
+
+        Only :mod:`api.desktop` sets ``quit_event``, and it only ever runs
+        with a session token, so the request that reaches this already
+        carried the window's cookie. A server started any other way has no
+        event and answers 409: ``make run`` is stopped from its terminal.
+        """
+        event = getattr(app.state, "quit_event", None)
+        if event is None:
+            from api.routes.common import sanctum_error_response
+
+            raise sanctum_error_response(
+                "UnsupportedCapability",
+                "This server was not started by the desktop launcher.",
+                "Stop it from the terminal that started it.",
+            )
+        event.set()
+        return {"quitting": True}
 
     if serve_ui and UI_DIST.is_dir():
         assets = UI_DIST / "assets"
@@ -167,7 +242,7 @@ def run() -> None:  # pragma: no cover - the process entry point
 
     port = int(os.environ.get("SANCTUM_PORT", DEFAULT_PORT))
     uvicorn.run(
-        create_app(),
+        create_app(),  # reads SANCTUM_SESSION_TOKEN; see api.security
         host=LOOPBACK_HOST,
         port=port,
         log_level="info",

@@ -734,7 +734,7 @@ sys.exit(1 if bad else 0)
 ```
 
 ```
-$ .venv/bin/python check_digests.py <state>/reports/CASE-001.forensic.json image.dd
+$ .venv/bin/python check_digests.py <state>/reports/<job_id>/CASE-001.forensic.json image.dd
 OK           0 jpg     2 runs  72dc6393d6a4b85e
 1/1 candidates match the image
 ```
@@ -790,8 +790,8 @@ curl -s -X POST http://127.0.0.1:8787/reports/<job_id> \
 ```json
 {
     "job_id": "carve-43c34d2ca280",
-    "json_path": "<state>/reports/CASE-001.forensic.json",
-    "pdf_path":  "<state>/reports/CASE-001.forensic.pdf",
+    "json_path": "<state>/reports/<job_id>/CASE-001.forensic.json",
+    "pdf_path":  "<state>/reports/<job_id>/CASE-001.forensic.pdf",
     "pubkey_fingerprint": "43:62:3F:92:1A:…:29:67",
     "sha256": "aabc749cd11bd67e7fea3dbacc37671b475211a8e1cf52e9e0033dafcd3d68b1",
     "bytes": 20150
@@ -1228,6 +1228,108 @@ Read `GET /jobs/<id>` for `state`, `error` and `remediation` before concluding
 anything.
 
 ---
+
+## 10a. Cases, artifacts, resume, and the tamper demonstration
+
+These were added on 2026-09-21. Each is covered by its own test file, named in
+brackets.
+
+**Cases** (`tests/api/test_cases.py`). Open one on the **Cases** screen before
+doing evidence work. The sidebar shows the open case on every screen, and every
+recovery, acquisition and drive erase started while it is open is filed against
+it; a report generated later inherits its id. The case screen's tabs show the
+exhibits, the operations and their status, the reports (with Open/Download
+links), and the chain entries belonging to the case. **The integrity verdict on
+that screen is the ledger's**; the case file itself is an index and proves
+nothing. `POST /cases`, `GET /cases`, `GET /cases/{id}`,
+`POST /cases/{id}/evidence`.
+
+**Operator identity** (`tests/api/test_operator_identity.py`). The actor in the
+ledger is the operating-system account the helper was started for, shown as
+`alice (uid 1000)`. What you type in an operator box is kept as
+`[label: …]` beside it. You cannot change the actor from the browser.
+
+**Recovered artifacts** (`tests/api/test_artifacts.py`). Run a scan with an
+output directory and the Recovery screen shows a gallery of the files actually
+written, with thumbnails for raster images, and for each: type, size,
+confidence, structure verdict, fragment count and identifier count (never a
+value). Recovered PDFs and every other non-image download; they are never
+opened in the browser. `GET /artifacts/recovered`,
+`GET /artifacts/recovered/{name}`, `GET /artifacts/reports/{name}`.
+
+**Reassembly explainer.** Selecting a reconstructed JPEG shows both runs, the
+gap between them to scale, the structure verdict, the MCU-accounting component
+and the scope statement: baseline JPEG, exactly two runs.
+
+**Reports survive a restart** (`tests/api/test_report_job_state.py`). A finished
+job's result is written to the ledger, so a report can be generated and verified
+after the API restarts. The Audit screen offers Open PDF, Download PDF, View
+JSON and Verify; no host path is shown.
+
+**Tamper simulation** (`tests/api/test_tamper_demo.py`). On the Audit screen,
+**Simulate tampering** copies the chain to a scratch directory, changes one
+entry's `actor` in the copy, and runs the real verifier on it. You see BEFORE:
+VALID, AFTER: BROKEN at the exact sequence, and how much of the chain still
+verifies. The live chain is not opened for writing, and the screen re-reads it
+afterwards so you can see it is still VALID.
+
+**Resume** (`tests/api/test_resume.py`). After an overwrite is cancelled or
+fails, the Sanitize screen reads the chain for a checkpoint. If there is one it
+offers Resume (dry run) and Resume erasure; the real resume needs the serial
+typed again. A firmware sanitize shows **RESUME NOT AVAILABLE** with the reason:
+the drive reports no progress, so there is no offset to continue from.
+
+**Verification panel.** After a run the Sanitize screen shows one of four
+words: PASSED, FAILED, INCONCLUSIVE, NOT APPLICABLE. A dry run is always NOT
+APPLICABLE. An unsettled read-back is INCONCLUSIVE, never PASSED.
+
+**Demo state** (`tests/scripts/test_demo_workflow.py`).
+`SANCTUM_KEY_PASSPHRASE=… python scripts/demo_setup.py --state-dir ~/sanctum-demo`
+stages a separate state directory with a key, a demo case, a synthetic evidence
+image containing a bifragmented JPEG, and a directory of throwaway files for the
+File eraser. It refuses a non-empty directory and never touches a device. Start
+the API with `SANCTUM_STATE_DIR=~/sanctum-demo`.
+
+## 10b. The desktop app, and what each platform can do
+
+**Installing.** Linux: run the AppImage, or `sudo apt install ./sanctum_<ver>_amd64.deb`.
+Windows: run `SanctumSetup.exe` (no administrator needed). macOS: open
+`Sanctum.dmg` and drag Sanctum to Applications. None of them needs Python or
+Node on the machine. Details, including signing status: `docs/packaging.md`.
+
+**Opening.** The app starts its own server on a private loopback port and
+opens a window. Only that window can talk to it. Press *Quit Sanctum* in the
+sidebar to stop it.
+
+**The Platform screen** answers "what can this computer do?". Every row has a
+status - *Supported*, *Supported with limits*, *Needs privilege*, *Runs, not
+verifiable*, *Unverified*, *Inconclusive*, *Unsupported* - and, underneath,
+the probe or code that decided it. *Unverified* means the code exists but its
+tests have not been recorded as passing on this operating system for this
+build; treat it as not yet proven.
+
+**The status strip** at the bottom of every screen shows the platform, your
+privilege, the selected device, whether it can be sanitized, whether the
+result can be verified, and the state of the audit chain.
+
+**Sanitizing a device** follows eight steps, shown across the top of the
+screen: choose the target, the app analyses it, you see the recommended
+method, review the warning, confirm by typing the serial, it sanitizes, it
+verifies, you get the certificate. The first panel answers three questions in
+plain words - which device, what will happen, can it be verified - and lists
+the safety checks. The engine's evidence is under *Technical details*.
+
+**"Sanitization not available"** is a result, not an error. It names the
+reason (for example: this is the system disk; a volume is in use; this
+platform has no whole-drive engine) and what to do instead, and it says that
+nothing was done to the device. On Windows and macOS every device shows this
+for whole-drive work in this release: use the Linux build for that, and use
+the File eraser for files and folders.
+
+**Getting the certificate.** After a run, press *Get certificate*. The first
+time, the app asks for a passphrase for the signing key (12 characters or
+more); keep it, because every later certificate from this installation is
+signed with the same key.
 
 ## 11. Limitations
 

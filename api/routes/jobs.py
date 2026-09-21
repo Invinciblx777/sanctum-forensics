@@ -23,6 +23,8 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
 from api.deps import AppServices
+from api.identity import resolve as resolve_identity
+from api.identity import sanitise_label
 from api.routes.common import (
     get_services,
     resolve_output_path,
@@ -34,6 +36,7 @@ from api.routes.models import (
     EraseDriveRequest,
     EraseFilesRequest,
     JobAccepted,
+    ResumeEraseRequest,
     WipeFreeSpaceRequest,
 )
 from api.sse import SSE_HEADERS, progress_events
@@ -66,6 +69,52 @@ def _accepted(job_id: str, kind: str, dry_run: bool) -> JobAccepted:
         dry_run=dry_run,
         stream_url=f"/jobs/{job_id}/stream",
     )
+
+
+def _submit(
+    services: AppServices,
+    kind: str,
+    params: dict[str, Any],
+    factory: Any,
+    *,
+    job_id: str,
+    label: str = "",
+    case_id: str = "",
+) -> None:
+    """Submit a job under the *trusted* actor, whatever the body said.
+
+    Every route goes through here so there is one place the identity is
+    attached. The client's ``operator`` field never becomes the actor: it is
+    sanitised into a label, recorded in the job parameters beside the identity
+    that was actually established, and the two are never merged into one
+    unmarked string. See :mod:`api.identity`.
+    """
+    identity = resolve_identity(services)
+    cleaned = sanitise_label(label)
+    enriched = dict(params)
+    enriched["case_id"] = case_id
+    enriched["operator_label"] = cleaned
+    enriched["actor"] = identity.actor
+    enriched["platform"] = services.platform_snapshot()
+    services.registry.submit(
+        kind,
+        enriched,
+        factory,
+        job_id=job_id,
+        actor=identity.labelled_actor(cleaned),
+        actor_basis=identity.basis,
+    )
+    if case_id:
+        from core.cases import attach_operation
+
+        attach_operation(
+            services.cases_dir,
+            case_id=case_id,
+            operation_id=job_id,
+            kind=kind,
+            actor=identity.actor,
+            params=enriched,
+        )
 
 
 # --------------------------------------------------------------------------
@@ -130,8 +179,6 @@ def erase_drive(
             "exactly.",
         )
 
-    registry = services.registry
-
     # Minted here rather than by the registry, for the same reason the carve
     # route mints its own: the ledger entries this run writes are keyed by the
     # job id the helper is given, and GET /jobs/{id} and the report excerpt
@@ -144,7 +191,10 @@ def erase_drive(
     def factory() -> Any:
         return _helper_job(services, "run_erase", params, job_id=job_id)
 
-    registry.submit("erase-drive", params, factory, job_id=job_id)
+    _submit(
+        services, "erase-drive", params, factory,
+        job_id=job_id, label=body.operator, case_id=body.case_id,
+    )
     return _accepted(job_id, "erase-drive", body.dry_run)
 
 
@@ -257,7 +307,10 @@ def erase_files(
             ledger=ChainLedgerSink(ledger),
         )
 
-    services.registry.submit("erase-files", params, factory, job_id=job_id)
+    _submit(
+        services, "erase-files", params, factory,
+        job_id=job_id, label=body.operator, case_id=body.case_id,
+    )
     return _accepted(job_id, "erase-files", body.dry_run)
 
 
@@ -324,7 +377,10 @@ def wipe_free_space(
         "fs_type": volume.fs_type,
         "dry_run": body.dry_run,
     }
-    services.registry.submit("wipe-free-space", params, factory, job_id=job_id)
+    _submit(
+        services, "wipe-free-space", params, factory,
+        job_id=job_id, label=body.operator,
+    )
     return _accepted(job_id, "wipe-free-space", body.dry_run)
 
 
@@ -379,7 +435,6 @@ def acquire_image(
         "fmt": body.fmt,
         "compression": body.compression,
     }
-    registry = services.registry
     ledger = Ledger(
         services.ledger_root,
         tool_version=services.tool_version,
@@ -398,13 +453,20 @@ def acquire_image(
             dest,
             fmt=body.fmt,
             options=AcquireOptions(
-                compression=body.compression, operator=body.operator
+                compression=body.compression,
+                # The trusted actor, not body.operator. The engine writes this
+                # into the chain, so it has to be the identity the helper
+                # resolved rather than the string the browser sent.
+                operator=resolve_identity(services).labelled_actor(body.operator),
             ),
             ledger=ledger,
             job_id=job_id,
         )
 
-    registry.submit("acquire", params, factory, job_id=job_id)
+    _submit(
+        services, "acquire", params, factory,
+        job_id=job_id, label=body.operator, case_id=body.case_id,
+    )
     return _accepted(job_id, "acquire", dry_run=False)
 
 
@@ -455,7 +517,6 @@ def carve_image(
         "pii_triage": body.pii_triage,
         "out_dir": str(out_dir) if out_dir else None,
     }
-    registry = services.registry
 
     # Minted here for the same reason the erase routes mint theirs: the ledger
     # entries this run writes have to be keyed to an id GET /jobs/{id} and the
@@ -476,10 +537,220 @@ def carve_image(
             out_dir=out_dir,
             job_id=job_id,
             ledger=ledger,
+            operator=resolve_identity(services).labelled_actor(body.operator),
+            case_id=body.case_id,
+            work_dir=services.work_dir,
         )
 
-    registry.submit("carve", params, factory, job_id=job_id)
+    _submit(
+        services, "carve", params, factory,
+        job_id=job_id, label=body.operator, case_id=body.case_id,
+    )
     return _accepted(job_id, "carve", dry_run=False)
+
+
+# --------------------------------------------------------------------------
+# Resume
+# --------------------------------------------------------------------------
+
+
+#: Ledger operation carrying the plan an erase ran under. Read to tell a
+#: resumable overwrite from a firmware sanitize.
+_PLAN_OPERATION = "erase.preflight.plan"
+#: Ledger operation an overwrite appends every checkpoint interval.
+_CHECKPOINT_SUFFIX = ".checkpoint"
+
+
+def _erase_facts(services: AppServices, job_id: str) -> dict[str, Any]:
+    """What the chain says about one erase job: its plan and its last checkpoint."""
+    from core.ledger.chain import Ledger
+
+    facts: dict[str, Any] = {
+        "found": False,
+        "method": "",
+        "level": "",
+        "path": "",
+        "serial": "",
+        "checkpoint": None,
+    }
+    try:
+        ledger = Ledger(
+            services.ledger_root,
+            tool_version=services.tool_version,
+            pubkey_fingerprint="",
+        )
+        entries = ledger.entries()
+    except (OSError, ValueError):
+        return facts
+
+    for entry in entries:
+        try:
+            params = ledger.params_of(entry)
+        except (OSError, ValueError, FileNotFoundError):
+            continue
+        if params.get("job_id") != job_id:
+            continue
+        if entry.operation == _PLAN_OPERATION:
+            plan = params.get("plan") or {}
+            facts["found"] = True
+            facts["method"] = str(plan.get("method") or "")
+            facts["level"] = str(plan.get("level_requested") or plan.get("level") or "")
+            facts["path"] = str(params.get("path") or "")
+            facts["serial"] = str(params.get("serial") or "")
+        elif entry.operation.endswith(_CHECKPOINT_SUFFIX):
+            facts["found"] = True
+            facts["checkpoint"] = {
+                "offset": int(params.get("offset") or 0),
+                "pass_index": int(params.get("pass_index") or 0),
+                "seq": entry.seq,
+            }
+    return facts
+
+
+def _resume_state(services: AppServices, job_id: str) -> dict[str, Any]:
+    """Whether this job can be resumed, and the honest reason when it cannot.
+
+    Resumability is read from the chain, not guessed from the job kind. Three
+    outcomes, and the middle one is the one this endpoint exists to state
+    plainly rather than hide behind a disabled button:
+
+    * **available** - the chain holds a checkpoint. An overwrite records one
+      every :data:`core.erase.drive.CHECKPOINT_INTERVAL_BYTES`, so there is a
+      byte offset and a pass index to continue from.
+    * **firmware** - the chain holds a plan naming a firmware method and no
+      checkpoint. A firmware sanitize is one command the drive executes on its
+      own: there is no offset to continue from and no way to ask how far it
+      got. Resuming one means running it again from the beginning, and calling
+      that "resume" would be a lie about what the device did.
+    * **no checkpoint** - an overwrite that stopped before its first
+      checkpoint, or a job that is not an erase at all.
+    """
+    from core.erase import patterns as pattern_mod
+
+    facts = _erase_facts(services, job_id)
+    software = {item.value for item in pattern_mod.SOFTWARE_METHODS}
+
+    if facts["checkpoint"] is not None:
+        point = facts["checkpoint"]
+        return {
+            **facts,
+            "resumable": True,
+            "reason": (
+                f"An overwrite checkpoint was recorded at byte {point['offset']} "
+                f"of pass {point['pass_index']} (ledger entry {point['seq']}). "
+                "The overwrite continues from there rather than restarting."
+            ),
+        }
+    if facts["method"] and facts["method"] not in software:
+        return {
+            **facts,
+            "resumable": False,
+            "reason": (
+                f"RESUME NOT AVAILABLE: {facts['method']} is a firmware "
+                "operation. The drive executes it on its own and reports no "
+                "progress, so there is no offset to continue from. Running it "
+                "again would start it from the beginning, which is not a "
+                "resume and is not offered as one."
+            ),
+        }
+    if not facts["found"]:
+        return {
+            **facts,
+            "resumable": False,
+            "reason": (
+                f"RESUME NOT AVAILABLE: the chain holds no erase entries for "
+                f"job {job_id!r}. There is nothing recorded to continue."
+            ),
+        }
+    return {
+        **facts,
+        "resumable": False,
+        "reason": (
+            "RESUME NOT AVAILABLE: this job recorded a plan but never reached "
+            "its first checkpoint, so there is no recorded offset to continue "
+            "from. Start the erase again."
+        ),
+    }
+
+
+@router.get("/jobs/{job_id}/resume")
+def resume_state(
+    job_id: str, services: AppServices = Depends(get_services)
+) -> dict[str, Any]:
+    """Whether an interrupted erase can be continued, and why or why not."""
+    return _resume_state(services, job_id)
+
+
+@router.post("/jobs/{job_id}/resume", response_model=JobAccepted)
+def resume_erase(
+    job_id: str,
+    body: ResumeEraseRequest,
+    services: AppServices = Depends(get_services),
+) -> JobAccepted:
+    """Continue an interrupted overwrite from its last recorded checkpoint.
+
+    A resume writes to the medium, so it keeps **both** gates of the run it
+    continues: ``dry_run`` defaults closed here as everywhere, and a real
+    resume needs the typed serial, which the helper re-checks against the
+    device it reads itself. A resume is not a lesser operation than the erase
+    it finishes and is not confirmed like one.
+    """
+    from helper.rpc import RpcError
+
+    state = _resume_state(services, job_id)
+    if not state["resumable"]:
+        raise sanctum_error_response(
+            "ResumeNotAvailable", state["reason"],
+            "Start the erase again from the Sanitize screen. Nothing was "
+            "written.",
+        )
+    if not body.dry_run and not body.typed_serial:
+        raise sanctum_error_response(
+            "ConfirmationMismatch",
+            f"Refusing to resume the erase of {state['path']}: dry_run is off "
+            "but no serial was typed. A resume writes to the medium and is "
+            "opt-in twice, like the run it continues.",
+            "Re-read the device serial from the capability report and type it "
+            "exactly.",
+        )
+
+    params: dict[str, Any] = {
+        "path": state["path"],
+        "level": state["level"] or "CLEAR",
+        "dry_run": body.dry_run,
+        "typed_serial": body.typed_serial,
+        "ledger_root": str(services.ledger_root),
+        "tool_version": services.tool_version,
+    }
+    try:
+        services.helper.call("probe_capabilities", {"path": state["path"]})
+    except RpcError as exc:
+        raise sanctum_error_response(
+            exc.kind or "DeviceVanished", exc.message, exc.remediation
+        ) from exc
+    except OSError as exc:
+        raise sanctum_error_response(
+            "PlatformUnsupported",
+            f"The privileged helper could not be reached: {exc}",
+            "Start the helper daemon and set SANCTUM_HELPER_SOCKET.",
+        ) from exc
+
+    # The *same* job id, deliberately. A resume continues one erasure, and
+    # giving it a new id would split one device's account of itself across two
+    # ids that nothing links. core.erase.drive.resume looks the checkpoint up
+    # by this id.
+    def factory() -> Any:
+        return _helper_job(services, "resume_erase", params, job_id=job_id)
+
+    services.registry.submit(
+        f"resume-{job_id}",
+        params,
+        factory,
+        job_id=f"resume-{job_id}",
+        actor=resolve_identity(services).labelled_actor(body.operator),
+        actor_basis=resolve_identity(services).basis,
+    )
+    return _accepted(f"resume-{job_id}", "erase-drive-resume", body.dry_run)
 
 
 # --------------------------------------------------------------------------
@@ -497,15 +768,18 @@ def job_status(
     the registry's buffer lives in memory and dies with the API, while the
     chain is on disk and is what a report is built from.
     """
-    try:
-        status = services.registry.status(job_id)
-    except KeyError:
+    from api.durable import status_for
+
+    status = status_for(services, job_id)
+    if status is None:
         raise sanctum_error_response(
             "DeviceVanished",
-            f"no job {job_id!r} is known to this process",
-            "The API was restarted, or the id is wrong. Job history that "
-            "survives a restart lives in the ledger; see GET /ledger/verify.",
-        ) from None
+            f"no job {job_id!r} is known to this process, and the chain holds "
+            "no finished outcome for it",
+            "The id is wrong, or the job never reached a terminal state in any "
+            "process. A finished job's result is written into the ledger and "
+            "survives a restart; see GET /ledger/verify.",
+        )
     status["ledger_entries"] = _ledger_entries_for(services, job_id)
     return status
 

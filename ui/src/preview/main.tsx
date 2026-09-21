@@ -21,8 +21,13 @@ import {
   DEVICES,
   FILE_RECORDS,
   LEDGER,
+  PLATFORM,
   REPORT_VERIFICATION,
+  SANITIZE_TARGET,
+  WINDOWS_ROW,
 } from './fixtures'
+
+const screen = new URLSearchParams(window.location.search).get('screen') ?? 'devices'
 
 // ---------------------------------------------------------------------------
 // The server, replaced
@@ -78,10 +83,19 @@ window.fetch = (input: RequestInfo | URL): Promise<Response> => {
   if (url.startsWith('/health')) {
     return Promise.resolve(respond({ tool_version: 'sanctum 0.9.0' }))
   }
+  if (url.startsWith('/platform/devices/')) {
+    const row = url.includes('PhysicalDrive') ? WINDOWS_ROW : SANITIZE_TARGET
+    return Promise.resolve(
+      respond({ normalized: row.normalized, assessment: row.assessment }),
+    )
+  }
+  if (url.startsWith('/platform')) return Promise.resolve(respond(PLATFORM))
+  // The app now opens on Cases; an empty list keeps that screen quiet.
+  if (url.startsWith('/cases')) return Promise.resolve(respond({ cases: [] }))
   if (url.startsWith('/devices')) {
     return Promise.resolve(
       respond({
-        devices: DEVICES,
+        devices: screen === 'unavailable' ? [...DEVICES, WINDOWS_ROW] : DEVICES,
         limitations: [
           'Two devices are behind a USB bridge that does not pass ATA ' +
             'pass-through, so their capability was probed through SCSI only.',
@@ -160,9 +174,18 @@ function type(element: HTMLInputElement, value: string): void {
   element.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
+async function openDevices(): Promise<void> {
+  click('.nav-item', 'Devices')
+  await settle()
+  await settle()
+}
+
 async function driveSanitize(): Promise<void> {
   // The real path onto this screen: pick the stick on Devices.
+  await openDevices()
   click('tr.is-openable', '/dev/sda')
+  await settle()
+  click('button.primary', 'Review plan')
   await settle()
   const dryRun = find<HTMLInputElement>('input[type="checkbox"]')
   dryRun.click()
@@ -216,15 +239,27 @@ async function driveAudit(): Promise<void> {
   click('button.btn', 'Verify')
 }
 
+async function driveUnavailable(): Promise<void> {
+  await openDevices()
+  click('tr.is-openable', 'PhysicalDrive2')
+  await settle()
+  await settle()
+}
+
+async function drivePlatform(): Promise<void> {
+  click('.nav-item', 'Platform')
+  await settle()
+}
+
 const DRIVERS: Record<string, () => Promise<void>> = {
-  devices: async () => {},
+  devices: openDevices,
+  unavailable: driveUnavailable,
+  platform: drivePlatform,
   sanitize: driveSanitize,
   files: driveFiles,
   recovery: driveRecovery,
   audit: driveAudit,
 }
-
-const screen = new URLSearchParams(window.location.search).get('screen') ?? 'devices'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

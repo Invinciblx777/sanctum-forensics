@@ -10,6 +10,8 @@
 import type {
   CarveCandidate,
   DeviceRow,
+  PlatformStatus,
+  SafetyCheck,
   FileEraseRecord,
   LedgerEntry,
   LedgerVerification,
@@ -270,6 +272,9 @@ export const LEDGER: LedgerVerification = {
  */
 export const REPORT_VERIFICATION: ReportVerification = {
   report: '/var/lib/sanctum/reports/erase-drive-3f9c2a.forensic.json',
+  report_name: 'erase-drive-3f9c2a.forensic.json',
+  json_url: '/artifacts/reports/erase-drive-3f9c2a.forensic.json',
+  pdf_url: '/artifacts/reports/erase-drive-3f9c2a.forensic.pdf',
   passed: false,
   fingerprint: 'SHA256:9f2c1a7e4b0d8365c1ae92f0d47b6a83',
   ledger_digest: '4a7d1ed414474e4033ac29ccb8653d9b1ee2b0bd0d4a3a3a1c1f7f5a2b3c4d5e',
@@ -565,3 +570,201 @@ export const FILE_RECORDS: FileEraseRecord[] = [
     verification: null,
   },
 ]
+
+// ---------------------------------------------------------------------------
+// Platform model (core/platform). Shaped like the helper's answers.
+// ---------------------------------------------------------------------------
+
+const STICK_CHECKS: SafetyCheck[] = [
+  { key: 'detected', label: 'Device detected', passed: true, detail: '/dev/sda was read from the OS by linux discovery.' },
+  { key: 'identity', label: 'Identity readable', passed: true, detail: 'Serial 4C530001120809117433.' },
+  { key: 'capacity', label: 'Capacity known', passed: true, detail: '7759462400 bytes.' },
+  { key: 'not_system', label: 'Not the system or boot disk', passed: true, detail: 'Holds no running system, boot, swap or page file.' },
+  { key: 'not_mounted', label: 'No mounted filesystem', passed: true, detail: 'Nothing on this device is mounted.' },
+  { key: 'media_type', label: 'Media type identified', passed: true, detail: 'Decided because the device is on the usb bus.' },
+  { key: 'privilege', label: 'Privilege available', passed: true, detail: 'Privileged work runs in the separate helper process over its authenticated socket; this interface stays unprivileged.' },
+]
+
+const FLASH_LIMITATION =
+  'SSD / flash limitation: an overwrite cannot address blocks the flash ' +
+  'controller has remapped or held in over-provisioned space. Only a firmware ' +
+  'sanitize or cryptographic erase reaches them, so an overwrite of flash is ' +
+  'reported as Clear, never as Purge.'
+
+SANITIZE_TARGET.normalized = {
+  id: '/dev/sda',
+  platform: 'linux',
+  path: '/dev/sda',
+  vendor: '',
+  model: 'SanDisk Cruzer Blade',
+  serial: '4C530001120809117433',
+  capacity_bytes: 7759462400,
+  interface: 'usb',
+  media_type: 'flash',
+  media_basis: 'Decided because the device is on the usb bus.',
+  removable: true,
+  mounted: false,
+  mount_points: [],
+  system_device: false,
+  system_reasons: [],
+  filesystems: ['vfat'],
+  partitions: [],
+  stable_id: '/dev/disk/by-id/usb-SanDisk_Cruzer_Blade_4C530001120809117433-0:0',
+  limitations: [],
+}
+
+SANITIZE_TARGET.assessment = {
+  device_id: '/dev/sda',
+  platform: 'linux',
+  status: 'SUPPORTED_WITH_LIMITATIONS',
+  headline: 'READY',
+  reason:
+    'Every addressable block is overwritten from this computer. On flash this ' +
+    'cannot reach remapped or spare blocks, so the result is recorded as Clear.',
+  recommended_action: '',
+  recommended: {
+    level: 'CLEAR',
+    title: 'Overwrite (Clear)',
+    status: 'SUPPORTED_WITH_LIMITATIONS',
+    method: 'SINGLE_PASS_OVERWRITE',
+    why:
+      'Every addressable block is overwritten from this computer. On flash this ' +
+      'cannot reach remapped or spare blocks, so the result is recorded as Clear.',
+    technical: ['Method: SINGLE_PASS_OVERWRITE'],
+    verification: 'Every byte is read back after the overwrite and checked.',
+    remediation: '',
+  },
+  alternatives: [],
+  unavailable: [
+    {
+      level: 'PURGE',
+      title: 'Hardware purge',
+      status: 'UNSUPPORTED',
+      method: null,
+      why:
+        'No purge pathway: the USB bridge does not pass ATA SANITIZE or ' +
+        'SECURITY ERASE to the media behind it.',
+      technical: [],
+      verification: '',
+      remediation:
+        'Connect the drive directly to a SATA port and re-probe.',
+    },
+  ],
+  verification: 'Every byte is read back after the overwrite and checked.',
+  safety_checks: STICK_CHECKS,
+  flash_limitation: FLASH_LIMITATION,
+}
+
+/** A Windows host: device discovered, whole-drive honestly unavailable. */
+export const WINDOWS_ROW: DeviceRow = {
+  device: {
+    path: '\\\\.\\PhysicalDrive2',
+    model: 'DataTraveler 3.0',
+    serial: 'E0D55EA574E2F4B1',
+    size_bytes: 30943995904,
+    rotational: false,
+    transport: 'usb',
+    is_system_disk: false,
+    mounted_at: [],
+    pt_type: null,
+    by_id_path: null,
+  },
+  capabilities: null,
+  erase_preview: null,
+  hidden_areas: null,
+  capability_error:
+    'Whole-drive sanitization is not implemented for Windows in this build.',
+  normalized: {
+    ...SANITIZE_TARGET.normalized,
+    id: 'PhysicalDrive2',
+    platform: 'windows',
+    path: '\\\\.\\PhysicalDrive2',
+    vendor: 'Kingston',
+    model: 'DataTraveler 3.0',
+    serial: 'E0D55EA574E2F4B1',
+    capacity_bytes: 30943995904,
+    stable_id: 'USBSTOR\\DISK&VEN_KINGSTON',
+  },
+  assessment: {
+    ...SANITIZE_TARGET.assessment,
+    device_id: 'PhysicalDrive2',
+    platform: 'windows',
+    status: 'UNSUPPORTED',
+    headline: 'NOT AVAILABLE',
+    reason:
+      'Whole-drive sanitization is not implemented for Windows in this build. ' +
+      'Windows can reach a disk through \\\\.\\PhysicalDriveN and ' +
+      'IOCTL_STORAGE_PROTOCOL_COMMAND, but no engine using them has been ' +
+      'written and validated, so none is offered.',
+    recommended_action:
+      'Sanitize this device with the Sanctum Linux build (AppImage) on any ' +
+      'Linux host or live USB, where the validated whole-drive engine runs, ' +
+      "or use the drive vendor's own sanitize tool.",
+    recommended: null,
+    unavailable: [
+      { ...SANITIZE_TARGET.assessment.unavailable[0], why: 'Not implemented for Windows in this build.', remediation: '' },
+      { ...SANITIZE_TARGET.assessment.recommended!, status: 'UNSUPPORTED', why: 'Not implemented for Windows in this build.', verification: '' },
+    ],
+    verification: 'No verification: no whole-drive operation is offered here.',
+    safety_checks: STICK_CHECKS.map((check) =>
+      check.key === 'detected'
+        ? { ...check, detail: 'PhysicalDrive2 was read from the OS by windows discovery.' }
+        : check.key === 'identity'
+          ? { ...check, detail: 'Serial E0D55EA574E2F4B1.' }
+          : check.key === 'capacity'
+            ? { ...check, detail: '30943995904 bytes.' }
+            : check.key === 'privilege'
+              ? { ...check, passed: false, detail: 'This process is not elevated (shell32.IsUserAnAdmin()).' }
+              : check,
+    ),
+  },
+}
+
+export const PLATFORM: PlatformStatus = {
+  platform: {
+    family: 'windows',
+    os_name: 'Windows 11',
+    os_version: '10',
+    os_build: '10.0.26100',
+    machine: 'AMD64',
+    app_version: '0.0.0',
+    packaged: true,
+    sys_platform: 'win32',
+  },
+  privilege: {
+    level: 'standard',
+    elevated: false,
+    basis: 'shell32.IsUserAnAdmin()',
+    helper: 'none',
+    helper_basis: '',
+  },
+  adapter: 'windows',
+  limitations: [],
+  restrictions: [
+    'Whole-drive sanitization is not available on Windows in this build; use the Linux build for whole-drive work.',
+    'Free-space wipe is Linux-only (fill behaviour not measured on NTFS).',
+  ],
+  operations: [
+    { operation: 'device_discovery', label: 'Device discovery', status: 'SUPPORTED', reason: '3 storage device(s) found.', source: 'PowerShell Get-Disk / Get-PhysicalDisk / Get-Partition / Get-Volume', verification: '', limitations: [], requires_privilege: false },
+    { operation: 'file_erase', label: 'File erase', status: 'UNVERIFIED', reason: 'Overwrites the file in place, renames, truncates, deletes. The file-erase test suite has not been recorded as passing on this platform for this build, so this is UNVERIFIED rather than supported.', source: "core.erase.files with the 'windows' file backend; validation record: file_erase suite on windows NOT RUN", verification: '', limitations: [], requires_privilege: false },
+    { operation: 'whole_drive_clear', label: 'Whole-drive Clear', status: 'UNSUPPORTED', reason: 'Whole-drive sanitization is not implemented for Windows in this build.', source: 'core.platform.windows.WindowsAdapter', verification: '', limitations: [], requires_privilege: false },
+  ],
+  media_classes: [
+    { media_class: 'Internal SSD', discovery: 'SUPPORTED', file_erase: 'UNVERIFIED', whole_drive: 'UNSUPPORTED', reason: 'Whole-drive sanitization is not implemented for Windows in this build.', detected_now: 1 },
+    { media_class: 'USB SSD / flash drive', discovery: 'SUPPORTED', file_erase: 'UNVERIFIED', whole_drive: 'UNSUPPORTED', reason: '', detected_now: 2 },
+  ],
+  filesystems: [
+    {
+      filesystem: 'NTFS',
+      cells: {
+        detect: { linux: 'SUPPORTED', windows: 'SUPPORTED', macos: 'UNSUPPORTED' },
+        read: { linux: 'SUPPORTED', windows: 'UNVERIFIED', macos: 'UNVERIFIED' },
+        erase_files: { linux: 'SUPPORTED_WITH_LIMITATIONS', windows: 'UNVERIFIED', macos: 'UNSUPPORTED' },
+        metadata: { linux: 'SUPPORTED_WITH_LIMITATIONS', windows: 'UNVERIFIED', macos: 'UNSUPPORTED' },
+        free_space: { linux: 'UNSUPPORTED', windows: 'UNSUPPORTED', macos: 'UNSUPPORTED' },
+        whole_drive: { linux: 'SUPPORTED_WITH_LIMITATIONS', windows: 'UNSUPPORTED', macos: 'UNSUPPORTED' },
+      },
+      notes: {},
+    },
+  ],
+}

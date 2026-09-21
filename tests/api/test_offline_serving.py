@@ -52,7 +52,7 @@ PROBE = textwrap.dedent(
 
     state = tempfile.mkdtemp()
     app = create_app(state_dir=__import__("pathlib").Path(state), serve_ui=True)
-    with TestClient(app) as client:
+    with TestClient(app, base_url=LOOPBACK_BASE_URL) as client:
         index = client.get("/")
         health = client.get("/health")
         assets = []

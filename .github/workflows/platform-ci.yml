@@ -1,0 +1,63 @@
+# Cross-platform checks. Linux runs the whole gate; Windows and macOS run the
+# suites that exercise their adapters and the file eraser on their own
+# filesystems (NTFS on the Windows runner, APFS on the macOS one), and record
+# the result with scripts/record_platform_validation.py.
+#
+# No job here touches a physical device. Hardware validation is separate and
+# manual, on designated test media (docs/validation/platform-matrix.md).
+name: platform-ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-typecheck-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: python scripts/ci_install.py dev
+      - run: python -m ruff check .
+      - run: python -m mypy --strict core/ helper/ api/
+      - run: python -m mypy --strict --platform win32 core/erase/_platform/win.py core/platform api/security.py api/deps.py core/erase/files.py
+      - run: python -m mypy --strict --platform darwin core/platform
+      - working-directory: ui
+        run: npm ci && npm run build && npm test
+
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: python scripts/ci_install.py dev
+      - name: UI bundle (the offline-serving tests read it)
+        working-directory: ui
+        run: npm ci && npm run build
+      - name: Platform adapters and file erasure (required)
+        run: python scripts/record_platform_validation.py file_erase --out validation-${{ runner.os }}.json
+      - name: API suite (informational off Linux)
+        run: python scripts/record_platform_validation.py api --out validation-${{ runner.os }}.json
+        continue-on-error: ${{ runner.os != 'Linux' }}
+      - name: Full suite
+        if: runner.os == 'Linux'
+        run: python -m pytest -o addopts="" -q
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-${{ runner.os }}
+          path: validation-${{ runner.os }}.json

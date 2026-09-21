@@ -176,6 +176,15 @@ a { color: var(--accent); }
 .grow { flex: 1; min-width: 0; }
 .split { display: grid; grid-template-columns: 1fr 340px; gap: 14px;
          align-items: start; }
+/* A grid track's minimum is its content's min-content width, so a panel whose
+   header holds a long unwrapped control row pushed the side column off the
+   right edge of the screen: on Recovery at 1440px the selected object's detail
+   panel began at x=1607. Letting each column shrink keeps both on screen. */
+.split > * { min-width: 0; }
+/* A growing field in a wrapping control row keeps a usable width: at 1024px
+   the Recovery screen's two path inputs shrank to about 40px each beside the
+   checkboxes. With a floor they wrap onto their own line instead. */
+.row.wrap > label.grow { min-width: 260px; }
 
 /* ---- controls ---- */
 
@@ -332,6 +341,217 @@ pre.log {
   font-size: var(--type-sm);
   padding: var(--space-3);
   text-align: center;
+}
+
+/* A rendered preview needs to be contained, not stretched: a recovered image
+   can be any aspect ratio, and a thumbnail that distorted it would misrepresent
+   the evidence for the sake of a tidy grid. */
+.preview-pane.is-media {
+  padding: 0;
+  min-height: 180px;
+  background:
+    repeating-conic-gradient(var(--surface-sunken) 0% 25%, #0d1114 0% 50%) 50% /
+      16px 16px;
+}
+
+.preview-pane.is-media img {
+  max-width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  display: block;
+}
+
+/* ---------------------------------------------------------------------------
+   Recovery gallery
+
+   Cards, not a photo grid. Each one carries the forensic metadata beside the
+   thumbnail, because the metadata is what an examiner triages on and a wall of
+   pictures is not evidence. The grid is auto-fill so it reflows on a projector
+   without a breakpoint per venue.
+   ------------------------------------------------------------------------ */
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: var(--space-3);
+  padding: var(--space-3);
+}
+
+.gallery-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 0 0 var(--space-2) 0;
+  background: var(--surface-raised);
+  border: 1px solid var(--rule);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  overflow: hidden;
+}
+
+.gallery-card:hover {
+  border-color: var(--rule-strong);
+}
+
+.gallery-card.is-selected {
+  border-color: var(--accent);
+}
+
+.gallery-card .gallery-rail {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--rail);
+}
+
+.gallery-thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 132px;
+  background:
+    repeating-conic-gradient(var(--surface-sunken) 0% 25%, #0d1114 0% 50%) 50% /
+      12px 12px;
+  border-bottom: 1px solid var(--rule);
+  overflow: hidden;
+}
+
+.gallery-thumb img {
+  max-width: 100%;
+  max-height: 132px;
+  object-fit: contain;
+  display: block;
+}
+
+.gallery-thumb-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-muted);
+  font-size: var(--type-sm);
+}
+
+.gallery-facts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: 0 var(--space-3);
+  min-width: 0;
+}
+
+.gallery-name {
+  font-size: var(--type-sm);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gallery-meta {
+  font-size: var(--type-sm);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------------------
+   Fragment map
+
+   The two runs and the gap between them, to scale. Each span's flex-grow is
+   its byte length, so the picture is the arithmetic and not an illustration of
+   it: a 12-byte gap looks like a 12-byte gap.
+   ------------------------------------------------------------------------ */
+.fragment-map {
+  display: flex;
+  height: 22px;
+  border: 1px solid var(--rule);
+  background: var(--surface-sunken);
+}
+
+.fragment-run {
+  background: var(--state-success);
+  min-width: 3px;
+}
+
+.fragment-gap {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--state-destructive-surface),
+    var(--state-destructive-surface) 4px,
+    transparent 4px,
+    transparent 8px
+  );
+  border-left: 1px solid var(--state-destructive);
+  border-right: 1px solid var(--state-destructive);
+  min-width: 3px;
+}
+
+/* ---------------------------------------------------------------------------
+   The open case, in the sidebar
+
+   Every screen files what it does against this, so it is visible from every
+   screen. Hiding it on the Sanitize screen would mean an operator could start
+   a wipe without seeing which investigation it lands in.
+   ------------------------------------------------------------------------ */
+.case-badge {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  margin: 0 var(--space-3) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-sunken);
+  border: 1px solid var(--rule);
+  border-left: var(--rail) solid var(--rule-strong);
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  width: calc(100% - var(--space-6));
+}
+
+.case-badge.is-open {
+  border-left-color: var(--state-success);
+}
+
+.case-badge-label {
+  font-size: var(--type-sm);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.case-badge-id {
+  font-family: var(--font-mono);
+  font-size: var(--type-sm);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+/* ---------------------------------------------------------------------------
+   Status strip
+
+   Four claims that have to hold, on every screen. Every one is read from the
+   server; none is asserted by the stylesheet.
+   ------------------------------------------------------------------------ */
+.status-strip {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  padding: var(--space-2) var(--space-6);
+  border-top: 1px solid var(--rule);
+  background: var(--surface-raised);
+  font-size: var(--type-sm);
 }
 
 .dropzone {
@@ -603,6 +823,11 @@ button.verdict:hover .verdict-basis { color: var(--text-primary); }
 .state-mark.is-warning     { color: var(--state-warning); }
 .state-mark.is-success     { color: var(--state-success); }
 .state-mark.is-muted       { color: var(--text-muted); }
+/* The fourth state: nothing was established, which is not a pass and not a
+   failure. Shares the muted colour with is-muted because "not known" and "not
+   emphasised" look the same and mean different things - the word carries the
+   meaning, as everywhere else in this interface. */
+.state-mark.is-unknown     { color: var(--text-muted); }
 
 /* ==================================================================== *
  * Mechanical lock
@@ -620,3 +845,108 @@ button.verdict:hover .verdict-basis { color: var(--text-primary); }
 .lockup > .path { color: var(--text-primary); }
 
 .panel-sub { color: var(--text-muted); font-size: var(--type-sm); }
+
+/* ==================================================================== *
+ * Platform capability tables
+ *
+ * The reason under each status is the point of the screen, so these cells
+ * wrap rather than ellipsise. Few rows, so no fixed row height is needed.
+ * ==================================================================== */
+
+.cap-table td { white-space: normal; overflow: visible; }
+.cap-why { display: flex; flex-direction: column; gap: var(--space-1); max-width: 90ch; }
+.cap-why .note-faint { word-break: break-word; }
+
+/* ==================================================================== *
+ * Sanitize flow
+ *
+ * The one new structure on the Sanitize screen: an ordered sequence, because
+ * the steps really are a sequence - each one gates the next. The current step
+ * carries the text colour and a rule beneath it; nothing else is decorated.
+ * ==================================================================== */
+
+.flow-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  border-bottom: 1px solid var(--rule);
+  counter-reset: step;
+}
+.flow-steps li {
+  counter-increment: step;
+  padding: var(--space-2) var(--space-2) var(--space-2) 0;
+  font-size: var(--type-sm);
+  color: var(--text-muted);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.flow-steps li::before {
+  content: counter(step);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+.flow-steps li.is-done { color: var(--text-secondary); }
+.flow-steps li.is-current {
+  color: var(--text-primary);
+  font-weight: var(--weight-medium);
+  border-bottom-color: var(--text-primary);
+}
+
+/* Three questions, answered side by side: what device, what will happen,
+   can it be verified. Each column is railed in its own state. */
+.answers {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+.answer-q { font-size: var(--type-sm); color: var(--text-muted); margin: 0; }
+.answer-a {
+  font-size: var(--type-lg);
+  font-weight: var(--weight-bold);
+  line-height: 1.2;
+  margin: 0;
+}
+.answer-detail { font-size: var(--type-md); color: var(--text-secondary); margin: 0; }
+
+.headline-block { display: flex; flex-direction: column; gap: var(--space-2); }
+.headline-word {
+  font-size: 26px;
+  font-weight: var(--weight-bold);
+  letter-spacing: 0.01em;
+  line-height: 1.1;
+  margin: 0;
+}
+.headline-word.is-success { color: var(--state-success); }
+.headline-word.is-warning { color: var(--state-warning); }
+.headline-word.is-destructive { color: var(--state-destructive); }
+.headline-word.is-unknown { color: var(--text-muted); }
+
+.checks { list-style: none; margin: 0; padding: 0; display: grid;
+          grid-template-columns: max-content max-content 1fr; gap: var(--space-1) var(--space-3);
+          font-size: var(--type-md); }
+.checks li { display: contents; }
+.checks .check-detail { color: var(--text-secondary); }
+
+.options { display: flex; flex-direction: column; gap: var(--space-3); }
+.option-title { font-weight: var(--weight-medium); }
+
+details.tech > summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: var(--type-md);
+  padding: var(--space-2) 0;
+}
+details.tech > summary:focus-visible { outline: 2px solid var(--text-primary); outline-offset: 2px; }
+details.tech[open] > summary { color: var(--text-primary); }
+details.tech > .tech-body { display: flex; flex-direction: column; gap: 14px; }
+
+@media (max-width: 900px) {
+  .flow-steps { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .answers { grid-template-columns: 1fr; }
+}

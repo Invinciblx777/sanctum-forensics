@@ -1,0 +1,83 @@
+{
+  "hardware": {},
+  "note": "Written by scripts/record_platform_validation.py from real pytest runs. Do not edit by hand. A missing entry means NOT RUN.",
+  "suites": {
+    "linux": {
+      "api": {
+        "commit": "20a6439508e0+dirty",
+        "counts": {
+          "errors": 0,
+          "failed": 0,
+          "passed": 209,
+          "skipped": 1
+        },
+        "date": "2026-09-21T17:40:08Z",
+        "exit_code": 0,
+        "os": "Linux 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026",
+        "paths": [
+          "tests/api"
+        ],
+        "python": "3.11.16",
+        "runner": "developer machine (Linux 6.19.10-300.fc44.x86_64)",
+        "state": "PASS"
+      },
+      "file_erase": {
+        "commit": "20a6439508e0+dirty",
+        "counts": {
+          "errors": 0,
+          "failed": 0,
+          "passed": 241,
+          "skipped": 2
+        },
+        "date": "2026-09-21T17:36:51Z",
+        "exit_code": 0,
+        "os": "Linux 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026",
+        "paths": [
+          "tests/erase/files",
+          "tests/platform"
+        ],
+        "python": "3.11.16",
+        "runner": "developer machine (Linux 6.19.10-300.fc44.x86_64)",
+        "state": "PASS"
+      },
+      "recovery": {
+        "commit": "20a6439508e0+dirty",
+        "counts": {
+          "errors": 0,
+          "failed": 0,
+          "passed": 400,
+          "skipped": 1
+        },
+        "date": "2026-09-21T17:39:43Z",
+        "exit_code": 0,
+        "os": "Linux 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026",
+        "paths": [
+          "tests/carve"
+        ],
+        "python": "3.11.16",
+        "runner": "developer machine (Linux 6.19.10-300.fc44.x86_64)",
+        "state": "PASS"
+      },
+      "whole_drive": {
+        "commit": "20a6439508e0+dirty",
+        "counts": {
+          "errors": 0,
+          "failed": 0,
+          "passed": 393,
+          "skipped": 10
+        },
+        "date": "2026-09-21T17:39:54Z",
+        "exit_code": 0,
+        "os": "Linux 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026",
+        "paths": [
+          "tests/erase",
+          "tests/device",
+          "tests/helper"
+        ],
+        "python": "3.11.16",
+        "runner": "developer machine (Linux 6.19.10-300.fc44.x86_64)",
+        "state": "PASS"
+      }
+    }
+  }
+}
