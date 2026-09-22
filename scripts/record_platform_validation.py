@@ -262,6 +262,21 @@ def feature_rows(
 
 
 def _os_string() -> str:
+    """The OS name without importing the project, for when that import fails.
+
+    ``platform.release()`` answers "10" on Windows 11, and this is the value a
+    row falls back to, so the build number decides here as it does in
+    ``core.platform.host.windows_product_name``.
+    """
+    if sys.platform == "win32":
+        release, version, _csd, _ptype = platform.win32_ver()
+        try:
+            build = int(version.split(".")[2]) if version.count(".") >= 2 else 0
+        except ValueError:
+            build = 0
+        if release in {"10", "11"} and build >= 22000:
+            return "Windows 11"
+        return f"Windows {release}".strip()
     return f"{platform.system()} {platform.release()}"
 
 
@@ -281,10 +296,14 @@ def _suite_os() -> str:
 def _host_description() -> dict[str, Any]:
     """This host as ``core.platform.host`` reports it, or an empty mapping.
 
-    Imported lazily: this script also runs where the package is not installed,
-    and a missing import must leave the row's fallbacks in place rather than
-    fail the recording.
+    Imported lazily, and from the checkout: the package job records its
+    evidence without installing the project, and there the import would
+    otherwise fail and file a real Windows 11 run as "Windows 10". A failure
+    that survives that still leaves the row's fallbacks in place rather than
+    failing the recording.
     """
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
     try:
         from core.platform.host import platform_info as probe
     except ImportError:
