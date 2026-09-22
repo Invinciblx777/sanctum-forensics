@@ -179,7 +179,7 @@ def run_suite(name: str) -> dict[str, object]:
         "paths": paths,
         "runner": _runner(),
         "python": platform.python_version(),
-        "os": f"{platform.system()} {platform.release()} {platform.version()}"[:160],
+        "os": _suite_os(),
         "commit": _commit(),
         "date": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -263,6 +263,19 @@ def feature_rows(
 
 def _os_string() -> str:
     return f"{platform.system()} {platform.release()}"
+
+
+def _suite_os() -> str:
+    """The operating system this suite ran on, named as the OS names itself.
+
+    ``platform.release()`` alone answers "10" on Windows 11, so the product
+    name comes from the same probe the adapter uses and the kernel or build
+    string follows it.
+    """
+    host = _host_description()
+    name = str(host.get("os_name") or _os_string())
+    build = str(host.get("os_build") or platform.version())
+    return f"{name} {build}".strip()[:160]
 
 
 def _host_description() -> dict[str, Any]:
