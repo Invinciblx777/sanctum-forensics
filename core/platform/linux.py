@@ -567,6 +567,10 @@ class LinuxAdapter(BaseAdapter):
                 CapabilityStatus.UNSUPPORTED,
                 engine_reason,
                 "core.erase.drive import guard",
+                verification=(
+                    "Nothing runs here: the engine does not load on this "
+                    "host, so there is nothing to verify."
+                ),
             )
         elif privileged is False:
             clear = row(
@@ -602,6 +606,10 @@ class LinuxAdapter(BaseAdapter):
                 CapabilityStatus.UNSUPPORTED,
                 engine_reason,
                 "core.erase.drive import guard",
+                verification=(
+                    "Nothing runs here: the engine does not load on this "
+                    "host, so there is nothing to verify."
+                ),
             )
         elif not tools:
             purge = row(
@@ -611,6 +619,10 @@ class LinuxAdapter(BaseAdapter):
                 "firmware sanitize command can be issued. Overwrite (Clear) "
                 "remains available; it is never presented as a Purge.",
                 "shutil.which over " + ", ".join(PURGE_TOOLS),
+                verification=(
+                    "No firmware command is issued here, so there is no "
+                    "drive attestation to read."
+                ),
             )
         elif privileged is False:
             purge = row(

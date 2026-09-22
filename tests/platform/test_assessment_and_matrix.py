@@ -70,6 +70,38 @@ def test_every_row_carries_a_verification_statement(
             assert row.verification.strip(), f"{adapter.name}: {row.operation}"
 
 
+def test_the_rows_hold_up_where_the_engine_does_not_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Linux adapter's own "no engine here" branch, as macOS sees it.
+
+    Those rows are unreachable on a Linux host, so the first version of the
+    verification rule passed here and failed on the macOS runner.
+    """
+    import builtins
+
+    from core.errors import PlatformUnsupported
+
+    real_import = builtins.__import__
+
+    def refuse(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "core.erase.drive":
+            raise PlatformUnsupported("needs Linux block-device semantics")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", refuse)
+    rows = adapter_for("linux").operation_capabilities()
+    monkeypatch.undo()
+
+    by_operation = {row.operation: row for row in rows}
+    for name in (Operation.WHOLE_DRIVE_CLEAR, Operation.WHOLE_DRIVE_PURGE):
+        assert by_operation[name].status is CapabilityStatus.UNSUPPORTED
+    for row in rows:
+        assert row.verification.strip(), row.operation
+        assert row.source.strip(), row.operation
+        assert row.reason.strip(), row.operation
+
+
 def test_without_a_passing_record_file_erase_is_unverified(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, windows_inventory: dict[str, Any]
 ) -> None:
