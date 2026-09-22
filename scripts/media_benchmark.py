@@ -30,6 +30,7 @@ chosen afterwards.
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import os
@@ -37,6 +38,7 @@ import random
 import subprocess
 import sys
 import time
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -391,6 +393,21 @@ def write_image(
     }
 
 
+def _hand_back(path: Path) -> None:
+    """Give a file written under sudo back to the invoking account.
+
+    Everything after acquisition is unprivileged, and a root-owned image would
+    make the scoring step need a privilege it has no business holding.
+    """
+    uid = os.environ.get("SUDO_UID")
+    gid = os.environ.get("SUDO_GID")
+    if uid and gid:
+        try:
+            os.chown(path, int(uid), int(gid))
+        except OSError:  # pragma: no cover - best effort, never fatal
+            pass
+
+
 def acquire(device: str, work: Path, *, length: int) -> dict[str, Any]:
     """Read the device back, write-blocked, recording throughput and errors."""
     from core.carve.acquire import apply_write_block
@@ -421,6 +438,7 @@ def acquire(device: str, work: Path, *, length: int) -> dict[str, Any]:
         sink.flush()
         os.fsync(sink.fileno())
     elapsed = time.monotonic() - started
+    _hand_back(target)
 
     return {
         "device": device,
@@ -435,6 +453,109 @@ def acquire(device: str, work: Path, *, length: int) -> dict[str, Any]:
             "verified_by": getattr(block, "verified_by", ""),
             "detail": getattr(block, "detail", ""),
         },
+    }
+
+
+def baseline_row() -> dict[str, Any]:
+    """The pre-registered synthetic reference, read from the checked-in CSV."""
+    with open(BASELINE_CSV, encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            if row["image"] == BASELINE_IMAGE and row["tool"] == BASELINE_TOOL:
+                full = int(row["full"])
+                exact = int(row["exact"])
+                return {
+                    "image": BASELINE_IMAGE,
+                    "tool": BASELINE_TOOL,
+                    "full": full,
+                    "exact": exact,
+                    "recall_pct": round(100.0 * exact / full, 2) if full else None,
+                    "corrupt": int(row["corrupt"]),
+                    "missed": int(row["missed"]),
+                    "fp_total": int(row["fp_total"]),
+                    "seconds": float(row["seconds"]),
+                }
+    raise Refused(f"no baseline row for {BASELINE_IMAGE}/{BASELINE_TOOL}")
+
+
+def score_physical(work: Path, *, timeout: int = 3600) -> dict[str, Any]:
+    """Ground truth from the acquired image, one carve run, and the verdict.
+
+    The truth is recomputed **from the acquired image**, not carried over from
+    the build: what the benchmark must score is what came back off the medium,
+    and any difference between the two is itself a finding.
+    """
+    from testkit.benchmark import (
+        OUTPUT_INDEX,
+        TRUTH_SUFFIX,
+        run_tool,
+        score_run,
+    )
+    from testkit.damage import load_truth, write_truth
+
+    acquired = work / "acquired" / "acquired.img"
+    if not acquired.is_file():
+        raise Refused(f"{acquired} is missing; run the acquire step first")
+
+    built_truth = load_truth(
+        work / "images" / f"{BASELINE_IMAGE.removesuffix('.img')}{TRUTH_SUFFIX}"
+    )
+
+    # Recompute the truth against the acquired bytes, using the same plant set.
+    physical = work / "physical"
+    images = physical / "images"
+    images.mkdir(parents=True, exist_ok=True)
+    stem = "media-fat32-255m-physical"
+    target = images / f"{stem}.img"
+    if not target.exists():
+        target.symlink_to(acquired)
+
+    # replace(), not Truth(**asdict(...)): asdict recurses, so the nested
+    # TruthObjects would come back as plain dicts and the scorer would read
+    # attributes off them.
+    truth = replace(built_truth, image=f"{stem}.img")
+    write_truth(truth, images / f"{stem}{TRUTH_SUFFIX}")
+
+    run_dir = physical / "runs" / stem / BASELINE_TOOL
+    meta = run_tool(
+        BASELINE_TOOL,
+        target,
+        run_dir,
+        foremost="foremost",
+        timeout=timeout,
+        keep_outputs=True,
+    )
+    index = run_dir / OUTPUT_INDEX
+    result = score_run(
+        truth,
+        index if index.exists() else run_dir,
+        work / "payloads",
+        tool=BASELINE_TOOL,
+        image_path=target,
+    )
+
+    counts: dict[str, int] = {}
+    for obj in truth.objects:
+        counts[obj.status] = counts.get(obj.status, 0) + 1
+
+    measured = asdict(result)
+    full = int(measured.get("full") or 0)
+    exact = int(measured.get("exact") or 0)
+    recall = round(100.0 * exact / full, 2) if full else None
+    base = baseline_row()
+    delta = (
+        round(recall - base["recall_pct"], 2)
+        if recall is not None and base["recall_pct"] is not None
+        else None
+    )
+    return {
+        "acquired_sha256": sha256_file(acquired),
+        "truth_counts": counts,
+        "measured": measured,
+        "recall_pct": recall,
+        "baseline": base,
+        "recall_delta_points": delta,
+        "run": meta,
+        "host": _host_facts(),
     }
 
 
@@ -469,6 +590,10 @@ def main(argv: list[str] | None = None) -> int:
     acq.add_argument("--work", required=True, type=Path)
     acq.add_argument("--bytes", type=int, default=MEDIA_SIZE)
 
+    sc = sub.add_parser("score", help="truth, one carve run, and the verdict")
+    sc.add_argument("--work", required=True, type=Path)
+    sc.add_argument("--timeout", type=int, default=3600)
+
     args = parser.parse_args(argv)
     try:
         if args.command == "preflight":
@@ -492,6 +617,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "acquire":
             payload = acquire(args.device, args.work, length=args.bytes)
+        elif args.command == "score":
+            payload = score_physical(args.work, timeout=args.timeout)
         else:  # pragma: no cover - argparse rejects anything else
             raise Refused(f"unknown command {args.command}")
     except Refused as refusal:
