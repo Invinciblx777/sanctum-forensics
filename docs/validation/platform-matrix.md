@@ -4,64 +4,79 @@ What was run, where, and what was not. **NOT RUN is not PASS.** A row marked
 NOT RUN has code and, usually, fixture tests on another host; it has not been
 executed on the platform named.
 
-Recorded 2026-09-21 on the development host (Fedora Linux 44, x86_64, Python
-3.11, unprivileged user). No Windows or macOS machine and no designated
-destructive test media were used in this change; the removable stick attached
-to the host during this work was mounted and was refused by every path, and
-nothing was written to any device.
+Recorded 2026-09-22 from `platform-ci` on the
+`release/cross-platform-validation` branch, three runners:
 
-## Automated (CI and fixtures)
+| Runner | OS | Architecture | Python |
+|---|---|---|---|
+| `ubuntu-latest` | Ubuntu 24.04.5 (kernel 6.17) | x86_64 | 3.11 |
+| `windows-latest` | Windows 11, build 10.0.26100 | AMD64 | 3.11.9 |
+| `macos-14` | macOS 14.8.9 | arm64 | 3.11.9 |
+
+plus the development host (Fedora Linux 44, x86_64, unprivileged user).
+
+**No physical device was written by any of it.** CI runners have virtual
+disks and no removable media; the stick attached to the development host was
+mounted and refused by every path.
+
+## Automated (CI and real runners)
 
 | Area | Linux | Windows | macOS | Where |
 |---|---|---|---|---|
-| Platform detection, host facts, privilege | PASS | PASS (fixtures, on Linux) · NOT RUN on Windows | PASS (fixtures, on Linux) · NOT RUN on macOS | `tests/platform/test_paths_and_host.py` |
-| Device normalization | PASS (`lsblk` path unchanged, `tests/device`) | PASS from a captured `Get-Disk` inventory · NOT RUN on Windows | PASS from captured `diskutil` plists · NOT RUN on macOS | `tests/platform/test_windows_adapter.py`, `test_macos_adapter.py` |
-| System/boot/page-file/APFS-role protection | PASS | PASS (fixtures) | PASS (fixtures) | same |
-| Capability matrix: sources, UNVERIFIED without a record | PASS | PASS (fixtures) | PASS (fixtures) | `tests/platform/test_assessment_and_matrix.py` |
-| Refused whole-drive on Windows/macOS never reaches an engine | n/a | PASS (adapter swapped in on Linux) | PASS | `tests/platform/test_boundary_and_security.py` |
-| Protected paths (case-insensitive, real `%SystemRoot%`) | PASS | PASS (pure-path tests) | PASS (pure-path tests) | `tests/platform/test_paths_and_host.py` |
-| File, folder, batch erase; metadata; cancellation | PASS (`tests/erase/files`) | NOT RUN — CI job `platform-ci / tests (windows-latest)` configured | NOT RUN — CI job configured | `.github/workflows/platform-ci.yml` |
-| NTFS-only tests (ADS, resident MFT data, VSS) | skipped with reason | NOT RUN | n/a | `tests/erase/files` (`ntfs_only`) |
-| Junction / reparse-point walk refusal | PASS (simulated attribute) | NOT RUN on a real junction | n/a | `test_a_folder_erase_does_not_descend_through_a_junction` |
-| Session token, DNS-rebinding host check | PASS | NOT RUN | NOT RUN | `tests/platform/test_boundary_and_security.py` |
-| Platform in the signed report | PASS | NOT RUN | NOT RUN | `tests/api/test_platform_in_report.py` |
-| Typed signing-key passphrase | PASS | NOT RUN | NOT RUN | same |
-| UI units (status words, flow, device kind) | PASS (Node) | — | — | `ui/tests/platform.test.ts` |
-| Type check as win32 / darwin | PASS (`mypy --platform`) | — | — | Makefile `typecheck` |
+| Lint, four strict typecheck passes, UI build and unit tests | PASS | — | — | `gate` |
+| Full Python suite | PASS (1644 passed, 34 skipped on the host; PASS on the runner) | PASS on the runner | PASS on the runner | `platform` job |
+| Platform adapter against the runner's own disks | PASS | PASS - 2 disks, both protected: `IsBoot`, and a page file on `D:` | PASS - internal disk protected: the running macOS boots from an APFS container on it | `scripts/platform_smoke.py`, `platform-smoke-*.json` |
+| Capability rows all carry a source; whole-drive UNSUPPORTED off Linux | PASS | PASS | PASS | same |
+| File, folder, batch erase; metadata; cancellation | PASS | PASS (`file_erase` suite: 201 passed, 71 skipped) | PASS (`file_erase` suite: 169 passed, 103 skipped) | `validation-*.json` |
+| NTFS specifics: real junction, alternate data streams, resident MFT data | n/a | PASS | n/a | `tests/platform/test_windows_filesystem.py` |
+| APFS: erase runs, verification refused with a reason, residual recorded | n/a | n/a | PASS | `tests/platform/test_macos_filesystem.py` |
+| Protected system locations, path traversal | PASS | PASS | PASS | per-platform lists |
+| Session token, DNS-rebinding host check, stale and cross-origin sessions | PASS | PASS | PASS | `tests/platform/test_boundary_and_security.py` |
+| Platform recorded in the signed report; typed signing passphrase | PASS | PASS | PASS | `tests/api/test_platform_in_report.py` |
+| API suite | PASS | PASS (201 passed, 9 skipped) | PASS (203 passed, 7 skipped) | `validation-*.json` |
+| Recovery suite | PASS (400 passed) | not run as a suite | not run as a suite | `validation-linux` |
+| UI units | PASS (32) | — | — | `ui/tests` |
 
 ## Packages
 
 | Check | Linux | Windows | macOS |
 |---|---|---|---|
-| Package built | PASS — AppImage + `.deb` on Fedora 44; portable build in `python:3.11-bullseye` | NOT RUN | NOT RUN |
-| Launches without a developer environment | PASS — frozen AppImage, fresh state dir | NOT RUN | NOT RUN |
-| Session protection in the frozen app | PASS — 401 without cookie, 303 on the session link | NOT RUN | NOT RUN |
-| Discovery, platform matrix in the frozen app | PASS | NOT RUN | NOT RUN |
-| File erase + certificate + report verification in the frozen app | PASS — scratch files on tmpfs; verification honestly *not possible* (tmpfs has no extents) | NOT RUN | NOT RUN |
-| Quit from the UI stops the process | PASS | NOT RUN | NOT RUN |
-| `.deb` installs and removes (`dpkg -i`, `dpkg -r`) | PASS — Debian 12 container | n/a | n/a |
-| Runs on an older distribution | FAIL for the host build (needs glibc 2.38) → fixed by the portable build; see `docs/packaging.md` | n/a | n/a |
+| Package built | PASS - AppImage + `.deb`, locally and on `ubuntu-22.04` | PASS - `SanctumSetup.exe` on `windows-latest` | PASS - `Sanctum.dmg` (44 MB) on `macos-14` |
+| Installed the way a user would | PASS - `.deb` installed and removed on Debian 12 | PASS - silent install to `%LOCALAPPDATA%\Programs\Sanctum`, then uninstalled | PASS - DMG mounted, `Sanctum.app` copied and run |
+| Runs with no developer environment | PASS - Debian 12 and Ubuntu 22.04 containers with no Python | PASS - runner Python not on the app's path | PASS |
+| Session refusal, non-loopback Host refusal | PASS | PASS | PASS |
+| Discovery and assessment through the package | PASS | PASS | PASS |
+| Folder erase confined to its scratch directory | PASS | PASS | PASS |
+| Signed certificate issued and verified | PASS | PASS | PASS |
+| Quit stops the process | PASS | PASS | PASS |
+| Packaged checks | 24 of 24 | 24 of 24 | 24 of 24 |
+
+The Windows column above is from the run that followed the one where the
+packaged smoke test itself failed on the quit: Windows resets the connection
+(`WinError 10054`) instead of closing it, and the script treated a missing
+reply as an error. The installer, the install, the run and the uninstall all
+worked in that earlier run too.
 
 ## Hardware
 
+Nothing here changed in this work. See
+[`hardware-platform-matrix.md`](hardware-platform-matrix.md).
+
 | Check | Linux | Windows | macOS |
 |---|---|---|---|
-| Whole-drive Clear on real media | PASS in earlier recorded runs (`hardware.md`); **not re-run** in this change | UNSUPPORTED (refused) | UNSUPPORTED (refused) |
+| Whole-drive Clear on real media | VALIDATED earlier (`hardware.md`); not re-run | UNSUPPORTED | UNSUPPORTED |
 | Firmware Purge on real media | NOT RUN | UNSUPPORTED | UNSUPPORTED |
-| Windows discovery on a real disk set | n/a | NOT RUN | n/a |
-| macOS discovery on a real disk set | n/a | n/a | NOT RUN |
-| File erase on real NTFS / APFS | n/a | NOT RUN | NOT RUN |
+| Discovery against a physical disk set | VALIDATED on the development host | NOT RUN | NOT RUN |
+| File erase on physical NTFS / APFS media | n/a | NOT RUN | NOT RUN |
+| Install by a human on a physical machine | VALIDATED | NOT RUN | NOT RUN |
 
-## To close the NOT RUN rows
+## To close the remaining rows
 
-1. Push the branch; `platform-ci` runs the file-erase and adapter suites on
-   `windows-latest` (NTFS) and `macos-14` (APFS) and uploads each
-   `validation-<OS>.json`.
-2. Merge them: `python scripts/record_platform_validation.py --merge
-   validation-*.json`, commit `core/platform/validation_record.json`.
-3. On a Windows 11 machine and a Mac with a **designated disposable** USB
-   stick attached: install the package, open *Platform*, confirm the stick is
-   listed with its size and bus, confirm the internal disk is *NOT AVAILABLE*
-   with the system reason, erase a scratch folder on the stick, and issue the
-   certificate. Record the result here with the date, OS build and stick
-   model. Never point any of this at a disk that holds data.
+1. A Windows 11 machine, a Mac, and a **disposable** USB stick each: install
+   the package, open *Platform*, confirm the stick appears and the internal
+   disk reads NOT AVAILABLE with its reason, erase a scratch folder on the
+   stick, issue the certificate. Record the run here with the date, OS build
+   and device model.
+2. A Linux host with a spare drive that reports ATA SANITIZE or NVMe sanitize,
+   for the firmware Purge path.
+3. A drive with an HPA or DCO set, for the hidden-area path.

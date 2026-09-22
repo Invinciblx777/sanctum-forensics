@@ -43,9 +43,19 @@ One product with a native adapter per OS (`core/platform/`). Linux has the
 full engine, including whole-drive Clear and firmware Purge. Windows and macOS
 discover and assess devices, erase files and folders, and issue certificates;
 they refuse whole-drive sanitization with the reason rather than offering
-something unvalidated. Packaged as an AppImage/`.deb`, `SanctumSetup.exe` and
-`Sanctum.dmg` — see [`docs/platform-support.md`](docs/platform-support.md) for
-exactly what each platform does, and what has not been run on it.
+something unvalidated.
+
+All three are exercised on their own operating system in CI
+(`.github/workflows/platform-ci.yml`): the suites, the adapter against that
+runner's real disks, and the built package installed and driven through a
+folder erase and a signed certificate. On the Windows runner the boot disk
+and the page-file disk were both refused with their reasons; on the macOS
+runner the internal disk was refused because the running system boots from an
+APFS container on it. Packaged as an AppImage and `.deb`, `SanctumSetup.exe`
+and `Sanctum.dmg`, all unsigned — see
+[`docs/platform-support.md`](docs/platform-support.md) for what each platform
+does, and [`docs/validation/hardware-platform-matrix.md`](docs/validation/hardware-platform-matrix.md)
+for what no CI run can establish.
 
 ## What it does not claim
 
@@ -101,6 +111,8 @@ See [`docs/privilege-boundary.md`](docs/privilege-boundary.md).
 | [`docs/platform-support.md`](docs/platform-support.md) | Linux / Windows / macOS capability matrix: FULL, PARTIAL, UNVERIFIED, UNSUPPORTED, each traced to code |
 | [`docs/packaging.md`](docs/packaging.md) | Building and running the AppImage, `.deb`, `SanctumSetup.exe` and `Sanctum.dmg`; signing status |
 | [`docs/validation/platform-matrix.md`](docs/validation/platform-matrix.md) | What ran on which platform, and what is NOT RUN |
+| [`docs/validation/hardware-platform-matrix.md`](docs/validation/hardware-platform-matrix.md) | VALIDATED, CI-VALIDATED, NOT YET VALIDATED, UNSUPPORTED — CI success is not hardware validation |
+| [`docs/release-readiness.md`](docs/release-readiness.md) | The release gate, condition by condition, with the evidence for each |
 | [`docs/security-review-cross-platform.md`](docs/security-review-cross-platform.md) | Review of the adapters, launcher, API front door and installers |
 | [`docs/validation/hardware.md`](docs/validation/hardware.md) | Real-media validation: method, runs, defects found |
 | [`docs/performance/calibration.md`](docs/performance/calibration.md) | How the confidence weights were derived and bounded |

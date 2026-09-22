@@ -707,17 +707,24 @@ supports and Windows does not expose unprivileged. On Windows the renames may
 remain recoverable from the directory index until the filesystem flushes on its
 own schedule, and the limitation is recorded on the record.
 
-### The Windows backend is untested on this build
+### The Windows backend: what has now run, and what has not
 
-`core/erase/_platform/win.py` is written against the Win32 API and is
-type-checked as Windows in a second mypy pass, but no recorded run has executed
-it on Windows: this project's development host is Linux. The Windows CI job
-(`.github/workflows/platform-ci.yml`) is configured to run the file-erase suite
-on an NTFS runner and record the result; until that record exists, the app's
-own capability screen shows file erase on Windows as **Unverified**, not as
-supported. Every method degrades to an honest unknown plus a recorded
-limitation when a call fails, so the worst case on an untried Windows build is
-a report full of unknowns rather than a false guarantee.
+`core/erase/_platform/win.py` now runs on a real Windows 11 runner in CI
+(`platform-ci`), against that machine's NTFS volume: alternate data streams,
+resident MFT data, the read-only attribute, and a real directory junction that
+must not redirect a recursive erase. Those results are recorded in
+`core/platform/validation_record.json`, and the app's capability screen lifts
+file erase on Windows out of *Unverified* only because that record exists.
+
+What has still never happened: a human installing the package on a physical
+Windows machine, and any erase on physical media. A CI runner has a virtual
+disk and no removable device. Every method still degrades to an honest unknown
+plus a recorded limitation when a call fails.
+
+One defect that testing found and fixed: the extent map recorded one cluster
+per run, so a post-erase read-back of a contiguous 256 KiB file verified
+4 KiB of it. Runs now carry their length, and a map truncated by fragmentation
+says so.
 
 ## Platform differences
 

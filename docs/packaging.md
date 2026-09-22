@@ -6,11 +6,15 @@ self-contained runtime, so **the target machine needs no Python, no Node and
 no developer tools**. The app serves its UI on a private loopback port and
 opens it in a window; nothing is fetched from the network, ever.
 
-| Platform | Artifact | Built by | Built and tested in this change |
+| Platform | Artifact | Built by | Built and driven |
 |---|---|---|---|
-| Linux | `Sanctum-<ver>-x86_64.AppImage`, `sanctum_<ver>_amd64.deb` | `scripts/build-linux-portable.sh` (glibc 2.31 container) or `scripts/build-linux.sh` (host) | Yes — see *What was verified* |
-| Windows 10 1809+ / 11, x64 | `SanctumSetup.exe` | `scripts/build-windows.ps1` (PyInstaller + Inno Setup 6) | **No** — no Windows machine was available. Scripted and wired into `.github/workflows/release.yml`. |
-| macOS 12+ (arm64 on the Apple silicon runner) | `Sanctum.dmg` containing `Sanctum.app` | `scripts/build-macos.sh` (PyInstaller + `hdiutil`) | **No** — no Mac was available. Scripted and wired into CI. |
+| Linux | `Sanctum-<ver>-x86_64.AppImage`, `sanctum_<ver>_amd64.deb` | `scripts/build-linux-portable.sh` (glibc 2.31 container) or `scripts/build-linux.sh` (host) | **Yes** — locally and on `ubuntu-22.04` in CI; installed and run on Debian 12 and Ubuntu 22.04; 24 of 24 packaged checks |
+| Windows 10 1809+ / 11, x64 | `SanctumSetup.exe` | `scripts/build-windows.ps1` (PyInstaller + Inno Setup 6) | **Yes, in CI** — built on `windows-latest`, installed silently, the installed app driven, then uninstalled. Unsigned. |
+| macOS 12+ (arm64) | `Sanctum.dmg` containing `Sanctum.app` | `scripts/build-macos.sh` (PyInstaller + `hdiutil`) | **Yes, in CI** — built on `macos-14`, DMG mounted, `Sanctum.app` driven through a folder erase and a signed certificate; 24 of 24 checks. Unsigned, **not notarized**. |
+
+None of these has been installed by a human on a physical Windows machine or
+Mac, and none has touched removable media; see
+[`validation/hardware-platform-matrix.md`](validation/hardware-platform-matrix.md).
 
 ## Build commands
 
@@ -125,6 +129,14 @@ and writes `core/platform/validation_record.json`; the spec bundles it. The
 app's capability screen reads it: a suite not recorded as `PASS` on the
 platform the app is running on leaves the capabilities it backs at
 **Unverified**. A build nobody tested therefore says so on its own screen.
+
+The record carries two shapes. `suites` is what the capability model gates
+on. `features` is one row per platform feature - platform, OS, architecture,
+commit, the tests behind it, the result, the date, the evidence file and the
+limitations that still apply - so the record never says "Windows verified",
+only which feature was validated, by what, and when. The CI jobs produce one
+record per runner and `--merge` folds them together, preferring a row that
+says something over one that says NOT RUN.
 
 ## Known packaging limits
 
