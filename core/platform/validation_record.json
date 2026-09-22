@@ -4,14 +4,14 @@
   "suites": {
     "linux": {
       "api": {
-        "commit": "20a6439508e0+dirty",
+        "commit": "693051364410",
         "counts": {
           "errors": 0,
           "failed": 0,
           "passed": 209,
           "skipped": 1
         },
-        "date": "2026-09-21T17:40:08Z",
+        "date": "2026-09-21T19:58:43Z",
         "exit_code": 0,
         "os": "Linux 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026",
         "paths": [
@@ -22,15 +22,15 @@
         "state": "PASS"
       },
       "file_erase": {
-        "commit": "8fa20ecc101c+dirty",
+        "commit": "4ceccd9003d2+dirty",
         "counts": {
           "errors": 0,
-          "failed": 1,
-          "passed": 249,
+          "failed": 0,
+          "passed": 250,
           "skipped": 22
         },
-        "date": "2026-09-21T19:43:01Z",
-        "exit_code": 1,
+        "date": "2026-09-21T19:55:20Z",
+        "exit_code": 0,
         "os": "Linux 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026",
         "paths": [
           "tests/erase/files",
@@ -38,17 +38,17 @@
         ],
         "python": "3.11.16",
         "runner": "developer machine (Linux 6.19.10-300.fc44.x86_64)",
-        "state": "FAIL"
+        "state": "PASS"
       },
       "recovery": {
-        "commit": "20a6439508e0+dirty",
+        "commit": "6e048b7496f2+dirty",
         "counts": {
           "errors": 0,
           "failed": 0,
           "passed": 400,
           "skipped": 1
         },
-        "date": "2026-09-21T17:39:43Z",
+        "date": "2026-09-21T19:58:18Z",
         "exit_code": 0,
         "os": "Linux 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026",
         "paths": [
@@ -59,14 +59,14 @@
         "state": "PASS"
       },
       "whole_drive": {
-        "commit": "20a6439508e0+dirty",
+        "commit": "693051364410",
         "counts": {
           "errors": 0,
           "failed": 0,
           "passed": 393,
           "skipped": 10
         },
-        "date": "2026-09-21T17:39:54Z",
+        "date": "2026-09-21T19:58:29Z",
         "exit_code": 0,
         "os": "Linux 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026",
         "paths": [

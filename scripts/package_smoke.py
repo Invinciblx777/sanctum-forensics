@@ -82,9 +82,15 @@ class Client:
         except urllib.error.HTTPError as exc:
             raw = exc.read().decode("utf-8", "replace")
             return exc.code, (json.loads(raw) if raw.startswith(("{", "[")) else raw)
-        except (urllib.error.URLError, http.client.RemoteDisconnected) as exc:
+        except (
+            urllib.error.URLError,
+            http.client.HTTPException,
+            OSError,
+        ) as exc:
             # A server that is shutting down closes the connection instead of
-            # answering; the caller decides whether that is a failure.
+            # answering - cleanly on POSIX, with a reset on Windows
+            # (WinError 10054). Either way the caller decides whether a
+            # missing reply is a failure; quit expects one.
             return 0, str(exc)
 
 
