@@ -41,7 +41,7 @@ mounted and refused by every path.
 
 | Check | Linux | Windows | macOS |
 |---|---|---|---|
-| Package built | PASS - AppImage + `.deb`, locally and on `ubuntu-22.04` | PASS - `SanctumSetup.exe` on `windows-latest` | PASS - `Sanctum.dmg` (44 MB) on `macos-14` |
+| Package built | PASS - AppImage + `.deb`, locally and on `ubuntu-22.04` | PASS - `SanctumSetup.exe` on `windows-latest` | PASS - `Sanctum.dmg` (44,013,635 bytes) on `macos-14` |
 | Installed the way a user would | PASS - `.deb` installed and removed on Debian 12 | PASS - silent install to `%LOCALAPPDATA%\Programs\Sanctum`, then uninstalled | PASS - DMG mounted, `Sanctum.app` copied and run |
 | Runs with no developer environment | PASS - Debian 12 and Ubuntu 22.04 containers with no Python | PASS - runner Python not on the app's path | PASS |
 | Session refusal, non-loopback Host refusal | PASS | PASS | PASS |
@@ -49,7 +49,9 @@ mounted and refused by every path.
 | Folder erase confined to its scratch directory | PASS | PASS | PASS |
 | Signed certificate issued and verified | PASS | PASS | PASS |
 | Quit stops the process | PASS | PASS | PASS |
-| Packaged checks | 24 of 24 | 24 of 24 | 24 of 24 |
+| Packaged checks | 23 of 23 | 24 of 24 | 24 of 24 |
+
+Linux runs one check fewer: *whole-drive unsupported off Linux* is a Windows and macOS check, and there is nothing for it to assert on the platform where whole-drive sanitization is supported.
 
 The Windows column above is from the run that followed the one where the
 packaged smoke test itself failed on the quit: Windows resets the connection

@@ -52,7 +52,7 @@ the `platform-smoke-*.json` and `package-smoke-*.json` artifacts of that run.
 | Resume | **PARTIAL** - overwrite from the last ledgered checkpoint; firmware methods restart | **UNSUPPORTED** | **UNSUPPORTED** |
 | Signed certificate, hash-chained ledger | **VALIDATED** | **VALIDATED** - the packaged app issued and verified one on the runner | **VALIDATED** - same |
 | Privileged helper | **VALIDATED** - root daemon, 0600 Unix socket, `SO_PEERCRED`, static allowlist, path confinement | not needed, and none ships: no implemented Windows operation requires elevation | not needed, as Windows |
-| Desktop package | **VALIDATED** - AppImage and `.deb`; built locally and in CI, installed and run on Debian 12 and Ubuntu 22.04, 24 of 24 packaged checks | **VALIDATED in CI** - `SanctumSetup.exe` built, installed silently, driven and uninstalled on the runner. Unsigned. | **VALIDATED in CI** - `Sanctum.dmg` built and mounted, `Sanctum.app` driven through erase and certificate, 24 of 24 checks. Unsigned, not notarized. |
+| Desktop package | **VALIDATED** - AppImage and `.deb`; built locally and in CI, installed and run on Debian 12 and Ubuntu 22.04, 23 of 23 packaged checks | **VALIDATED in CI** - `SanctumSetup.exe` built, installed silently, driven and uninstalled on the runner. Unsigned. | **VALIDATED in CI** - `Sanctum.dmg` built and mounted, `Sanctum.app` driven through erase and certificate, 24 of 24 checks. Unsigned, not notarized. |
 
 **Nothing above was performed on physical media on Windows or macOS.** CI
 runners have virtual disks and no removable device; see

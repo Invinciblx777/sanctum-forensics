@@ -25,9 +25,9 @@ the defects each one found._
 | 7 | macOS file/folder erase tests run | DONE | `validation-macOS.json`, suite `file_erase` |
 | 8 | Windows junction / reparse protections validated | DONE | `tests/platform/test_windows_filesystem.py` creates a real junction on the runner and proves the erase stays inside the named root |
 | 9 | macOS APFS limitation behaviour validated | DONE | `tests/platform/test_macos_filesystem.py`: the erase runs, the verification is `not_possible` with a reason, and a residual finding is recorded |
-| 10 | Windows installer built | DONE in CI | `package (windows-latest)`: `SanctumSetup.exe` (15.0 MB) built, installed silently to `%LOCALAPPDATA%\Programs\Sanctum`, the installed app driven through 24 of 24 checks, then uninstalled and the directory confirmed gone |
-| 11 | macOS DMG built | DONE in CI | `package (macos-14)`: `Sanctum.dmg` (44.0 MB) built and mounted, `Sanctum.app` driven through 24 of 24 checks |
-| 12 | Linux package still works | DONE | AppImage + `.deb` built locally and in CI; `package-smoke-Linux.json`: 24 of 24 checks |
+| 10 | Windows installer built | DONE in CI | `package (windows-latest)`: `SanctumSetup.exe` (36,666,595 bytes) built, installed silently to `%LOCALAPPDATA%\Programs\Sanctum`, the installed app driven through 24 of 24 checks, then uninstalled and the directory confirmed gone |
+| 11 | macOS DMG built | DONE in CI | `package (macos-14)`: `Sanctum.dmg` (44,013,635 bytes) built and mounted, `Sanctum.app` driven through 24 of 24 checks |
+| 12 | Linux package still works | DONE | AppImage + `.deb` built locally and in CI; `package-smoke-Linux.json`: 23 of 23 checks - one fewer than the other two platforms, because the check that whole-drive work is refused off Linux does not apply on Linux |
 | 13 | Capability states reflect real evidence | DONE | every row carries `source`; file-erase rows stay UNVERIFIED until `validation_record.json` records a passing suite for that platform |
 | 14 | `validation_record.json` holds real platform results | DONE | suites plus per-feature rows (platform, OS, architecture, commit, tests, result, date, evidence, limitations) |
 | 15 | No fake platform checkmarks | DONE | `tests/platform/test_assessment_and_matrix.py` pins that a Linux pass does not lift a Windows row, and that whole-drive is UNSUPPORTED off Linux |

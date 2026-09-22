@@ -162,3 +162,40 @@ def test_the_writer_gets_the_lock_once_the_holder_releases_it(
 
     assert entry.seq == 2
     assert make_ledger(tmp_path).verify().status is ChainStatus.VALID
+
+
+def test_retries_are_jittered_so_colliding_writers_stop_waking_together(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The backoff is a range, not a metronome.
+
+    The lock is taken without blocking, so it has no queue and cannot be fair.
+    With a fixed doubling backoff, writers that lose the same attempt wait the
+    same time and collide again at the same instant; once they reach the cap
+    they retry in lockstep for good, and one of them can lose all twenty
+    attempts while the chain is being written normally by the others. The
+    Windows runner failed that way. Each wait is therefore drawn from
+    ``[floor x delay, delay]``.
+    """
+    slept: list[float] = []
+    monkeypatch.setattr(chain_mod.time, "sleep", slept.append)
+    monkeypatch.setattr(chain_mod, "APPEND_LOCK_ATTEMPTS", 12)
+    ledger = make_ledger(tmp_path)
+    ledger.append(actor="setup", operation="op", params={}, result={})
+
+    with file_lock(ledger.store.lock_path):
+        with pytest.raises(LedgerBusy):
+            ledger.append(actor="loser", operation="op", params={}, result={})
+
+    assert len(slept) == 11, "one wait between each pair of attempts"
+
+    delay = chain_mod.APPEND_BACKOFF_INITIAL_SECONDS
+    for pause in slept:
+        assert chain_mod.APPEND_BACKOFF_JITTER_FLOOR * delay <= pause <= delay
+        delay = min(delay * 2, chain_mod.APPEND_BACKOFF_CAP_SECONDS)
+
+    at_the_cap = slept[-4:]
+    assert len(set(at_the_cap)) > 1, (
+        "waits at the cap are identical, so writers that collide there stay "
+        f"in lockstep: {at_the_cap}"
+    )
