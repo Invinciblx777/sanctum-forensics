@@ -7,8 +7,10 @@ at something a reader can open: a CI run, an evidence file in
 Statuses: **DONE** (evidence exists), **PARTIAL** (done for part of the
 scope, named), **NOT DONE** (and why).
 
-_Last updated from CI run `<run-id>` on the `release/cross-platform-validation`
-branch; see the final report for the numbers of that run._
+_Evidence: `platform-ci` run 35679982678 on the
+`release/cross-platform-validation` branch (2026-09-22) - gate, three
+platform jobs and three package jobs all green - plus the runs before it for
+the defects each one found._
 
 ## The gate
 
@@ -23,9 +25,9 @@ branch; see the final report for the numbers of that run._
 | 7 | macOS file/folder erase tests run | DONE | `validation-macOS.json`, suite `file_erase` |
 | 8 | Windows junction / reparse protections validated | DONE | `tests/platform/test_windows_filesystem.py` creates a real junction on the runner and proves the erase stays inside the named root |
 | 9 | macOS APFS limitation behaviour validated | DONE | `tests/platform/test_macos_filesystem.py`: the erase runs, the verification is `not_possible` with a reason, and a residual finding is recorded |
-| 10 | Windows installer built | DONE in CI | `platform-ci / package (windows-latest)` builds `SanctumSetup.exe`, installs it silently, drives the installed app, uninstalls |
-| 11 | macOS DMG built | DONE in CI | `platform-ci / package (macos-14)` builds and mounts `Sanctum.dmg` and drives `Sanctum.app` |
-| 12 | Linux package still works | DONE | AppImage + `.deb` built locally and in CI; `package-smoke-Linux.json`: 23 of 23 checks |
+| 10 | Windows installer built | DONE in CI | `package (windows-latest)`: `SanctumSetup.exe` (15.0 MB) built, installed silently to `%LOCALAPPDATA%\Programs\Sanctum`, the installed app driven through 24 of 24 checks, then uninstalled and the directory confirmed gone |
+| 11 | macOS DMG built | DONE in CI | `package (macos-14)`: `Sanctum.dmg` (44.0 MB) built and mounted, `Sanctum.app` driven through 24 of 24 checks |
+| 12 | Linux package still works | DONE | AppImage + `.deb` built locally and in CI; `package-smoke-Linux.json`: 24 of 24 checks |
 | 13 | Capability states reflect real evidence | DONE | every row carries `source`; file-erase rows stay UNVERIFIED until `validation_record.json` records a passing suite for that platform |
 | 14 | `validation_record.json` holds real platform results | DONE | suites plus per-feature rows (platform, OS, architecture, commit, tests, result, date, evidence, limitations) |
 | 15 | No fake platform checkmarks | DONE | `tests/platform/test_assessment_and_matrix.py` pins that a Linux pass does not lift a Windows row, and that whole-drive is UNSUPPORTED off Linux |
@@ -36,7 +38,7 @@ branch; see the final report for the numbers of that run._
 | 20 | Whole-drive Linux-only scope documented | DONE | `docs/platform-support.md`, `docs/limitations.md`; the app refuses with the reason on Windows and macOS |
 | 21 | Hardware limitations documented | DONE | `docs/validation/hardware-platform-matrix.md` separates VALIDATED, CI-VALIDATED, NOT YET VALIDATED and UNSUPPORTED |
 | 22 | Build artifacts reproducible/documented | PARTIAL | every build records version, commit, platform, architecture, date, Python and Node (`packaging/build_info.py`), honours `SOURCE_DATE_EPOCH`, and publishes SHA-256 sums. Bit-for-bit reproducibility is **not** claimed: PyInstaller embeds timestamps and the wheels are not pinned by hash. |
-| 23 | Full test suite passes | DONE | see the final report for the counts, per platform |
+| 23 | Full test suite passes | DONE | development host 1644 passed / 34 skipped / 0 failed; the same suite green on all three runners |
 | 24 | UI platform screen works | DONE | rows with a plain-English *Why?*, screenshotted from the real server; `ui/tests/platform.test.ts` |
 | 25 | Demo runs offline | DONE | no network call at run time; `tests/api/test_offline_serving.py` and the CSP; the packaged app was driven with the runner's network unused |
 
