@@ -177,9 +177,10 @@ Recorded results:
 
 NOT RUN is not PASS, and UNSUPPORTED is a refusal, not a gap.
 
-Every row in the file names commit `ba13a9a73bf8`, the commit run
-35706589476 tested. The commit that *carries* the file is necessarily the
-next one: a record can only be written after the run it records.
+Every CI row names commit `ba13a9a73bf8`, the commit run 35706589476
+tested; the two developer-host suites name the commit they ran at. No row
+is marked `+dirty`. The commit that *carries* the file is necessarily a
+later one: a record can only be written after the run it records.
 
 Four recording defects were found and fixed while producing this record, and
 they are worth naming because each one would have put a false statement in
@@ -318,7 +319,7 @@ From a source checkout, on any of the three: `python -m api.desktop`, or
 
 **Commit and merge the branch.**
 
-The branch is 20 commits on `release/cross-platform-validation`, each one
+The branch is 24 commits on `release/cross-platform-validation`, each one
 green in CI by itself or superseded by a later fix in the same series. The
 final commit set is green on all seven jobs: gate, three platform jobs on
 Linux, Windows and macOS, and three package jobs. No pre-existing work was
