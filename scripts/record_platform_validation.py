@@ -97,6 +97,13 @@ def _family() -> str:
 
 
 def _commit() -> str:
+    """The commit under test, marked ``+dirty`` if a tracked file differs.
+
+    Untracked files are ignored on purpose: a CI job writes its own
+    evidence (``platform-smoke-*.json``, ``build_info.json``) into the tree
+    before this runs, and that output says nothing about the source that
+    was tested.
+    """
     try:
         head = subprocess.run(
             ["git", "rev-parse", "--short=12", "HEAD"],
@@ -107,7 +114,7 @@ def _commit() -> str:
             timeout=15,
         ).stdout.strip()
         dirty = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", "status", "--porcelain", "--untracked-files=no"],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -203,7 +210,12 @@ def feature_rows(
     refuses the feature by design, and ``PASS``/``FAIL`` only where something
     actually executed.
     """
-    platform_info = smoke.get("platform") or {}
+    # The smoke evidence describes the host the adapter ran on. Without it -
+    # the package job records no adapter smoke - ask this host directly, which
+    # is the same probe, rather than falling back to ``platform.release()``:
+    # that answers "10" on Windows 11 and would file real results under the
+    # wrong operating system.
+    platform_info = smoke.get("platform") or _host_description()
     common = {
         "platform": family,
         "os": platform_info.get("os_name") or _os_string(),
@@ -251,6 +263,26 @@ def feature_rows(
 
 def _os_string() -> str:
     return f"{platform.system()} {platform.release()}"
+
+
+def _host_description() -> dict[str, Any]:
+    """This host as ``core.platform.host`` reports it, or an empty mapping.
+
+    Imported lazily: this script also runs where the package is not installed,
+    and a missing import must leave the row's fallbacks in place rather than
+    fail the recording.
+    """
+    try:
+        from core.platform.host import platform_info as probe
+    except ImportError:
+        return {}
+    info = probe()
+    return {
+        "os_name": info.os_name,
+        "os_build": info.os_build,
+        "machine": info.machine,
+        "app_version": info.app_version,
+    }
 
 
 def _load(path: Path) -> dict[str, object]:

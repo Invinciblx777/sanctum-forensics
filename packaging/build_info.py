@@ -53,7 +53,9 @@ def collect() -> dict[str, str]:
     epoch = os.environ.get("SOURCE_DATE_EPOCH")
     when = time.gmtime(int(epoch)) if epoch and epoch.isdigit() else time.gmtime()
     commit = _run("git", "rev-parse", "HEAD")
-    dirty = bool(_run("git", "status", "--porcelain"))
+    # Tracked files only. A CI job writes its own evidence into the tree
+    # before this runs; untracked output does not change what was built.
+    dirty = bool(_run("git", "status", "--porcelain", "--untracked-files=no"))
     return {
         "version": _version(),
         "commit": (commit + ("+dirty" if dirty else "")) if commit else "unknown",

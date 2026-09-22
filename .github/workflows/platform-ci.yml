@@ -187,3 +187,14 @@ jobs:
             validation-package-${{ matrix.name }}.json
             core/platform/build_info.json
           if-no-files-found: warn
+      # The same evidence again, on its own: merging the record back into the
+      # repository should not mean downloading a hundred megabytes of installer.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-package-${{ matrix.name }}
+          path: |
+            package-smoke-${{ matrix.name }}.json
+            validation-package-${{ matrix.name }}.json
+            core/platform/build_info.json
+          if-no-files-found: warn
