@@ -1,9 +1,20 @@
-"""Assign a confidence score and HIGH/MEDIUM/LOW bucket to a candidate.
+"""Assign an evidence score and HIGH/MEDIUM/LOW bucket to a candidate.
 
 The score is a sum of named components in basis points, clamped to 0..10000,
 and every component is recorded on the candidate. That matters more than the
 total: an examiner asked "how did you arrive at 0.35?" can be shown the six
 numbers that produced it rather than a model's opinion.
+
+**It is not a probability that the object is correct.** The components come to
+10,500 when every one is established, so a candidate carrying all of them
+reads 10000 because that is where the clamp lands - not because anything
+measured certainty. What the calibration measured is the *bucket's* precision
+on a population: pooled over eight seeds and 173 candidates, 104 of 104 HIGH
+candidates matched a planted object byte for byte, and that is a property of
+those synthetic corpora rather than a rate for seized media (on the 7 GiB
+image HIGH precision was 86.6% before the footer-bound fix). Anything that
+renders this number must not format it as a percentage; see
+``ui/src/lib/format.ts:evidenceScore``.
 
 The components, and what each one is evidence of:
 

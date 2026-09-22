@@ -140,16 +140,19 @@ Leave it running. Nothing else in the demo is root.
 
 **Terminal 1 — the API, as yourself.** `SANCTUM_HELPER_SOCKET` is what makes it
 use the daemon rather than dispatching privileged operations inside the web
-server process. **All three variables are required** — without the socket
+server process. **All four variables are required** — without the socket
 variable the API falls back to the in-process helper and `GET /health` reports
 the `HELPER_IN_PROCESS` limitation, which is the state this sequence exists to
-avoid; and `core.report.sign` refuses to open an unprotected signing key, whose
-passphrase has to match the one `demo-reset.sh` staged with:
+avoid; `core.report.sign` refuses to open an unprotected signing key, whose
+passphrase has to match the one `demo-reset.sh` staged with; and without
+`SANCTUM_SESSION_TOKEN` the server mints a fresh random token at every start,
+which makes every URL below unusable until you read it off the banner:
 
 ```bash
 SANCTUM_HELPER_SOCKET=/run/sanctum/helper.sock \
 SANCTUM_STATE_DIR=/var/lib/sanctum-demo \
 SANCTUM_KEY_PASSPHRASE=sanctum-demo \
+SANCTUM_SESSION_TOKEN=sanctum-demo-session \
 .venv/bin/python -m api.main
 ```
 
@@ -163,10 +166,23 @@ If you overrode `SANCTUM_KEY_PASSPHRASE` when you ran the reset, use that value
 here. Get it wrong and the 3:15 report beat fails at "Generate signed report"
 with a key error, which is a bad place to discover it.
 
+**Why `SANCTUM_SESSION_TOKEN` is pinned, and why it is not a weakening.** The
+server refuses every request that does not carry its session cookie, including
+`GET /health`, and mints a new token per start unless you supply one
+(`api/main.py:dev_session_token`). An earlier version of this runbook opened
+`http://127.0.0.1:8787` directly and health-checked it with a bare `curl`; both
+now answer **401 `SessionRequired`**, so the pre-flight check could not be read
+and the browser never reached the UI. Pinning the token keeps every command on
+this page copy-pasteable. It changes nothing about the boundary: the server
+still binds `127.0.0.1` only, still refuses any non-loopback `Host`, and still
+refuses every request without the cookie. Do not use this value outside the
+demo state directory.
+
 Confirm the boundary is actually up before the room fills:
 
 ```bash
-curl -s http://127.0.0.1:8787/health | python -m json.tool
+curl -s --cookie "sanctum_session=sanctum-demo-session" \
+     http://127.0.0.1:8787/health | python -m json.tool
 ```
 
 `limitations` must **not** contain `HELPER_IN_PROCESS`. If it does, the API did
@@ -177,14 +193,21 @@ exists yet, the second that the chain was started without one, and both mean the
 `fingerprint_matches_genesis` check will be SKIP on the 3:15 report. Re-run the
 reset rather than continuing.
 
-It binds `127.0.0.1:8787` and nothing else. Open the browser full-screen on
-`http://127.0.0.1:8787`, on the Devices screen, before anyone is looking.
+If instead you get `{"error": "Refused: this request did not come from the
+Sanctum window."}`, the token in the cookie is not the token the server started
+with — restart Terminal 1 with the variable set.
+
+It binds `127.0.0.1:8787` and nothing else. **Open the browser full-screen on
+`http://127.0.0.1:8787/session/sanctum-demo-session`** — that one request sets
+the cookie and redirects to the UI. Land on the Devices screen before anyone is
+looking. Opening `http://127.0.0.1:8787` without the `/session/` prefix first
+returns 401 and shows a refusal, not the app.
 
 Five things on screen, arranged before you start:
 
 | Window | Contents | Used at |
 |---|---|---|
-| Browser, full screen | the UI on `http://127.0.0.1:8787` | every beat |
+| Browser, full screen | the UI, opened once via `http://127.0.0.1:8787/session/sanctum-demo-session` | every beat |
 | Terminal 0, minimised | the root helper daemon | background |
 | Terminal 1, visible | the API server log, running as you | background |
 | Terminal 2, large font | empty, cwd is the repo | 3:15 tamper beat |
@@ -426,11 +449,11 @@ controller behaviour. We have no card, so we have not measured one.
 4. Filter to HIGH. Click one candidate. The **Score breakdown** panel opens.
 
 **Expected on screen:** ten planted JPEGs, five deleted, five recovered. Each
-recovered candidate shows a confidence in basis points, its bucket, and six
-score components with their evidence.
+recovered candidate shows an **evidence score** out of 10000, its bucket, and
+six score components with their evidence.
 
 ```
-img00.jpg   100.00%  HIGH
+img00.jpg   HIGH   evidence score 10000 / 10000
   header             2000   the magic number for this format is present
   exact_length       1500   a parser derived the length from the structure
   decoder_valid      4000   a real decoder read it end to end
@@ -438,24 +461,39 @@ img00.jpg   100.00%  HIGH
   fs_metadata        1500   a surviving filesystem record names this file
   no_overlap          500   no other candidate claims these bytes
                           ------
-                          10500   clamped to 10000 = 100.00%
+                          10500   clamped to 10000
 ```
 
-The six components sum to 10,500 and `core/carve/score.py:418` clamps the total
-to 10,000, so a candidate carrying all six reads **100.00%**, not 98%. Phase B
+The six components sum to 10,500 and `core/carve/score.py` clamps the total to
+10,000, so a candidate carrying all six reads `10000 / 10000`. Phase B
 recovered its named deleted JPEGs at exactly `10000`.
+
+**Do not say "one hundred percent", and the screen no longer offers it.** This
+number is a sum of evidence, not a probability that the file is correct — the
+components simply add up past the clamp. An earlier build rendered it as
+`100.00%`, which is the single easiest sentence for a judge to take apart, and
+it was right to. What the calibration supports is the *bucket*, and that is the
+claim to make out loud.
 
 **Say:**
 
-> Five deleted JPEGs, five recovered, byte-identical. But the number that
-> matters is the confidence, and every component of it is on screen with what it
-> establishes.
+> Five deleted JPEGs, five recovered, byte-identical. The number beside each
+> one is an **evidence score**, not a probability — it is a sum of six measured
+> components, and every component is on screen with what it establishes. Ten
+> thousand out of ten thousand means every check fired, not that the file is
+> certainly right.
 >
-> These weights are not opinions. They were calibrated against a corpus with
-> known ground truth — 33 candidates, 15 recoverable files, and a candidate only
-> counts as a true positive if its SHA-256 matches. `decoder_valid` moved from
-> 3500 to 4000 because every candidate meeting that description was a true
-> positive and the missing 500 was keeping four of them out of HIGH.
+> What is calibrated is the **bucket**. Pooled over eight seeds and 173
+> candidates, all 104 HIGH candidates matched a planted object byte for byte.
+> That is a precision figure for a bucket on a synthetic population, and I will
+> tell you where it broke: on a 7 GiB image, HIGH precision was 86.6% until we
+> fixed the footer bound. It is in the document.
+>
+> These weights are not opinions either. They were calibrated against a corpus
+> with known ground truth, and a candidate only counts as a true positive if its
+> SHA-256 matches. `decoder_valid` moved from 3500 to 4000 because every
+> candidate meeting that description was a true positive and the missing 500 was
+> keeping four of them out of HIGH.
 >
 > `fs_metadata` stayed at 1500 — and that is the interesting one. We swept it
 > from 0 to 5000. At 5000 the aggregate looks far better: 95.6% precision
@@ -952,19 +990,28 @@ anything. Follow it in order. Do not skip step 4 because it is boring.
    SANCTUM_HELPER_SOCKET=/run/sanctum/helper.sock \
    SANCTUM_STATE_DIR=/var/lib/sanctum-demo \
    SANCTUM_KEY_PASSPHRASE=sanctum-demo \
+   SANCTUM_SESSION_TOKEN=sanctum-demo-session \
    .venv/bin/python -m api.main
    ```
+
+   The fourth variable is not optional. Without it the server mints a random
+   session token at every start, and both the check below and step 10 answer
+   401 until you read that run's token off the banner.
 
    Then check the boundary is real, not assumed:
 
    ```bash
-   curl -s http://127.0.0.1:8787/health | python -m json.tool
+   curl -s --cookie "sanctum_session=sanctum-demo-session" \
+        http://127.0.0.1:8787/health | python -m json.tool
    ```
 
    `limitations` must not contain `HELPER_IN_PROCESS`, `NO_SIGNING_KEY` or
    `CHAIN_WITHOUT_KEY_FINGERPRINT`.
 
-10. **Open the browser to `http://127.0.0.1:8787`, full screen, Devices tab.**
+10. **Open the browser to
+    `http://127.0.0.1:8787/session/sanctum-demo-session`, full screen, Devices
+    tab.** That request sets the session cookie and redirects to the UI; the
+    bare `http://127.0.0.1:8787` returns 401 until it has.
     Your stick must be listed — both, if you staged `--usb-b`. If it is not,
     refresh once; if it is still not, the *helper* is not running or is not
     serving your uid: read Terminal 0. The API itself is unprivileged and never
@@ -1040,11 +1087,14 @@ can run it again.
 1. `sudo ./scripts/demo-reset.sh --check-only` prints `OK` on every row and
    exits 0.
 2. The root helper is running (Terminal 0) and the API is running **as you**,
-   with `SANCTUM_HELPER_SOCKET`, `SANCTUM_STATE_DIR` and
-   `SANCTUM_KEY_PASSPHRASE` all set, matching what the reset staged with.
-   `GET /health` does not report `HELPER_IN_PROCESS`.
-3. The browser is on the Devices screen, full-screen, showing the stick with a
-   FAT32 volume on it.
+   with `SANCTUM_HELPER_SOCKET`, `SANCTUM_STATE_DIR`, `SANCTUM_KEY_PASSPHRASE`
+   and `SANCTUM_SESSION_TOKEN` all set, matching what the reset staged with.
+   `GET /health`, sent with the session cookie, does not report
+   `HELPER_IN_PROCESS`.
+3. The browser has already been opened once on
+   `http://127.0.0.1:8787/session/sanctum-demo-session`, so it holds the
+   session cookie, and is now on the Devices screen, full-screen, showing the
+   stick with a FAT32 volume on it.
 4. The serial is written on a sticky note stuck to the laptop.
 5. `docs/demo/fallback/` is populated. Nothing generates it; see its README.
 

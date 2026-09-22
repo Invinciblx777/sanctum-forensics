@@ -673,12 +673,19 @@ scanned and none produced a hit.
 Turn triage off with `"pii_triage": false` if you do not want it. The run records
 the setting in its `carve.start` ledger entry.
 
-### Confidence buckets: what a bucket does and does not assert
+### Evidence score and confidence buckets: what each does and does not assert
 
-Confidence is the sum of six measured components in basis points — `header`,
+The screen calls this number the **evidence score** and shows it as
+`9500 / 10000`, never as a percentage. `confidence_bp` in the JSON report is the
+same number under the name the signed schema has always used.
+
+It is the sum of six measured components in basis points — `header`,
 `exact_length`, `decoder`, `entropy`, `fs_metadata`, `no_overlap` — plus a seventh,
 `reassembly`, which is 0 for every candidate except one rebuilt from separate runs
-(see below). Clamped, never scaled. The buckets are a reading of that number:
+(see below). Clamped, never scaled. Those six come to **10,500** when every one is
+established, so a candidate reading `10000 / 10000` is at the clamp; that is not a
+measurement of certainty, and it is why the percent sign is gone. The buckets are
+a reading of that number:
 
 | Bucket | Score | What it asserts |
 |---|---|---|
@@ -694,6 +701,21 @@ calibrated against a ground-truth corpus — see
 the measured per-bucket precision and recall. The report prints
 `score_components` per candidate so the number can be taken apart by someone who
 was not there when it was computed.
+
+**What the calibration does support is per-bucket precision on a named
+population.** Pooled over eight seeds and 173 candidates, 104 of 104 HIGH
+candidates matched a planted object byte for byte
+([`performance/calibration-pooled.md`](performance/calibration-pooled.md)). Two
+things follow, and the second matters as much as the first: that is a property
+of those synthetic corpora, and on the 7 GiB validation image HIGH precision was
+**86.6%** — 39 of 292 HIGH candidates matched no planted file — until the
+footer-bound fix of 2026-09-21. Quote the bucket's precision with its
+population, never a single candidate's score as a likelihood of correctness.
+
+`confidence_bp` is also the name of a field on a post-erase
+`VerificationResult`, and **there it genuinely is a probability**: the chance of
+detecting a residual region of a given size under sampling, or 10000 for a full
+read. The two numbers share a field name and nothing else.
 
 A LOW candidate is not a false positive. A candidate whose `validation` reads
 `corrupt` or `truncated` is telling you what the decoder found, and both are

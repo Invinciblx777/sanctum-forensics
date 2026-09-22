@@ -268,10 +268,14 @@ class VerificationResult(BaseModel):
     strategy: Literal["full_read", "sampled", "hw_attested"]
     bytes_checked: int
     sample_count: int
-    #: Detection confidence in basis points: 10000 is 100.00%. An integer at
-    #: the source, because this is the one number a third party reads to judge
-    #: whether verification meant anything, and it must not be a lossy rewrite
-    #: of something else.
+    #: Detection **probability** in basis points: 10000 is 100.00%. Unlike
+    #: :attr:`CarveCandidate.confidence_bp`, which is a weighted evidence sum,
+    #: this one genuinely is a probability - 10000 for a full read, otherwise
+    #: the sampling formula in :mod:`core.erase.verify` - and it is the chance
+    #: of *detecting* a residual region of a given size, never a claim that
+    #: none exists. An integer at the source, because this is the one number a
+    #: third party reads to judge whether verification meant anything, and it
+    #: must not be a lossy rewrite of something else.
     confidence_bp: int = Field(ge=0, le=10_000)
     failed_offsets: list[int]
     #: RNG seed for the sampled strategy, recorded so the sample set is
@@ -505,7 +509,15 @@ class CarveCandidate(BaseModel):
     mime: str
     source: Literal["fs_metadata", "signature", "structure"]
     validation: Validation
-    #: Carve confidence in basis points: 10000 is 100.00%.
+    #: Carve **evidence score** in basis points, out of 10000. This is a sum
+    #: of measured components (see :attr:`score_components`), clamped and never
+    #: scaled - **not a probability that this object is correct**, and not
+    #: comparable with :attr:`VerificationResult.confidence_bp`, which is one.
+    #: The components come to 10500 when every one is established, so 10000 is
+    #: where the clamp lands rather than a statement of certainty. What the
+    #: calibration measured is per-bucket precision on a synthetic population;
+    #: see ``docs/performance/calibration-pooled.md``. The field name is kept
+    #: because it is part of the signed report schema.
     confidence_bp: int = Field(ge=0, le=10_000)
     bucket: Literal["HIGH", "MEDIUM", "LOW"]
     sha256: str

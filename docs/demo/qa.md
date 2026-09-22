@@ -218,6 +218,20 @@ report relies on.
 > there by promoting **237 candidates no decoder ever confirmed** — so 1500 is the
 > largest value the evidence permits.
 
+**First, the question underneath it: what is the number?** An evidence score out
+of 10000, not a probability that the object is correct. Six components fire or
+do not, each worth a fixed number of basis points; they come to 10,500 when all
+six fire, so a candidate showing `10000 / 10000` hit the clamp rather than a
+measurement of certainty. That is why the screen shows a score against its
+denominator and not a percentage. **What is calibrated is the bucket**, and its
+precision on a stated population: pooled over eight seeds and 173 candidates,
+104 of 104 HIGH candidates matched a planted object byte for byte
+(`docs/performance/calibration-pooled.md`). Say the limit in the same breath —
+those are synthetic corpora, and on the 7 GiB image HIGH precision was **86.6%**
+until the footer-bound fix of 2026-09-21. If a judge asks "so is a HIGH file
+100% certain?", the answer is no: *every HIGH candidate in that population was
+correct, and the population is small and synthetic.*
+
 **The full written answer, for the follow-up:**
 
 By measuring them against ground truth, then publishing the sweep.

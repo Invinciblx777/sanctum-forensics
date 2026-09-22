@@ -25,10 +25,16 @@ forensic report that a third party verifies with a tool they run themselves.
 
 ## Status
 
-Implemented and under test. `make check` runs ruff, `mypy --strict` and the suite:
-**1529 passing, 13 skipped, 0 failing** as of 2026-09-21 (the skips need root, a
-Windows host, or an E01-writing libewf build; each names its reason). The UI has
-its own 26 unit tests (`cd ui && npm test`). Validation results — a 7 GiB carve, a
+Implemented and under test. `make check` runs ruff, four `mypy --strict` passes
+(Linux, plus `--platform win32` and `--platform darwin` for the platform
+adapters) and the suite: **1649 passing, 34 skipped, 0 failing** as of
+2026-09-22 on this Linux host. Each skip names its reason; on this host they
+need root and `losetup` (10), a Windows host (10) or a macOS host (8), and on a
+host whose libewf build cannot write E01 that adds a few more. The Windows and
+macOS skips are not gaps — those suites run on their own runner in
+`platform-ci`, and `docs/validation/platform-matrix.md` records what each one
+reported. The UI has
+its own 32 unit tests (`cd ui && npm test`). Validation results — a 7 GiB carve, a
 fuzz pass, the pooled calibration — are summarised in
 [`docs/validation/final-sih-readiness.md`](docs/validation/final-sih-readiness.md).
 

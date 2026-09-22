@@ -893,10 +893,18 @@ elsewhere rather than offer a shim that would have to fake `O_DIRECT` alignment,
 `core/erase/files.py` stays cross-platform.
 
 **The Windows file-erasure backend (`core/erase/_platform/win.py`) is
-type-checked under `--platform win32` and has not been executed on a Windows
-host in this project's recorded validation.** Its behaviour on NTFS alternate
-data streams, the USN journal and Windows file locking is implemented from
-documentation and is unverified.
+type-checked under `--platform win32` and now also runs on a real Windows 11
+runner in CI** — see "The Windows backend: what has now run, and what has not"
+above, which is the authoritative statement, and the `file_folder_erase` /
+Windows 11 row of `core/platform/validation_record.json`. Alternate data
+streams, resident MFT data and a real directory junction are covered there. The
+USN journal and Windows file locking are still implemented from documentation
+and exercised by no test, and **no erase has run on physical Windows media**: a
+CI runner has a virtual disk and no removable device.
+
+This paragraph previously said the backend had never executed on a Windows
+host. That stopped being true when `platform-ci` began running the suites on a
+Windows runner, and the sentence outlived the fact.
 
 **E01 limits.** Acquisition to E01 is uncompressed (see above). E01 reading
 depends on the `libewf-python` build; the tests that need an E01-writing build
