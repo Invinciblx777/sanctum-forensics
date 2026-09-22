@@ -41,3 +41,21 @@ def test_the_fallback_name_reads_the_build_number_on_windows(
         module.platform, "win32_ver", lambda: ("10", "10.0.19045", "", "")
     )
     assert module._os_string() == "Windows 10"
+
+
+def test_the_fallback_names_macos_and_linux_the_way_they_name_themselves(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A row that says Darwin names the kernel, not the product."""
+    module = _module()
+    monkeypatch.setattr(module.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        module.platform, "mac_ver", lambda: ("14.8.9", ("", "", ""), "")
+    )
+    assert module._os_string() == "macOS 14.8.9"
+
+    release = tmp_path / "os-release"
+    release.write_text('PRETTY_NAME="Ubuntu 24.04.5 LTS"\n', encoding="utf-8")
+    monkeypatch.setattr(module.sys, "platform", "linux")
+    monkeypatch.setattr(module, "Path", lambda _: release)
+    assert module._os_string() == "Ubuntu 24.04.5 LTS"

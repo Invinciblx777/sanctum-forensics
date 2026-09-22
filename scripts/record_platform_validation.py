@@ -277,6 +277,16 @@ def _os_string() -> str:
         if release in {"10", "11"} and build >= 22000:
             return "Windows 11"
         return f"Windows {release}".strip()
+    if sys.platform == "darwin":
+        return f"macOS {platform.mac_ver()[0]}".strip()
+    try:
+        for line in Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
+            if line.startswith("PRETTY_NAME="):
+                name = line.split("=", 1)[1].strip().strip('"').strip("'")
+                if name:
+                    return name
+    except OSError:
+        pass
     return f"{platform.system()} {platform.release()}"
 
 
