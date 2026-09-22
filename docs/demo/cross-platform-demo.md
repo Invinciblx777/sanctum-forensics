@@ -26,6 +26,11 @@ data, and never on the laptop's own disk except to show the refusal.
 
 ## Windows — about 2 minutes
 
+(What CI already proves, so nothing here is a rehearsal of an untried path:
+the installer builds, installs silently, the installed app discovers both of
+the runner's disks and refuses both — boot disk, page file — erases a scratch
+folder and issues a certificate that verifies.)
+
 1. Run `SanctumSetup.exe` (no administrator prompt), open Sanctum from Start.
 2. **Platform**: Windows 11, *Standard user*, file erase and discovery with
    their sources; whole-drive *Unsupported* with the reason. If the validation
@@ -40,6 +45,10 @@ data, and never on the laptop's own disk except to show the refusal.
    the NTFS residual findings → *Get certificate*.
 
 ## macOS — about 2 minutes
+
+(Also proven in CI on macOS 14 arm64: the DMG mounts, the app runs, the
+internal disk is refused because the running system boots from an APFS
+container on it, a folder erase completes and its certificate verifies.)
 
 1. Open `Sanctum.dmg`, drag to Applications, open (right-click > Open: the
    build is unsigned and not notarized - say so).

@@ -535,6 +535,10 @@ class BaseAdapter:
                 "themselves, each with the same file erase.",
                 source + "; core.erase.files.expand_targets walks depth-first "
                 "and never follows symlinks or junctions",
+                verification=(
+                    "Per file, as above; a link or reparse point is reported "
+                    "refused rather than erased."
+                ),
                 limitations=limits,
             ),
             row(
@@ -543,6 +547,10 @@ class BaseAdapter:
                 "Many files and folders in one job, one ledger entry per file "
                 "per phase, cancellable between files.",
                 source,
+                verification=(
+                    "Per file, as above; a cancelled batch records which files "
+                    "it had reached."
+                ),
                 limitations=limits,
             ),
         ]
@@ -561,6 +569,8 @@ class BaseAdapter:
                 "document properties) before the file is erased. Formats not "
                 "listed are reported as not cleansed, never as clean.",
                 "core.erase.metadata handlers: " + ", ".join(handlers),
+                verification="The cleansed file is re-parsed and every field "
+                "that survived is named in the record.",
                 limitations=[
                     "Filesystem metadata (directory entries, MFT records, "
                     "journal) is renamed and truncated, not cleansed in place."
@@ -593,6 +603,11 @@ class BaseAdapter:
                 verify_status,
                 verify_reason,
                 source + "; core.erase.verify.verify_file_erase",
+                verification=(
+                    "This row *is* the verification path: a result is passed, "
+                    "failed or not possible, and is never inferred from the "
+                    "file having disappeared."
+                ),
                 limitations=[
                     "On copy-on-write filesystems (APFS, Btrfs, ReFS, ZFS) the "
                     "overwrite lands in new blocks, so a read-back of the old "
@@ -630,6 +645,11 @@ class BaseAdapter:
                 CapabilityStatus.SUPPORTED,
                 f"{len(outcome.devices)} storage device(s) found.",
                 f"{outcome.tool}: {outcome.detail}".strip(": "),
+                verification=(
+                    "Every list is read from the OS, never cached; the "
+                    "privileged layer re-reads the device again immediately "
+                    "before any destructive operation."
+                ),
             )
         return row(
             Operation.DEVICE_DISCOVERY,
@@ -649,14 +669,28 @@ class BaseAdapter:
                 "Free-space wipe is implemented for Linux only; its fill "
                 "behaviour has not been measured on this platform's filesystems.",
                 "core.erase.freespace.FREE_SPACE_PLATFORMS",
+                verification="Nothing runs here, so there is nothing to verify.",
             ),
-            row(Operation.WHOLE_DRIVE_CLEAR, CapabilityStatus.UNSUPPORTED, reason, src),
-            row(Operation.WHOLE_DRIVE_PURGE, CapabilityStatus.UNSUPPORTED, reason, src),
+            row(
+                Operation.WHOLE_DRIVE_CLEAR,
+                CapabilityStatus.UNSUPPORTED,
+                reason,
+                src,
+                verification="Nothing runs here, so there is nothing to verify.",
+            ),
+            row(
+                Operation.WHOLE_DRIVE_PURGE,
+                CapabilityStatus.UNSUPPORTED,
+                reason,
+                src,
+                verification="Nothing runs here, so there is nothing to verify.",
+            ),
             row(
                 Operation.DRIVE_VERIFICATION,
                 CapabilityStatus.UNSUPPORTED,
                 "No whole-drive operation runs here, so there is none to verify.",
                 src,
+                verification="Nothing runs here, so there is nothing to verify.",
             ),
             row(
                 Operation.RESUME,
@@ -664,6 +698,7 @@ class BaseAdapter:
                 "Only a whole-drive overwrite can resume, and none runs here. A "
                 "cancelled file batch records which files it reached.",
                 src,
+                verification="Nothing runs here, so there is nothing to verify.",
             ),
         ]
 

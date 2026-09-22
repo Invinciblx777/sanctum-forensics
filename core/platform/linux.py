@@ -575,6 +575,10 @@ class LinuxAdapter(BaseAdapter):
                 "The overwrite engine is available, but raw device writes need "
                 "the privileged helper, which is not running.",
                 source + "; " + privilege.basis,
+                verification=(
+                    "Would be a full read-back up to 64 GiB, and seeded "
+                    "sampling above it, once the helper is running."
+                ),
                 requires_privilege=True,
             )
         else:
@@ -615,6 +619,10 @@ class LinuxAdapter(BaseAdapter):
                 "Firmware sanitize tools are installed but need the privileged "
                 "helper, which is not running.",
                 "found " + ", ".join(tools) + "; " + privilege.basis,
+                verification=(
+                    "Would be the drive's own completion status "
+                    "(hardware-attested), once the helper is running."
+                ),
                 requires_privilege=True,
             )
         else:
@@ -639,6 +647,9 @@ class LinuxAdapter(BaseAdapter):
                 if clear.status is not CapabilityStatus.UNSUPPORTED
                 else clear.reason,
                 "core.erase.verify.choose_strategy",
+                verification="A sampled verification reports its seed and the "
+                "probability that a residual region would have been found; "
+                "uncertainty is never reported as a pass.",
                 requires_privilege=True,
             )
         )
@@ -650,6 +661,8 @@ class LinuxAdapter(BaseAdapter):
                 "checkpoint. A firmware sanitize cannot be resumed; it is "
                 "issued again from the start.",
                 "core.erase.drive.resume, CHECKPOINT_INTERVAL_BYTES",
+                verification="The resumed run is verified exactly as an "
+                "uninterrupted one, over the whole device.",
                 requires_privilege=True,
             )
         )

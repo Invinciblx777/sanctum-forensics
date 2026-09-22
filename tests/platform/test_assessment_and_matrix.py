@@ -57,6 +57,19 @@ def test_every_row_has_a_source_and_a_reason(
             assert row.reason.strip(), row
 
 
+def test_every_row_carries_a_verification_statement(
+    windows_inventory: dict[str, Any],
+) -> None:
+    """Status, reason, source *and* what would establish the result.
+
+    A capability row that cannot say how its result would be checked is a row
+    that should not be claiming a result.
+    """
+    for adapter in (_windows(windows_inventory), adapter_for("linux")):
+        for row in adapter.operation_capabilities():
+            assert row.verification.strip(), f"{adapter.name}: {row.operation}"
+
+
 def test_without_a_passing_record_file_erase_is_unverified(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, windows_inventory: dict[str, Any]
 ) -> None:
