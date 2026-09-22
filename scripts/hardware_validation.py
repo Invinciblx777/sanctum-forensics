@@ -1044,7 +1044,7 @@ def fragment_jpeg_bytes() -> bytes:
 
 
 def plant_fragmented(
-    root: Path | str, *, statvfs: Any = os.statvfs, seed: int = 11
+    root: Path | str, *, statvfs: Any = None, seed: int = 11
 ) -> dict[str, Any]:
     """Lay one JPEG down in exactly two runs, around a live pad.
 
@@ -1083,9 +1083,14 @@ def plant_fragmented(
     target_root = Path(root)
     rng = random.Random(seed)
     jpeg = fragment_jpeg_bytes()
+    # Resolved here rather than in the signature: `os.statvfs` as a default
+    # argument is evaluated at import, and this module does not exist on
+    # Windows - which made importing it there an AttributeError, and took 36
+    # platform-independent carving tests down with it on the Windows runner.
+    measure = statvfs if statvfs is not None else os.statvfs
 
     def free() -> int:
-        stats = statvfs(target_root)
+        stats = measure(target_root)
         return int(stats.f_bavail) * int(stats.f_frsize)
 
     created: list[str] = []

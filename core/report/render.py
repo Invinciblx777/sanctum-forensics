@@ -282,6 +282,7 @@ def build_report(
     anchor: dict[str, Any] | None = None,
     signature: Signature | None = None,
     job_state: str | None = None,
+    platform: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble the nine report sections in order.
 
@@ -296,6 +297,7 @@ def build_report(
             "tool_version": tool_version,
             "canon_version": CANON_VERSION,
             "job_state": job_state or NONE_RECORDED,
+            **_platform_field(platform),
         },
         "device_identity": {
             "model": device.get("model", ""),
@@ -376,6 +378,17 @@ def build_report(
     return report
 
 
+def _platform_field(platform: dict[str, Any] | None) -> dict[str, Any]:
+    """``{"platform": ...}`` when the job recorded one, else nothing.
+
+    Absent rather than ``none recorded`` for a job submitted before platform
+    snapshots existed, so the canonical bytes of those reports are unchanged.
+    """
+    if not platform:
+        return {}
+    return {"platform": dict(platform)}
+
+
 def _case_identity(
     *,
     case_id: str,
@@ -383,6 +396,7 @@ def _case_identity(
     generated_at: datetime,
     tool_version: str,
     job_state: str | None,
+    platform: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Who, when, with what - and what state the documented job was in.
 
@@ -397,6 +411,7 @@ def _case_identity(
         "tool_version": tool_version,
         "canon_version": CANON_VERSION,
         "job_state": job_state or NONE_RECORDED,
+        **_platform_field(platform),
     }
 
 
@@ -472,6 +487,7 @@ def build_file_erase_report(
     anchor: dict[str, Any] | None = None,
     signature: Signature | None = None,
     job_state: str | None = None,
+    platform: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The M2 report: what was erased, and what the filesystem kept anyway.
 
@@ -514,6 +530,7 @@ def build_file_erase_report(
             generated_at=generated_at,
             tool_version=tool_version,
             job_state=job_state,
+            platform=platform,
         ),
         "scope": {
             "paths_requested": len(records),
@@ -607,6 +624,7 @@ def build_carve_report(
     anchor: dict[str, Any] | None = None,
     signature: Signature | None = None,
     job_state: str | None = None,
+    platform: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The M3 report: what was recovered, how sure the tool is, and why.
 
@@ -653,6 +671,7 @@ def build_carve_report(
             generated_at=generated_at,
             tool_version=tool_version,
             job_state=job_state,
+            platform=platform,
         ),
         "evidence": {
             "path": evidence.get("path", ""),

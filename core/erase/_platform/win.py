@@ -191,8 +191,14 @@ class WindowsBackend(PortableBackend):
 
     def _retrieval_pointers(
         self, path: Path
-    ) -> tuple[list[tuple[int, int]] | None, int, list[str]]:
-        """``(vcn, lcn)`` runs, the last error, and limitations.
+    ) -> tuple[list[tuple[int, int, int]] | None, int, list[str]]:
+        """``(vcn, next_vcn, lcn)`` runs, the last error, and limitations.
+
+        The run *length* matters and used to be thrown away: NTFS describes a
+        contiguous 256 KiB file as one run of 64 clusters, and a map that kept
+        only the first cluster of each run made the post-erase read-back check
+        4 KiB of it. Found by the Windows CI runner
+        (``test_a_real_extent_map_is_captured_on_a_block_backed_filesystem``).
 
         ``None`` with ``ERROR_HANDLE_EOF`` is the resident-data signal, not a
         failure: NTFS returns it for a file small enough to live inside its own
@@ -225,7 +231,7 @@ class WindowsBackend(PortableBackend):
 
             count = int.from_bytes(buffer.raw[0:4], "little")
             start_vcn = int.from_bytes(buffer.raw[8:16], "little", signed=True)
-            runs: list[tuple[int, int]] = []
+            runs: list[tuple[int, int, int]] = []
             previous = start_vcn
             for index in range(min(count, _EXTENT_BATCH)):
                 at = 16 + index * 16
@@ -235,9 +241,16 @@ class WindowsBackend(PortableBackend):
                 lcn = int.from_bytes(
                     buffer.raw[at + 8 : at + 16], "little", signed=True
                 )
-                runs.append((previous, lcn))
+                runs.append((previous, next_vcn, lcn))
                 previous = next_vcn
-            return runs, error, []
+            truncated: list[str] = []
+            if count > _EXTENT_BATCH or error == ERROR_MORE_DATA:
+                truncated.append(
+                    f"{path} is fragmented into more than {_EXTENT_BATCH} runs; "
+                    "the extent map was truncated there, so a read-back covers "
+                    "only the runs that were captured."
+                )
+            return runs, error, truncated
         finally:
             self._k32.CloseHandle(ctypes.c_void_p(handle))
 
@@ -267,19 +280,26 @@ class WindowsBackend(PortableBackend):
             return [], [f"{path} could not be stat'd for its extent map: {exc}."]
 
         found: list[Extent] = []
-        remaining = size
-        for vcn, lcn in runs:
+        for vcn, next_vcn, lcn in runs:
             if lcn < 0:  # a sparse hole: no physical address exists
                 continue
-            span = min(cluster, remaining) if remaining < cluster else cluster
+            clusters = max(next_vcn - vcn, 0)
+            if clusters == 0:
+                continue
+            logical = vcn * cluster
+            # The last run of a file ends inside its final cluster; the rest of
+            # that cluster is file slack, which belongs to this file's
+            # allocation but is not its data.
+            length = min(clusters * cluster, max(size - logical, 0))
+            if length <= 0:
+                continue
             found.append(
                 Extent(
-                    logical_offset=vcn * cluster,
+                    logical_offset=logical,
                     physical_offset=lcn * cluster,
-                    length=max(span, 0),
+                    length=length,
                 )
             )
-            remaining -= span
         return found, limits
 
     def is_resident(self, path: Path) -> tuple[bool | None, list[str]]:
@@ -288,7 +308,7 @@ class WindowsBackend(PortableBackend):
             if error == ERROR_HANDLE_EOF:
                 return True, []
             return None, limits
-        return len(runs) == 0, []
+        return not any(next_vcn > vcn for vcn, next_vcn, _ in runs), []
 
     # -- streams ------------------------------------------------------------
 

@@ -80,12 +80,15 @@ import time
 from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from core.errors import SanctumError
 
 from helper import rpc
+
+if TYPE_CHECKING:  # pragma: no cover
+    from core.platform.base import BaseAdapter
 
 __all__ = [
     "SOCKET_PATH",
@@ -141,50 +144,191 @@ StreamHandler = Callable[
 # --------------------------------------------------------------------------
 
 
+def _adapter(params: dict[str, Any]) -> BaseAdapter:
+    """The platform adapter for this host, told how privileged work is reached.
+
+    ``helper_mode`` is stamped by :meth:`HelperDaemon.apply_policy`, never
+    read from a caller: the socket daemon says ``socket``, the in-process
+    helper says ``in-process``, and the privilege state every capability row
+    reports is computed from that plus this process's own euid.
+    """
+    from core.platform import current_adapter
+
+    mode = str(params.get("helper_mode") or "in-process")
+    basis = str(params.get("identity_basis") or "")
+    return current_adapter(helper=mode, helper_basis=basis)
+
+
 def _op_enumerate_devices(params: dict[str, Any]) -> dict[str, Any]:
-    """List host block devices with their capability and hidden-area reports.
+    """List host storage devices with capability, plan and assessment.
 
     One round trip rather than three per device: the UI's device list needs all
-    three, and a per-device probe would mean N+1 socket calls for a screen that
-    refreshes.
+    of it, and a per-device probe would mean N+1 socket calls for a screen that
+    refreshes. The rows come from this host's platform adapter; on Linux they
+    carry the same capability, erase-preview and hidden-area fields as before
+    the adapter existed, plus ``normalized`` and ``assessment`` on every
+    platform.
     """
-    from core.device import capabilities, hidden_areas, media
-    from core.device.enumerate import enumerate_devices
-    from core.erase import drive
-
     include_virtual = bool(params.get("include_virtual", False))
-    found: list[dict[str, Any]] = []
-    for device in enumerate_devices(include_virtual=include_virtual):
-        entry: dict[str, Any] = {"device": device.model_dump(mode="json")}
-        # The flash determination the engine uses, so no screen has to infer
-        # it from `rotational`, which a USB bridge leaves set on a flash stick.
-        flash, flash_reason = media.is_flash(device)
-        entry["media"] = {"flash": flash, "reason": flash_reason}
+    return {"devices": _adapter(params).device_rows(include_virtual=include_virtual)}
+
+
+def _op_platform_status(params: dict[str, Any]) -> dict[str, Any]:
+    """Platform, privilege, capability matrix and filesystem registry.
+
+    Computed here, on the privileged side, because the privilege that decides
+    whether a whole-drive operation can run is this process's, not the API's.
+    """
+    from core.platform import platform_status
+
+    return platform_status(_adapter(params)).model_dump(mode="json")
+
+
+def _op_assess_device(params: dict[str, Any]) -> dict[str, Any]:
+    """Re-read one device from the OS and assess it, now.
+
+    Never answered from a cache: this is the call the API makes immediately
+    before accepting a destructive job, and a device swapped since the page
+    loaded must be re-identified, not remembered.
+    """
+    adapter = _adapter(params)
+    device = adapter.inspect_device(str(params["path"]))
+    return {
+        "normalized": device.model_dump(mode="json"),
+        "assessment": adapter.assess_device(device).model_dump(mode="json"),
+    }
+
+
+def _op_whoami(params: dict[str, Any]) -> dict[str, Any]:
+    """Resolve the trusted local operator identity.
+
+    **This is the only place an operator identity comes from.** It is built
+    from the uid :class:`HelperDaemon` was started with, never from anything in
+    the request: a caller cannot name a uid, a username or a display name and
+    have it come back. That is the whole value of putting it here rather than
+    in the API, where the field used to be a free-text box the browser filled
+    in and the ledger believed.
+
+    What is returned, and how far each field can be trusted:
+
+    * ``uid`` - the operator uid. Over the socket it is the uid the daemon was
+      started with and the *only* uid ``SO_PEERCRED`` admits, so a request that
+      got this far came from that account or from root. In process it is this
+      process's own uid.
+    * ``username`` - that uid's name from the password database, or the number
+      again when the account has no entry. A name is a lookup of the uid, never
+      a second source.
+    * ``basis`` - a sentence saying which of the two situations above produced
+      the value, so a report never has to imply the stronger one.
+
+    It deliberately does **not** return a human's name. The host knows which
+    account ran the tool and does not know who was sitting at it, and a field
+    called ``examiner_name`` filled from anywhere would be an invitation to
+    read it as one. See :mod:`api.identity` for how that limit is reported.
+    """
+    if not hasattr(os, "getuid"):
+        return _whoami_windows(params)
+
+    import getpass
+    import grp
+    import pwd
+
+    uid = _owner_uid(params)
+    if uid is None:
+        uid = os.getuid()
+    try:
+        record = pwd.getpwuid(uid)
+        username, gid = record.pw_name, record.pw_gid
+    except KeyError:
+        # A uid with no password-database entry is normal in a container. The
+        # number is still the identity; there is simply no name for it.
         try:
-            probed = capabilities.probe(device)
-            entry["capabilities"] = probed.model_dump(mode="json")
-            # What an erase of this device would run, per level, from the same
-            # selection the job makes. The Sanitize screen shows this instead of
-            # offering a method the engine would override.
-            entry["erase_preview"] = drive.preview(device, probed).model_dump(
-                mode="json"
-            )
-        except SanctumError as exc:
-            entry["capabilities"] = None
-            entry["erase_preview"] = None
-            entry["capability_error"] = exc.message
-        try:
-            hidden = hidden_areas.detect_hidden_areas(device)
-            entry["hidden_areas"] = hidden.model_dump(mode="json")
-        except SanctumError as exc:
-            entry["hidden_areas"] = None
-            entry["hidden_area_error"] = exc.message
-        found.append(entry)
-    return {"devices": found}
+            username = getpass.getuser()
+        except (KeyError, OSError):
+            username = str(uid)
+        gid = os.getgid()
+    try:
+        group = grp.getgrgid(gid).gr_name
+    except (KeyError, OSError):
+        group = str(gid)
+
+    return {
+        "uid": int(uid),
+        "username": username,
+        "gid": int(gid),
+        "group": group,
+        "basis": str(
+            params.get("identity_basis")
+            or "this process's own uid; no privileged helper was involved"
+        ),
+        "helper_pid": os.getpid(),
+        "helper_euid": os.geteuid(),
+    }
+
+
+def _whoami_windows(params: dict[str, Any]) -> dict[str, Any]:
+    """The Windows account running this process. There is no numeric uid.
+
+    The name comes from ``GetUserNameW``, which reads the process token, not
+    from ``%USERNAME%``, which the environment can set to anything. ``uid``
+    and ``gid`` are ``-1``: Windows identifies accounts by SID, and a made-up
+    number would look like a POSIX uid it is not.
+    """
+    import ctypes
+
+    username = ""
+    windll = getattr(ctypes, "windll", None)
+    if windll is not None:
+        size = ctypes.c_ulong(257)
+        buffer = ctypes.create_unicode_buffer(257)
+        if windll.advapi32.GetUserNameW(buffer, ctypes.byref(size)):
+            username = buffer.value
+    basis = (
+        "GetUserNameW on this process's token (Windows account, no numeric "
+        "uid); no separate privileged helper runs on Windows"
+    )
+    if not username:
+        import getpass
+
+        username = getpass.getuser()
+        basis = (
+            "getpass.getuser(), read from the environment because "
+            "GetUserNameW was unavailable; no separate privileged helper runs "
+            "on Windows"
+        )
+    return {
+        "uid": -1,
+        "username": username,
+        "gid": -1,
+        "group": "",
+        "basis": basis,
+        "helper_pid": os.getpid(),
+        "helper_euid": -1,
+    }
+
+
+def _require_drive_engine(params: dict[str, Any]) -> None:
+    """Refuse, with the adapter's reason, on a host with no whole-drive engine.
+
+    Without this, a Windows or macOS host would fall through to the Linux
+    ``lsblk`` path and answer "no such device", which is true and useless. The
+    adapter says what is actually the case: the engine does not exist here,
+    and nothing was done.
+    """
+    adapter = _adapter(params)
+    reason = adapter.whole_drive_unavailable_reason()
+    if reason:
+        from core.errors import PlatformUnsupported
+
+        raise PlatformUnsupported(
+            reason + " No operation was performed on the device.",
+            remediation=adapter.whole_drive_recommended_action(),
+        )
 
 
 def _op_probe_capabilities(params: dict[str, Any]) -> dict[str, Any]:
     """Probe sanitization capability for one device."""
+    _require_drive_engine(params)
     from core.device import capabilities
     from core.device.enumerate import get_device
 
@@ -197,6 +341,7 @@ def _op_probe_capabilities(params: dict[str, Any]) -> dict[str, Any]:
 
 def _op_detect_hidden_areas(params: dict[str, Any]) -> dict[str, Any]:
     """Probe HPA/DCO for one device."""
+    _require_drive_engine(params)
     from core.device import hidden_areas
     from core.device.enumerate import get_device
 
@@ -248,69 +393,50 @@ def _op_run_erase(params: dict[str, Any]) -> dict[str, Any]:
 def _stream_run_erase(
     params: dict[str, Any],
 ) -> Generator[dict[str, Any], None, dict[str, Any]]:
-    """Execute a sanitization job. Both gates are enforced here, not upstream.
+    """Execute a sanitization job through this host's platform adapter.
 
     ``dry_run`` defaults to True when the key is absent. An API that forgot to
     forward the flag therefore simulates rather than wipes, which is the
     failure direction that costs nothing.
+
+    Both gates are enforced on this side of the boundary, by the adapter: the
+    device is re-read from the host and the typed confirmation is checked by
+    :func:`core.device.guard.assert_serial_confirmed` against what this
+    process just read, never against what the caller believed. On a platform
+    with no whole-drive engine the adapter raises ``PlatformUnsupported``
+    naming why, before anything is opened.
 
     Progress is *yielded*, not collected: the caller is a socket that wants to
     write each record as the engine produces it. Closing this generator asks the
     engine to stop at its next yield; what that leaves on the device is recorded
     by :func:`core.erase.drive.execute` before the exception propagates.
     """
-    from core.device import capabilities, guard
-    from core.device.enumerate import get_device
-    from core.erase.drive import ChainLedgerSink, execute
-    from core.ledger.chain import Ledger
-    from core.models import EraseJob, SanitizationLevel
+    return (yield from _adapter(params).execute_drive_sanitization(params))
 
-    device = get_device(str(params["path"]))
-    dry_run = bool(params.get("dry_run", True))
-    typed_serial = str(params.get("typed_serial") or "")
 
-    if not dry_run:
-        # Re-checked against the device this process just read from the host,
-        # not against whatever the caller believed. A stale UI cannot authorise
-        # a wipe of a device that was swapped since the page loaded.
-        #
-        # The check is delegated rather than restated. A second copy of the rule
-        # lived here and required an exact serial match, so it rejected the
-        # /dev/disk/by-id path that `assert_serial_confirmed` accepts for a
-        # device reporting no serial - and accepted the empty string, which then
-        # failed downstream naming a different gate. A serial-less stick could
-        # not be erased through the product at all. One implementation, called
-        # from both sides of the boundary, cannot drift like that.
-        guard.assert_serial_confirmed(device, typed_serial)
+def _op_resume_erase(params: dict[str, Any]) -> dict[str, Any]:
+    """Continue an interrupted overwrite, in one batch."""
+    return _drain(_stream_resume_erase(params))
 
-    ledger = Ledger(
-        Path(str(params["ledger_root"])),
-        tool_version=str(params.get("tool_version", "sanctum-forensics/0.0.0")),
-        pubkey_fingerprint=str(params.get("pubkey_fingerprint", "")),
-        # Set by HelperDaemon.apply_policy, never by the caller. Without it a
-        # root-run wipe leaves 0600 root-owned blobs in a chain the
-        # unprivileged API has to read back to issue the certificate.
-        owner_uid=_owner_uid(params),
-    )
-    job = EraseJob(
-        job_id=str(params["job_id"]),
-        device=device,
-        level=SanitizationLevel(str(params.get("level", "CLEAR"))),
-        dry_run=dry_run,
-        confirmed_serial=typed_serial or device.serial,
-        method=None,
-    )
-    generator = execute(
-        job,
-        capabilities.probe(device),
-        ledger=ChainLedgerSink(ledger),
-    )
-    while True:
-        try:
-            record = next(generator)
-        except StopIteration as stop:
-            return {"result": stop.value.model_dump(mode="json")}
-        yield record.model_dump(mode="json")
+
+def _stream_resume_erase(
+    params: dict[str, Any],
+) -> Generator[dict[str, Any], None, dict[str, Any]]:
+    """Continue an interrupted overwrite from its last recorded checkpoint.
+
+    **Only the overwrite path resumes.** A firmware sanitize is issued as one
+    command the drive executes on its own; there is no offset to continue from
+    and no way to ask it how far it got, so "resume" for one of those means
+    issuing it again from the start. :func:`core.erase.drive.resume` refuses
+    when no checkpoint was recorded, which is exactly the firmware case, and
+    that refusal travels back with its own remediation rather than being
+    reinterpreted here.
+
+    Both destructive gates are re-applied by the adapter. A resume writes to
+    the medium, so it is not a lesser operation than the run it continues and
+    does not get a lesser confirmation.
+    """
+    return (yield from _adapter(params).resume_drive_sanitization(params))
 
 
 def _op_acquire_image(params: dict[str, Any]) -> dict[str, Any]:
@@ -358,10 +484,14 @@ def _stream_acquire_image(
 
 #: Static allowlist. The only operations the daemon will ever perform.
 OPERATIONS: dict[str, Handler] = {
+    "whoami": _op_whoami,
     "enumerate_devices": _op_enumerate_devices,
+    "platform_status": _op_platform_status,
+    "assess_device": _op_assess_device,
     "probe_capabilities": _op_probe_capabilities,
     "detect_hidden_areas": _op_detect_hidden_areas,
     "run_erase": _op_run_erase,
+    "resume_erase": _op_resume_erase,
     "acquire_image": _op_acquire_image,
 }
 
@@ -370,6 +500,7 @@ OPERATIONS: dict[str, Handler] = {
 #: ``test_the_operation_allowlist_is_closed`` holds that.
 STREAMING_OPERATIONS: dict[str, StreamHandler] = {
     "run_erase": _stream_run_erase,
+    "resume_erase": _stream_resume_erase,
     "acquire_image": _stream_acquire_image,
 }
 
@@ -405,6 +536,22 @@ class HelperDaemon:
         self.operator_uid: int = operator_uid
         self.socket_path: str = socket_path
         self.state_dir: Path | None = Path(state_dir).resolve() if state_dir else None
+        #: How far the identity this daemon reports can be trusted, as a
+        #: sentence. A confined daemon is the real socket one, where the uid was
+        #: fixed at start and SO_PEERCRED admits nothing else; an unconfined one
+        #: is the in-process helper, which holds no privilege and no authority
+        #: over identity beyond the process's own uid.
+        self.identity_basis: str = (
+            "SO_PEERCRED-authenticated connection to the privileged helper; "
+            f"the operator uid {operator_uid} was fixed when the daemon was "
+            "started and no other peer is served"
+            if self.state_dir is not None
+            else (
+                "in-process helper: this API process's own uid. No privileged "
+                "daemon was involved, so the identity is as trustworthy as the "
+                "account running the API and no more."
+            )
+        )
         self._server: socket.socket | None = None
         self._stop = False
 
@@ -749,16 +896,28 @@ class HelperDaemon:
           from the request: a caller cannot ask for a file to be given to
           somebody else.
         """
+        confined = dict(params)
+        # Stamped on every request, confined or not, and never read from one.
+        # `whoami` is answered from these two fields, so a caller that could
+        # set them could name its own operator - which is the exact spoof the
+        # trusted-identity path exists to make impossible.
+        confined["owner_uid"] = self.operator_uid
+        confined["identity_basis"] = self.identity_basis
+        # How privileged work is reached, for the platform adapter's privilege
+        # report. Stamped for the same reason: a caller that could claim
+        # "socket" could make an unprivileged host report itself authorised.
+        confined["helper_mode"] = (
+            "socket" if self.state_dir is not None else "in-process"
+        )
+
         base = self.state_dir
         if base is None:
-            return params
-        confined = dict(params)
+            return confined
         for field in _CONFINED_PATH_PARAMS:
             value = confined.get(field)
             if value is None or value == "":
                 continue
             confined[field] = str(self._confine(base, str(value), field))
-        confined["owner_uid"] = self.operator_uid
         return confined
 
     @staticmethod
@@ -916,6 +1075,12 @@ def _rpc_errors(method: str) -> Iterator[None]:
         ) from exc
 
 
+def current_uid() -> int:
+    """This process's uid, or ``-1`` on Windows, which has none."""
+    getuid = getattr(os, "getuid", None)
+    return int(getuid()) if getuid is not None else -1
+
+
 class InProcessHelper:
     """A helper that dispatches in this process instead of over a socket.
 
@@ -931,7 +1096,7 @@ class InProcessHelper:
     """
 
     def __init__(self) -> None:
-        self._daemon = HelperDaemon(operator_uid=os.getuid())
+        self._daemon = HelperDaemon(operator_uid=current_uid())
 
     def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """Dispatch through the allowlist, converting errors the way RPC does."""

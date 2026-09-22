@@ -90,6 +90,8 @@ def test_an_unprivileged_real_erase_reports_not_possible_rather_than_a_pass(
     verification still reports nothing, because reading the block device needs
     root. That combination is exactly what must not silently become a pass.
     """
+    if not hasattr(os, "geteuid"):
+        pytest.skip("this case is about POSIX raw-device permissions")
     if os.geteuid() == 0:
         pytest.skip("running as root, so the raw read would succeed")
 

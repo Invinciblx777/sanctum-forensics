@@ -25,6 +25,8 @@ from api.main import create_app
 from fastapi.testclient import TestClient
 from helper.rpc import RpcError
 
+from tests._loopback import LOOPBACK_BASE_URL
+
 MIB = 1024 * 1024
 
 #: One synthetic device per capability badge the UI renders, so the device
@@ -141,6 +143,27 @@ class RecordingHelper:
         if method == "detect_hidden_areas":
             return {"hidden_areas": self._row(params.get("path", ""))["hidden_areas"]}
 
+        if method == "whoami":
+            # Answered from the process, never from the request - the same
+            # rule the real handler holds. A test that let the body name a uid
+            # would let a spoof pass unnoticed.
+            import os
+
+            return {
+                "uid": os.getuid(),
+                "username": f"test-operator-{os.getuid()}",
+                "gid": os.getgid(),
+                "group": "testers",
+                "basis": "in-process test helper; this process's own uid",
+            }
+
+        if method == "resume_erase":
+            # Resume returns the same result shape run_erase does, with
+            # `resumed` set: it is the same engine continuing the same job.
+            answer = self.call("run_erase", params)
+            answer["result"]["resumed"] = True
+            return answer
+
         if method == "run_erase":
             row = self._row(params.get("path", ""))
             dry_run = bool(params.get("dry_run", True))
@@ -253,7 +276,7 @@ def services(tmp_path: Path, helper: RecordingHelper) -> AppServices:
 @pytest.fixture
 def client(services: AppServices) -> Iterator[TestClient]:
     app = create_app(services=services, serve_ui=False)
-    with TestClient(app) as test_client:
+    with TestClient(app, base_url=LOOPBACK_BASE_URL) as test_client:
         yield test_client
 
 

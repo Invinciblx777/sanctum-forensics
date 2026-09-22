@@ -78,6 +78,16 @@ class JobRecord:
     #: Set when a caller asked for cancellation. The generator stops at its
     #: next yield rather than being killed mid-operation.
     cancel_requested: bool = False
+    #: The trusted actor string, resolved server-side from the privileged
+    #: helper (:mod:`api.identity`). Never taken from a request body.
+    actor: str = "sanctum"
+    #: How that actor was established, as a sentence.
+    actor_basis: str = ""
+    #: Set once the job is terminal **and** its outcome has been handed to
+    #: :attr:`JobRegistry.on_finish`. ``state`` becomes terminal a moment
+    #: earlier, inside the worker loop; a caller that reads the ledger as soon
+    #: as it sees ``complete`` would otherwise race the ``job.outcome`` append.
+    settled: threading.Event = field(default_factory=threading.Event)
 
     @property
     def terminal(self) -> bool:
@@ -89,6 +99,12 @@ class JobRecord:
             "job_id": self.job_id,
             "kind": self.kind,
             "state": self.state,
+            # Terminal *and* written to the chain. `state` flips a moment
+            # earlier, inside the worker loop, so a client that asked for a
+            # report the instant it saw "complete" could beat the job.outcome
+            # append and be told the job is unknown. Seen on the Windows CI
+            # runner, where that window is wide enough to lose.
+            "settled": self.settled.is_set(),
             "params": _redact(self.params),
             "progress_count": len(self.progress),
             "dropped_progress": self.dropped,
@@ -102,6 +118,8 @@ class JobRecord:
             "started_at": self.started_at.isoformat(),
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "cancel_requested": self.cancel_requested,
+            "actor": self.actor,
+            "actor_basis": self.actor_basis,
         }
 
 
@@ -146,6 +164,13 @@ class JobRegistry:
         self._generators: dict[str, Generator[Progress, None, Any]] = {}
         self._lock = threading.RLock()
         self._max_buffered = max_buffered
+        #: Called with the record once a job reaches a terminal state, on the
+        #: worker thread. :func:`api.deps.AppServices.prepare` sets it to the
+        #: durable-outcome writer, which is what lets a report survive a
+        #: restart; a registry with none simply keeps everything in memory, as
+        #: this class always did. A raising callback never fails the job - see
+        #: :meth:`_run`.
+        self.on_finish: Callable[[JobRecord], None] | None = None
 
     # -- submission --------------------------------------------------------
 
@@ -156,6 +181,8 @@ class JobRegistry:
         factory: JobFactory,
         *,
         job_id: str | None = None,
+        actor: str = "sanctum",
+        actor_basis: str = "",
     ) -> str:
         """Start a job of ``kind`` on a worker thread and return its id.
 
@@ -166,7 +193,13 @@ class JobRegistry:
         with self._lock:
             if identifier in self._jobs:
                 raise KeyError(f"job {identifier} already exists")
-            record = JobRecord(job_id=identifier, kind=kind, params=dict(params))
+            record = JobRecord(
+                job_id=identifier,
+                kind=kind,
+                params=dict(params),
+                actor=actor,
+                actor_basis=actor_basis,
+            )
             self._jobs[identifier] = record
             self._subscribers[identifier] = []
 
@@ -223,6 +256,21 @@ class JobRegistry:
                 for subscriber in self._subscribers.get(job_id, []):
                     subscriber.queue.put(None)
             logger.info("job_finished", job_id=job_id, state=record.state)
+            # After the subscribers are released, so a slow durable write never
+            # holds an SSE stream open past the end of the run, and inside the
+            # finally so a failed job is recorded exactly like a complete one.
+            callback = self.on_finish
+            if callback is not None:
+                try:
+                    callback(record)
+                except Exception as exc:  # noqa: BLE001 - never fail a job
+                    logger.warning(
+                        "job_on_finish_failed",
+                        job_id=job_id,
+                        error=str(exc),
+                        kind=type(exc).__name__,
+                    )
+            record.settled.set()
 
     def _publish(self, job_id: str, progress: Progress) -> None:
         """Buffer one record and hand it to every live subscriber."""
@@ -266,12 +314,10 @@ class JobRegistry:
 
         Never called from a request handler; the API streams instead.
         """
-        import time
-
         record = self.record(job_id)
-        deadline = time.monotonic() + timeout
-        while not record.terminal and time.monotonic() < deadline:
-            time.sleep(0.01)
+        # Waits for the outcome to be recorded, not only for the state to
+        # flip: see JobRecord.settled.
+        record.settled.wait(timeout)
         return record
 
     # -- streaming ---------------------------------------------------------

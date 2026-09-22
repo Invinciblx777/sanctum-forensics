@@ -63,6 +63,19 @@ STATUS_FOR_ERROR: dict[str, int] = {
     # A report was asked for a job this process holds no record of - never
     # submitted, or forgotten by a restart. Not the same verdict as running.
     "JobNotKnown": 404,
+    # The case does not exist. 404, like any other missing resource.
+    "CaseNotFound": 404,
+    # The case id is illegal, or a case with that id already exists. 409: the
+    # request is well formed and the state of the world is what refuses it.
+    "CaseRefused": 409,
+    # An artifact request named a root that is not served, walked out of the
+    # one it named, or pointed at something that is not a regular file. The
+    # status travels on the exception because the three cases differ.
+    "ArtifactRefused": 400,
+    # A resume was asked for a job that cannot be resumed - a firmware
+    # sanitize, or an overwrite that never reached a checkpoint. 409: the
+    # request is well formed and the state of the world refuses it.
+    "ResumeNotAvailable": 409,
 }
 
 

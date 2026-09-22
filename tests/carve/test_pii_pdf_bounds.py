@@ -24,10 +24,16 @@ import sys
 import zlib
 from pathlib import Path
 
+import pytest
 from core.carve import pii
 
 REPO = Path(__file__).resolve().parents[2]
 MIB = 1024 * 1024
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the memory bound is measured with resource.getrusage; POSIX-only",
+)
 
 
 def _verhoeff_complete(stem: str) -> str:
@@ -73,7 +79,11 @@ import json, resource, subprocess, sys
 done = subprocess.run([sys.executable, "-c", sys.argv[1], sys.argv[2]],
                       capture_output=True, text=True)
 print(json.dumps({
-    "maxrss": resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * 1024,
+    # ru_maxrss is KiB on Linux and *bytes* on macOS/BSD. Multiplying
+    # unconditionally reported a 21 GiB peak on the macOS runner for a scan
+    # that used 20 MiB.
+    "maxrss": resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+              * (1 if sys.platform == "darwin" else 1024),
     "returncode": done.returncode,
     "stdout": done.stdout,
     "stderr": done.stderr[-2000:],

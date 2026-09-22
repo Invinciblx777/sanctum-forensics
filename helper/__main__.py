@@ -77,6 +77,21 @@ def main(argv: list[str] | None = None) -> int:
     """Serve until interrupted. Returns a process exit code."""
     args = _parser().parse_args(argv)
 
+    if sys.platform != "linux":
+        # The daemon authenticates every peer with SO_PEERCRED, which only
+        # Linux has, and it exists to hold raw device access for the Linux
+        # whole-drive engine. No operation implemented on Windows or macOS
+        # needs a privileged process, so none is started - rather than a
+        # socket that would have to serve without peer authentication.
+        print(
+            "The privileged helper is Linux-only. On this platform no "
+            "implemented operation needs elevation: device discovery and file "
+            "erasure run in the unprivileged app, and whole-drive "
+            "sanitization is not offered.",
+            file=sys.stderr,
+        )
+        return 2
+
     if os.geteuid() != 0:
         print(
             "The helper must run as root: it exists to be the one process that "

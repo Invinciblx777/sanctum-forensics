@@ -323,6 +323,11 @@ def test_a_key_directory_holds_the_key_file_inside_it(
 
     key_file = key_dir / KEY_FILENAME
     assert key_file.is_file()
+    if sys.platform == "win32":
+        # NTFS ACLs, not mode bits: core.report.sign._assert_safe_permissions
+        # returns early on Windows rather than give a false assurance, and
+        # chmod there cannot express 0600.
+        return
     assert stat.S_IMODE(key_file.stat().st_mode) == 0o600
     assert stat.S_IMODE(key_dir.stat().st_mode) == 0o755, (
         "the directory's own mode is not the key's mode and must not be touched"

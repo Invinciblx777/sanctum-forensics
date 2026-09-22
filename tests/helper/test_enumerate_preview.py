@@ -64,6 +64,14 @@ def _patch(monkeypatch: pytest.MonkeyPatch, probe: Any) -> None:
         lambda include_virtual=False: [STICK, SSD],
     )
     monkeypatch.setattr("core.device.capabilities.probe", probe)
+    # The adapter reads partitions from a second lsblk call; the devices here
+    # are fixtures, so there is nothing on the host to read them from.
+    monkeypatch.setattr(
+        "core.platform.linux.LinuxAdapter._partitions", lambda self, probe: {}
+    )
+    monkeypatch.setattr(
+        "core.platform.linux.LinuxAdapter._removable", lambda self, probe, device: None
+    )
     monkeypatch.setattr(
         "core.device.hidden_areas.detect_hidden_areas",
         lambda device: HiddenAreaReport(

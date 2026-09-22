@@ -13,6 +13,31 @@ long does it take.**
 Every figure here is from synthetic images built on this host. No real storage medium
 was measured. Read [Limits](#limits) before quoting any number.
 
+## Re-run of the Sanctum rows, 2026-09-21
+
+After the changes of 2026-09-21 — carve payloads spilled to disk instead of held
+in memory, the footer search bounded at the next same-format header, the WAV
+validator fix, the PDF incremental-update check — the two Sanctum rows were rebuilt and re-run over the same 40
+images (`testkit.benchmark build --seed 0`, `run --tool sanctum-carve --tool
+sanctum-full`, `score`). Raw table:
+[`benchmark-2026-09-21-sanctum.csv`](benchmark-2026-09-21-sanctum.csv).
+
+| Row, summed over 40 images | FULL | Byte-identical | Corrupt | Missed | False positives | Outputs | Seconds |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| sanctum-carve, 2026-09-16 | 591 | 565 | 26 | 0 | 63 | 687 | 184.1 |
+| sanctum-carve, 2026-09-21 | 591 | 565 | 26 | 0 | 63 | 687 | 186.7 |
+| sanctum-full, 2026-09-16 | 591 | 576 | 15 | 0 | 88 | 969 | 201.1 |
+| sanctum-full, 2026-09-21 | 591 | 576 | 15 | 0 | 88 | 969 | 202.9 |
+
+Every recovery count is identical. The changes did not move a single file on
+these images; the footer-bound fix matters on images where objects are
+megabytes apart (see [`../validation/large-image.md`](../validation/large-image.md)),
+which these are not. The 2026-09-21 run was the only job on the host; one run
+each, so a few seconds of difference is within run-to-run variation and is not
+claimed as a change. **PhotoRec and Foremost were not re-run**
+(Foremost is not installed on this host); their rows below are the 2026-09-16
+measurements.
+
 ## Tools, versions and settings
 
 | Row | Tool and version | How it was run | Settings |
@@ -60,24 +85,32 @@ binaries.
 
 Each benchmark volume holds 21 real files, 17 of them deleted:
 
-| Format | Header in Sanctum's signature table | Files | Encoder |
-|---|---|---:|---|
-| JPEG | yes | 3 (+1 on FAT32) | Pillow, noise, q95; 128, 384 and 768 px |
-| PNG | yes | 2 | Pillow, noise |
-| GIF | yes | 1 | Pillow |
-| PDF | yes | 2 | hand-built, correct xref |
-| ZIP | yes | 1 | `zipfile`, deflate |
-| DOCX, XLSX | yes (as ZIP) | 1 each | `zipfile`, OPC parts |
-| SQLite | yes | 1 | `sqlite3`, 2000 rows |
-| MP4 | yes | 1 | `ftyp` + `mdat` boxes |
-| TIFF | yes, no structure parser | 1 | Pillow |
-| BMP | **no** | 1 | Pillow |
-| WebP | **no** | 1 | Pillow, lossy |
-| WAV | **no** | 1 | `wave`, 1 s PCM |
-| GZIP | **no** | 1 | `gzip` |
-| TAR | **no** | 1 | `tarfile`, ustar |
-| HTML | **no** | 1 | text |
-| RTF | **no** | 1 | text |
+| Format | Header in Sanctum's signature table | Structure parser | Files | Encoder |
+|---|---|---|---:|---|
+| JPEG | yes | yes | 3 (+1 on FAT32) | Pillow, noise, q95; 128, 384 and 768 px |
+| PNG | yes | yes | 2 | Pillow, noise |
+| GIF | yes | no (footer bound) | 1 | Pillow |
+| PDF | yes | yes | 2 | hand-built, correct xref |
+| ZIP | yes | yes | 1 | `zipfile`, deflate |
+| DOCX, XLSX | yes (as ZIP) | yes (as ZIP) | 1 each | `zipfile`, OPC parts |
+| SQLite | yes | yes | 1 | `sqlite3`, 2000 rows |
+| MP4 | yes | yes | 1 | `ftyp` + `mdat` boxes |
+| TIFF | yes | yes | 1 | Pillow |
+| BMP | yes | yes | 1 | Pillow |
+| WebP | yes | yes | 1 | Pillow, lossy |
+| WAV | yes | yes | 1 | `wave`, 1 s PCM |
+| GZIP | yes | yes | 1 | `gzip` |
+| TAR | yes | yes | 1 | `tarfile`, ustar |
+| HTML | yes | yes | 1 | text |
+| RTF | yes | yes | 1 | text |
+
+The header and parser columns describe the tree at commit `20a6439` and later,
+which is what every "after" figure in this document was measured on. The
+**before** figures predate it: at that point BMP, WebP, WAV, GZIP, TAR, HTML and
+RTF had no signature and TIFF had no parser, which is part of why they were worse.
+The authoritative, generated list of what the current tree supports is
+[`../supported-formats.md`](../supported-formats.md); it is regenerated from the
+signature table and parser registry and a test fails if it drifts.
 
 On both FAT32 volumes a fifth JPEG, `frag.jpg`, is written **in exactly two runs** the
 way a real volume splits a file: two 64 KiB pads are written, the first is deleted, and
@@ -233,7 +266,7 @@ Other columns, over the 25 benchmark volumes:
 | Wall clock | 2,071.8 s | **170.2 s** |
 | Bytes written, all 40 images | 48.0 GiB | **0.034 GiB** |
 
-What moved, and why, is recorded in `BENCHMARK_REPORT_2.md`: three causes of candidates
+What moved, and why, is recorded in the message of commit `20a6439` (`git show 20a6439`): three causes of candidates
 that ran to the end of the image (ZIP member headers, MP4 cluster slack read as a
 size-0 box, TIFF having no parser), and seven formats that had no signature at all.
 
@@ -582,7 +615,7 @@ Strict byte-identity is the only success in the tables above. A reader who would
 whole file followed by padding would move Foremost's 74 archives and PhotoRec's 53
 GZIP/TIFF/TAR files into the success column. Sanctum's 16 TAR outputs are the opposite
 case — a file that is *short* of the original by its writer's padding, never longer — and
-the reasoning for refusing to claim those bytes is in `BENCHMARK_REPORT_2.md` §2.
+the reasoning for refusing to claim those bytes is in item 1 of "Where Sanctum wins, where it loses" below.
 
 ## Where Sanctum wins, where it loses, where the three are equivalent
 
@@ -605,7 +638,7 @@ At fix5 the same three rows were 263, 372 and 220. Only Sanctum changed.
    archive without the padding its writer added past the end-of-archive marker. Those
    bytes are zeros, and so is the last cluster's slack, so nothing in the content
    separates them; claiming them would be an assumption about the writer's blocking
-   factor. See `BENCHMARK_REPORT_2.md` §2 and finding B16.
+   factor.
 2. **PNG: 47 of 51.** The four misses are exFAT's `shot.png`, stored in 28 runs.
    Reassembly handles exactly two.
 3. **SQLite: 12 of 15.** The three misses are ext4's sparse `contacts.sqlite`, which no
@@ -680,7 +713,7 @@ defaults, on the same images, scored by the same function.
 surviving files byte-for-byte than either.** Over the 20 damaged volumes it returned 327
 of 343 (95.3%), PhotoRec 288 (84.0%) and Foremost 173 (50.4%). At fix5 the same figure
 was 207 (60.3%), and the difference is entirely the defects listed in
-`BENCHMARK_REPORT_2.md` — candidates that ran to the end of the image, and seven formats
+commit `20a6439` — candidates that ran to the end of the image, and seven formats
 with no signature.
 
 **This reversal was checked before it was believed.** The scorer is byte-identical to the

@@ -1,6 +1,8 @@
 # Carve confidence calibration
 
-**Run date:** 2026-09-04, re-measured 2026-09-16 · **Corpus seed:** 0 · **Harness:** `testkit/calibrate.py`
+**Run date:** 2026-09-04, re-measured 2026-09-16 · **Corpus seed:** 0
+· **Superseded population:** the eight-seed pooled re-run of 2026-09-21 is in
+[`calibration-pooled.md`](calibration-pooled.md); weights unchanged by it · **Harness:** `testkit/calibrate.py`
 · **Table:** [`calibration.csv`](calibration.csv) · **Chart:** [`calibration.png`](calibration.png)
 
 An uncalibrated score is a number somebody made up. This document records the
@@ -91,7 +93,7 @@ By source and by decoder verdict:
 ### What moved when the runaway-length defect was fixed, and what did not
 
 The table above was re-measured on 2026-09-16, after the fixes recorded in
-`BENCHMARK_REPORT_2.md`. **No weight changed, and no threshold changed.** What
+commit `20a6439` (`git show 20a6439`). **No weight changed, and no threshold changed.** What
 changed is the population being scored:
 
 | Row | Before (2026-09-04) | After (2026-09-16) | Why |

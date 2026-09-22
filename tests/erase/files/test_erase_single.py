@@ -11,7 +11,7 @@ from core.erase.inspect import inspect_path
 from core.errors import ConfirmationMismatch, SystemDiskRefused
 from core.models import FileEraseOptions, ResidualKind, Severity
 
-from .conftest import ntfs_only, real_erase
+from .conftest import ntfs_only, posix_only, real_erase
 
 # --------------------------------------------------------------------------
 # Spec test 1: the overwrite reaches the bytes
@@ -254,8 +254,28 @@ def test_a_filesystem_root_is_refused() -> None:
 
 
 def test_a_protected_system_directory_is_refused() -> None:
-    with pytest.raises(SystemDiskRefused):
-        erase_one(Path("/usr"), real_erase())
+    """Whichever directory this platform protects - /usr, C:\\Windows, /System.
+
+    The path used to be the literal "/usr", which on Windows resolves to
+    C:\\usr, exists nowhere, and failed as ENOENT instead of being refused.
+    """
+    from core.platform.host import family
+    from core.platform.paths import protected_prefixes
+
+    protected = [
+        Path(item)
+        for item in protected_prefixes(family())
+        # A symlinked protected directory (/bin on Ubuntu and Fedora) is
+        # refused as a link, in a record rather than a raise, by an earlier
+        # branch; this test is about the protected list itself.
+        if Path(item).is_dir()
+        and not Path(item).is_symlink()
+        and Path(item).parent != Path(item)
+    ]
+    assert protected, "this platform protects nothing, which cannot be right"
+    for candidate in protected[:3]:
+        with pytest.raises(SystemDiskRefused):
+            erase_one(candidate, real_erase())
 
 
 # --------------------------------------------------------------------------
@@ -439,6 +459,7 @@ def test_the_xattr_value_is_zeroed_before_the_attribute_is_removed(
     assert "user.payload" not in os.listxattr(target)
 
 
+@posix_only
 def test_kernel_owned_attributes_are_left_alone(real_fs_dir: Path) -> None:
     """``security.*`` and ``system.*`` are access control, not content.
 
@@ -481,6 +502,7 @@ def test_kernel_owned_attributes_are_left_alone(real_fs_dir: Path) -> None:
     assert record.xattrs_removed == ["user.payload"]
 
 
+@posix_only
 def test_an_unremovable_attribute_is_reported_rather_than_ignored(
     real_fs_dir: Path,
 ) -> None:

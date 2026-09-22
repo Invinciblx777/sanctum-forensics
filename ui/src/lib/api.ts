@@ -62,6 +62,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => request<Record<string, unknown>>('/health'),
 
+  platform: () => request<PlatformStatus>('/platform'),
+
+  /** Stops a launcher-started app; the server refuses it otherwise. */
+  quit: () => request<{ quitting: boolean }>('/app/quit', { method: 'POST' }),
+
+  /** Re-reads one device from the OS now; never a cached row. */
+  assessment: (deviceId: string) =>
+    request<{ normalized: NormalizedDevice; assessment: DeviceAssessment }>(
+      `/platform/devices/${encodeURIComponent(deviceId)}/assessment`,
+    ),
+
   devices: (includeVirtual = false) =>
     request<{ devices: DeviceRow[]; limitations: string[] }>(
       `/devices?include_virtual=${includeVirtual}`,
@@ -109,7 +120,10 @@ export const api = {
       `/ledger/entries?limit=${limit}`,
     ),
 
-  generateReport: (jobId: string, body: { case_id: string; operator: string }) =>
+  generateReport: (
+    jobId: string,
+    body: { case_id: string; operator: string; key_passphrase?: string },
+  ) =>
     request<ReportResult>(`/reports/${jobId}`, {
       method: 'POST',
       body: JSON.stringify(body),
@@ -117,6 +131,81 @@ export const api = {
 
   verifyReport: (jobId: string) =>
     request<ReportVerification>(`/reports/${jobId}/verify`),
+
+  // -- cases ----------------------------------------------------------------
+
+  cases: () => request<{ cases: CaseSummary[] }>('/cases'),
+
+  createCase: (body: { case_id: string; title: string; description: string }) =>
+    request<{ case: CaseSummary }>('/cases', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  case: (caseId: string) =>
+    request<CaseDetail>(`/cases/${encodeURIComponent(caseId)}`),
+
+  registerEvidence: (caseId: string, body: EvidenceBody) =>
+    request<{ evidence: EvidenceRecord }>(
+      `/cases/${encodeURIComponent(caseId)}/evidence`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+  // -- artifacts ------------------------------------------------------------
+
+  artifacts: (root: 'recovered' | 'reports') =>
+    request<{ root: string; count: number; artifacts: ArtifactRef[] }>(
+      `/artifacts/${root}`,
+    ),
+
+  // -- audit ----------------------------------------------------------------
+
+  tamperDemo: (seq?: number) =>
+    request<TamperDemo>('/ledger/tamper-demo', {
+      method: 'POST',
+      body: JSON.stringify(seq === undefined ? {} : { seq }),
+    }),
+
+  // -- resume ---------------------------------------------------------------
+
+  resumeState: (jobId: string) =>
+    request<ResumeState>(`/jobs/${jobId}/resume`),
+
+  resume: (jobId: string, body: ResumeBody) =>
+    request<JobAccepted>(`/jobs/${jobId}/resume`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+}
+
+/**
+ * The URL an artifact is fetched from.
+ *
+ * The only place a `/artifacts` URL is built, so a screen never concatenates a
+ * name into a URL by hand and the encoding happens once.
+ *
+ * A name containing an absolute path or a `..` component **throws** rather
+ * than being encoded and sent. The server refuses those regardless - that is
+ * where the boundary lives and it is tested there - but every name this
+ * function is given came out of a server listing, so one that walks upward is
+ * a bug in this client and not a request to forward. `encodeURIComponent`
+ * leaves a dot alone, so encoding would have emitted the traversal intact and
+ * relied entirely on the far end.
+ */
+export function artifactUrl(
+  root: 'recovered' | 'reports',
+  name: string,
+  options: { download?: boolean } = {},
+): string {
+  const parts = name.split('/')
+  if (name.startsWith('/') || parts.some((part) => part === '..')) {
+    throw new Error(
+      `refusing to build an artifact URL for ${name}: an artifact is named ` +
+        'relative to its root, and this name leaves it',
+    )
+  }
+  const path = parts.map((part) => encodeURIComponent(part)).join('/')
+  return `/artifacts/${root}/${path}${options.download ? '?download=true' : ''}`
 }
 
 // ---------------------------------------------------------------------------
@@ -231,7 +320,145 @@ export interface ErasePreview {
   plans: PlannedErase[]
 }
 
+// ---------------------------------------------------------------------------
+// Platform model (core/platform/model.py). The UI reads only these shapes; it
+// never learns how a device was discovered on a given OS.
+// ---------------------------------------------------------------------------
+
+export type CapabilityStatus =
+  | 'SUPPORTED'
+  | 'SUPPORTED_WITH_LIMITATIONS'
+  | 'NOT_AUTHORIZED'
+  | 'NOT_VERIFIABLE'
+  | 'UNVERIFIED'
+  | 'INCONCLUSIVE'
+  | 'UNSUPPORTED'
+
+export interface PlatformInfo {
+  family: 'linux' | 'windows' | 'macos' | 'other'
+  os_name: string
+  os_version: string
+  os_build: string
+  machine: string
+  app_version: string
+  packaged: boolean
+  /** What the build recorded about itself; empty from a source checkout. */
+  build: Record<string, string>
+  sys_platform: string
+}
+
+export interface PrivilegeState {
+  level: 'root' | 'administrator' | 'standard' | 'unknown'
+  elevated: boolean | null
+  basis: string
+  helper: 'socket' | 'in-process' | 'none'
+  helper_basis: string
+}
+
+export interface OperationCapability {
+  operation: string
+  label: string
+  status: CapabilityStatus
+  reason: string
+  source: string
+  verification: string
+  limitations: string[]
+  requires_privilege: boolean
+}
+
+export interface MediaClassSupport {
+  media_class: string
+  discovery: CapabilityStatus
+  file_erase: CapabilityStatus
+  whole_drive: CapabilityStatus
+  reason: string
+  detected_now: number
+}
+
+export interface FilesystemSupport {
+  filesystem: string
+  cells: Record<string, Record<string, CapabilityStatus>>
+  notes: Record<string, string>
+}
+
+export interface PlatformStatus {
+  platform: PlatformInfo
+  privilege: PrivilegeState
+  operations: OperationCapability[]
+  media_classes: MediaClassSupport[]
+  filesystems: FilesystemSupport[]
+  restrictions: string[]
+  adapter: string
+  limitations: string[]
+}
+
+export interface PartitionInfo {
+  id: string
+  size_bytes: number
+  filesystem: string
+  label: string
+  mount_points: string[]
+}
+
+export interface NormalizedDevice {
+  id: string
+  platform: string
+  path: string
+  vendor: string
+  model: string
+  serial: string
+  capacity_bytes: number
+  interface: string
+  media_type: 'hdd' | 'ssd' | 'flash' | 'unknown'
+  media_basis: string
+  removable: boolean | null
+  mounted: boolean
+  mount_points: string[]
+  system_device: boolean
+  system_reasons: string[]
+  filesystems: string[]
+  partitions: PartitionInfo[]
+  stable_id: string
+  limitations: string[]
+}
+
+export interface SafetyCheck {
+  key: string
+  label: string
+  passed: boolean | null
+  detail: string
+}
+
+export interface SanitizeOption {
+  level: Level
+  title: string
+  status: CapabilityStatus
+  method: string | null
+  why: string
+  technical: string[]
+  verification: string
+  remediation: string
+}
+
+export interface DeviceAssessment {
+  device_id: string
+  platform: string
+  status: CapabilityStatus
+  headline: 'READY' | 'NOT AVAILABLE' | 'NOT AUTHORIZED' | string
+  reason: string
+  recommended_action: string
+  recommended: SanitizeOption | null
+  alternatives: SanitizeOption[]
+  unavailable: SanitizeOption[]
+  verification: string
+  safety_checks: SafetyCheck[]
+  flash_limitation: string
+}
+
 export interface DeviceRow {
+  /** Cross-platform shape; absent only from a helper older than the adapters. */
+  normalized?: NormalizedDevice
+  assessment?: DeviceAssessment
   device: Device
   capabilities: Capabilities | null
   /** Absent from a helper older than the preview; treated as unknown. */
@@ -255,6 +482,12 @@ export interface JobStatus {
   job_id: string
   kind: string
   state: string
+  /**
+   * Terminal *and* written to the chain. `state` flips a moment earlier, so a
+   * certificate asked for on `state` alone can race the ledger append and be
+   * refused as an unknown job. Absent from an older server: treated as settled.
+   */
+  settled?: boolean
   params: Record<string, unknown>
   progress_count: number
   dropped_progress: number
@@ -267,6 +500,12 @@ export interface JobStatus {
   finished_at: string | null
   cancel_requested: boolean
   ledger_entries?: LedgerEntry[]
+  /** The trusted actor. Resolved server-side; never what a client claimed. */
+  actor?: string
+  actor_basis?: string
+  /** True when this status was rebuilt from the chain after a restart. */
+  reconstructed?: boolean
+  reconstructed_from_seq?: number
 }
 
 export interface LedgerEntry {
@@ -293,8 +532,15 @@ export interface LedgerVerification {
 
 export interface ReportResult {
   job_id: string
+  case_id: string
+  /** Host paths. The UI addresses reports by the artifact URLs below instead. */
   json_path: string
   pdf_path: string
+  json_name: string
+  pdf_name: string
+  json_url: string
+  pdf_url: string
+  generated_at: string
   pubkey_fingerprint: string
   /** SHA-256 of the JSON artifact, as recorded in the ledger at generation. */
   sha256: string
@@ -317,6 +563,9 @@ export interface ReportCheck {
 
 export interface ReportVerification {
   report: string
+  report_name: string
+  json_url: string
+  pdf_url: string
   passed: boolean
   fingerprint: string
   /** The identity caveat, written by core and passed through verbatim. */
@@ -423,6 +672,20 @@ export interface EraseDriveBody {
   operator?: string
 }
 
+/** What a sanitization verification concluded. Four outcomes, never three. */
+export interface EraseVerification {
+  strategy: string
+  /** null is INCONCLUSIVE: the check ran and settled nothing. */
+  passed: boolean | null
+  bytes_checked: number
+  sample_count: number
+  sample_seed: number | null
+  confidence_bp: number
+  failed_offsets: number[]
+  probability_note: string
+  hw_attested: boolean
+}
+
 export interface EraseFilesBody {
   paths: string[]
   dry_run: boolean
@@ -469,6 +732,8 @@ export interface AcquireBody {
   dest: string
   fmt: string
   compression: string
+  case_id?: string
+  operator?: string
 }
 
 export interface CarveBody {
@@ -477,4 +742,164 @@ export interface CarveBody {
   carve_signatures: boolean
   pii_triage: boolean
   out_dir: string | null
+  case_id?: string
+  operator?: string
+}
+
+// ---------------------------------------------------------------------------
+// Cases
+// ---------------------------------------------------------------------------
+
+export interface CaseSummary {
+  case_id: string
+  title: string
+  description: string
+  status: string
+  created_at: string
+  created_by: string
+  updated_at: string
+  evidence_count: number
+  operation_count: number
+  report_count: number
+  recovered_artifact_count: number
+  /** Present on the detail response only. The chain's verdict, not the file's. */
+  audit_event_count?: number
+  integrity?: string
+}
+
+export interface EvidenceRecord {
+  evidence_id: string
+  case_id: string
+  source: string
+  media_type: string
+  acquired_at: string
+  source_hash: string
+  verification_hash: string
+  state: string
+  detail: Record<string, unknown>
+}
+
+export interface OperationRecord {
+  operation_id: string
+  case_id: string
+  evidence_id: string
+  type: string
+  status: string
+  started_at: string
+  completed_at: string | null
+  operator: string
+  result_ref: string
+  recovered_artifacts: number
+  params: Record<string, unknown>
+}
+
+export interface CaseReportRecord {
+  report_id: string
+  case_id: string
+  operation_id: string
+  json_name: string
+  pdf_name: string
+  report_hash: string
+  signed: boolean
+  pubkey_fingerprint: string
+  generated_at: string
+}
+
+export interface AuditEvent {
+  seq: number
+  case_id: string
+  operation_id: string
+  sequence: number
+  actor: string
+  event: string
+  timestamp: string
+  previous_hash: string
+  current_hash: string
+}
+
+export interface CaseDetail {
+  case: CaseSummary
+  evidence: EvidenceRecord[]
+  operations: OperationRecord[]
+  reports: CaseReportRecord[]
+  audit: {
+    chain_status: string
+    chain_explanation: string
+    first_broken_seq: number | null
+    entry_count: number
+    events: AuditEvent[]
+  }
+}
+
+export interface EvidenceBody {
+  evidence_id: string
+  source: string
+  media_type: string
+  acquired_at?: string
+  source_hash?: string
+  verification_hash?: string
+  state?: string
+}
+
+// ---------------------------------------------------------------------------
+// Artifacts
+// ---------------------------------------------------------------------------
+
+export interface ArtifactRef {
+  name: string
+  size: number
+  /** From the server's closed extension table. Never sniffed. */
+  content_type: string
+  /** `inline` only for raster images, and for reports this tool generated. */
+  disposition: 'inline' | 'attachment'
+  url: string
+}
+
+// ---------------------------------------------------------------------------
+// Tamper demonstration
+// ---------------------------------------------------------------------------
+
+export interface ChainVerdict {
+  status: string
+  explanation: string
+  entry_count: number
+  first_broken_seq: number | null
+  failure_kind?: string | null
+  verified_through?: number | null
+  unverifiable_count?: number
+}
+
+export interface TamperDemo {
+  demonstration: boolean
+  /** Always false. The live chain is copied, never opened for writing. */
+  production_ledger_modified: boolean
+  production_ledger_root: string
+  tampered_seq: number
+  field: string
+  original_value: string
+  modified_value: string
+  before: ChainVerdict
+  after: ChainVerdict
+  note: string
+}
+
+// ---------------------------------------------------------------------------
+// Resume
+// ---------------------------------------------------------------------------
+
+export interface ResumeState {
+  found: boolean
+  method: string
+  level: string
+  path: string
+  serial: string
+  checkpoint: { offset: number; pass_index: number; seq: number } | null
+  resumable: boolean
+  /** Written by the server. Rendered verbatim; never reworded by a screen. */
+  reason: string
+}
+
+export interface ResumeBody {
+  dry_run: boolean
+  typed_serial: string
 }

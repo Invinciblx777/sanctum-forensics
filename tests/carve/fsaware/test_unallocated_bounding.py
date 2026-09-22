@@ -145,11 +145,15 @@ def test_the_pipeline_does_not_bound_the_scan() -> None:
     import api.carve_job as carve_job
 
     source = Path(carve_job.__file__).read_text(encoding="utf-8")
+    # Whitespace-normalised, so wrapping the call across lines to stay inside
+    # the line-length limit does not read as changing it. What this guard is
+    # about is which arguments are passed, not how they are formatted.
+    flattened = " ".join(source.split())
 
     # Batch 7 added one keyword argument, the undelete pass's cluster sizes,
     # which chooses the reassembly grid and bounds nothing. Re-checked: no
     # range is passed, which the assertion below still enforces.
-    assert "carve_structures(handle, cluster_bytes_at=" in source, (
+    assert "carve_structures( handle, cluster_bytes_at=" in flattened, (
         "the carve call changed shape; re-check whether a range is now passed"
     )
     assert "start=" not in source and "end=" not in source, (

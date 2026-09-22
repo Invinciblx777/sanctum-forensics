@@ -27,6 +27,7 @@ from __future__ import annotations
 import errno
 import os
 import secrets
+import stat as stat_mod
 import string
 import time
 from collections.abc import Generator, Sequence
@@ -106,7 +107,18 @@ PROTECTED_PREFIXES = (
 
 
 def _refuse_protected(path: Path) -> None:
-    """Raise for a filesystem root or a system directory."""
+    """Raise for a filesystem root or a system directory.
+
+    Two layers. :data:`PROTECTED_PREFIXES` is the historical list, matched
+    exactly, unchanged. :func:`core.platform.paths.protected_reason` adds the
+    running platform's own rules: on Windows the real ``%SystemRoot%`` and
+    Program Files trees (which are not always on ``C:``) compared
+    case-insensitively, and whole subtrees such as ``System32`` rather than
+    only the directory itself; on macOS ``/System`` and the swap directory.
+    """
+    from core.platform.host import family
+    from core.platform.paths import protected_reason
+
     try:
         resolved = path.resolve()
     except OSError:
@@ -122,6 +134,12 @@ def _refuse_protected(path: Path) -> None:
                 f"Refusing to erase {resolved}: it is a protected system "
                 "location, and erasing it would break the running system."
             )
+    why = protected_reason(text, family())
+    if why:
+        raise SystemDiskRefused(
+            f"Refusing to erase {resolved}: {why} Erasing it would break the "
+            "running system."
+        )
 
 
 def _random_same_length_name(original: str) -> str:
@@ -303,7 +321,10 @@ def _erase_streams(
         location = _stream_path(target, stream)
         try:
             length = os.stat(location).st_size
-            fd = os.open(location, os.O_WRONLY)
+            # O_BINARY: without it the Windows CRT opens the stream in text
+            # mode. Zeros survive text mode today, but a pattern containing
+            # 0x0A would be written as 0x0D 0x0A and overrun the stream.
+            fd = os.open(location, os.O_WRONLY | getattr(os, "O_BINARY", 0))
             try:
                 _overwrite_fd(fd, length)
             finally:
@@ -409,15 +430,45 @@ def expand_targets(
     out: list[Path] = []
     for entry in paths:
         target = Path(entry)
-        if not target.is_dir() or target.is_symlink() or not recursive:
+        if not target.is_dir() or _is_link_or_reparse(target) or not recursive:
             out.append(target)
             continue
         out.extend(_walk_depth_first(target))
     return out
 
 
+def _stat_is_link_or_reparse(info: os.stat_result) -> bool:
+    """A symlink, or any Windows reparse point, from an ``lstat`` result.
+
+    ``is_symlink()`` is not enough on Windows. A directory **junction** is a
+    reparse point but not a symlink, so ``is_symlink()`` is False for it and
+    ``DirEntry.is_dir(follow_symlinks=False)`` is True - and a walk that
+    trusted those two would descend through the junction and erase whatever
+    tree it points at, which is typically outside the folder the operator
+    named. ``FILE_ATTRIBUTE_REPARSE_POINT`` catches junctions, mount points,
+    symlinks and cloud placeholders alike.
+    """
+    from core.erase.inspect import FILE_ATTRIBUTE_REPARSE_POINT
+
+    if stat_mod.S_ISLNK(info.st_mode):
+        return True
+    attributes = int(getattr(info, "st_file_attributes", 0))
+    return bool(attributes & FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _is_link_or_reparse(path: Path) -> bool:
+    try:
+        return _stat_is_link_or_reparse(os.lstat(path))
+    except OSError:
+        return False
+
+
 def _walk_depth_first(root: Path) -> list[Path]:
-    """Every path under ``root``, children before parents, ``root`` last."""
+    """Every path under ``root``, children before parents, ``root`` last.
+
+    A link or reparse point inside the tree is emitted as itself and never
+    descended into; :func:`erase_one` then refuses it by name.
+    """
     found: list[Path] = []
 
     def descend(directory: Path) -> None:
@@ -427,7 +478,11 @@ def _walk_depth_first(root: Path) -> list[Path]:
             return
         for item in entries:
             child = Path(item.path)
-            if item.is_dir(follow_symlinks=False):
+            try:
+                linked = _stat_is_link_or_reparse(item.stat(follow_symlinks=False))
+            except OSError:
+                linked = True  # cannot tell: do not descend
+            if not linked and item.is_dir(follow_symlinks=False):
                 descend(child)
                 found.append(child)
             else:

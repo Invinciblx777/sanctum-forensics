@@ -1,6 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, RequestFailed, streamJob } from '../lib/api'
-import type { DeviceRow, JobStatus, Level, Progress } from '../lib/api'
+import type {
+  DeviceAssessment,
+  DeviceRow,
+  EraseVerification,
+  JobStatus,
+  Level,
+  Progress,
+  ReportResult,
+  ResumeState,
+} from '../lib/api'
+import { currentStep, runnableStatus } from '../lib/platform'
+import { AssessmentSummary, FlowSteps } from '../components/sanitizeFlow'
+import { verificationWord } from '../lib/artifacts'
+import { useCase } from '../lib/caseContext'
 import {
   contradiction,
   defaultLevel,
@@ -13,6 +26,7 @@ import {
 import { bytes, duration, exactBytes } from '../lib/format'
 import {
   Chip,
+  Empty,
   ErrorNotice,
   Evidence,
   Limitations,
@@ -20,6 +34,7 @@ import {
   Panel,
   ProgressView,
   Railed,
+  Stat,
   Verdict,
 } from '../components/widgets'
 import type { Tone } from '../components/widgets'
@@ -49,6 +64,229 @@ function levelTone(level: Level): Tone {
  * the operator commits to the method that will run, and the evidence for it.
  */
 
+/**
+ * The four outcomes a sanitization verification can have.
+ *
+ * **Uncertainty is never collapsed into PASS.** The engine reports
+ * `passed: true`, `passed: false` or `passed: null`, and the third is not a
+ * quiet version of the first: it means the check ran and settled nothing, or
+ * could not run at all. A screen that rendered null as a tick would be the
+ * interface making a claim the engine refused to make.
+ *
+ * NOT APPLICABLE is separated from INCONCLUSIVE by whether anything was read:
+ * a verification that checked zero bytes did not attempt the measurement, and
+ * one that checked bytes and could not conclude did.
+ */
+function verificationVerdict(
+  verification: EraseVerification | null,
+  dryRun: boolean,
+): { word: string; tone: Tone; note: string } {
+  const word = verificationWord(verification, dryRun)
+  if (word === 'PASSED') {
+    return {
+      word,
+      tone: 'success',
+      note:
+        verification?.probability_note || 'Every byte read back as expected.',
+    }
+  }
+  if (word === 'FAILED') {
+    const failures = verification?.failed_offsets.length ?? 0
+    return {
+      word,
+      tone: 'destructive',
+      note:
+        `${failures} sampled offset${failures === 1 ? '' : 's'} did not read ` +
+        'back as expected. The medium is not sanitized.',
+    }
+  }
+  if (word === 'INCONCLUSIVE') {
+    return {
+      word,
+      tone: 'warning',
+      note:
+        'The read-back ran and did not settle the question. This is not a ' +
+        'pass: nothing here claims the medium was verified.',
+    }
+  }
+  return {
+    word,
+    tone: 'unknown',
+    note: dryRun
+      ? 'This was a dry run. Nothing was written, so there was nothing to ' +
+        'verify. A dry run never produces a verification result and never ' +
+        'claims one.'
+      : !verification
+        ? 'No verification was recorded for this run.'
+        : 'No read-back was attempted for this method. A firmware sanitize is ' +
+          'attested by the drive, not measured by the host; what that attests ' +
+          'to is in the residual-risk panel.',
+  }
+}
+
+/**
+ * What the run proved, after it finished.
+ *
+ * Sampled verification is reported as sampling, with its seed and its detection
+ * probability, because "verified" over a sample of a four-terabyte disk and
+ * "verified" over every byte of a 64 MB stick are different claims and the
+ * engine already distinguishes them.
+ */
+function VerificationPanel({
+  status,
+  dryRun,
+}: {
+  status: JobStatus
+  dryRun: boolean
+}) {
+  const verification =
+    (status.result?.verification as EraseVerification | undefined) ?? null
+  const verdict = verificationVerdict(verification, dryRun)
+  const method =
+    (status.result?.plan as { method?: string } | undefined)?.method ?? ''
+  const warnings = (status.result?.limitations as string[] | undefined) ?? []
+
+  return (
+    <div className="col" data-testid="verification-panel">
+      <Railed tone={verdict.tone}>
+        <Verdict
+          level={`VERIFICATION: ${verdict.word}`}
+          basis={verification?.strategy || 'no strategy recorded'}
+          tone={verdict.tone}
+        />
+        <span className="note">{verdict.note}</span>
+      </Railed>
+
+      <Evidence
+        stacked
+        rows={[
+          { label: 'Operation', value: status.job_id, kind: 'mono' },
+          { label: 'Method run', value: method || 'not recorded', kind: 'mono' },
+          { label: 'Started', value: status.started_at },
+          { label: 'Finished', value: status.finished_at ?? 'still running' },
+          {
+            label: 'Strategy',
+            value: verification?.strategy || 'none recorded',
+          },
+          {
+            label: 'Attested by the drive',
+            value: verification?.hw_attested ? 'yes' : 'no',
+          },
+        ]}
+      />
+
+      {verification && verification.bytes_checked > 0 && (
+        <div className="row wrap" style={{ gap: 'var(--space-6)' }}>
+          <Stat label="bytes read back" value={bytes(verification.bytes_checked)} />
+          <Stat label="samples" value={verification.sample_count} />
+          <Stat
+            label="detection probability"
+            value={`${(verification.confidence_bp / 100).toFixed(2)}%`}
+          />
+          {verification.sample_seed !== null && (
+            <Stat label="sample seed" value={verification.sample_seed} />
+          )}
+        </div>
+      )}
+
+      {verification && verification.probability_note && (
+        <Notice tone="info">{verification.probability_note}</Notice>
+      )}
+
+      {verification && verification.failed_offsets.length > 0 && (
+        <div className="col tight">
+          <span className="stat-label">offsets that failed read-back</span>
+          <pre className="log">
+            {verification.failed_offsets
+              .slice(0, 32)
+              .map((offset) => `0x${offset.toString(16)}`)
+              .join('\n')}
+            {verification.failed_offsets.length > 32 &&
+              `\n… and ${verification.failed_offsets.length - 32} more`}
+          </pre>
+        </div>
+      )}
+
+      {warnings.length > 0 && <Limitations items={warnings} />}
+    </div>
+  )
+}
+
+/**
+ * Whether an interrupted erase can be continued, from the chain's own record.
+ *
+ * The refusal is the interesting half. An overwrite records a checkpoint every
+ * interval and resumes from the recorded offset; a firmware sanitize is one
+ * command the drive executes alone and reports no progress for, so there is no
+ * offset to continue from. Offering a Resume button there would claim the
+ * device told us where it stopped. The reason text is the server's, verbatim.
+ */
+function ResumePanel({
+  state,
+  serial,
+  onResume,
+}: {
+  state: ResumeState
+  serial: string
+  onResume: (dryRun: boolean, typedSerial: string) => void
+}) {
+  const [typed, setTyped] = useState('')
+
+  if (!state.resumable) {
+    return (
+      <Railed tone="unknown">
+        <Verdict level="RESUME NOT AVAILABLE" basis={state.method || 'no plan recorded'} tone="unknown" />
+        <span className="note">{state.reason}</span>
+      </Railed>
+    )
+  }
+
+  return (
+    <div className="col">
+      <Railed tone="warning">
+        <Verdict
+          level="RESUME AVAILABLE"
+          basis={
+            state.checkpoint
+              ? `from byte ${state.checkpoint.offset.toLocaleString('en-US')}, pass ${state.checkpoint.pass_index}`
+              : ''
+          }
+          tone="warning"
+        />
+        <span className="note">{state.reason}</span>
+      </Railed>
+
+      <div className="row wrap" style={{ alignItems: 'flex-end' }}>
+        <label className="grow">
+          Type the device serial to resume for real
+          <input
+            type="text"
+            value={typed}
+            spellCheck={false}
+            placeholder={serial}
+            onChange={(event) => setTyped(event.target.value)}
+          />
+        </label>
+        <button className="btn" onClick={() => onResume(true, '')}>
+          Resume (dry run)
+        </button>
+        <button
+          className="btn destructive"
+          disabled={typed !== serial || !serial}
+          onClick={() => onResume(false, typed)}
+        >
+          Resume erasure
+        </button>
+      </div>
+      <p className="note">
+        A resume writes to the medium, so it keeps both gates of the run it
+        continues. The server re-reads the serial from the device itself and
+        refuses regardless of what is typed here.
+      </p>
+    </div>
+  )
+}
+
 export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
   const [level, setLevel] = useState<Level>(defaultLevel(selected))
   const [dryRun, setDryRun] = useState(true)
@@ -62,10 +300,76 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
     kind?: string
     remediation?: string
   } | null>(null)
+  const [resume, setResume] = useState<ResumeState | null>(null)
+  // The assessment the device list carried, then replaced by a fresh one read
+  // from the OS when this screen opens and again before the confirmation.
+  const [assessment, setAssessment] = useState<DeviceAssessment | null>(
+    selected?.assessment ?? null,
+  )
+  const [reviewing, setReviewing] = useState(false)
+  const [report, setReport] = useState<ReportResult | null>(null)
+  // Only when the server says the signing key needs one. Held in this
+  // component for the one request and never stored anywhere.
+  const [needsPassphrase, setNeedsPassphrase] = useState(false)
+  const [passphrase, setPassphrase] = useState('')
+  const { openCase } = useCase()
   const detach = useRef<(() => void) | null>(null)
 
   useEffect(() => setLevel(defaultLevel(selected)), [selected])
+
+  // Step 2, "Analyse": re-read the device now rather than trusting the row the
+  // device list loaded. A failure leaves the list's assessment in place.
+  useEffect(() => {
+    setAssessment(selected?.assessment ?? null)
+    setReviewing(false)
+    setReport(null)
+    const id = selected?.normalized?.id
+    if (!id) return
+    void api
+      .assessment(id)
+      .then((answer) => setAssessment(answer.assessment))
+      .catch(() => undefined)
+  }, [selected])
   useEffect(() => () => detach.current?.(), [])
+
+  // Resumability is read from the chain once the job reaches a terminal state:
+  // a cancelled or failed overwrite is exactly the case resume exists for, and
+  // it is also the case where the operator most needs to be told plainly that
+  // a firmware sanitize cannot be continued.
+  useEffect(() => {
+    if (!jobId || !status || status.state === 'running') return
+    void api
+      .resumeState(jobId)
+      .then(setResume)
+      .catch(() => setResume(null))
+  }, [jobId, status?.state])
+
+  async function startResume(resumeDryRun: boolean, typedSerial: string) {
+    if (!jobId) return
+    setError(null)
+    try {
+      const accepted = await api.resume(jobId, {
+        dry_run: resumeDryRun,
+        typed_serial: typedSerial,
+      })
+      setJobId(accepted.job_id)
+      setProgress(null)
+      setStatus(null)
+      setResume(null)
+      detach.current?.()
+      detach.current = streamJob(accepted.job_id, {
+        onProgress: setProgress,
+        onState: setStatus,
+      })
+    } catch (exc) {
+      const failure = exc as RequestFailed
+      setError({
+        message: failure.message,
+        kind: failure.kind,
+        remediation: failure.remediation,
+      })
+    }
+  }
 
   const device = selected?.device
   const hidden = selected?.hidden_areas
@@ -75,13 +379,81 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
   const media = flashOf(selected)
   const canRun = runnable(plan)
 
+  /**
+   * Opens the confirmation only after the device has been re-read from the OS
+   * and is still available. The helper re-checks identity again when the job
+   * starts; this is the check the operator sees.
+   */
+  async function openConfirmation() {
+    const id = selected?.normalized?.id
+    if (!id) {
+      setConfirming(true)
+      return
+    }
+    try {
+      const fresh = await api.assessment(id)
+      setAssessment(fresh.assessment)
+      if (fresh.normalized.serial !== (selected?.normalized?.serial ?? '')) {
+        setError({
+          message:
+            'The device identity changed since the list was loaded. Rescan the devices before erasing.',
+          kind: 'ConfirmationMismatch',
+        })
+        return
+      }
+      if (fresh.assessment.headline !== 'READY') {
+        setError({
+          message: `Sanitization is ${fresh.assessment.headline.toLowerCase()}: ${fresh.assessment.reason}`,
+          kind: 'Refused',
+          remediation: fresh.assessment.recommended_action,
+        })
+        return
+      }
+      setConfirming(true)
+    } catch (exc) {
+      const failure = exc as RequestFailed
+      setError({
+        message: failure.message,
+        kind: failure.kind,
+        remediation: failure.remediation,
+      })
+    }
+  }
+
+  async function certificate() {
+    if (!jobId) return
+    try {
+      setReport(
+        await api.generateReport(jobId, {
+          case_id: openCase?.case_id ?? '',
+          operator: '',
+          key_passphrase: passphrase || undefined,
+        }),
+      )
+      setPassphrase('')
+      setNeedsPassphrase(false)
+      setError(null)
+    } catch (exc) {
+      const failure = exc as RequestFailed
+      if (failure.kind === 'KeyPassphraseMissing') setNeedsPassphrase(true)
+      setError({
+        message: failure.message,
+        kind: failure.kind,
+        remediation: failure.remediation,
+      })
+    }
+  }
+
   async function start() {
     if (!device || !canRun) return
     setError(null)
     try {
-      const accepted = await api.eraseDrive(
-        eraseBody(device.path, level, dryRun, typed),
-      )
+      const accepted = await api.eraseDrive({
+        ...eraseBody(device.path, level, dryRun, typed),
+        // Filed against the open case, so the wipe appears on the case screen
+        // and its certificate inherits the case id.
+        case_id: openCase?.case_id ?? '',
+      })
       setJobId(accepted.job_id)
       setProgress(null)
       setStatus(null)
@@ -106,10 +478,11 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
     return (
       <>
         <div className="screen-head">
-          <h1>Sanitize</h1>
-          <p>Select a device on the Devices screen first.</p>
+          <h1>Secure sanitization</h1>
+          <p>Choose a device on the Devices screen to begin.</p>
         </div>
         <div className="screen-body">
+          <FlowSteps current={0} />
           <Notice tone="info">
             No device selected. A locked device — the system disk, or one with a
             mounted filesystem — cannot be selected at all.
@@ -125,11 +498,35 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
       ?.factors ?? []
   const mismatch = contradiction(plan, status?.result)
   const basis = plan?.method ? methodLabel(plan.method) : 'not reachable'
+  const normalized = selected?.normalized ?? null
+  // A platform with no whole-drive engine sends an assessment and nothing to
+  // run; a Linux row sends both, and both must agree before Erase is offered.
+  const offered =
+    !assessment ||
+    (assessment.headline !== 'NOT AVAILABLE' &&
+      runnableStatus(assessment.recommended?.status))
+  // `settled`, not just terminal: the job's outcome has reached the chain, so
+  // the certificate can be built from it.
+  const finished = Boolean(
+    status && status.state !== 'running' && status.settled !== false,
+  )
+  const verificationResult =
+    (status?.result?.verification as EraseVerification | undefined) ?? null
+  const step = currentStep({
+    hasDevice: true,
+    hasAssessment: Boolean(assessment) || Boolean(preview),
+    reviewing,
+    confirming,
+    running,
+    finished,
+    verified: Boolean(verificationResult) || dryRun,
+    certified: Boolean(report),
+  })
 
   return (
     <>
       <div className="screen-head">
-        <h1>Sanitize</h1>
+        <h1>Secure sanitization</h1>
         <p className="path">{device.path}</p>
         <Chip tone="muted">{device.model}</Chip>
         <span className="serial" style={{ color: 'var(--text-muted)' }}>
@@ -138,7 +535,70 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
       </div>
 
       <div className="screen-body">
+        <FlowSteps current={step} />
         <ErrorNotice error={error} />
+
+        {normalized && assessment && (
+          <AssessmentSummary device={normalized} assessment={assessment} />
+        )}
+
+        {offered && canRun && !reviewing && !jobId && (
+          <div className="row">
+            <button className="btn primary" onClick={() => setReviewing(true)}>
+              Review plan
+            </button>
+            <span className="note">
+              Nothing is written until you confirm, and a dry run comes first.
+            </span>
+          </div>
+        )}
+
+        {jobId && finished && (
+          <Panel title="Certificate">
+            {report ? (
+              <div className="col tight">
+                <span className="state-mark is-success">Certificate issued</span>
+                <span className="note">
+                  Signed report {report.json_name}. Open it on the Audit screen to
+                  verify the signature and the chain.
+                </span>
+                <div className="row">
+                  <a className="btn" href={report.pdf_url} target="_blank" rel="noreferrer">
+                    Open PDF
+                  </a>
+                  <a className="btn" href={report.json_url} target="_blank" rel="noreferrer">
+                    Open signed JSON
+                  </a>
+                </div>
+              </div>
+            ) : (
+              <div className="row wrap">
+                {needsPassphrase && (
+                  <label className="grow">
+                    Signing-key passphrase (a new key needs 12 or more characters)
+                    <input
+                      type="password"
+                      value={passphrase}
+                      autoComplete="off"
+                      onChange={(event) => setPassphrase(event.target.value)}
+                    />
+                  </label>
+                )}
+                <button className="btn primary" onClick={() => void certificate()}>
+                  Get certificate
+                </button>
+                <span className="note">
+                  The certificate records what ran, how it was verified, and what
+                  it could not claim{dryRun ? ' - for a dry run, that nothing was written' : ''}.
+                </span>
+              </div>
+            )}
+          </Panel>
+        )}
+
+        <details className="tech" open={(!normalized || reviewing || Boolean(jobId)) && offered}>
+          <summary>Technical details</summary>
+          <div className="tech-body">
 
         {hidden && hidden.hidden_bytes > 0 && (
           <Notice tone="warn">
@@ -150,6 +610,135 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
             max is unlocked first; a firmware sanitize covers the full media by
             design.
           </Notice>
+        )}
+
+        <Panel
+          title="Target"
+          subtitle="Re-read from the host by the privileged helper, not remembered by this page."
+        >
+          <div className="row wrap" style={{ gap: 'var(--space-6)' }}>
+            <Stat label="path" value={device.path} />
+            <Stat label="model" value={device.model} />
+            <Stat label="serial" value={device.serial || 'none reported'} />
+            <Stat label="capacity" value={bytes(device.size_bytes)} />
+            <Stat label="transport" value={device.transport} />
+            <Stat
+              label="partitioning"
+              value={device.pt_type ?? 'none detected'}
+            />
+            <Stat
+              label="mount state"
+              value={
+                device.mounted_at.length > 0
+                  ? device.mounted_at.join(', ')
+                  : 'not mounted'
+              }
+            />
+            <Stat
+              label="medium"
+              value={
+                media.flash === null
+                  ? 'not determined'
+                  : media.flash
+                    ? 'flash'
+                    : 'not flash'
+              }
+            />
+          </div>
+          <p className="note" style={{ marginTop: 'var(--space-2)' }}>
+            {media.reason}
+          </p>
+        </Panel>
+
+        <Panel
+          title="Capability probe"
+          subtitle="What the drive itself reported. The method is selected from this and from nothing the operator typed."
+        >
+          <div className="col">
+            <Evidence
+              stacked
+              rows={[
+                {
+                  label: 'Levels the drive can reach',
+                  value:
+                    (selected?.capabilities?.achievable_levels ?? []).join(
+                      ', ',
+                    ) || 'none established',
+                },
+                {
+                  label: 'Purge pathways reported',
+                  value:
+                    (preview?.purge_mechanisms ?? []).map(methodLabel).join(', ') ||
+                    'none',
+                },
+                {
+                  label: 'ATA security erase',
+                  value: selected?.capabilities?.ata_security_erase
+                    ? 'supported'
+                    : 'not reported',
+                },
+                {
+                  label: 'ATA sanitize operations',
+                  value:
+                    (selected?.capabilities?.ata_sanitize_ops ?? []).join(', ') ||
+                    'none reported',
+                },
+                {
+                  label: 'Security frozen',
+                  value: selected?.capabilities?.security_frozen
+                    ? 'yes — a frozen drive cannot start a security erase'
+                    : 'no',
+                },
+                {
+                  label: 'Self-encrypting (Opal)',
+                  value: selected?.capabilities?.is_sed_opal ? 'yes' : 'no',
+                },
+                {
+                  label: 'Hidden areas',
+                  value:
+                    hidden && hidden.hidden_bytes > 0
+                      ? `${bytes(hidden.hidden_bytes)} behind ${hidden.hpa_present ? 'an HPA' : 'a DCO'} (${hidden.accessible_sectors.toLocaleString('en-US')} of ${hidden.native_max_sectors.toLocaleString('en-US')} sectors accessible)`
+                      : hidden
+                        ? 'none measured'
+                        : 'not probed',
+                },
+              ]}
+            />
+            {(selected?.capabilities?.limitations ?? []).length > 0 && (
+              <Limitations items={selected?.capabilities?.limitations ?? []} />
+            )}
+            {selected?.capability_error && (
+              <Notice tone="warn">
+                The capability probe failed: {selected.capability_error} Nothing
+                is predicted from a probe that did not complete.
+              </Notice>
+            )}
+          </div>
+        </Panel>
+
+        {!canRun && (
+          <Panel title="Sanitization plan">
+            <Railed tone="destructive">
+              <Verdict
+                level="SANITIZATION NOT AUTHORIZED"
+                basis={`${level} on ${device.path}`}
+                tone="destructive"
+              />
+              <span className="note">
+                {plan?.refusal ||
+                  'This level is not reachable on this device from what the capability probe established.'}
+              </span>
+              {plan?.remediation && (
+                <span className="note-faint">{plan.remediation}</span>
+              )}
+            </Railed>
+            <p className="note" style={{ marginTop: 'var(--space-2)' }}>
+              <strong>No downgrade was performed.</strong> The engine does not
+              substitute a weaker method for one the device cannot reach: a
+              Clear issued in place of a refused Purge would produce a
+              certificate naming a guarantee that was never made.
+            </p>
+          </Panel>
         )}
 
         <div className="split">
@@ -294,8 +883,8 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
                 <div className="row">
                   <button
                     className={dryRun ? 'btn primary' : 'btn destructive'}
-                    disabled={running || !canRun}
-                    onClick={() => (dryRun ? void start() : setConfirming(true))}
+                    disabled={running || !canRun || (!dryRun && !offered)}
+                    onClick={() => (dryRun ? void start() : void openConfirmation())}
                   >
                     {dryRun ? 'Run dry run' : 'Erase this device'}
                   </button>
@@ -315,6 +904,31 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
                 </div>
               </div>
             </Panel>
+
+            {jobId && status && (
+              <Panel
+                title="Verification"
+                subtitle="Four outcomes. Uncertainty is never rendered as a pass."
+              >
+                <VerificationPanel status={status} dryRun={dryRun} />
+              </Panel>
+            )}
+
+            {jobId && status && (
+              <Panel title="Resume">
+                {resume ? (
+                  <ResumePanel
+                    state={resume}
+                    serial={device.serial}
+                    onResume={(resumeDry, typedSerial) =>
+                      void startResume(resumeDry, typedSerial)
+                    }
+                  />
+                ) : (
+                  <Empty>Reading the chain for a checkpoint&hellip;</Empty>
+                )}
+              </Panel>
+            )}
 
             {jobId && (
               <Panel title="Progress">
@@ -417,6 +1031,8 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
             </div>
           </Panel>
         </div>
+          </div>
+        </details>
       </div>
 
       {confirming && plan?.method && (

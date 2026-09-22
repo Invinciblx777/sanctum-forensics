@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import time
 import uuid
 from collections.abc import Callable
@@ -58,6 +59,7 @@ __all__ = [
     "APPEND_LOCK_ATTEMPTS",
     "APPEND_BACKOFF_INITIAL_SECONDS",
     "APPEND_BACKOFF_CAP_SECONDS",
+    "APPEND_BACKOFF_JITTER_FLOOR",
 ]
 
 logger = structlog.get_logger(__name__)
@@ -79,14 +81,21 @@ GENESIS_ACTOR = "sanctum"
 #: 0.5 ms on a 100-entry chain and 39 ms on a 10,000-entry chain, because the
 #: read is linear in the chain; a slow USB ``fsync`` adds tens to hundreds of
 #: milliseconds on top. With doubling backoff from 10 ms capped at 1 s, twenty
-#: attempts wait about 13 seconds in total - several hundred appends' worth of
-#: contention - before concluding the holder is not an appender but a hung
-#: process.
+#: attempts wait about 10 seconds in total - several hundred appends' worth of
+#: contention - before the append is refused.
 APPEND_LOCK_ATTEMPTS = 20
 #: First wait between attempts; doubled after each one.
 APPEND_BACKOFF_INITIAL_SECONDS = 0.01
 #: Longest single wait between attempts.
 APPEND_BACKOFF_CAP_SECONDS = 1.0
+#: Smallest fraction of the current backoff a writer actually sleeps. The rest
+#: is chosen at random from the interval, so writers that collide do not go on
+#: waking together. Without it, eight threads that lose the same first attempt
+#: converge on the same one-second rhythm and one of them can lose every
+#: subsequent attempt as well: the Windows runner failed exactly that way
+#: (``tests/ledger/test_concurrent_writers.py``, run 35682651431). The lock is
+#: not queued and cannot be fair, so the retries must not be synchronised.
+APPEND_BACKOFF_JITTER_FLOOR = 0.5
 
 _BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
 _HASHED_FIELDS = (
@@ -324,16 +333,18 @@ class Ledger:
                 logger.debug(
                     "ledger_lock_contended", attempt=attempt, operation=operation
                 )
-                time.sleep(delay)
-                waited += delay
+                pause = random.uniform(delay * APPEND_BACKOFF_JITTER_FLOOR, delay)
+                time.sleep(pause)
+                waited += pause
                 delay = min(delay * 2, APPEND_BACKOFF_CAP_SECONDS)
 
         raise LedgerBusy(
             f"Ledger entry {operation!r} was NOT recorded: the writer lock "
             f"{self.store.lock_path} was held by another writer through "
-            f"{APPEND_LOCK_ATTEMPTS} attempts over {waited:.1f} s. No append "
-            "holds the lock for more than a fraction of a second, so the holder "
-            "is most likely a hung process."
+            f"{APPEND_LOCK_ATTEMPTS} attempts over {waited:.1f} s. No single "
+            "append holds the lock for more than a fraction of a second, so "
+            "either a process is hung while holding it, or this many writers "
+            "are contending for one chain."
         )
 
     def _append_locked(

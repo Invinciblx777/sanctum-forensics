@@ -14,6 +14,7 @@ is what makes the boundary checkable by grep rather than by trust.
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Generator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,16 +28,44 @@ __all__ = [
     "AppServices",
     "HelperTransport",
     "default_services",
+    "default_state_dir",
     "signing_key_limitations",
 ]
 
 logger = structlog.get_logger(__name__)
 
-#: Where the ledger, reports and recovered objects live when the environment
-#: does not say otherwise.
-DEFAULT_STATE_DIR = Path(os.environ.get("SANCTUM_STATE_DIR", "")) or (
-    Path.home() / ".local" / "share" / "sanctum"
-)
+def default_state_dir(
+    environ: dict[str, str] | None = None, platform: str | None = None
+) -> Path:
+    """Where the ledger, reports and recovered objects live by default.
+
+    ``SANCTUM_STATE_DIR`` wins when it is set to something non-empty.
+    Otherwise the per-user data directory each OS expects: ``~/.local/share/
+    sanctum`` on Linux (``$XDG_DATA_HOME`` when set), ``%LOCALAPPDATA%\\
+    Sanctum`` on Windows, ``~/Library/Application Support/Sanctum`` on macOS.
+
+    This used to be ``Path(os.environ.get("SANCTUM_STATE_DIR", "")) or ...``,
+    and ``Path("")`` is ``Path(".")``, which is truthy: with the variable
+    unset the state directory was whatever directory the API was started
+    from. A packaged app starts from ``/`` or ``C:\\Program Files``, where
+    that is either unwritable or somewhere nobody would look for a ledger.
+    """
+    env = os.environ if environ is None else environ
+    explicit = (env.get("SANCTUM_STATE_DIR") or "").strip()
+    if explicit:
+        return Path(explicit)
+    host = platform or sys.platform
+    if host == "win32":
+        base = env.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "Sanctum"
+    if host == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Sanctum"
+    xdg = (env.get("XDG_DATA_HOME") or "").strip()
+    return (Path(xdg) if xdg else Path.home() / ".local" / "share") / "sanctum"
+
+
+#: Resolved once at import, for callers that read it directly.
+DEFAULT_STATE_DIR = default_state_dir()
 
 
 class HelperTransport(Protocol):
@@ -98,16 +127,97 @@ class AppServices:
         """
         return self.state_dir / "recovered"
 
+    @property
+    def cases_dir(self) -> Path:
+        """Case records. See :mod:`core.cases`."""
+        return self.state_dir / "cases"
+
+    @property
+    def work_dir(self) -> Path:
+        """Scratch space the API owns: spilled carve payloads, demo chains.
+
+        Inside the state directory rather than the system temp directory, so a
+        deployment that confines the helper to one tree confines this too, and
+        so an operator looking for what the tool wrote has one place to look.
+        """
+        return self.state_dir / "work"
+
     def prepare(self) -> None:
-        """Create the directories the API writes into."""
+        """Create the directories the API writes into and wire durable jobs."""
         for directory in (
             self.state_dir,
             self.ledger_root,
             self.reports_dir,
             self.evidence_dir,
             self.recovered_dir,
+            self.cases_dir,
+            self.work_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
+        # Every finished job writes its result into the chain, so a report can
+        # be rebuilt after this process is gone. Wired here rather than in
+        # default_services because the test suite builds AppServices directly
+        # and a durability guarantee that only held on one construction path
+        # would not be one. See :mod:`api.durable`.
+        self.registry.on_finish = self._record_job_outcome
+
+    def ledger(self) -> Any:
+        """A read/write handle on this deployment's chain.
+
+        One constructor, so every caller records the same tool version and the
+        same signing fingerprint in a genesis it might create. Looked up rather
+        than minted: building a ledger must not have the side effect of
+        creating a signing key.
+        """
+        from core.ledger.chain import Ledger
+        from core.report.sign import fingerprint_of_existing_key
+
+        return Ledger(
+            self.ledger_root,
+            tool_version=self.tool_version,
+            pubkey_fingerprint=fingerprint_of_existing_key(
+                self.key_dir or (self.state_dir / "keys")
+            ),
+        )
+
+    def platform_snapshot(self) -> dict[str, Any]:
+        """Which OS, app build and privilege a job ran under, for its report.
+
+        Recorded in the job's parameters at submission, so it is hashed into
+        the ledger with them and the certificate carries the host it was
+        issued on - a Windows file erase and a Linux one are different claims
+        and the report must not leave a reader to guess which.
+        """
+        from core.platform.host import platform_info, privilege_state
+
+        joined = " ".join(self.limitations)
+        helper = (
+            "none"
+            if "HELPER_NOT_REQUIRED" in joined
+            else "in-process"
+            if "HELPER_IN_PROCESS" in joined
+            else "socket"
+        )
+        info = platform_info()
+        privilege = privilege_state(helper=helper)
+        return {
+            "family": info.family,
+            "os": info.os_name,
+            "os_version": info.os_version,
+            "os_build": info.os_build,
+            "machine": info.machine,
+            "app_version": info.app_version,
+            "tool_version": self.tool_version,
+            "packaged": info.packaged,
+            "privilege": privilege.level,
+            "privilege_basis": privilege.basis,
+            "helper": helper,
+        }
+
+    def _record_job_outcome(self, record: Any) -> None:
+        from api.durable import record_outcome
+
+        record_outcome(self.ledger(), record)
 
 
 def signing_key_limitations(services: AppServices) -> list[str]:
@@ -169,7 +279,18 @@ def default_services(
         helper = HelperClient(socket_path) if socket_path else InProcessHelper()
 
     limitations: list[str] = []
-    if not socket_path:
+    if not socket_path and sys.platform != "linux":
+        # Not a degradation here: the socket daemon exists to hold raw device
+        # access for the Linux whole-drive engine, and no operation that runs
+        # on Windows or macOS needs elevation. Saying "in-process" as if a
+        # daemon were missing would send an operator looking for one.
+        limitations.append(
+            "HELPER_NOT_REQUIRED: no privileged helper runs on this platform. "
+            "Device discovery and file erasure run unprivileged in this "
+            "process, and whole-drive sanitization is not offered here, so "
+            "nothing needs elevation and nothing is escalated."
+        )
+    elif not socket_path:
         limitations.append(
             "HELPER_IN_PROCESS: no helper socket was configured, so privileged "
             "operations run with this process's own privileges rather than "
@@ -180,7 +301,7 @@ def default_services(
     services = AppServices(
         registry=JobRegistry(),
         helper=helper,
-        state_dir=Path(state_dir) if state_dir else DEFAULT_STATE_DIR,
+        state_dir=Path(state_dir) if state_dir else default_state_dir(),
         limitations=limitations,
     )
     services.prepare()

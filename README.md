@@ -26,13 +26,36 @@ forensic report that a third party verifies with a tool they run themselves.
 ## Status
 
 Implemented and under test. `make check` runs ruff, `mypy --strict` and the suite:
-**1211 passing, 12 skipped** (the skips need root, a Windows host, or an E01-writing
-libewf build; each names its reason).
+**1529 passing, 13 skipped, 0 failing** as of 2026-09-21 (the skips need root, a
+Windows host, or an E01-writing libewf build; each names its reason). The UI has
+its own 26 unit tests (`cd ui && npm test`). Validation results — a 7 GiB carve, a
+fuzz pass, the pooled calibration — are summarised in
+[`docs/validation/final-sih-readiness.md`](docs/validation/final-sih-readiness.md).
 
 Validated against real removable media over six recorded runs — see
 [`docs/validation/hardware.md`](docs/validation/hardware.md), which includes the run
 where the erase covered 512 bytes of a 7.76 GB device and printed `COMPLETE`, the
 eight other defects that run found, and the fixes.
+
+## Platforms
+
+One product with a native adapter per OS (`core/platform/`). Linux has the
+full engine, including whole-drive Clear and firmware Purge. Windows and macOS
+discover and assess devices, erase files and folders, and issue certificates;
+they refuse whole-drive sanitization with the reason rather than offering
+something unvalidated.
+
+All three are exercised on their own operating system in CI
+(`.github/workflows/platform-ci.yml`): the suites, the adapter against that
+runner's real disks, and the built package installed and driven through a
+folder erase and a signed certificate. On the Windows runner the boot disk
+and the page-file disk were both refused with their reasons; on the macOS
+runner the internal disk was refused because the running system boots from an
+APFS container on it. Packaged as an AppImage and `.deb`, `SanctumSetup.exe`
+and `Sanctum.dmg`, all unsigned — see
+[`docs/platform-support.md`](docs/platform-support.md) for what each platform
+does, and [`docs/validation/hardware-platform-matrix.md`](docs/validation/hardware-platform-matrix.md)
+for what no CI run can establish.
 
 ## What it does not claim
 
@@ -66,8 +89,12 @@ Run the local control surface. It binds `127.0.0.1` only, serves its own bundled
 assets, and makes no network call of any kind:
 
 ```bash
-make run            # http://127.0.0.1:8787
+make run            # prints http://127.0.0.1:8787/session/<token> - open that
 ```
+
+The server mints a session token per run and refuses every request without its
+cookie, and every request addressed to a non-loopback name. The packaged
+desktop app does the same and opens the window on that URL itself.
 
 Whole-device operations need the privileged helper; everything else runs unprivileged.
 See [`docs/privilege-boundary.md`](docs/privilege-boundary.md).
@@ -81,10 +108,23 @@ See [`docs/privilege-boundary.md`](docs/privilege-boundary.md).
 | [`docs/architecture.md`](docs/architecture.md) | Layer map and the invariants each layer holds |
 | [`docs/compliance.md`](docs/compliance.md) | What the tool does against NIST SP 800-88r2, and against Indian instruments (DPDP Act 2023 and Rules 2025, IT Act §43A, CERT-In, IS/ISO/IEC 27040) — including where it does not, and that IEEE 2883-2022 conformance has not been verified |
 | [`docs/limitations.md`](docs/limitations.md) | Every guarantee this tool does not make |
+| [`docs/platform-support.md`](docs/platform-support.md) | Linux / Windows / macOS capability matrix: FULL, PARTIAL, UNVERIFIED, UNSUPPORTED, each traced to code |
+| [`docs/packaging.md`](docs/packaging.md) | Building and running the AppImage, `.deb`, `SanctumSetup.exe` and `Sanctum.dmg`; signing status |
+| [`docs/validation/platform-matrix.md`](docs/validation/platform-matrix.md) | What ran on which platform, and what is NOT RUN |
+| [`docs/validation/hardware-platform-matrix.md`](docs/validation/hardware-platform-matrix.md) | VALIDATED, CI-VALIDATED, NOT YET VALIDATED, UNSUPPORTED — CI success is not hardware validation |
+| [`docs/release-readiness.md`](docs/release-readiness.md) | The release gate, condition by condition, with the evidence for each |
+| [`docs/security-review-cross-platform.md`](docs/security-review-cross-platform.md) | Review of the adapters, launcher, API front door and installers |
 | [`docs/validation/hardware.md`](docs/validation/hardware.md) | Real-media validation: method, runs, defects found |
 | [`docs/performance/calibration.md`](docs/performance/calibration.md) | How the confidence weights were derived and bounded |
 | [`docs/performance/acquisition.md`](docs/performance/acquisition.md) | Acquisition throughput against `ewfacquire` |
 | [`docs/privilege-boundary.md`](docs/privilege-boundary.md) | The single root process and what it will accept |
+| [`docs/threat-model.md`](docs/threat-model.md) | Assets, trust boundaries, each threat with its control, its test, and its limit |
+| [`docs/supported-formats.md`](docs/supported-formats.md) | Generated from the signature table and parser/decoder registries; a test fails if it drifts |
+| [`docs/performance/calibration-pooled.md`](docs/performance/calibration-pooled.md) | Eight-seed pooled re-run of the confidence calibration |
+| [`docs/performance/benchmark.md`](docs/performance/benchmark.md) | Recovery benchmark against PhotoRec and Foremost |
+| [`docs/validation/large-image.md`](docs/validation/large-image.md) | 7 GiB carve: wall clock, peak memory, throughput, false positives |
+| [`docs/validation/fuzz.md`](docs/validation/fuzz.md) | Bounded fuzz pass over every structure parser and decoder |
+| [`docs/validation/final-sih-readiness.md`](docs/validation/final-sih-readiness.md) | What is implemented, what is measured, what is not verified |
 
 `CLAUDE.md` holds the non-negotiables every change is checked against.
 
@@ -129,7 +169,8 @@ write E01 does not get built.
 Confirm both after starting it:
 
 ```bash
-curl -s http://127.0.0.1:8787/health        # "ui_bundled": true
+curl -s --cookie "sanctum_session=$SANCTUM_SESSION_TOKEN" \
+  http://127.0.0.1:8787/health             # "ui_bundled": true
 docker exec <container> python -c \
     "from core.carve.acquire import e01_write_supported; print(e01_write_supported())"
 ```

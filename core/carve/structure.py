@@ -320,7 +320,36 @@ def _revision_follows(
     """
     if marker <= previous_end:
         return False
-    return bool(_REVISION_START.match(_read(handle, previous_end, 24, cap)))
+    if not _REVISION_START.match(_read(handle, previous_end, 24, cap)):
+        return False
+    # The prefix test alone is one byte of evidence when the byte is ``%``,
+    # and uniform filler starts with ``%`` or whitespace often enough to
+    # matter: on the 1 GiB validation image (docs/validation/large-image.md),
+    # a 453-byte PDF took the ``%%EOF`` of an identical PDF 11 MB later - whose
+    # ``startxref`` necessarily pointed back at this one's xref - and scored
+    # HIGH at 11 MB. An incremental update appends revisions; it never contains
+    # a second ``%PDF-`` header. One between the two markers means the second
+    # marker ends a different document.
+    return not _contains(handle, b"%PDF-", previous_end, marker, cap)
+
+
+def _contains(
+    handle: EvidenceHandle, needle: bytes, start: int, end: int, cap: int
+) -> bool:
+    """Whether ``needle`` occurs in ``[start, end)``, read in bounded windows."""
+    window = 1 * MIB
+    cursor = start
+    stop = min(end, cap)
+    while cursor < stop:
+        block = _read(handle, cursor, min(window, stop - cursor), cap)
+        if not block:
+            return False
+        if block.find(needle) != -1:
+            return True
+        if cursor + len(block) >= stop:
+            return False
+        cursor += max(len(block) - (len(needle) - 1), 1)
+    return False
 
 
 #: How far back from a ``%%EOF`` the ``startxref`` keyword and its operand sit.

@@ -60,6 +60,7 @@ __all__ = [
     "FILL_FILE_BYTES",
     "NOT_REACHED",
     "SUPPORTED",
+    "FREE_SPACE_PLATFORMS",
     "resolve_volume",
     "wipe_free_space",
 ]
@@ -87,6 +88,10 @@ _SPARE_ENTRIES = 32
 #: Kernel filesystem types whose fill behaviour has been measured, and the name
 #: this module reports for each.
 SUPPORTED = {"vfat": "FAT32", "exfat": "exFAT", "ext4": "ext4"}
+
+#: ``sys.platform`` values the wipe runs on. Read by the platform capability
+#: matrix, so the matrix and this gate cannot disagree.
+FREE_SPACE_PLATFORMS = frozenset({"linux"})
 
 #: Always reported. A free-space wipe that left these out would read as complete.
 NOT_REACHED = (
@@ -157,7 +162,7 @@ def resolve_volume(
         UnsupportedCapability: Not a mount point, or a filesystem whose fill
             behaviour has not been measured.
     """
-    if sys.platform != "linux":
+    if sys.platform not in FREE_SPACE_PLATFORMS:
         raise PlatformUnsupported(
             "Free-space wipe identifies the volume from /proc/mounts and is "
             "implemented for Linux only."

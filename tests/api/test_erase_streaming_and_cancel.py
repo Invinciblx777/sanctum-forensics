@@ -32,6 +32,8 @@ from api.jobs import JobRegistry
 from api.main import create_app
 from fastapi.testclient import TestClient
 
+from tests._loopback import LOOPBACK_BASE_URL
+
 from .conftest import FAKE_DEVICES
 
 PHASES = ("PREFLIGHT", "HIDDEN_AREA_UNLOCK", "ERASE", "VERIFY", "REPORT")
@@ -99,7 +101,9 @@ def slow_client(
         key_dir=tmp_path / "keys",
     )
     services.prepare()
-    with TestClient(create_app(services=services, serve_ui=False)) as client:
+    with TestClient(
+        create_app(services=services, serve_ui=False), base_url=LOOPBACK_BASE_URL
+    ) as client:
         yield client
 
 

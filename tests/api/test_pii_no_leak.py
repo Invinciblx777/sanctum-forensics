@@ -117,10 +117,14 @@ CSV = f"name,mobile,email\nCanary,+91-{MOBILE},{EMAIL}\n".encode()
 
 
 def _forms(value: str) -> set[bytes]:
-    plain = {
-        value,
-        re.sub(r"\D", "", value) if any(c.isdigit() for c in value) else value,
-    }
+    # The digits-only form is a real way to write a numeric identifier (an
+    # Aadhaar, a card, a mobile number with its separators stripped). For an
+    # alphanumeric one it is not: IFSC "SNCT0A1B2C3" reduces to "0123", which
+    # occurs by chance in hex job ids, digests and timestamps and made this
+    # test fail intermittently with no identifier anywhere near the output.
+    plain = {value}
+    if not any(c.isalpha() for c in value):
+        plain.add(re.sub(r"\D", "", value))
     if value == AADHAAR:
         plain |= {AADHAAR_SPACED, AADHAAR_SPACED.replace(" ", "-")}
     if value == CARD:
