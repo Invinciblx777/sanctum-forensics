@@ -3,16 +3,16 @@
     {
       "app_version": "0.0.0",
       "architecture": "x86_64",
-      "commit": "7fa7fb0f7e92+dirty",
-      "date": "2026-09-22T02:38:01Z",
+      "commit": "1f9bf39d1693+dirty",
+      "date": "2026-09-22T02:45:34Z",
       "evidence": "pytest",
       "feature": "api_and_reporting",
       "limitations": "In-process client; no browser and no packaged runtime involved.",
-      "os": "Fedora Linux 44 (Forty Four)",
-      "os_version": "6.19.10-300.fc44.x86_64",
+      "os": "Ubuntu 24.04.5 LTS",
+      "os_version": "6.17.0-1022-azure",
       "platform": "linux",
       "result": "PASS",
-      "runner": "developer machine (Linux 6.19.10-300.fc44.x86_64)",
+      "runner": "GitHub Actions Linux runner, run 35680288845",
       "tests": [
         "tests/api"
       ]
@@ -20,16 +20,16 @@
     {
       "app_version": "0.0.0",
       "architecture": "x86_64",
-      "commit": "7fa7fb0f7e92+dirty",
-      "date": "2026-09-22T02:39:42Z",
+      "commit": "1f9bf39d1693+dirty",
+      "date": "2026-09-22T02:45:34Z",
       "evidence": "platform-smoke-Linux.json",
       "feature": "device_discovery",
       "limitations": "Runner disks only: no removable device is attached to a CI runner.",
-      "os": "Fedora Linux 44 (Forty Four)",
-      "os_version": "6.19.10-300.fc44.x86_64",
+      "os": "Ubuntu 24.04.5 LTS",
+      "os_version": "6.17.0-1022-azure",
       "platform": "linux",
       "result": "PASS",
-      "runner": "developer machine (Linux 6.19.10-300.fc44.x86_64)",
+      "runner": "GitHub Actions Linux runner, run 35680288845",
       "tests": [
         "scripts/platform_smoke.py"
       ]
@@ -37,16 +37,16 @@
     {
       "app_version": "0.0.0",
       "architecture": "x86_64",
-      "commit": "7fa7fb0f7e92+dirty",
-      "date": "2026-09-22T02:38:01Z",
+      "commit": "1f9bf39d1693+dirty",
+      "date": "2026-09-22T02:45:34Z",
       "evidence": "pytest",
       "feature": "file_folder_erase",
       "limitations": "Journals, snapshots and flash remapping are reported, never removed; on copy-on-write filesystems the overwrite cannot reach the old blocks.",
-      "os": "Fedora Linux 44 (Forty Four)",
-      "os_version": "6.19.10-300.fc44.x86_64",
+      "os": "Ubuntu 24.04.5 LTS",
+      "os_version": "6.17.0-1022-azure",
       "platform": "linux",
       "result": "PASS",
-      "runner": "developer machine (Linux 6.19.10-300.fc44.x86_64)",
+      "runner": "GitHub Actions Linux runner, run 35680288845",
       "tests": [
         "tests/erase/files",
         "tests/platform"
@@ -104,6 +104,200 @@
         "tests/device",
         "tests/helper"
       ]
+    },
+    {
+      "app_version": "0.0.0",
+      "architecture": "arm64",
+      "commit": "1f9bf39d1693+dirty",
+      "date": "2026-09-22T02:43:32Z",
+      "evidence": "pytest",
+      "feature": "api_and_reporting",
+      "limitations": "In-process client; no browser and no packaged runtime involved.",
+      "os": "macOS 14.8.9",
+      "os_version": "23.6.0",
+      "platform": "macos",
+      "result": "PASS",
+      "runner": "GitHub Actions macOS runner, run 35680288845",
+      "tests": [
+        "tests/api"
+      ]
+    },
+    {
+      "app_version": "0.0.0",
+      "architecture": "arm64",
+      "commit": "1f9bf39d1693+dirty",
+      "date": "2026-09-22T02:43:32Z",
+      "evidence": "platform-smoke-macOS.json",
+      "feature": "device_discovery",
+      "limitations": "Runner disks only: no removable device is attached to a CI runner.",
+      "os": "macOS 14.8.9",
+      "os_version": "23.6.0",
+      "platform": "macos",
+      "result": "PASS",
+      "runner": "GitHub Actions macOS runner, run 35680288845",
+      "tests": [
+        "scripts/platform_smoke.py"
+      ]
+    },
+    {
+      "app_version": "0.0.0",
+      "architecture": "arm64",
+      "commit": "1f9bf39d1693+dirty",
+      "date": "2026-09-22T02:43:32Z",
+      "evidence": "pytest",
+      "feature": "file_folder_erase",
+      "limitations": "Journals, snapshots and flash remapping are reported, never removed; on copy-on-write filesystems the overwrite cannot reach the old blocks.",
+      "os": "macOS 14.8.9",
+      "os_version": "23.6.0",
+      "platform": "macos",
+      "result": "PASS",
+      "runner": "GitHub Actions macOS runner, run 35680288845",
+      "tests": [
+        "tests/erase/files",
+        "tests/platform"
+      ]
+    },
+    {
+      "app_version": "0.0.0",
+      "architecture": "arm64",
+      "commit": "1f9bf39d1693+dirty",
+      "date": "2026-09-22T02:43:32Z",
+      "evidence": "",
+      "feature": "packaged_application",
+      "limitations": "Installed and driven by a script; no human, no desktop session.",
+      "os": "macOS 14.8.9",
+      "os_version": "23.6.0",
+      "platform": "macos",
+      "result": "NOT RUN",
+      "runner": "GitHub Actions macOS runner, run 35680288845",
+      "tests": []
+    },
+    {
+      "app_version": "0.0.0",
+      "architecture": "arm64",
+      "commit": "1f9bf39d1693+dirty",
+      "date": "2026-09-22T02:43:32Z",
+      "evidence": "",
+      "feature": "recovery",
+      "limitations": "Synthetic images; no physical evidence.",
+      "os": "macOS 14.8.9",
+      "os_version": "23.6.0",
+      "platform": "macos",
+      "result": "NOT RUN",
+      "runner": "GitHub Actions macOS runner, run 35680288845",
+      "tests": []
+    },
+    {
+      "app_version": "0.0.0",
+      "architecture": "arm64",
+      "commit": "1f9bf39d1693+dirty",
+      "date": "2026-09-22T02:43:32Z",
+      "evidence": "core/platform/<family>.py refusal",
+      "feature": "whole_drive_sanitization",
+      "limitations": "Linux only, and never executed against a physical device in CI.",
+      "os": "macOS 14.8.9",
+      "os_version": "23.6.0",
+      "platform": "macos",
+      "result": "UNSUPPORTED",
+      "runner": "GitHub Actions macOS runner, run 35680288845",
+      "tests": []
+    },
+    {
+      "app_version": "0.0.0",
+      "architecture": "AMD64",
+      "commit": "1f9bf39d1693+dirty",
+      "date": "2026-09-22T02:49:35Z",
+      "evidence": "pytest",
+      "feature": "api_and_reporting",
+      "limitations": "In-process client; no browser and no packaged runtime involved.",
+      "os": "Windows 11",
+      "os_version": "10.0.26100",
+      "platform": "windows",
+      "result": "PASS",
+      "runner": "GitHub Actions Windows runner, run 35680288845",
+      "tests": [
+        "tests/api"
+      ]
+    },
+    {
+      "app_version": "0.0.0",
+      "architecture": "AMD64",
+      "commit": "1f9bf39d1693+dirty",
+      "date": "2026-09-22T02:49:35Z",
+      "evidence": "platform-smoke-Windows.json",
+      "feature": "device_discovery",
+      "limitations": "Runner disks only: no removable device is attached to a CI runner.",
+      "os": "Windows 11",
+      "os_version": "10.0.26100",
+      "platform": "windows",
+      "result": "PASS",
+      "runner": "GitHub Actions Windows runner, run 35680288845",
+      "tests": [
+        "scripts/platform_smoke.py"
+      ]
+    },
+    {
+      "app_version": "0.0.0",
+      "architecture": "AMD64",
+      "commit": "1f9bf39d1693+dirty",
+      "date": "2026-09-22T02:49:35Z",
+      "evidence": "pytest",
+      "feature": "file_folder_erase",
+      "limitations": "Journals, snapshots and flash remapping are reported, never removed; on copy-on-write filesystems the overwrite cannot reach the old blocks.",
+      "os": "Windows 11",
+      "os_version": "10.0.26100",
+      "platform": "windows",
+      "result": "PASS",
+      "runner": "GitHub Actions Windows runner, run 35680288845",
+      "tests": [
+        "tests/erase/files",
+        "tests/platform"
+      ]
+    },
+    {
+      "app_version": "0.0.0",
+      "architecture": "AMD64",
+      "commit": "1f9bf39d1693+dirty",
+      "date": "2026-09-22T02:49:35Z",
+      "evidence": "",
+      "feature": "packaged_application",
+      "limitations": "Installed and driven by a script; no human, no desktop session.",
+      "os": "Windows 11",
+      "os_version": "10.0.26100",
+      "platform": "windows",
+      "result": "NOT RUN",
+      "runner": "GitHub Actions Windows runner, run 35680288845",
+      "tests": []
+    },
+    {
+      "app_version": "0.0.0",
+      "architecture": "AMD64",
+      "commit": "1f9bf39d1693+dirty",
+      "date": "2026-09-22T02:49:35Z",
+      "evidence": "",
+      "feature": "recovery",
+      "limitations": "Synthetic images; no physical evidence.",
+      "os": "Windows 11",
+      "os_version": "10.0.26100",
+      "platform": "windows",
+      "result": "NOT RUN",
+      "runner": "GitHub Actions Windows runner, run 35680288845",
+      "tests": []
+    },
+    {
+      "app_version": "0.0.0",
+      "architecture": "AMD64",
+      "commit": "1f9bf39d1693+dirty",
+      "date": "2026-09-22T02:49:35Z",
+      "evidence": "core/platform/<family>.py refusal",
+      "feature": "whole_drive_sanitization",
+      "limitations": "Linux only, and never executed against a physical device in CI.",
+      "os": "Windows 11",
+      "os_version": "10.0.26100",
+      "platform": "windows",
+      "result": "UNSUPPORTED",
+      "runner": "GitHub Actions Windows runner, run 35680288845",
+      "tests": []
     }
   ],
   "hardware": {},
@@ -111,32 +305,32 @@
   "suites": {
     "linux": {
       "api": {
-        "commit": "7fa7fb0f7e92+dirty",
+        "commit": "1f9bf39d1693+dirty",
         "counts": {
           "errors": 0,
           "failed": 0,
-          "passed": 209,
-          "skipped": 1
+          "passed": 208,
+          "skipped": 2
         },
-        "date": "2026-09-22T02:38:01Z",
+        "date": "2026-09-22T02:45:34Z",
         "exit_code": 0,
-        "os": "Linux 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026",
+        "os": "Linux 6.17.0-1022-azure #22-Ubuntu SMP Mon Jul 27 17:24:03 UTC 2026",
         "paths": [
           "tests/api"
         ],
         "python": "3.11.16",
-        "runner": "developer machine (Linux 6.19.10-300.fc44.x86_64)",
+        "runner": "GitHub Actions Linux runner, run 35680288845",
         "state": "PASS"
       },
       "file_erase": {
-        "commit": "6e048b7496f2+dirty",
+        "commit": "1f9bf39d1693+dirty",
         "counts": {
           "errors": 0,
           "failed": 0,
           "passed": 242,
           "skipped": 30
         },
-        "date": "2026-09-21T20:02:25Z",
+        "date": "2026-09-22T02:45:17Z",
         "exit_code": 0,
         "os": "Linux 6.17.0-1022-azure #22-Ubuntu SMP Mon Jul 27 17:24:03 UTC 2026",
         "paths": [
@@ -144,7 +338,7 @@
           "tests/platform"
         ],
         "python": "3.11.16",
-        "runner": "GitHub Actions Linux runner, run 35648003571",
+        "runner": "GitHub Actions Linux runner, run 35680288845",
         "state": "PASS"
       },
       "recovery": {
@@ -188,32 +382,32 @@
     },
     "macos": {
       "api": {
-        "commit": "6e048b7496f2+dirty",
+        "commit": "1f9bf39d1693+dirty",
         "counts": {
           "errors": 0,
           "failed": 0,
           "passed": 203,
           "skipped": 7
         },
-        "date": "2026-09-21T20:00:52Z",
+        "date": "2026-09-22T02:43:32Z",
         "exit_code": 0,
         "os": "Darwin 23.6.0 Darwin Kernel Version 23.6.0: Tue Jul 21 21:56:54 PDT 2026; root:xnu-10063.141.1.713.39~1/RELEASE_ARM64_VMAPPLE",
         "paths": [
           "tests/api"
         ],
         "python": "3.11.9",
-        "runner": "GitHub Actions macOS runner, run 35648003571",
+        "runner": "GitHub Actions macOS runner, run 35680288845",
         "state": "PASS"
       },
       "file_erase": {
-        "commit": "6e048b7496f2+dirty",
+        "commit": "1f9bf39d1693+dirty",
         "counts": {
           "errors": 0,
           "failed": 0,
           "passed": 169,
           "skipped": 103
         },
-        "date": "2026-09-21T20:00:35Z",
+        "date": "2026-09-22T02:43:19Z",
         "exit_code": 0,
         "os": "Darwin 23.6.0 Darwin Kernel Version 23.6.0: Tue Jul 21 21:56:54 PDT 2026; root:xnu-10063.141.1.713.39~1/RELEASE_ARM64_VMAPPLE",
         "paths": [
@@ -221,38 +415,38 @@
           "tests/platform"
         ],
         "python": "3.11.9",
-        "runner": "GitHub Actions macOS runner, run 35648003571",
+        "runner": "GitHub Actions macOS runner, run 35680288845",
         "state": "PASS"
       }
     },
     "windows": {
       "api": {
-        "commit": "6e048b7496f2+dirty",
+        "commit": "1f9bf39d1693+dirty",
         "counts": {
           "errors": 0,
           "failed": 0,
           "passed": 201,
           "skipped": 9
         },
-        "date": "2026-09-21T20:05:39Z",
+        "date": "2026-09-22T02:49:35Z",
         "exit_code": 0,
         "os": "Windows 10 10.0.26100",
         "paths": [
           "tests/api"
         ],
         "python": "3.11.9",
-        "runner": "GitHub Actions Windows runner, run 35648003571",
+        "runner": "GitHub Actions Windows runner, run 35680288845",
         "state": "PASS"
       },
       "file_erase": {
-        "commit": "6e048b7496f2+dirty",
+        "commit": "1f9bf39d1693+dirty",
         "counts": {
           "errors": 0,
           "failed": 0,
           "passed": 201,
           "skipped": 71
         },
-        "date": "2026-09-21T20:05:09Z",
+        "date": "2026-09-22T02:48:35Z",
         "exit_code": 0,
         "os": "Windows 10 10.0.26100",
         "paths": [
@@ -260,7 +454,7 @@
           "tests/platform"
         ],
         "python": "3.11.9",
-        "runner": "GitHub Actions Windows runner, run 35648003571",
+        "runner": "GitHub Actions Windows runner, run 35680288845",
         "state": "PASS"
       }
     }
