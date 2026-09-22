@@ -17,9 +17,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from scripts.media_benchmark import MEDIA_SIZE, Refused, preflight
+from scripts.media_benchmark import MEDIA_SIZE, Refused, _kernel_serial, preflight
 
 SERIAL = "B103B9C19DE1CCC1BD535ACB"
+SYSFS_SERIAL = "/sys/devices/pci0000:00/usb8/8-1/serial"
 
 
 def _disk(**overrides: Any) -> dict[str, Any]:
@@ -45,9 +46,17 @@ def _disk(**overrides: Any) -> dict[str, Any]:
 def host(monkeypatch: pytest.MonkeyPatch) -> Any:
     """Point the two host probes at values a test controls."""
 
-    def install(node: dict[str, Any], root: str = "nvme0n1") -> None:
+    def install(
+        node: dict[str, Any],
+        root: str = "nvme0n1",
+        *,
+        kernel: tuple[str | None, str | None] = (SERIAL, SYSFS_SERIAL),
+    ) -> None:
         monkeypatch.setattr(
             "scripts.media_benchmark._lsblk", lambda device: node
+        )
+        monkeypatch.setattr(
+            "scripts.media_benchmark._kernel_serial", lambda name, tran: kernel
         )
         monkeypatch.setattr("scripts.media_benchmark._root_disk", lambda: root)
         monkeypatch.setattr(Path, "exists", lambda self: True)
@@ -134,3 +143,74 @@ def test_an_implausibly_large_device_is_refused(host: Any) -> None:
     host(_disk(size=2 * 1024**4))
     with pytest.raises(Refused, match="sanity limit"):
         preflight("/dev/sdb", expect_serial=SERIAL)
+
+
+# ------------------------------------------------ the independent serial
+
+
+def test_agreeing_serial_sources_are_reported_as_agreement(host: Any) -> None:
+    host(_disk())
+    result = preflight("/dev/sdb", expect_serial=SERIAL)
+    check = result["serial_check"]
+    assert check["status"] == "AGREE"
+    assert check["source_a"]["value"] == SERIAL
+    assert check["source_b"] == {"name": SYSFS_SERIAL, "value": SERIAL}
+
+
+def test_disagreeing_serial_sources_are_refused(host: Any) -> None:
+    """lsblk matches the declaration, the kernel does not: neither is believed."""
+    host(_disk(), kernel=("B103B9C19DE1CCC1BD535ACC", SYSFS_SERIAL))
+    with pytest.raises(Refused, match="disagree"):
+        preflight("/dev/sdb", expect_serial=SERIAL)
+
+
+def test_an_unreadable_independent_serial_is_unverified_not_agreed(
+    host: Any,
+) -> None:
+    host(_disk(), kernel=(None, None))
+    result = preflight("/dev/sdb", expect_serial=SERIAL)
+    assert result["serial_check"]["status"] == "UNVERIFIED"
+    assert result["serial_check"]["source_b"]["value"] is None
+
+
+def _sysfs(root: Path, device_dir: Path) -> None:
+    (root / "sdb").mkdir(parents=True)
+    device_dir.mkdir(parents=True)
+    (root / "sdb" / "device").symlink_to(device_dir)
+
+
+def test_the_kernel_serial_of_a_usb_disk_is_its_usb_device_serial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    usb = tmp_path / "devices" / "usb8" / "8-1"
+    scsi = usb / "8-1:1.0" / "host0" / "target0:0:0" / "0:0:0:0"
+    _sysfs(tmp_path / "block", scsi)
+    (usb / "idVendor").write_text("0930\n")
+    (usb / "serial").write_text(SERIAL + "\n")
+    # A host controller further up also has a serial; it must not be taken.
+    (usb.parent / "idVendor").write_text("1d6b\n")
+    (usb.parent / "serial").write_text("0000:76:00.4\n")
+    monkeypatch.setattr("scripts.media_benchmark.SYSFS_BLOCK", tmp_path / "block")
+    assert _kernel_serial("sdb", "usb") == (SERIAL, str(usb / "serial"))
+
+
+def test_the_kernel_serial_of_a_scsi_disk_comes_from_its_vpd_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scsi = tmp_path / "devices" / "0:0:0:0"
+    _sysfs(tmp_path / "block", scsi)
+    payload = b"  WD-ABC123 "
+    header = b"\x00\x80" + len(payload).to_bytes(2, "big")
+    (scsi / "vpd_pg80").write_bytes(header + payload)
+    monkeypatch.setattr("scripts.media_benchmark.SYSFS_BLOCK", tmp_path / "block")
+    assert _kernel_serial("sdb", "sata") == ("WD-ABC123", str(scsi / "vpd_pg80"))
+
+
+def test_a_missing_kernel_serial_is_not_invented(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _sysfs(tmp_path / "block", tmp_path / "devices" / "0:0:0:0")
+    monkeypatch.setattr("scripts.media_benchmark.SYSFS_BLOCK", tmp_path / "block")
+    assert _kernel_serial("sdb", "usb") == (None, None)
+    assert _kernel_serial("sdb", "sata") == (None, None)
+    assert _kernel_serial("sdz", "usb") == (None, None)
