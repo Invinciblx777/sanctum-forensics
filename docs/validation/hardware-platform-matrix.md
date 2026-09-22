@@ -66,3 +66,20 @@ Four states, and they are not interchangeable:
 
 Record each run here with the date, the OS build, the device model and the
 resulting certificate, as `docs/validation/hardware.md` does.
+
+## Recorded CI evidence, 2026-09-22
+
+`platform-ci` run 35680288845 on `release/cross-platform-validation`, all
+jobs green. What the runners actually reported:
+
+| Runner | Disks found | Protected, and why |
+|---|---|---|
+| Ubuntu 24.04.5, x86_64 | 1 (`/dev/sda`, 150 GB) | 1 — holds the running root filesystem |
+| Windows 11 10.0.26100, AMD64 | 2 (`PhysicalDrive0`, `PhysicalDrive1`, 150 GB each) | 2 — `IsBoot` on the first, an active page file on `D:` for the second |
+| macOS 14.8.9, arm64 | 1 (`disk0`, 325 GB, SSD) | 1 — the running macOS boots from an APFS container on it |
+
+Every protected device was assessed NOT AVAILABLE, every capability row
+carried a source, and whole-drive rows were UNSUPPORTED on Windows and macOS.
+
+This is still not hardware validation: those are virtual disks on hosted
+runners, and no removable media was attached to any of them.
