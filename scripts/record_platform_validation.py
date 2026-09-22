@@ -273,23 +273,40 @@ def _skeleton() -> dict[str, object]:
 
 
 def merge(paths: list[Path], out: Path) -> None:
+    """Fold per-platform records into one.
+
+    Suites merge by platform. Features merge by *(platform, feature)*, and a
+    row that says something ("PASS", "FAIL", "UNSUPPORTED") always beats one
+    that says "NOT RUN": the package job records only the packaged-application
+    feature, and must not blank the rows the test job recorded for the same
+    platform minutes earlier.
+    """
     merged = _load(out) or _skeleton()
     suites = merged.setdefault("suites", {})
-    features = merged.setdefault("features", [])
     assert isinstance(suites, dict)
-    assert isinstance(features, list)
+    rows: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in merged.get("features") or []:
+        if isinstance(row, dict):
+            rows[(str(row.get("platform")), str(row.get("feature")))] = row
+
     for path in paths:
         other = _load(path)
         for fam, entries in (other.get("suites") or {}).items():  # type: ignore[union-attr]
             suites.setdefault(fam, {}).update(entries)
-        incoming = [
-            row for row in (other.get("features") or []) if isinstance(row, dict)
-        ]
-        replaced = {row.get("platform") for row in incoming}
-        merged["features"] = [
-            row for row in features if row.get("platform") not in replaced
-        ] + incoming
-        features = merged["features"]
+        for row in other.get("features") or []:  # type: ignore[union-attr]
+            if not isinstance(row, dict):
+                continue
+            key = (str(row.get("platform")), str(row.get("feature")))
+            existing = rows.get(key)
+            if (
+                existing is not None
+                and row.get("result") == "NOT RUN"
+                and existing.get("result") != "NOT RUN"
+            ):
+                continue
+            rows[key] = row
+
+    merged["features"] = [rows[key] for key in sorted(rows)]
     out.write_text(
         json.dumps(merged, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -305,6 +322,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--package", type=Path, default=None, help="package_smoke.py evidence file"
+    )
+    parser.add_argument(
+        "--record-only",
+        action="store_true",
+        help="record the given evidence without running any test suite",
     )
     args = parser.parse_args(argv)
 
@@ -323,11 +345,31 @@ def main(argv: list[str] | None = None) -> int:
     assert isinstance(suites, dict)
     family = _family()
     failed = False
-    for name in args.suites or list(SUITES):
+    for name in args.suites if args.record_only else (args.suites or list(SUITES)):
         result = run_suite(name)
         suites.setdefault(family, {})[name] = result
         failed |= result["state"] != "PASS"
         print(f"{family} {name}: {result['state']} {result.get('counts')}")
+
+    rows = feature_rows(
+        family,
+        suites.get(family, {}),
+        _evidence(args.smoke),
+        _evidence(args.package),
+        # The file's name, not its path: this record is committed, and where
+        # a developer's scratch directory lives is not evidence.
+        args.smoke.name if args.smoke else "",
+        args.package.name if args.package else "",
+    )
+    kept = [
+        row
+        for row in (record.get("features") or [])
+        if isinstance(row, dict) and row.get("platform") != family
+    ]
+    record["features"] = kept + rows
+    for row in rows:
+        print(f"{family} {row['feature']}: {row['result']}")
+
     args.out.write_text(
         json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )

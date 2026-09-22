@@ -1,17 +1,124 @@
 {
+  "features": [
+    {
+      "app_version": "0.0.0",
+      "architecture": "x86_64",
+      "commit": "7fa7fb0f7e92+dirty",
+      "date": "2026-09-22T02:38:01Z",
+      "evidence": "pytest",
+      "feature": "api_and_reporting",
+      "limitations": "In-process client; no browser and no packaged runtime involved.",
+      "os": "Fedora Linux 44 (Forty Four)",
+      "os_version": "6.19.10-300.fc44.x86_64",
+      "platform": "linux",
+      "result": "PASS",
+      "runner": "developer machine (Linux 6.19.10-300.fc44.x86_64)",
+      "tests": [
+        "tests/api"
+      ]
+    },
+    {
+      "app_version": "0.0.0",
+      "architecture": "x86_64",
+      "commit": "7fa7fb0f7e92+dirty",
+      "date": "2026-09-22T02:39:42Z",
+      "evidence": "platform-smoke-Linux.json",
+      "feature": "device_discovery",
+      "limitations": "Runner disks only: no removable device is attached to a CI runner.",
+      "os": "Fedora Linux 44 (Forty Four)",
+      "os_version": "6.19.10-300.fc44.x86_64",
+      "platform": "linux",
+      "result": "PASS",
+      "runner": "developer machine (Linux 6.19.10-300.fc44.x86_64)",
+      "tests": [
+        "scripts/platform_smoke.py"
+      ]
+    },
+    {
+      "app_version": "0.0.0",
+      "architecture": "x86_64",
+      "commit": "7fa7fb0f7e92+dirty",
+      "date": "2026-09-22T02:38:01Z",
+      "evidence": "pytest",
+      "feature": "file_folder_erase",
+      "limitations": "Journals, snapshots and flash remapping are reported, never removed; on copy-on-write filesystems the overwrite cannot reach the old blocks.",
+      "os": "Fedora Linux 44 (Forty Four)",
+      "os_version": "6.19.10-300.fc44.x86_64",
+      "platform": "linux",
+      "result": "PASS",
+      "runner": "developer machine (Linux 6.19.10-300.fc44.x86_64)",
+      "tests": [
+        "tests/erase/files",
+        "tests/platform"
+      ]
+    },
+    {
+      "app_version": "0.0.0",
+      "architecture": "x86_64",
+      "commit": "7fa7fb0f7e92+dirty",
+      "date": "2026-09-22T02:39:42Z",
+      "evidence": "package-smoke-Linux.json",
+      "feature": "packaged_application",
+      "limitations": "Installed and driven by a script; no human, no desktop session.",
+      "os": "Fedora Linux 44 (Forty Four)",
+      "os_version": "6.19.10-300.fc44.x86_64",
+      "platform": "linux",
+      "result": "PASS",
+      "runner": "developer machine (Linux 6.19.10-300.fc44.x86_64)",
+      "tests": [
+        "scripts/package_smoke.py"
+      ]
+    },
+    {
+      "app_version": "0.0.0",
+      "architecture": "x86_64",
+      "commit": "7fa7fb0f7e92+dirty",
+      "date": "2026-09-22T02:38:01Z",
+      "evidence": "pytest",
+      "feature": "recovery",
+      "limitations": "Synthetic images; no physical evidence.",
+      "os": "Fedora Linux 44 (Forty Four)",
+      "os_version": "6.19.10-300.fc44.x86_64",
+      "platform": "linux",
+      "result": "PASS",
+      "runner": "developer machine (Linux 6.19.10-300.fc44.x86_64)",
+      "tests": [
+        "tests/carve"
+      ]
+    },
+    {
+      "app_version": "0.0.0",
+      "architecture": "x86_64",
+      "commit": "7fa7fb0f7e92+dirty",
+      "date": "2026-09-22T02:38:01Z",
+      "evidence": "pytest",
+      "feature": "whole_drive_sanitization",
+      "limitations": "Linux only, and never executed against a physical device in CI.",
+      "os": "Fedora Linux 44 (Forty Four)",
+      "os_version": "6.19.10-300.fc44.x86_64",
+      "platform": "linux",
+      "result": "PASS",
+      "runner": "developer machine (Linux 6.19.10-300.fc44.x86_64)",
+      "tests": [
+        "tests/erase",
+        "tests/device",
+        "tests/helper"
+      ]
+    }
+  ],
   "hardware": {},
   "note": "Written by scripts/record_platform_validation.py from real pytest runs. Do not edit by hand. A missing entry means NOT RUN.",
   "suites": {
     "linux": {
       "api": {
-        "commit": "693051364410",
+        "commit": "7fa7fb0f7e92+dirty",
         "counts": {
           "errors": 0,
           "failed": 0,
           "passed": 209,
           "skipped": 1
         },
-        "date": "2026-09-21T19:58:43Z",
+        "date": "2026-09-22T02:38:01Z",
         "exit_code": 0,
         "os": "Linux 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026",
         "paths": [
@@ -22,22 +129,22 @@
         "state": "PASS"
       },
       "file_erase": {
-        "commit": "4ceccd9003d2+dirty",
+        "commit": "6e048b7496f2+dirty",
         "counts": {
           "errors": 0,
           "failed": 0,
-          "passed": 250,
-          "skipped": 22
+          "passed": 242,
+          "skipped": 30
         },
-        "date": "2026-09-21T19:55:20Z",
+        "date": "2026-09-21T20:02:25Z",
         "exit_code": 0,
-        "os": "Linux 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026",
+        "os": "Linux 6.17.0-1022-azure #22-Ubuntu SMP Mon Jul 27 17:24:03 UTC 2026",
         "paths": [
           "tests/erase/files",
           "tests/platform"
         ],
         "python": "3.11.16",
-        "runner": "developer machine (Linux 6.19.10-300.fc44.x86_64)",
+        "runner": "GitHub Actions Linux runner, run 35648003571",
         "state": "PASS"
       },
       "recovery": {
@@ -76,6 +183,84 @@
         ],
         "python": "3.11.16",
         "runner": "developer machine (Linux 6.19.10-300.fc44.x86_64)",
+        "state": "PASS"
+      }
+    },
+    "macos": {
+      "api": {
+        "commit": "6e048b7496f2+dirty",
+        "counts": {
+          "errors": 0,
+          "failed": 0,
+          "passed": 203,
+          "skipped": 7
+        },
+        "date": "2026-09-21T20:00:52Z",
+        "exit_code": 0,
+        "os": "Darwin 23.6.0 Darwin Kernel Version 23.6.0: Tue Jul 21 21:56:54 PDT 2026; root:xnu-10063.141.1.713.39~1/RELEASE_ARM64_VMAPPLE",
+        "paths": [
+          "tests/api"
+        ],
+        "python": "3.11.9",
+        "runner": "GitHub Actions macOS runner, run 35648003571",
+        "state": "PASS"
+      },
+      "file_erase": {
+        "commit": "6e048b7496f2+dirty",
+        "counts": {
+          "errors": 0,
+          "failed": 0,
+          "passed": 169,
+          "skipped": 103
+        },
+        "date": "2026-09-21T20:00:35Z",
+        "exit_code": 0,
+        "os": "Darwin 23.6.0 Darwin Kernel Version 23.6.0: Tue Jul 21 21:56:54 PDT 2026; root:xnu-10063.141.1.713.39~1/RELEASE_ARM64_VMAPPLE",
+        "paths": [
+          "tests/erase/files",
+          "tests/platform"
+        ],
+        "python": "3.11.9",
+        "runner": "GitHub Actions macOS runner, run 35648003571",
+        "state": "PASS"
+      }
+    },
+    "windows": {
+      "api": {
+        "commit": "6e048b7496f2+dirty",
+        "counts": {
+          "errors": 0,
+          "failed": 0,
+          "passed": 201,
+          "skipped": 9
+        },
+        "date": "2026-09-21T20:05:39Z",
+        "exit_code": 0,
+        "os": "Windows 10 10.0.26100",
+        "paths": [
+          "tests/api"
+        ],
+        "python": "3.11.9",
+        "runner": "GitHub Actions Windows runner, run 35648003571",
+        "state": "PASS"
+      },
+      "file_erase": {
+        "commit": "6e048b7496f2+dirty",
+        "counts": {
+          "errors": 0,
+          "failed": 0,
+          "passed": 201,
+          "skipped": 71
+        },
+        "date": "2026-09-21T20:05:09Z",
+        "exit_code": 0,
+        "os": "Windows 10 10.0.26100",
+        "paths": [
+          "tests/erase/files",
+          "tests/platform"
+        ],
+        "python": "3.11.9",
+        "runner": "GitHub Actions Windows runner, run 35648003571",
         "state": "PASS"
       }
     }

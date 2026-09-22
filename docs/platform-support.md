@@ -28,31 +28,35 @@ hardware-validated**, and no row here claims a physical device unless
 
 ## Matrix
 
+Evidence: `platform-ci` run on `release/cross-platform-validation`, three
+runners - Ubuntu 24.04.5 (x86_64), Windows 11 build 10.0.26100 (AMD64),
+macOS 14.8.9 (arm64). Suite results are in
+`core/platform/validation_record.json`; the adapter and package evidence are
+the `platform-smoke-*.json` and `package-smoke-*.json` artifacts of that run.
+
 | Feature | Linux | Windows | macOS |
 |---|---|---|---|
-| Device discovery | **FULL** — `lsblk -J -O -b` with `/sys/block` fallback, by-id identity (`core/device/enumerate.py`) | **UNVERIFIED** — Storage module: `Get-Disk`, `Get-PhysicalDisk`, `Get-Partition`, `Get-Volume`, `Win32_PageFileUsage`, one encoded PowerShell script (`core/platform/windows.py`); parser tested from a captured inventory | **UNVERIFIED** — `diskutil list/apfs list/info -plist` via `plistlib` (`core/platform/macos.py`); parser tested from captured plists |
-| System/boot/mounted refusal | **FULL** — root, `/boot`, swap, mounts (`core/device/guard.py`); refused on the real host disks in hardware runs | **UNVERIFIED** — `IsBoot`, `IsSystem`, `%SystemDrive%`, page file, `hiberfil.sys`, drive letters and folder mounts | **UNVERIFIED** — boot APFS container traced to its physical store, System/Data/VM/Preboot/Recovery roles, mounts through containers |
-| Normalized device + assessment | **FULL** | **UNVERIFIED** | **UNVERIFIED** |
-| File erase | **FULL** — `core/erase/files.py`, `PosixBackend` (FIEMAP extents, xattrs, chattr flags, btrfs/zfs snapshot listing) | **UNVERIFIED** — same engine, `WindowsBackend` (retrieval pointers, resident-MFT detection, ADS, read-only attribute, VSS listing when elevated) | **UNVERIFIED** — same engine, `PosixBackend` darwin paths (`statfs`, `F_LOG2PHYS_EXT`, `tmutil` snapshots). On APFS the overwrite lands in new blocks: removal plus residual report, never verified destruction |
-| Folder / recursive erase | **FULL** | **UNVERIFIED** — junctions and all reparse points are never descended (fixed in this change; see *Security*) | **UNVERIFIED** |
-| Batch erase, progress, cancellation | **FULL** | **UNVERIFIED** | **UNVERIFIED** |
-| Document metadata cleanse | **FULL** — JPEG, PNG, PDF, OOXML, OLE, audio, SVG, HTML (`core/erase/metadata.py`) | **UNVERIFIED** (pure Python) | **UNVERIFIED** (pure Python) |
-| Filesystem metadata (names, size) | **PARTIAL** — same-length rename chain, stepped truncation; journal and index copies are reported, not removed | **UNVERIFIED** — as Linux, plus no unprivileged directory flush | **UNVERIFIED** |
-| Free-space wipe | **PARTIAL** — FAT32, exFAT, ext4 only (`FREE_SPACE_PLATFORMS`, `SUPPORTED`) | **UNSUPPORTED** | **UNSUPPORTED** |
-| Whole-drive Clear (overwrite) | **FULL** — `O_DIRECT` overwrite, HPA/DCO unlock, validated on real USB flash (`docs/validation/hardware.md`) | **UNSUPPORTED** — no validated raw-disk engine; refused with reason | **UNSUPPORTED** — refused with reason |
-| Hardware Purge (ATA SANITIZE, SECURITY ERASE, NVMe sanitize/format, Opal) | **UNVERIFIED** — selected from probed capability and dispatched, never executed on hardware in recorded validation | **UNSUPPORTED** | **UNSUPPORTED** — internal Apple storage is purged by macOS *Erase All Content and Settings*, which the app names and does not perform |
-| Whole-drive verification | **FULL** for overwrite (full read to 64 GiB, seeded sampling above); **UNVERIFIED** for drive attestation | **UNSUPPORTED** | **UNSUPPORTED** |
-| File-erase verification | **PARTIAL** — physical read-back of pre-captured extents; needs raw read access; not possible on tmpfs or copy-on-write | **UNVERIFIED** — raw volume read needs elevation; unelevated it is reported *not verified* | **UNVERIFIED** — not possible on APFS |
-| Resume | **PARTIAL** — overwrite from last ledgered checkpoint; firmware methods restart | **UNSUPPORTED** | **UNSUPPORTED** |
-| Signed certificate, hash-chained ledger | **FULL** | **UNVERIFIED** (pure Python; `msvcrt` ledger lock) | **UNVERIFIED** (pure Python) |
-| Privileged helper | **FULL** — root daemon, Unix socket 0600, `SO_PEERCRED`, static allowlist, path confinement | not needed: no Windows operation needs elevation, and none is requested | not needed: as Windows |
-| Desktop package | **FULL** — AppImage and `.deb`, built and smoke-tested on Fedora 44 in this change | **UNVERIFIED** — `SanctumSetup.exe` scripted (PyInstaller + Inno Setup) and wired into CI; not built on a Windows machine in this change | **UNVERIFIED** — `Sanctum.dmg` scripted (PyInstaller + `hdiutil`); not built on a Mac in this change; unsigned, not notarized |
+| Device discovery | **VALIDATED** - `lsblk -J -O -b` with a `/sys/block` fallback and by-id identity; run on the host and on the CI runner | **VALIDATED** - Storage module (`Get-Disk`, `Get-PhysicalDisk`, `Get-Partition`, `Get-Volume`, `Win32_PageFileUsage`) through one encoded PowerShell script; on the runner it found both disks and normalised them | **VALIDATED** - `diskutil list/apfs list/info -plist`; on the runner it found the internal disk and traced the boot APFS container to it |
+| System/boot/mounted refusal | **VALIDATED** - root, `/boot`, swap and mounts; the runner's own disk was refused | **VALIDATED** - `IsBoot`, `IsSystem`, `%SystemDrive%`, page file, `hiberfil.sys`; the runner's boot disk **and** its page-file disk were both refused, each with its reason | **VALIDATED** - "the running macOS boots from an APFS container on this disk"; System/Data/VM/Preboot/Recovery roles also protect |
+| Normalized device + assessment | **VALIDATED** | **VALIDATED** - every discovered device carried an assessment; protected ones read NOT AVAILABLE | **VALIDATED** |
+| File erase | **VALIDATED** - `PosixBackend`: FIEMAP extents, xattrs, chattr flags, snapshot listing | **VALIDATED** - `WindowsBackend` on the runner's NTFS: retrieval pointers, resident-MFT detection, alternate data streams, read-only attribute | **VALIDATED** - `PosixBackend` darwin paths on APFS; the erase runs and the verification is refused rather than claimed |
+| Folder / recursive erase | **VALIDATED** | **VALIDATED** - a real NTFS junction is created on the runner and proved unable to redirect the erase out of the named root | **VALIDATED** |
+| Batch erase, progress, cancellation | **VALIDATED** | **VALIDATED** | **VALIDATED** |
+| Document metadata cleanse | **VALIDATED** | **VALIDATED** (pure Python, run in the Windows suite) | **VALIDATED** |
+| Filesystem metadata (names, size) | **PARTIAL** - rename chain and stepped truncation; journal and index copies are reported, not removed | **PARTIAL** - as Linux, and no unprivileged directory flush exists on Windows | **PARTIAL** |
+| Free-space wipe | **PARTIAL** - FAT32, exFAT, ext4 only | **UNSUPPORTED** | **UNSUPPORTED** |
+| Whole-drive Clear (overwrite) | **VALIDATED** - `O_DIRECT` overwrite with HPA/DCO unlock, validated on real USB flash (`validation/hardware.md`) | **UNSUPPORTED** - refused with the reason; no engine exists here | **UNSUPPORTED** - refused with the reason |
+| Hardware Purge (ATA SANITIZE, SECURITY ERASE, NVMe sanitize/format, Opal) | **HARDWARE-UNVERIFIED** - selected from probed capability and dispatched; no drive has executed it in a recorded run | **UNSUPPORTED** | **UNSUPPORTED** - macOS purges internal storage through *Erase All Content and Settings*, which the app names and does not perform |
+| Whole-drive verification | **VALIDATED** for overwrite (full read to 64 GiB, seeded sampling above); **HARDWARE-UNVERIFIED** for drive attestation | **UNSUPPORTED** | **UNSUPPORTED** |
+| File-erase verification | **PARTIAL** - physical read-back of pre-captured extents; needs raw read access, impossible on tmpfs | **PARTIAL** - extents come from `FSCTL_GET_RETRIEVAL_POINTERS` (whole runs, fixed in this work); the read-back itself needs elevation, and unelevated it is reported *not verified* | **NOT VERIFIABLE on APFS** - copy-on-write; reported with its reason, never as a pass |
+| Resume | **PARTIAL** - overwrite from the last ledgered checkpoint; firmware methods restart | **UNSUPPORTED** | **UNSUPPORTED** |
+| Signed certificate, hash-chained ledger | **VALIDATED** | **VALIDATED** - the packaged app issued and verified one on the runner | **VALIDATED** - same |
+| Privileged helper | **VALIDATED** - root daemon, 0600 Unix socket, `SO_PEERCRED`, static allowlist, path confinement | not needed, and none ships: no implemented Windows operation requires elevation | not needed, as Windows |
+| Desktop package | **VALIDATED** - AppImage and `.deb`; built locally and in CI, installed and run on Debian 12 and Ubuntu 22.04, 24 of 24 packaged checks | **VALIDATED in CI** - `SanctumSetup.exe` built, installed silently, driven and uninstalled on the runner. Unsigned. | **VALIDATED in CI** - `Sanctum.dmg` built and mounted, `Sanctum.app` driven through erase and certificate, 24 of 24 checks. Unsigned, not notarized. |
 
-When the Windows and macOS CI jobs (`.github/workflows/platform-ci.yml`) pass,
-`scripts/record_platform_validation.py` writes their results into
-`core/platform/validation_record.json`, and the app's own matrix lifts the
-file-erase rows on that platform from *Unverified* to *Supported with limits*.
-This document should then be updated from the recorded run, not before.
+**Nothing above was performed on physical media on Windows or macOS.** CI
+runners have virtual disks and no removable device; see
+[`validation/hardware-platform-matrix.md`](validation/hardware-platform-matrix.md).
 
 ## Filesystems
 

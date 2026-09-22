@@ -163,6 +163,13 @@ jobs:
           python scripts/package_smoke.py "$RUNNER_TEMP/Sanctum.app/Contents/MacOS/Sanctum" \
             --out package-smoke-macOS.json
 
+      - name: Record what the package validated
+        if: always()
+        shell: bash
+        run: >
+          python scripts/record_platform_validation.py --record-only
+          --package package-smoke-${{ matrix.name }}.json
+          --out validation-package-${{ matrix.name }}.json
       - name: Artifact facts
         if: always()
         shell: bash
@@ -177,5 +184,6 @@ jobs:
           path: |
             dist/
             package-smoke-${{ matrix.name }}.json
+            validation-package-${{ matrix.name }}.json
             core/platform/build_info.json
           if-no-files-found: warn
