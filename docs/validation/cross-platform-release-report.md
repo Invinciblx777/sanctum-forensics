@@ -5,8 +5,8 @@ comes from a recorded run: a job in `platform-ci`, an evidence file in
 `core/platform/validation_record.json`, or a suite on the development host.
 Nothing here is inferred from a platform name.
 
-The evidence run is `platform-ci` run @@RUN@@ on
-`release/cross-platform-validation`, commit @@COMMIT@@ — gate, three platform
+The evidence run is `platform-ci` run 35706589476 on
+`release/cross-platform-validation`, commit `ba13a9a` — gate, three platform
 jobs and three package jobs, all green. Earlier runs are cited where they
 found a defect.
 
@@ -16,9 +16,9 @@ Runner `windows-latest`: Windows 11, build 10.0.26100, AMD64, Python 3.11.9.
 
 | What ran | Result |
 |---|---|
-| Full Python suite | @@WIN_FULL@@ |
-| `file_erase` suite (`tests/erase/files`, `tests/platform`) | @@WIN_FILE@@ |
-| `api` suite (`tests/api`) | @@WIN_API@@ |
+| Full Python suite | PASS — 1224 passed, 361 skipped, 0 failed |
+| `file_erase` suite (`tests/erase/files`, `tests/platform`) | PASS — 203 passed, 71 skipped, 0 failed |
+| `api` suite (`tests/api`) | PASS — 201 passed, 9 skipped, 0 failed |
 | Adapter against the runner's own disks (`scripts/platform_smoke.py`) | PASS — 2 disks found and normalized, both refused: `PhysicalDrive0` for `IsBoot`, `IsSystem` and the `C:` system volume; `PhysicalDrive1` for an active page file on `D:` |
 | Capability rows | every row carried a source; whole-drive rows UNSUPPORTED |
 
@@ -48,9 +48,9 @@ Runner `macos-14`: macOS 14.8.9, arm64, Python 3.11.9.
 
 | What ran | Result |
 |---|---|
-| Full Python suite | @@MAC_FULL@@ |
-| `file_erase` suite | @@MAC_FILE@@ |
-| `api` suite | @@MAC_API@@ |
+| Full Python suite | PASS — 1231 passed, 354 skipped, 0 failed |
+| `file_erase` suite | PASS — 171 passed, 103 skipped, 0 failed |
+| `api` suite | PASS — 203 passed, 7 skipped, 0 failed |
 | Adapter against the runner's own disks | PASS — `disk0` (325 GB, SSD) found through `diskutil list/apfs list/info -plist`, the synthesized APFS container traced to its physical store, and the disk refused because the running macOS boots from a container on it |
 | APFS honesty | `tests/platform/test_macos_filesystem.py`: the erase runs, verification is `not_possible` **with a reason**, and a residual finding is recorded. A pass is never claimed on copy-on-write storage. |
 
@@ -70,11 +70,11 @@ defect reached it. It is green on three hosts:
 
 | Where | Result |
 |---|---|
-| `gate` job (`ubuntu-latest`) | @@GATE_FULL@@ |
-| `platform (ubuntu-latest)` job | @@LIN_FULL@@ |
-| Development host (Fedora Linux 44, x86_64, unprivileged) | @@DEV_FULL@@ |
-| `recovery` suite (`tests/carve`), development host | @@LIN_RECOVERY@@ |
-| `whole_drive` suite (`tests/erase`, `tests/device`, `tests/helper`), development host | @@LIN_WHOLE@@ |
+| `gate` job (`ubuntu-latest`) | 1601 passed, 82 skipped, 0 failed |
+| `platform (ubuntu-latest)` job | 1601 passed, 82 skipped, 0 failed |
+| Development host (Fedora Linux 44, x86_64, unprivileged) | 1648 passed, 34 skipped, 0 failed |
+| `recovery` suite (`tests/carve`), development host | PASS — 400 passed, 1 skipped, 0 failed |
+| `whole_drive` suite (`tests/erase`, `tests/device`, `tests/helper`), development host | PASS — 393 passed, 10 skipped, 0 failed |
 | Lint (`ruff check .`) | clean |
 | Typecheck — four `mypy --strict` passes (Linux, win32 on the Windows backend, win32 on the platform package, darwin on the platform package) | clean |
 | UI | `tsc -b && vite build` clean, `oxlint` clean, 32 unit tests pass |
@@ -88,13 +88,13 @@ nothing in this branch changes the overwrite engine.
 | | |
 |---|---|
 | Artifact | `dist\SanctumSetup.exe` |
-| Size | 36,666,595 bytes |
+| Size | 36,665,388 bytes |
 | Built by | `scripts/build-windows.ps1` — PyInstaller onedir + Inno Setup 6, job `package (windows-latest)` |
-| Commit | @@COMMIT_FULL@@ |
+| Commit | `ba13a9a73bf8` |
 | Python / Node | 3.11.9 / v22.23.2 |
 | Installer | Inno Setup 6, per-user, no elevation prompt |
 | OS | Windows 11, build 10.0.26100, AMD64 |
-| Installed to | `%LOCALAPPDATA%\Programs\Sanctum\Sanctum.exe` (14,953,786 bytes) |
+| Installed to | `%LOCALAPPDATA%\Programs\Sanctum\Sanctum.exe` (14,953,929 bytes) |
 | Driven | 24 of 24 packaged checks |
 | Uninstalled | `unins000.exe /VERYSILENT`, and the directory confirmed gone |
 | Code signing | **NOT PERFORMED.** `build_info.json` records `"signed": "no"`. This is an unsigned build; SmartScreen will warn. |
@@ -104,19 +104,19 @@ nothing in this branch changes the overwrite engine.
 | | |
 |---|---|
 | Artifact | `dist/Sanctum.dmg` |
-| Size | 44,013,635 bytes |
+| Size | 44,567,434 bytes |
 | Built by | `scripts/build-macos.sh` — PyInstaller BUNDLE + `hdiutil`, job `package (macos-14)` |
-| Commit | @@COMMIT_FULL@@ |
+| Commit | `ba13a9a73bf8` |
 | Python / Node | 3.11.9 / v22.23.2 |
 | OS | macOS 14.8.9, arm64 |
-| Driven | DMG mounted with `hdiutil attach`, `Sanctum.app` copied out, `Contents/MacOS/Sanctum` (13,048,288 bytes) driven through 24 of 24 checks |
+| Driven | DMG mounted with `hdiutil attach`, `Sanctum.app` copied out, `Contents/MacOS/Sanctum` (13,048,432 bytes) driven through 24 of 24 checks |
 | Signing | **UNSIGNED BUILD.** Ad-hoc signature only, from PyInstaller. **Not notarized.** Gatekeeper blocks a double-click on another Mac; the first open needs right-click > Open. |
 
 ## 6. Linux package result
 
 | | |
 |---|---|
-| Artifacts | `dist/Sanctum-0.0.0-x86_64.AppImage` (57,014,776 bytes), `dist/sanctum_0.0.0_amd64.deb` (60,296,662 bytes), `SHA256SUMS-linux.txt` |
+| Artifacts | `dist/Sanctum-0.0.0-x86_64.AppImage` (57,014,776 bytes), `dist/sanctum_0.0.0_amd64.deb` (60,297,362 bytes), `SHA256SUMS-linux.txt` |
 | Built by | `scripts/build-linux.sh` in CI (`ubuntu-22.04`); `scripts/build-linux-portable.sh` builds in a `python:3.11-bullseye` container for glibc 2.31 portability |
 | Driven | AppImage run with `--appimage-extract-and-run`, 23 of 23 packaged checks |
 | Installed as a user would | `.deb` installed and removed in a Debian 12 container; AppImage run in Debian 12 and Ubuntu 22.04 containers with no Python present |
@@ -177,7 +177,11 @@ Recorded results:
 
 NOT RUN is not PASS, and UNSUPPORTED is a refusal, not a gap.
 
-Three recording defects were found and fixed while producing this record, and
+Every row in the file names commit `ba13a9a73bf8`, the commit run
+35706589476 tested. The commit that *carries* the file is necessarily the
+next one: a record can only be written after the run it records.
+
+Four recording defects were found and fixed while producing this record, and
 they are worth naming because each one would have put a false statement in
 the evidence file:
 
@@ -185,10 +189,13 @@ the evidence file:
    dirtiness check counted the untracked evidence files the CI job had just
    written. It now looks at tracked files only.
 2. The package job recorded a real Windows 11 run as "Windows 10", because it
-   fell back to `platform.release()`. It now uses the same host probe the
-   adapter uses, and the dependency-free fallback reads the build number
-   itself.
-3. `main()` built the feature rows and never wrote them, so the per-feature
+   fell back to `platform.release()`, which answers "10" on Windows 11. It
+   now uses the same host probe the adapter uses, and the dependency-free
+   fallback reads the build number itself.
+3. The same fallback named macOS by its kernel ("Darwin 23.6.0") and Linux by
+   its kernel release. It now reports `macOS 14.8.9` and the distribution's
+   `PRETTY_NAME`.
+4. `main()` built the feature rows and never wrote them, so the per-feature
    section was empty in an earlier run.
 
 ## 9. Security changes
@@ -334,7 +341,7 @@ complete".
 
 ## 15. Files changed
 
-@@FILESTAT@@ against `main`. By area:
+162 files changed, 23890 insertions(+), 632 deletions(-) against `main`. By area:
 
 | Area | Files |
 |---|---|
