@@ -1182,10 +1182,25 @@ def write_image(
             + ". Nothing was written."
         )
 
+    # The bytes written are the bytes verified, read once before the device is
+    # opened. Copying from the file until it ends would write whatever the file
+    # holds by then: an image grown after the check reaches past the extent the
+    # backup covers, and one rewritten in place is not the image it was taken for.
+    with open(image, "rb") as source:
+        payload = source.read(length + 1)
+    verified = checked["image_sha256"]
+    if len(payload) != length or hashlib.sha256(payload).hexdigest() != verified:
+        raise Refused(
+            "the image changed after the backup was verified against it. "
+            "Nothing was written."
+        )
+
     started = time.monotonic()
     written = 0
-    with open(image, "rb") as source, open(device, "wb") as sink:
-        while chunk := source.read(4 * MIB):
+    with open(device, "wb") as sink:
+        view = memoryview(payload)
+        while written < length:
+            chunk = view[written : written + 4 * MIB]
             sink.write(chunk)
             written += len(chunk)
         sink.flush()
@@ -1210,14 +1225,14 @@ def write_image(
         "device": device,
         "serial": facts["serial"],
         "image": str(image),
-        "image_sha256": sha256_file(image),
+        "image_sha256": verified,
         "backup": checked["backup"],
         "backup_sha256": checked["backup_sha256"],
         "backup_bytes": checked["backup_bytes"],
         "write_extent": checked["write_extent"],
         "bytes_written": written,
         "readback_sha256": digest.hexdigest(),
-        "readback_matches": digest.hexdigest() == sha256_file(image),
+        "readback_matches": digest.hexdigest() == verified,
         "seconds": round(elapsed, 2),
         "mib_per_sec": round(written / MIB / elapsed, 2) if elapsed else None,
         "host": _host_facts(),

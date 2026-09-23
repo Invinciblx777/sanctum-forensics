@@ -842,3 +842,52 @@ def test_the_plan_shows_both_image_hashes_and_stays_review_only(
     assert "APPROVED: false" in text
     assert "VERDICT: REVIEW ONLY" in text
     assert kit.untouched()
+
+
+# ------------------------------------------- between the verification and the copy
+
+
+def _after_verification(
+    kit: Bench, monkeypatch: pytest.MonkeyPatch, change: Any
+) -> None:
+    """Run the real verification, then change the image before the copy."""
+    import scripts.media_benchmark as bench_module
+
+    real = bench_module.verify_backup
+
+    def racing(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        report: dict[str, Any] = real(*args, **kwargs)
+        change()
+        return report
+
+    monkeypatch.setattr("scripts.media_benchmark.verify_backup", racing)
+
+
+def test_an_image_that_grows_after_verification_is_not_written(
+    bench: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Growth past the verified extent would write bytes no backup covers."""
+    kit = bench()
+    _captured(kit)
+
+    def grow() -> None:
+        with open(kit.image, "ab") as handle:
+            handle.write(b"X" * 65536)
+
+    _after_verification(kit, monkeypatch, grow)
+    with pytest.raises(Refused, match="changed after the backup was verified"):
+        _write(kit)
+    assert kit.untouched()
+
+
+def test_an_image_rewritten_after_verification_is_not_written(
+    bench: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kit = bench()
+    _captured(kit)
+    _after_verification(
+        kit, monkeypatch, lambda: kit.image.write_bytes(b"NOTTHIS!" * 1024)
+    )
+    with pytest.raises(Refused, match="changed after the backup was verified"):
+        _write(kit)
+    assert kit.untouched()
