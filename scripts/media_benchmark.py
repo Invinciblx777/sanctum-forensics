@@ -1195,9 +1195,21 @@ def write_image(
             "Nothing was written."
         )
 
+    # Only a permission refusal is relabelled. Any other failure to open is not
+    # a question of privilege, and is left to surface as what it is.
+    try:
+        sink = open(device, "wb")
+    except PermissionError as denied:
+        raise PrivilegeRefused(
+            f"{device} passed every check, but this account cannot open it for "
+            f"writing ({denied.strerror}). Writing a raw block device needs "
+            "operating-system privilege this process does not hold, and this "
+            "script does not obtain it. Nothing was written."
+        ) from denied
+
     started = time.monotonic()
     written = 0
-    with open(device, "wb") as sink:
+    with sink:
         view = memoryview(payload)
         while written < length:
             chunk = view[written : written + 4 * MIB]

@@ -891,3 +891,67 @@ def test_an_image_rewritten_after_verification_is_not_written(
     with pytest.raises(Refused, match="changed after the backup was verified"):
         _write(kit)
     assert kit.untouched()
+
+
+# ------------------------------------------------- privilege at the write
+
+
+def _deny_writes(
+    kit: Bench, monkeypatch: pytest.MonkeyPatch, failure: OSError
+) -> None:
+    """Fail only a write-mode open of the stand-in; reads still succeed."""
+
+    def guarded(file: Any, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+        if str(file) == kit.path and any(flag in mode for flag in "wa+"):
+            raise failure
+        return builtins.open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr("scripts.media_benchmark.open", guarded, raising=False)
+
+
+def test_a_permission_denied_write_is_a_privilege_refusal(
+    bench: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kit = bench()
+    _captured(kit)
+    _deny_writes(
+        kit, monkeypatch, PermissionError(13, "Permission denied", kit.path)
+    )
+    with pytest.raises(PrivilegeRefused, match="Nothing was written") as refused:
+        _write(kit)
+    assert refused.value.kind == "privilege"
+    assert "sudo" not in str(refused.value)
+    assert kit.device.stat().st_size == DEVICE_BYTES
+    assert kit.untouched()
+
+
+def test_the_cli_reports_a_write_privilege_refusal_without_a_traceback(
+    bench: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    kit = bench()
+    _captured(kit)
+    _deny_writes(
+        kit, monkeypatch, PermissionError(13, "Permission denied", kit.path)
+    )
+    code = main(
+        ["write", "--device", kit.path, "--work", str(kit.work),
+         "--expect-serial", SERIAL, "--confirm-serial", SERIAL,
+         "--i-understand-this-destroys-data"]
+    )
+    out = capsys.readouterr()
+    assert code == 2
+    assert json.loads(out.out)["kind"] == "privilege"
+    assert "Traceback" not in out.out + out.err
+    assert kit.untouched()
+
+
+def test_an_unrelated_io_error_at_the_write_is_not_called_a_privilege_error(
+    bench: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kit = bench()
+    _captured(kit)
+    _deny_writes(kit, monkeypatch, OSError(5, "Input/output error", kit.path))
+    with pytest.raises(OSError, match="Input/output error") as raised:
+        _write(kit)
+    assert not isinstance(raised.value, Refused)
+    assert kit.untouched()
