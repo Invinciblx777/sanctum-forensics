@@ -48,6 +48,9 @@ def _render(result: ReportVerification, path: Path) -> None:
         typer.echo(f"[{status}] {check.name.value}: {check.detail}")
     typer.echo("")
     typer.echo(f"Result: {'PASS' if result.ok else 'FAIL'}")
+    typer.echo(f"Verdict: {result.verdict.value}")
+    for reason in result.verdict_reasons:
+        typer.echo(f"  - {reason}")
     typer.echo("")
     typer.echo(f"Note: {result.caveat}")
 

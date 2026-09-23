@@ -892,6 +892,19 @@ ledger cannot have its chain checked, and the output prints `SKIP`, not `PASS`.
 `Result: PASS` means every *applicable* check passed — read the lines, not only the
 last one.
 
+The next line, `Verdict:`, grades the whole result in one of four words, and prints
+the reason for every downgrade underneath it:
+
+| Verdict | Meaning |
+|---|---|
+| `FAILED_VERIFICATION` | an applicable check failed |
+| `PARTIAL` | every check that ran passed, but at least one could not run (`SKIP`) |
+| `VERIFIED_WITH_LIMITATIONS` | all five ran and passed, and the report declares limitations, residual risk above low, a verification it records as not passed, or an excerpt with declared gaps |
+| `VERIFIED` | all five ran and passed, and the report declares none of those |
+
+The exit code still follows `Result:`, not the verdict. The identity caveat applies
+to every report and is not a downgrade.
+
 ### The command a third party runs, on their own machine, without your help
 
 They need the report file and — to get all five checks — a copy of the ledger
@@ -917,6 +930,10 @@ Signed by fingerprint: 69:45:A0:97:57:16:4D:A0:63:36:61:BF:B5:18:BD:4D:38:70:F5:
 [PASS] blobs_available: every blob referenced by 37 entries is present
 
 Result: PASS
+Verdict: VERIFIED_WITH_LIMITATIONS
+  - the report declares a limitation: The overwrite pattern was changed from this method's default because …
+  - the report declares a limitation: /dev/sda is behind a usb bridge, where ATA pass-through is not dependable; …
+  - the report records residual risk high (4 factors in section residual_risk)
 
 Note: An embedded public key proves internal consistency only. It does not prove
 identity: a third party must compare the fingerprint above against a value published
@@ -936,6 +953,8 @@ line, and the other four still pass:
        altered after signing, or signed by a different key
 …
 Result: FAIL
+Verdict: FAILED_VERIFICATION
+  - signature failed: signature does not match the report contents; …
 ```
 
 ### The caveat that travels with every result

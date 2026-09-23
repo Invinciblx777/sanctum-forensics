@@ -20,6 +20,24 @@ property holds:
 5. **Blob availability** - the params and result blobs the excerpt references
    are present, when the store is reachable. Not applicable otherwise.
 
+The verdict
+-----------
+``ok`` says every *applicable* check passed. It does not say whether every
+check could run, or whether the report itself declares limits on what it proves.
+:func:`grade_report` adds one word that says both, and every downgrade from
+``VERIFIED`` names its reason:
+
+* ``FAILED_VERIFICATION`` - an applicable check failed.
+* ``PARTIAL`` - every check that ran passed, but at least one could not run
+  (no ledger store, no genesis fingerprint), so less was confirmed than the
+  five checks can confirm.
+* ``VERIFIED_WITH_LIMITATIONS`` - all five ran and passed, and the report is
+  authentic, but it declares limitations, residual risk above low, a
+  verification it records as not passed, or an excerpt with declared gaps.
+* ``VERIFIED`` - all five ran and passed and the report declares none of those.
+
+The identity caveat below applies to every report and is not a downgrade.
+
 What this does not prove
 ------------------------
 An embedded public key only proves *internal consistency*: that whoever signed
@@ -53,6 +71,7 @@ from core.ledger.chain import (
 )
 from core.ledger.store import BlobStore, LedgerStore
 from core.models import LedgerEntry, Signature
+from core.report.render import NONE_RECORDED
 from core.report.sign import verify_signature
 
 __all__ = [
@@ -60,7 +79,9 @@ __all__ = [
     "ChainExcerptStatus",
     "GenesisFingerprintReason",
     "ReportCheck",
+    "ReportVerdict",
     "ReportVerification",
+    "grade_report",
     "verify_report_file",
     "verify_report",
     "IDENTITY_CAVEAT",
@@ -147,6 +168,15 @@ _GENESIS_REASON_DETAIL = {
 }
 
 
+class ReportVerdict(StrEnum):
+    """One graded word for a whole verification. See the module docstring."""
+
+    VERIFIED = "VERIFIED"
+    VERIFIED_WITH_LIMITATIONS = "VERIFIED_WITH_LIMITATIONS"
+    PARTIAL = "PARTIAL"
+    FAILED_VERIFICATION = "FAILED_VERIFICATION"
+
+
 @dataclass(frozen=True)
 class ReportCheck:
     """One check, its outcome, and a one-line reason.
@@ -170,6 +200,9 @@ class ReportVerification:
     checks: list[ReportCheck] = field(default_factory=list)
     caveat: str = IDENTITY_CAVEAT
     fingerprint: str = ""
+    verdict: ReportVerdict = ReportVerdict.FAILED_VERIFICATION
+    #: Why the verdict is not ``VERIFIED``; empty when it is.
+    verdict_reasons: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -543,16 +576,87 @@ def verify_report(
     """Run every check over an already-loaded report."""
     root = Path(ledger_root) if ledger_root is not None else None
     signature = report.get("signature") or {}
+    checks = [
+        _check_signature(report),
+        _check_fingerprint(report, root),
+        _check_chain(report),
+        _check_store_chain(report, root),
+        _check_blobs(report, root),
+    ]
+    verdict, reasons = grade_report(report, checks)
     return ReportVerification(
-        checks=[
-            _check_signature(report),
-            _check_fingerprint(report, root),
-            _check_chain(report),
-            _check_store_chain(report, root),
-            _check_blobs(report, root),
-        ],
+        checks=checks,
         fingerprint=str(signature.get("pubkey_fingerprint") or ""),
+        verdict=verdict,
+        verdict_reasons=reasons,
     )
+
+
+def _declared(items: Any) -> list[str]:
+    """A report's list of statements, without the "none recorded" placeholder."""
+    if not isinstance(items, list):
+        return []
+    return [str(item) for item in items if str(item) != NONE_RECORDED]
+
+
+def grade_report(
+    report: dict[str, Any], checks: list[ReportCheck]
+) -> tuple[ReportVerdict, list[str]]:
+    """The verdict word for these checks over this report, and why.
+
+    Precedence is fixed: a failed check outranks a check that could not run,
+    which outranks a limitation the report declares. The report's own content is
+    read only for what it declares about itself; a malformed section is treated
+    as declaring nothing, and the checks above have already said whether the
+    bytes are authentic.
+    """
+    failed = [c for c in checks if c.applicable and not c.passed]
+    if failed:
+        return ReportVerdict.FAILED_VERIFICATION, [
+            f"{c.name.value} failed: {c.detail}" for c in failed
+        ]
+    skipped = [c for c in checks if not c.applicable]
+    if skipped:
+        return ReportVerdict.PARTIAL, [
+            f"{c.name.value} could not run: {c.detail}" for c in skipped
+        ]
+
+    reasons: list[str] = []
+    for check in checks:
+        if (
+            check.name is CheckName.CHAIN_INTEGRITY
+            and check.status == ChainExcerptStatus.VERIFIED_PARTIAL.value
+        ):
+            reasons.append(
+                "the ledger excerpt carries only part of the chain; the gaps are "
+                "declared in the report and the store verified independently"
+            )
+    sections = report.get("sections")
+    if isinstance(sections, dict):
+        limitations = sections.get("limitations")
+        if isinstance(limitations, dict):
+            reasons += [
+                f"the report declares a limitation: {item}"
+                for item in _declared(limitations.get("items"))
+            ]
+        residual = sections.get("residual_risk")
+        if isinstance(residual, dict):
+            level = str(residual.get("level") or "").strip().lower()
+            if level and level != "low":
+                # The factors are counted, not quoted: they are full sentences
+                # and most repeat the limitations already listed above.
+                count = len(_declared(residual.get("factors")))
+                noun = "factor" if count == 1 else "factors"
+                reasons.append(
+                    f"the report records residual risk {level}"
+                    + (f" ({count} {noun} in section residual_risk)" if count else "")
+                )
+        verification = sections.get("verification")
+        if isinstance(verification, dict) and verification.get("passed") is False:
+            reasons.append("the report records that its own verification did not pass")
+    if reasons:
+        return ReportVerdict.VERIFIED_WITH_LIMITATIONS, reasons
+    return ReportVerdict.VERIFIED, []
 
 
 def verify_report_file(

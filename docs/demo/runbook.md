@@ -578,6 +578,8 @@ Signed by fingerprint: 27:9F:14:59:56:96:F6:D9:…
 [PASS] blobs_available: every blob referenced by <N> entries is present
 
 Result: PASS
+Verdict: VERIFIED_WITH_LIMITATIONS
+  - <one line per limitation or residual-risk finding the report declares>
 
 Note: An embedded public key proves internal consistency only. It does not
 prove identity: a third party must compare the fingerprint above against a
@@ -587,8 +589,10 @@ produced the report.
 
 **Read the right-hand side, not a status word.** `core/report/cli.py:_render`
 prints each check's *detail sentence*; `VERIFIED_PARTIAL` and `VALID` are
-internal status values that never appear on this line. The `Note:` line always
-prints, after `Result:`. Fill the `<…>` in from your own reset — the counts are
+internal status values that never appear on this line. `Verdict:` follows
+`Result:` and grades the whole result; an erase report on flash reads
+`VERIFIED_WITH_LIMITATIONS` because it declares what overwrite cannot reach. The
+`Note:` line always prints, after the verdict. Fill the `<…>` in from your own reset — the counts are
 whatever your ledger holds. If the report's job interleaved with another job in
 the ledger, `chain_integrity` instead reads "<N> excerpt entries hash correctly
 and all <N-2> adjacent pair(s) link (<span>); <M> entr(y/ies) are not carried by
@@ -619,6 +623,8 @@ printf '0' | dd of="$REPORT" bs=1 seek=19636 count=1 conv=notrunc status=none
 [PASS] blobs_available: every blob referenced by <N> entries is present
 
 Result: FAIL
+Verdict: FAILED_VERIFICATION
+  - signature failed: signature does not match the report contents; …
 ```
 
 ```bash
@@ -643,6 +649,11 @@ mv "$REPORT.bak" "$REPORT"
 > `excerpt_gaps` — here that field is empty. An earlier build called a gap a
 > broken chain. Reporting a gap as a gap, and no gap as none, is the
 > difference between a report an examiner can defend and one they cannot.
+>
+> And read the verdict line. Before the tamper it said
+> `VERIFIED_WITH_LIMITATIONS`, not `VERIFIED`: the signature is good, but the
+> report itself says what overwrite could not reach on this stick, and the
+> verifier will not round that up.
 >
 > Restore the byte. Passes again.
 

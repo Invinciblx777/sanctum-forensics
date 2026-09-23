@@ -9,6 +9,7 @@ import type {
 } from '../lib/api'
 import { useCase } from '../lib/caseContext'
 import { timestamp } from '../lib/format'
+import { verdictMeaning } from '../lib/verdict'
 import {
   Empty,
   ErrorNotice,
@@ -434,6 +435,23 @@ export default function Audit() {
                   />
                 </Railed>
                 <p className="note">{summary.note}</p>
+                {/* The graded word is core's. The screen renders it and every
+                    reason for a downgrade, and never computes its own. */}
+                <Railed tone={verdictMeaning(verification.verdict).tone}>
+                  <Verdict
+                    level={verification.verdict || 'NO VERDICT'}
+                    basis="graded verdict"
+                    tone={verdictMeaning(verification.verdict).tone}
+                  />
+                  <span className="note">
+                    {verdictMeaning(verification.verdict).label}
+                  </span>
+                  {(verification.verdict_reasons ?? []).map((reason) => (
+                    <span key={reason} className="note-faint">
+                      {reason}
+                    </span>
+                  ))}
+                </Railed>
                 {!verification.ledger_digest_matches && (
                   <Notice tone="danger">
                     The file checked is <strong>not</strong> the bytes the

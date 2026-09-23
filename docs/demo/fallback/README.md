@@ -103,8 +103,9 @@ SANCTUM_KEY_PASSPHRASE=sanctum-demo .venv/bin/python -m core.report.cli \
     --ledger-root docs/demo/fallback/demo-ledger
 ```
 
-Five `[PASS]` lines and `Result: PASS`, then a `Note:` line about identity that
-always prints. Each `[PASS]` is followed by a *sentence*, not a status word —
+Five `[PASS]` lines and `Result: PASS`, then `Verdict: VERIFIED_WITH_LIMITATIONS`
+with one reason per declared limitation or residual-risk finding, then a `Note:`
+line about identity that always prints. Each `[PASS]` is followed by a *sentence*, not a status word —
 `chain_integrity` reads "N excerpt entries hash correctly and all N-2 adjacent
 pair(s) link …", not `VERIFIED_PARTIAL`. If `chain_store` or
 `fingerprint_matches_genesis` reads anything other than a success sentence, the
