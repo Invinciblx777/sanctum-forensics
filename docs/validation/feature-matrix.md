@@ -2,8 +2,9 @@
 
 **Audit date:** 2026-09-23, starting from `761dffe`; updated 2026-09-24 after the
 upgrade waves. This matrix and [`demo-evidence-index.md`](demo-evidence-index.md)
-are the source of truth for the presentation. A row states what the code does, where it is, what
-tests it, and what it does not do. It does not describe plans as features.
+are the source of truth for the presentation. A row states what the code does,
+where it is, what tests it, and what it does not do. It does not describe plans
+as features.
 
 The SIH 26149 problem statement text is not in this repository. The rows below
 follow the three modules named in `README.md` and `CLAUDE.md`, plus the
