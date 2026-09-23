@@ -106,6 +106,11 @@ class Bench:
             "bytes": backup_bytes,
             "sha256": hashlib.sha256(backup.read_bytes()).hexdigest(),
             "image": str(self.image),
+            "image_sha256": (
+                hashlib.sha256(self.image.read_bytes()).hexdigest()
+                if self.image.is_file()
+                else None
+            ),
             "write_extent": {"offset": 0, "modified_end_bytes": extent_end},
         }
         entry.update(record)
@@ -683,4 +688,157 @@ def test_the_plan_shows_both_serial_sources_and_claims_no_human_check(
         assert heading in text
     assert "human confirmed" not in text.lower()
     assert any("UNVERIFIED" in reason for reason in plan["blocking"])
+    assert kit.untouched()
+
+
+# ------------------------------------------------- the image the backup is for
+
+
+def _captured(kit: Bench) -> None:
+    """A real backup of the stand-in, taken for an image with real content."""
+    kit.build(8192).write_bytes(b"CORPUS42" * 1024)
+    kit.capture()
+
+
+def _rewrite_one_byte(kit: Bench, monkeypatch: pytest.MonkeyPatch) -> None:
+    data = bytearray(kit.image.read_bytes())
+    data[4096] ^= 0xFF
+    kit.image.write_bytes(bytes(data))
+
+
+def _swap_same_size(kit: Bench, monkeypatch: pytest.MonkeyPatch) -> None:
+    other = kit.image.with_name("other-same-size.img")
+    other.write_bytes(b"NOTTHIS!" * 1024)
+    other.replace(kit.image)
+
+
+def _swap_same_extent(kit: Bench, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 8000 bytes still rounds to the same 8192-byte extent, so only the hash
+    # can tell this file from the one the backup was taken for.
+    other = kit.image.with_name("other-same-extent.img")
+    other.write_bytes(b"N" * 8000)
+    other.replace(kit.image)
+
+
+def _remove_image(kit: Bench, monkeypatch: pytest.MonkeyPatch) -> None:
+    kit.image.unlink()
+
+
+def _unreadable_image(kit: Bench, monkeypatch: pytest.MonkeyPatch) -> None:
+    import scripts.media_benchmark as bench_module
+
+    real = bench_module.sha256_file
+
+    def guarded(path: Path) -> str:
+        if Path(path).resolve() == kit.image.resolve():
+            raise PermissionError(13, "Permission denied", str(path))
+        return real(path)
+
+    monkeypatch.setattr("scripts.media_benchmark.sha256_file", guarded)
+
+
+def _wrong_serial(kit: Bench, monkeypatch: pytest.MonkeyPatch) -> None:
+    kit.amend(serial="SOMEOTHERSERIAL")
+
+
+def _wrong_extent(kit: Bench, monkeypatch: pytest.MonkeyPatch) -> None:
+    kit.amend(write_extent={"offset": 0, "modified_end_bytes": 16384})
+
+
+def _corrupt_backup(kit: Bench, monkeypatch: pytest.MonkeyPatch) -> None:
+    backup, _ = backup_paths(kit.work)
+    data = bytearray(backup.read_bytes())
+    data[0] ^= 0xFF
+    backup.write_bytes(bytes(data))
+
+
+def _no_recorded_image_hash(kit: Bench, monkeypatch: pytest.MonkeyPatch) -> None:
+    kit.amend(image_sha256=None)
+
+
+def _recorded_for_another_path(kit: Bench, monkeypatch: pytest.MonkeyPatch) -> None:
+    kit.amend(image=str(kit.image.with_name("elsewhere.img")))
+
+
+def test_a_backup_for_the_current_image_bytes_is_accepted(bench: Any) -> None:
+    kit = bench()
+    _captured(kit)
+    report = verify_backup(kit.path, kit.work, expect_serial=SERIAL)
+    expected = hashlib.sha256(kit.image.read_bytes()).hexdigest()
+    assert report["image_sha256"] == expected
+    assert report["backup_image_sha256"] == expected
+    assert report["image_sha256_matches"] is True
+    assert report["blocking"] == []
+    assert report["sufficient_for_restoring_the_modified_region"] is True
+    assert kit.untouched()
+
+
+@pytest.mark.parametrize(
+    ("tamper", "because", "image_agrees"),
+    [
+        (_rewrite_one_byte, "does not match the image hash", False),
+        (_swap_same_size, "does not match the image hash", False),
+        (_swap_same_extent, "does not match the image hash", False),
+        (_remove_image, "has not been built", False),
+        (_unreadable_image, "could not be hashed", False),
+        (_wrong_serial, "the device now reports", True),
+        (_wrong_extent, "16384-byte write extent", True),
+        (_corrupt_backup, "no longer match the hash", True),
+        (_no_recorded_image_hash, "names no image hash", False),
+        (_recorded_for_another_path, "taken for the image", True),
+    ],
+    ids=[
+        "image-bytes-changed",
+        "different-image-same-size",
+        "different-image-same-path",
+        "image-missing",
+        "image-unreadable",
+        "wrong-provenance-serial",
+        "wrong-provenance-extent",
+        "backup-corrupted",
+        "record-without-image-hash",
+        "record-for-another-path",
+    ],
+)
+def test_a_backup_not_proven_for_the_current_image_is_refused(
+    bench: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tamper: Any,
+    because: str,
+    image_agrees: bool,
+) -> None:
+    kit = bench()
+    _captured(kit)
+    tamper(kit, monkeypatch)
+
+    report = verify_backup(kit.path, kit.work, expect_serial=SERIAL)
+    assert report["sufficient_for_restoring_the_modified_region"] is False
+    assert because in " ".join(report["blocking"])
+    assert report["image_sha256_matches"] is image_agrees
+
+    # The write gate runs the same verification and must refuse before the
+    # first byte, whichever of its checks reaches the problem first.
+    with pytest.raises(Refused, match="Nothing was written|is not a file"):
+        _write(kit)
+    assert kit.untouched()
+
+
+def test_the_plan_shows_both_image_hashes_and_stays_review_only(
+    bench: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kit = bench()
+    _captured(kit)
+    agreed = render_plan(prewrite_plan(kit.path, kit.work, expect_serial=SERIAL))
+    digest = hashlib.sha256(kit.image.read_bytes()).hexdigest()
+    assert f"CURRENT IMAGE SHA-256   {digest}" in agreed
+    assert f"RECORDED IMAGE SHA-256  {digest}" in agreed
+    assert "IMAGE HASH AGREES: true" in agreed
+
+    _rewrite_one_byte(kit, monkeypatch)
+    plan = prewrite_plan(kit.path, kit.work, expect_serial=SERIAL)
+    text = render_plan(plan)
+    assert "IMAGE HASH AGREES: false" in text
+    assert plan["approved"] is False
+    assert "APPROVED: false" in text
+    assert "VERDICT: REVIEW ONLY" in text
     assert kit.untouched()

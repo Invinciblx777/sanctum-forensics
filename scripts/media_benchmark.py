@@ -749,6 +749,16 @@ def verify_backup(
     if safety.get("verdict") != "SAFE":
         reasons.append(f"preflight refused: {safety.get('reason')}")
 
+    # The image the write will copy, hashed now rather than trusted by path.
+    # A backup taken while a different image sat at the same path covers the
+    # extent of that image, and the path and size alone cannot tell them apart.
+    image_digest: str | None = None
+    if extent["image_present"]:
+        try:
+            image_digest = sha256_file(image)
+        except OSError as failure:
+            reasons.append(f"the current image {image} could not be hashed: {failure}")
+
     # Provenance. A backup is only a backup of *this* device, at *this* extent:
     # the right number of bytes taken from the wrong stick restores nothing.
     digest: str | None = None
@@ -788,6 +798,27 @@ def verify_backup(
                 "the backup's contents no longer match the hash recorded when "
                 "it was taken"
             )
+        recorded_image = str(record.get("image") or "")
+        if not recorded_image or Path(recorded_image).resolve() != image.resolve():
+            reasons.append(
+                f"the backup was taken for the image {recorded_image or None!r}, "
+                f"and the write copies {str(image)!r}"
+            )
+        if not record.get("image_sha256"):
+            reasons.append(
+                "the backup's record names no image hash, so the image it was "
+                "taken for cannot be identified"
+            )
+        elif image_digest is None:
+            reasons.append(
+                "the current image could not be hashed, so it cannot be shown "
+                "to be the image the backup was taken for"
+            )
+        elif record.get("image_sha256") != image_digest:
+            reasons.append(
+                "the current image's SHA-256 does not match the image hash "
+                "recorded when the backup was taken"
+            )
 
     sufficient = covers and location["on_host_storage"] is True and not reasons
     return {
@@ -805,6 +836,15 @@ def verify_backup(
         "backup_present": present,
         "backup_bytes": backup_bytes,
         "backup_sha256": digest,
+        "image_sha256": image_digest,
+        "backup_image_sha256": (
+            str(record.get("image_sha256") or "") or None if record else None
+        ),
+        "image_sha256_matches": bool(
+            record is not None
+            and image_digest is not None
+            and record.get("image_sha256") == image_digest
+        ),
         "backup_covers_range": [0, backup_bytes] if present else None,
         "expected_write_range": (
             [extent["offset"], end] if end is not None else None
@@ -903,9 +943,9 @@ def prewrite_plan(
         "write_granularity_bytes": extent["granularity_bytes"],
         "image": extent["image"],
         "image_present": extent["image_present"],
-        "image_sha256": (
-            sha256_file(Path(extent["image"])) if extent["image_present"] else None
-        ),
+        "image_sha256": checked["image_sha256"],
+        "recorded_image_sha256": checked["backup_image_sha256"],
+        "image_hash_agrees": checked["image_sha256_matches"],
         "backup": checked["backup"],
         "backup_metadata": checked["backup_metadata"],
         "backup_present": checked["backup_present"],
@@ -970,7 +1010,9 @@ def render_plan(plan: dict[str, Any]) -> str:
         + (", ".join(plan["mountpoints"]) if plan["mountpoints"] else "unmounted"),
         f"  PREFLIGHT               {plan['safety'].get('verdict')}",
         f"  IMAGE                   {plan['image']}",
-        f"  IMAGE SHA-256           {plan['image_sha256']}",
+        f"  CURRENT IMAGE SHA-256   {plan['image_sha256']}",
+        f"  RECORDED IMAGE SHA-256  {plan['recorded_image_sha256']}",
+        f"  IMAGE HASH AGREES: {str(plan['image_hash_agrees']).lower()}",
         f"  WRITE EXTENT            [{plan['write_offset']}, "
         f"{plan['write_modified_end_bytes']}) - {plan['write_length_bytes']} bytes "
         f"at {plan['write_granularity_bytes']}-byte granularity",
@@ -1082,8 +1124,9 @@ def write_image(
     not a report the operator is trusted to read. This function runs that same
     verification itself, against the device it is about to write to, and
     refuses unless the backup exists, lies on other storage, was taken from
-    this serial, was taken for this exact extent, still hashes to what its
-    record says, and covers every byte the copy below can reach. The first
+    this serial, was taken for this exact extent and for an image whose
+    SHA-256 is the current image's, still hashes to what its record says, and
+    covers every byte the copy below can reach. The first
     write happens after the last check, never between two of them.
     """
     facts = preflight(
