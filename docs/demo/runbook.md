@@ -573,7 +573,7 @@ Signed by fingerprint: 27:9F:14:59:56:96:F6:D9:…
 
 [PASS] signature: valid Ed25519 signature by 27:9F:14:59:…
 [PASS] fingerprint_matches_genesis: signing key 27:9F:14:59:… is the key recorded in the ledger genesis
-[PASS] chain_integrity: <N> excerpt entries hash correctly and all <N-2> adjacent pair(s) link (<span>); <M> entr(y/ies) are not carried by this excerpt at seq <range> and are not evidenced by it
+[PASS] chain_integrity: all <N> excerpt entries link and hash correctly (<span>)
 [PASS] chain_store: the ledger store verifies independently: <explanation>
 [PASS] blobs_available: every blob referenced by <N> entries is present
 
@@ -589,7 +589,16 @@ produced the report.
 prints each check's *detail sentence*; `VERIFIED_PARTIAL` and `VALID` are
 internal status values that never appear on this line. The `Note:` line always
 prints, after `Result:`. Fill the `<…>` in from your own reset — the counts are
-whatever your ledger holds.
+whatever your ledger holds. If the report's job interleaved with another job in
+the ledger, `chain_integrity` instead reads "<N> excerpt entries hash correctly
+and all <N-2> adjacent pair(s) link (<span>); <M> entr(y/ies) are not carried by
+this excerpt at seq <range> and are not evidenced by it". Say only what the
+screen shows.
+
+The committed fallback (`docs/demo/fallback/`, verified 2026-09-23) is the
+complete-chain case: `chain_integrity: all 37 excerpt entries link and hash
+correctly (0..36)`, `chain_store: … All 67 entries verify, 0..66.`, and
+`excerpt_gaps` is empty. The **Say** block below matches that fallback.
 
 ```bash
 # 2. Flip one byte. Offset 19636 was the one used in validation; any offset
@@ -623,17 +632,17 @@ mv "$REPORT.bak" "$REPORT"
 > Five independent checks. One byte changed — a `1` to a `0`, one character.
 >
 > Signature fails. **The other four hold**, and that is deliberate: they are
-> independent of the report bytes. `chain_store` re-verified all 43 ledger
+> independent of the report bytes. `chain_store` re-verified all 67 ledger
 > entries from the store itself, not from the copy inside the report, so a
 > forged report cannot make it agree.
 >
-> `chain_integrity` reads `VERIFIED_PARTIAL`, not `VALID`, and it is not being
-> coy. The excerpt in this report carries one job's entries plus genesis. 37
-> entries hash correctly, all 35 adjacent pairs link, and 6 entries from a
-> different job are named as not carried — under the report's own signature, in
-> a field called `excerpt_gaps`. An earlier build called that a broken chain.
-> Reporting a gap as a gap is the difference between a report an examiner can
-> defend and one they cannot.
+> `chain_integrity` checks the excerpt the report carries under its own
+> signature: 37 entries, every one hashing correctly and linking to the one
+> before it, no gaps. Had another job's entries fallen between them, the report
+> would name them as not carried, under its own signature, in a field called
+> `excerpt_gaps` — here that field is empty. An earlier build called a gap a
+> broken chain. Reporting a gap as a gap, and no gap as none, is the
+> difference between a report an examiner can defend and one they cannot.
 >
 > Restore the byte. Passes again.
 

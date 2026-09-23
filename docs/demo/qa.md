@@ -283,7 +283,7 @@ shipped code that every existing test passed.
 ## 5 · What stops someone forging your report?
 
 > **Say it out loud:** Five independent checks, and the one that matters against
-> forgery is `chain_store` — it re-verifies **all 43 ledger entries from the store
+> forgery is `chain_store` — it re-verifies **every ledger entry from the store
 > itself**, not from the copy inside the report, so a forged report cannot make it
 > agree. Change one byte and the signature fails while the other four hold. And
 > the honest half: an embedded key proves internal consistency, never identity —
@@ -322,11 +322,12 @@ owns the machine.
 ## 6 · Why does your chain check say `VERIFIED_PARTIAL` and not just valid?
 
 > **Say it out loud:** Because the excerpt genuinely is partial, and calling it
-> complete would be the exact lie this project exists not to tell. The report
-> carries **37 entries out of 43** — its own job plus genesis — and declares the
-> six-entry gap *under its own signature*, in a field called `excerpt_gaps`. An
-> earlier build called that a broken chain; reporting a gap as a gap is the
-> difference between a report an examiner can defend and one they cannot.
+> complete would be the exact lie this project exists not to tell. On the
+> validation run the report carried **37 entries out of 43** — its own job plus
+> genesis — and declared the six-entry gap *under its own signature*, in a field
+> called `excerpt_gaps`. An earlier build called that a broken chain; reporting
+> a gap as a gap is the difference between a report an examiner can defend and
+> one they cannot.
 
 **The full written answer, for the follow-up:**
 
