@@ -16,9 +16,11 @@ import {
   Panel,
   ProgressView,
   Railed,
+  SimulationBanner,
   Verdict,
 } from '../components/widgets'
 import type { Tone } from '../components/widgets'
+import { isSimulation } from '../lib/simulation'
 
 function worstSeverity(findings: ResidualFinding[]): string | null {
   const order = ['HIGH', 'MEDIUM', 'LOW']
@@ -371,6 +373,7 @@ export default function FileEraser() {
               </Panel>
             )}
 
+            {jobId && isSimulation(status) && <SimulationBanner />}
             {jobId && records.length === 0 && (
               <Panel title="Progress">
                 <ProgressView progress={progress} destructive={!dryRun} />
@@ -549,6 +552,7 @@ function FreeSpacePanel() {
           {dryRun ? 'Simulate free-space wipe' : 'Wipe free space'}
         </button>
 
+        {isSimulation(status) && <SimulationBanner />}
         {progress && !result && (
           <ProgressView progress={progress} destructive={!dryRun} />
         )}

@@ -34,10 +34,12 @@ import {
   Panel,
   ProgressView,
   Railed,
+  SimulationBanner,
   Stat,
   Verdict,
 } from '../components/widgets'
 import type { Tone } from '../components/widgets'
+import { isSimulation } from '../lib/simulation'
 
 /**
  * The tone of a NIST level.
@@ -930,6 +932,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
               </Panel>
             )}
 
+            {jobId && isSimulation(status) && <SimulationBanner />}
             {jobId && (
               <Panel title="Progress">
                 <ProgressView progress={progress} destructive={!dryRun} />

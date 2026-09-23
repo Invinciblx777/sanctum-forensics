@@ -984,3 +984,32 @@ details.tech > .tech-body { display: flex; flex-direction: column; gap: 14px; }
 }
 .link-button:hover { color: var(--text-primary); }
 .link-button:focus-visible { outline: 2px solid var(--text-primary); outline-offset: 2px; }
+
+/* Home: four workflow cards and the four-question summary. */
+.workflows {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-3);
+}
+.workflow-card {
+  display: flex; flex-direction: column; align-items: flex-start;
+  gap: var(--space-2); text-align: left; cursor: pointer;
+  background: var(--bg-panel); border: 1px solid var(--line);
+  color: inherit; font: inherit; padding: 12px;
+}
+.workflow-card:hover { border-color: var(--accent-dim); }
+.workflow-title { font-weight: 600; font-size: var(--type-md); }
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--space-4);
+}
+.summary-title { font-weight: 600; letter-spacing: 0.04em; font-size: var(--type-sm); }
+
+.simulation-banner {
+  border: 1px dashed var(--accent-dim);
+  padding: 8px 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-align: center;
+}

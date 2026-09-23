@@ -345,3 +345,15 @@ export function ErrorNotice({
     </div>
   )
 }
+
+/**
+ * Shown on every screen that displays a simulated job. The words are fixed so a
+ * screenshot of a dry run can never be mistaken for a destructive run.
+ */
+export function SimulationBanner() {
+  return (
+    <div className="simulation-banner" role="status">
+      SIMULATION / NO PHYSICAL DEVICE MODIFIED
+    </div>
+  )
+}
