@@ -509,7 +509,10 @@ claim to make out loud.
 > thirty candidates and thirty true positives. Not one false positive reached
 > HIGH** — including twenty-seven signature hits the carver manufactured out of
 > 236 megabytes of pseudo-random filler, every one of which it scored MEDIUM or
-> LOW. The corpus predicted 100% HIGH precision and the hardware returned it.
+> LOW. That is thirty HIGH candidates from the pipeline as it stood on
+> 5 September, before Batch 2 wired in structure carving, so it is a sample of
+> thirty and not a claim about performance in general. The pipeline that ships,
+> with structure carving, has not yet been measured on real media.
 
 **If it fails:**
 
@@ -629,8 +632,8 @@ mv "$REPORT.bak" "$REPORT"
 > entries hash correctly, all 35 adjacent pairs link, and 6 entries from a
 > different job are named as not carried — under the report's own signature, in
 > a field called `excerpt_gaps`. An earlier build called that a broken chain.
-> Reporting a gap as a gap is the difference between a tool you can put in front
-> of a court and one you cannot.
+> Reporting a gap as a gap is the difference between a report an examiner can
+> defend and one they cannot.
 >
 > Restore the byte. Passes again.
 

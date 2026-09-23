@@ -1168,8 +1168,8 @@ Pooling all three passes — 963 candidates:
 **Not one false positive reached HIGH, in any pass.** HIGH is 30 for 30 on real
 media, which is exactly what `docs/performance/calibration.md` measured on the
 synthetic corpus. **The score weights do not need revisiting**, and the
-`fs_metadata` weight that the calibration deliberately held at 1500 is vindicated
-by this run rather than challenged by it.
+`fs_metadata` weight that the calibration deliberately held at 1500 is consistent
+with this run rather than challenged by it.
 
 > **Note added 2026-09-14.** Every Phase B figure here was measured on the carve
 > pipeline as it stood on 2026-09-05, which called the signature carver alone.

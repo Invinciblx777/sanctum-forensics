@@ -326,7 +326,7 @@ owns the machine.
 > carries **37 entries out of 43** — its own job plus genesis — and declares the
 > six-entry gap *under its own signature*, in a field called `excerpt_gaps`. An
 > earlier build called that a broken chain; reporting a gap as a gap is the
-> difference between a tool you can put in front of a court and one you cannot.
+> difference between a report an examiner can defend and one they cannot.
 
 **The full written answer, for the follow-up:**
 
@@ -355,8 +355,9 @@ broken link, so it reported `FAIL` in all three tamper stages for a store where
 all 42 entries verified. It was invisible synthetically because every loop-device
 run had one job on a fresh ledger.
 
-**A tool that reports a gap as a gap can go in front of a court. One that reports
-it as a break, or hides it, cannot.**
+**Reporting a gap as a gap is the difference between a report an examiner can
+defend and one they cannot. A report that calls it a break, or hides it, cannot
+be defended.**
 
 ---
 
