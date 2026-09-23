@@ -57,6 +57,9 @@ REPO = Path(__file__).resolve().parent.parent
 if str(REPO) not in sys.path:  # pragma: no cover - import bootstrap
     sys.path.insert(0, str(REPO))
 
+from core.workflow import WorkflowFacts  # noqa: E402
+from core.workflow import derive as derive_workflow  # noqa: E402
+
 MIB = 1024 * 1024
 
 #: The geometry the synthetic baseline was measured on. Changing this without
@@ -914,9 +917,28 @@ def prewrite_plan(
         *(["  --allow-fixed"] if allow_fixed else []),
         "  --i-understand-this-destroys-data",
     ]
+    # The named state and WHY BLOCKED, derived from the facts above. The plan
+    # never records an approval, so it cannot derive PLAN_READY; the write gate
+    # re-checks everything itself and does not read this field.
+    workflow = derive_workflow(
+        WorkflowFacts(
+            device_present=True,
+            preflight_ran=True,
+            preflight_safe=checked["safety"].get("verdict") == "SAFE",
+            preflight_refusal=str(checked["safety"].get("reason") or ""),
+            serial_sources_agree=identity["status"] == "AGREE",
+            backup_sufficient=bool(
+                checked["sufficient_for_restoring_the_modified_region"]
+            ),
+            plan_generated=True,
+            plan_blocking=tuple(blocking),
+            human_approved=False,
+        )
+    )
     return {
         "verdict": "REVIEW ONLY - no write performed",
         "approved": False,
+        "workflow": workflow.as_dict(),
         "device": device,
         "model": str(node.get("model") or "").strip(),
         "transport": node.get("tran"),
@@ -994,8 +1016,17 @@ def render_plan(plan: dict[str, Any]) -> str:
         backup_status = "covers the write extent"
     else:
         backup_status = "INSUFFICIENT"
+    workflow = plan["workflow"]
     lines = [
         "PRE-WRITE PLAN - REVIEW ONLY. NOTHING HAS BEEN WRITTEN.",
+        "",
+        f"STATE                   {workflow['state']}",
+        "WHY BLOCKED",
+        *(
+            [f"  - {reason}" for reason in workflow["why_blocked"]]
+            or ["  nothing - every gate this plan can check is satisfied"]
+        ),
+        f"NEXT                    {workflow['next_action']}",
         "",
         "SUMMARY",
         f"  DEVICE                  {plan['device']}",

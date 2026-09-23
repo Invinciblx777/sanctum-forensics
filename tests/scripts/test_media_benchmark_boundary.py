@@ -955,3 +955,51 @@ def test_an_unrelated_io_error_at_the_write_is_not_called_a_privilege_error(
         _write(kit)
     assert not isinstance(raised.value, Refused)
     assert kit.untouched()
+
+
+# ----------------------------------------------------------- workflow state
+
+
+def test_a_mounted_device_plans_as_blocked_with_the_refusal_as_the_reason(
+    bench: Any,
+) -> None:
+    kit = bench(_disk(mountpoints=["/run/media/someone/STICK"]))
+    kit.build(8192)
+    plan = prewrite_plan(kit.path, kit.work, expect_serial=SERIAL)
+    assert plan["workflow"]["state"] == "BLOCKED"
+    assert any("mounted" in reason for reason in plan["workflow"]["why_blocked"])
+    text = render_plan(plan)
+    assert "STATE                   BLOCKED" in text
+    assert "WHY BLOCKED" in text
+    assert kit.untouched()
+
+
+def test_no_backup_plans_as_backup_required(bench: Any) -> None:
+    kit = bench()
+    kit.build(8192)
+    plan = prewrite_plan(kit.path, kit.work, expect_serial=SERIAL)
+    assert plan["workflow"]["state"] == "BACKUP_REQUIRED"
+    assert plan["workflow"]["why_blocked"]
+    assert kit.untouched()
+
+
+def test_a_clean_plan_stops_at_human_approval_and_never_at_ready(bench: Any) -> None:
+    """The plan cannot approve itself, so it can never derive PLAN_READY."""
+    kit = bench()
+    kit.build(8192)
+    kit.capture()
+    plan = prewrite_plan(kit.path, kit.work, expect_serial=SERIAL)
+    assert plan["blocking"] == []
+    assert plan["workflow"]["state"] == "HUMAN_APPROVAL_REQUIRED"
+    assert "EXECUTING" not in plan["workflow"]["allowed_next"]
+    assert "STATE                   HUMAN_APPROVAL_REQUIRED" in render_plan(plan)
+    assert kit.untouched()
+
+
+def test_unconfirmed_serial_sources_plan_as_blocked(bench: Any) -> None:
+    kit = bench(kernel=(None, None))
+    kit.build(8192)
+    kit.capture()
+    plan = prewrite_plan(kit.path, kit.work, expect_serial=SERIAL)
+    assert plan["workflow"]["state"] == "BLOCKED"
+    assert kit.untouched()
