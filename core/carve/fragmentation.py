@@ -1,4 +1,4 @@
-"""Bifragment gap carving, for baseline JPEG and for nothing else.
+"""Bifragment gap carving, for baseline JPEG and PNG and for nothing else.
 
 **Read this before extending it.** General fragment reassembly - "SmartCarving"
 in the literature - is an open research problem. Deciding which of a million
@@ -99,8 +99,12 @@ Reach is therefore a byte distance, not a count of steps: the distance between
 the two runs costs nothing by itself. What costs budget is ambiguous gap bytes
 next to the runs and other JPEG ends between them.
 
-Everything that is not a baseline JPEG gets ``possibly_fragmented=True`` and no
-reconstruction attempt at all.
+PNG has its own section at the end of this module. Its oracle is chunk CRC-32s
+plus an exact-length zlib stream, which is stronger than the JPEG one, and the
+same rules apply: exhaustive inside a budget, unique or refused.
+
+Everything that is neither a baseline JPEG nor a PNG gets
+``possibly_fragmented=True`` and no reconstruction attempt at all.
 """
 
 from __future__ import annotations
@@ -108,6 +112,7 @@ from __future__ import annotations
 import io
 import re
 import time
+import zlib
 from bisect import bisect_left
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -131,6 +136,9 @@ __all__ = [
     "read_fragments",
     "reassemble_bifragmented_jpeg",
     "reassemble_bifragmented_jpeg_runs",
+    "MAX_PNG_SEARCH_STEPS",
+    "MAX_PNG_CRC_CHECKS",
+    "reassemble_bifragmented_png_runs",
 ]
 
 logger = structlog.get_logger(__name__)
@@ -799,4 +807,373 @@ def _log_exhausted(
         attempts=attempts,
         steps=steps,
         unconfirmed=accepted,
+    )
+
+
+# PNG
+# --------------------------------------------------------------------------
+#
+# A PNG is the other format whose bytes can be *accounted for* rather than
+# merely decoded, and its oracle is stronger than the JPEG one. Every chunk ends
+# in a CRC-32 over its type and data. All image data is one zlib stream, split
+# across IDAT chunks, whose Adler-32 covers every inflated byte and whose
+# inflated length is fixed exactly by the IHDR. A join is accepted only when all
+# of these hold at once:
+#
+# * every chunk from the break to IEND has a valid type and a matching CRC;
+# * the IDAT data inflates to **exactly** the byte count the IHDR implies, the
+#   stream ends there, its Adler-32 matches, and nothing is left over;
+# * the join is *bound*: either a chunk straddles it, so one CRC covers bytes
+#   from both runs, or IDAT data lies on both sides of it, so the deflate state
+#   and the Adler-32 run across it. A join at a chunk boundary with all image
+#   data on one side proves nothing about the other side, and is refused - that
+#   is how a header of one PNG and the image data of another with the same
+#   dimensions would otherwise pass;
+# * it is the only join in the window that passes. A second passing join, even
+#   one that yields identical bytes, means the medium does not say where the
+#   file was, and the runs would be a guess.
+#
+# The search is exhaustive inside its budget, not first-match. Running out of
+# budget before uniqueness is known is a refusal.
+
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_IEND = b"IEND"
+_IDAT = b"IDAT"
+
+#: (head end, tail start) pairs the PNG search may enumerate.
+MAX_PNG_SEARCH_STEPS = 4_000_000
+#: Chunk CRCs the PNG search may compute across the join.
+MAX_PNG_CRC_CHECKS = 200_000
+
+#: Channels per pixel, keyed by IHDR colour type, with the bit depths each
+#: allows (PNG specification, Table 11.1).
+_PNG_COLOUR = {
+    0: (1, (1, 2, 4, 8, 16)),
+    2: (3, (8, 16)),
+    3: (1, (1, 2, 4, 8)),
+    4: (2, (8, 16)),
+    6: (4, (8, 16)),
+}
+#: Adam7 passes: (x0, y0, dx, dy).
+_ADAM7 = (
+    (0, 0, 8, 8),
+    (4, 0, 8, 8),
+    (0, 4, 4, 8),
+    (2, 0, 4, 4),
+    (0, 2, 2, 4),
+    (1, 0, 2, 2),
+    (0, 1, 1, 2),
+)
+_ALPHA4 = re.compile(rb"(?=[A-Za-z]{4})")
+
+
+def _png_raw_size(ihdr: bytes) -> int | None:
+    """Bytes the image data must inflate to, from a 13-byte IHDR, or None."""
+    if len(ihdr) != 13:
+        return None
+    width = int.from_bytes(ihdr[0:4], "big")
+    height = int.from_bytes(ihdr[4:8], "big")
+    depth, colour, compression, filtering, interlace = ihdr[8:13]
+    spec = _PNG_COLOUR.get(colour)
+    if (
+        spec is None
+        or depth not in spec[1]
+        or compression
+        or filtering
+        or interlace not in (0, 1)
+        or not 0 < width < 1 << 31
+        or not 0 < height < 1 << 31
+    ):
+        return None
+    bits = spec[0] * depth
+
+    def rows(w: int, h: int) -> int:
+        return 0 if w == 0 or h == 0 else h * (1 + _ceil_div(w * bits, 8))
+
+    if not interlace:
+        return rows(width, height)
+    return sum(
+        rows(_ceil_div(max(width - x0, 0), dx), _ceil_div(max(height - y0, 0), dy))
+        for x0, y0, dx, dy in _ADAM7
+    )
+
+
+def _inflates_exactly(pieces: Sequence[bytes], expected: int) -> bool:
+    """True when the pieces are one zlib stream of exactly ``expected`` bytes.
+
+    Streams the output in bounded slices so a lying IHDR or a decompression
+    bomb costs a counter, not memory. zlib checks the Adler-32 at stream end.
+    """
+    inflater = zlib.decompressobj()
+    total = 0
+    try:
+        for index, piece in enumerate(pieces):
+            data = piece
+            while data and not inflater.eof:
+                total += len(inflater.decompress(data, MIB))
+                if total > expected:
+                    return False
+                data = inflater.unconsumed_tail
+            if inflater.eof:
+                trailing = inflater.unused_data or any(pieces[index + 1 :])
+                return not trailing and total == expected
+        total += len(inflater.flush())
+    except zlib.error:
+        return False
+    return inflater.eof and total == expected
+
+
+@dataclass(frozen=True)
+class _PngPrefix:
+    """What the head, read as laid on the medium, establishes."""
+
+    raw_size: int
+    #: Offset (window-relative) of the first chunk that does not verify, or
+    #: None when the object verified contiguously to IEND.
+    bad_at: int | None
+    #: IDAT payloads wholly before ``bad_at``, in order.
+    idat: tuple[bytes, ...]
+    #: End of IEND when ``bad_at`` is None.
+    end: int
+
+
+def _png_prefix(window: bytes) -> _PngPrefix | None:
+    if not window.startswith(_PNG_MAGIC) or len(window) < 33:
+        return None
+    if window[12:16] != b"IHDR" or int.from_bytes(window[8:12], "big") != 13:
+        return None
+    if zlib.crc32(window[12:29]) & 0xFFFFFFFF != int.from_bytes(window[29:33], "big"):
+        return None
+    raw_size = _png_raw_size(window[16:29])
+    if raw_size is None:
+        return None
+    idat: list[bytes] = []
+    cursor = 33
+    while True:
+        if cursor + 12 > len(window):
+            return _PngPrefix(raw_size, cursor, tuple(idat), 0)
+        length = int.from_bytes(window[cursor : cursor + 4], "big")
+        kind = window[cursor + 4 : cursor + 8]
+        end = cursor + 12 + length
+        if not kind.isalpha() or end > len(window):
+            return _PngPrefix(raw_size, cursor, tuple(idat), 0)
+        body = window[cursor + 8 : end - 4]
+        if zlib.crc32(kind + body) & 0xFFFFFFFF != int.from_bytes(
+            window[end - 4 : end], "big"
+        ):
+            return _PngPrefix(raw_size, cursor, tuple(idat), 0)
+        if kind == _IDAT:
+            idat.append(body)
+        if kind == _IEND:
+            return _PngPrefix(raw_size, None, tuple(idat), end)
+        cursor = end
+
+
+class _Crcs:
+    """The CRC budget, shared across one object's search."""
+
+    def __init__(self) -> None:
+        self.used = 0
+
+    def spend(self) -> bool:
+        self.used += 1
+        return self.used <= MAX_PNG_CRC_CHECKS
+
+
+def _png_join_end(
+    window: bytes,
+    prefix: _PngPrefix,
+    head: int,
+    tail: int,
+    crcs: _Crcs,
+) -> int | None:
+    """Joined-stream end of IEND when head + tail verifies, bound, else None.
+
+    Offsets are in joined coordinates: ``[0, head)`` is ``window[:head]`` and
+    ``[head, ...)`` is ``window[tail:]``.
+    """
+    assert prefix.bad_at is not None
+    shift = tail - head
+
+    def get(lo: int, hi: int) -> bytes | None:
+        if hi <= head:
+            return window[lo:hi]
+        if hi + shift > len(window):
+            return None
+        if lo >= head:
+            return window[lo + shift : hi + shift]
+        return window[lo:head] + window[tail : hi + shift]
+
+    idat = list(prefix.idat)
+    idat_before = bool(idat)
+    idat_after = False
+    straddled = False
+    cursor = prefix.bad_at
+    while True:
+        header = get(cursor, cursor + 8)
+        if header is None:
+            return None
+        length = int.from_bytes(header[0:4], "big")
+        kind = header[4:8]
+        end = cursor + 12 + length
+        if not kind.isalpha() or end + shift > len(window):
+            return None
+        if not crcs.spend():
+            return None
+        body = get(cursor + 8, end - 4)
+        crc = get(end - 4, end)
+        if body is None or crc is None:
+            return None
+        if zlib.crc32(kind + body) & 0xFFFFFFFF != int.from_bytes(crc, "big"):
+            return None
+        if cursor < head < end and kind != _IEND:
+            straddled = True
+        if kind == _IDAT:
+            idat.append(body)
+            if cursor + 8 < head:
+                idat_before = True
+            if end - 4 > head:
+                idat_after = True
+        if kind == _IEND:
+            if end <= head:
+                return None
+            bound = straddled or (idat_before and idat_after)
+            if not bound or not _inflates_exactly(idat, prefix.raw_size):
+                return None
+            return end
+        cursor = end
+
+
+def reassemble_bifragmented_png_runs(
+    handle: EvidenceHandle,
+    start: int,
+    *,
+    max_size: int,
+    cluster_size: int | None = None,
+) -> Reassembly | None:
+    """Recover a PNG split into two runs by one gap, or return ``None``.
+
+    The grid rules are the JPEG search's: the head and the gap are whole
+    clusters when ``cluster_size`` is known, whole sectors when it is not.
+    Returns ``None`` when no join verifies, when more than one does, when the
+    only verifying join is not bound across both runs, and when the budget runs
+    out before either is known. Interlaced (Adam7) images are handled; the
+    inflated length is computed per pass.
+    """
+    grid = SECTOR_BYTES if cluster_size is None else cluster_size
+    if grid <= 0 or grid % SECTOR_BYTES:
+        raise ValueError(
+            f"cluster size {cluster_size} is not a whole number of "
+            f"{SECTOR_BYTES}-byte sectors"
+        )
+    deadline = time.monotonic() + DECODE_DEADLINE_S
+    limit = min(start + max_size, handle.size, start + MAX_SEARCH_WINDOW)
+    if limit - start < 33 or handle.read(start, 8) != _PNG_MAGIC:
+        return None
+    window = _read_window(handle, start, limit - start)
+    prefix = _png_prefix(window)
+    if prefix is None:
+        return None
+    if prefix.bad_at is None:
+        if not _inflates_exactly(prefix.idat, prefix.raw_size):
+            return None
+        return Reassembly(
+            payload=window[: prefix.end],
+            runs=(CarveFragment(offset=start, length=prefix.end),),
+        )
+
+    bad_at = prefix.bad_at
+    laid_length = int.from_bytes(window[bad_at : bad_at + 4], "big")
+    laid_kind = window[bad_at + 4 : bad_at + 8]
+    laid_end = bad_at + 12 + laid_length
+    # The break is at or after the first unverified chunk, and before that
+    # chunk's end when its header was the file's own; inside the header when
+    # the header itself is foreign.
+    if len(laid_kind) == 4 and laid_kind.isalpha():
+        highest = min(laid_end - 1, len(window) - grid)
+    else:
+        highest = min(bad_at + 7, len(window) - grid)
+    heads = range(_ceil_div(bad_at, grid) * grid, highest + 1, grid)
+
+    by_residue: dict[int, list[int]] = {}
+    for match in _ALPHA4.finditer(window):
+        by_residue.setdefault(match.start() % grid, []).append(match.start())
+
+    crcs = _Crcs()
+    accepted: list[tuple[int, int, int]] = []
+    steps = 0
+    for head in heads:
+        if head <= 0:
+            continue
+        if head >= bad_at + 8 and laid_kind.isalpha():
+            if laid_kind == _IEND:
+                continue
+            # Fast path: the header is the head's, so the next chunk's type sits
+            # at a fixed distance into the tail. Only tails that put four
+            # letters there, behind a length field that fits in the window, are
+            # worth a CRC. Text in the gap puts letters everywhere; its "length"
+            # fields read as billions and fall out here.
+            reach = laid_end + 4 - head
+            positions = by_residue.get(reach % grid, [])
+            first = bisect_left(positions, head + grid + reach)
+            tails: Sequence[int] = [
+                q - reach
+                for q in positions[first:]
+                if int.from_bytes(window[q - 4 : q], "big") <= len(window) - q
+            ]
+        else:
+            tails = range(head + grid, len(window), grid)
+        for tail in tails:
+            steps += 1
+            if steps > MAX_PNG_SEARCH_STEPS or time.monotonic() > deadline:
+                _log_png_refusal(start, "budget", steps, crcs.used, accepted)
+                return None
+            end = _png_join_end(window, prefix, head, tail, crcs)
+            if crcs.used > MAX_PNG_CRC_CHECKS:
+                _log_png_refusal(start, "budget", steps, crcs.used, accepted)
+                return None
+            if end is None:
+                continue
+            if end - head + tail > len(window) or end > max_size:
+                continue
+            accepted.append((head, tail, end))
+            if len(accepted) > 1:
+                _log_png_refusal(start, "ambiguous", steps, crcs.used, accepted)
+                return None
+
+    if not accepted:
+        return None
+    head, tail, end = accepted[0]
+    payload = window[:head] + window[tail : tail + end - head]
+    logger.info(
+        "bifragmented png reassembled",
+        offset=start,
+        head_bytes=head,
+        gap_bytes=tail - head,
+        grid_bytes=grid,
+        crc_checks=crcs.used,
+    )
+    return Reassembly(
+        payload=payload,
+        runs=(
+            CarveFragment(offset=start, length=head),
+            CarveFragment(offset=start + tail, length=end - head),
+        ),
+    )
+
+
+def _log_png_refusal(
+    start: int,
+    reason: str,
+    steps: int,
+    crcs: int,
+    accepted: list[tuple[int, int, int]],
+) -> None:
+    logger.info(
+        "bifragment png search refused",
+        offset=start,
+        reason=reason,
+        steps=steps,
+        crc_checks=crcs,
+        joins=accepted,
     )

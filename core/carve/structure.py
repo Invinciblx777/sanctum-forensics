@@ -41,6 +41,7 @@ from core.carve.fragmentation import (
     accounts_for_scan,
     is_whole_jpeg,
     reassemble_bifragmented_jpeg_runs,
+    reassemble_bifragmented_png_runs,
 )
 from core.carve.signature import (
     Signature,
@@ -1199,7 +1200,13 @@ PARSERS = {
 _SELF_NESTING_EXTS = frozenset({"zip", "tar", "html"})
 
 #: Formats for which bifragment reassembly is attempted. Deliberately one.
-_FRAGMENT_CAPABLE = {"JPEG"}
+#: Formats with a reassembler, and the reassembler. Each one accounts for the
+#: object's bytes exactly (JPEG: Huffman scan accounting; PNG: chunk CRCs plus
+#: an exact-length zlib stream) rather than trusting a decoder that tolerates.
+_FRAGMENT_CAPABLE = {
+    "JPEG": reassemble_bifragmented_jpeg_runs,
+    "PNG": reassemble_bifragmented_png_runs,
+}
 
 
 def _signature_by_ext(signatures: list[Signature]) -> dict[str, Signature]:
@@ -1269,7 +1276,7 @@ def carve_structures(
             covered[candidate.ext] = candidate.offset + length
         reassembly_capable = attempt_reassembly and name in _FRAGMENT_CAPABLE
 
-        if reassembly_capable and validation == "valid":
+        if reassembly_capable and name == "JPEG" and validation == "valid":
             # A JPEG segment walk cannot tell a contiguous object from
             # head + gap + tail. Entropy-coded data is arbitrary bytes, so
             # _scan_entropy_to_eoi steps over an unrelated 32 KiB of somebody
@@ -1289,7 +1296,7 @@ def carve_structures(
             cluster = None if cluster_bytes_at is None else cluster_bytes_at(
                 candidate.offset
             )
-            rebuilt = reassemble_bifragmented_jpeg_runs(
+            rebuilt = _FRAGMENT_CAPABLE[name](
                 image,
                 candidate.offset,
                 max_size=signature.max_size,

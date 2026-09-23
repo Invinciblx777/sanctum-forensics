@@ -462,12 +462,15 @@ the form type four bytes later. Both are in the table and both are checked.
 
 ## Bifragment reassembly is narrow, and depends on the volume's cluster size
 
-`core/carve/fragmentation.py` rebuilds a JPEG split into two runs. What it can be
-trusted with is exactly this and no more:
+`core/carve/fragmentation.py` rebuilds a baseline JPEG or a PNG split into two runs.
+PNG's reach and refusals are measured separately in
+[`validation/png-reassembly.md`](validation/png-reassembly.md): 120 of 120 layouts to
+a 7 MiB gap, 0 of 800 adversarial joins accepted, on synthetic images. The rest of
+this section is about JPEG. What it can be trusted with is exactly this and no more:
 
 * **One baseline JPEG, exactly two runs, both still on the medium.** Progressive,
-  arithmetic-coded, lossless and multi-scan JPEGs are never reassembled, and neither is
-  any other format. A file in three or more pieces is not recovered.
+  arithmetic-coded, lossless and multi-scan JPEGs are never reassembled, and no format
+  other than JPEG and PNG is. A file in three or more pieces is not recovered.
 * **Reach: the gap between the runs at most 2 MiB (2,097,152 bytes).** Measured over
   ten random layouts at each of 64 KiB, 128 KiB, 256 KiB, 512 KiB, 1 MiB and 2 MiB, on
   512-byte and 4096-byte clusters with the size known: all recovered byte for byte.

@@ -27,7 +27,7 @@ where marked, and only for an object in exactly two runs.
 | JPEG | `jpg` | yes (`parse_jpeg`) | yes | yes (baseline only) |
 | MP4 | `mp4` | yes (`parse_mp4`) | yes | no |
 | PDF | `pdf` | yes (`parse_pdf`) | yes | no |
-| PNG | `png` | yes (`parse_png`) | yes | no |
+| PNG | `png` | yes (`parse_png`) | yes | yes (chunk CRC + exact zlib length) |
 | RAR | `rar` | no | no | no |
 | RTF | `rtf` | yes (`parse_rtf`) | no | no |
 | SQLite | `sqlite` | yes (`parse_sqlite`) | yes | no |
