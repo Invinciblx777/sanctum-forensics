@@ -103,6 +103,46 @@ class PrivilegeRefused(Refused):
     kind = "privilege"
 
 
+class DeviceUnavailable(Refused):
+    """The named device is not there to be checked. Nothing was read or written.
+
+    A path that does not exist, a ``/dev/disk/by-id`` link left behind after
+    the stick was pulled, or a node the kernel no longer recognises. Kept apart
+    from a safety refusal because nothing about the device was evaluated: the
+    answer is neither SAFE nor unsafe, only absent. No other device is tried in
+    its place.
+    """
+
+    kind = "unavailable"
+
+
+def _require_present(device: str) -> None:
+    """Refuse a device path that names nothing, before any probe runs on it.
+
+    Checked here rather than left to ``lsblk``, whose failure is an exit status
+    that says "not a block device" for a missing path, a stale link and a
+    regular file alike. A dangling link is named as one, with its target, since
+    that is what a by-id path looks like after the device it named was removed.
+    """
+    path = Path(device)
+    if path.exists():
+        return
+    if path.is_symlink():
+        try:
+            target = os.readlink(path)
+        except OSError:
+            target = "an unreadable target"
+        raise DeviceUnavailable(
+            f"{device} is a link to {target}, which does not exist. The device "
+            "was disconnected or the by-id name is stale. No other device was "
+            "substituted. Nothing was read and nothing was written."
+        )
+    raise DeviceUnavailable(
+        f"{device} does not exist. The device may be disconnected. No other "
+        "device was substituted. Nothing was read and nothing was written."
+    )
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
@@ -112,20 +152,36 @@ def sha256_file(path: Path) -> str:
 
 
 def _lsblk(device: str) -> dict[str, Any]:
-    out = subprocess.run(
-        [
-            "lsblk",
-            "--json",
-            "-b",
-            "-o",
-            "NAME,PATH,SIZE,TYPE,TRAN,RM,RO,FSTYPE,LABEL,MOUNTPOINTS,MODEL,SERIAL,PKNAME",
-            device,
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    payload: dict[str, Any] = json.loads(out.stdout)
+    _require_present(device)
+    try:
+        out = subprocess.run(
+            [
+                "lsblk",
+                "--json",
+                "-b",
+                "-o",
+                "NAME,PATH,SIZE,TYPE,TRAN,RM,RO,FSTYPE,LABEL,MOUNTPOINTS,MODEL,SERIAL,PKNAME",
+                device,
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as failure:
+        # The path exists but lsblk will not describe it: a regular file, or a
+        # node whose device went away between the check above and this call.
+        detail = (failure.stderr or "").strip() or f"exit status {failure.returncode}"
+        raise DeviceUnavailable(
+            f"{device}: lsblk could not describe it ({detail}). Nothing was "
+            "read and nothing was written."
+        ) from failure
+    try:
+        payload: dict[str, Any] = json.loads(out.stdout)
+    except ValueError as failure:
+        raise Refused(
+            f"{device}: lsblk output could not be parsed ({failure}). Refusing "
+            "rather than guessing the device's identity."
+        ) from failure
     devices: list[dict[str, Any]] = payload.get("blockdevices", [])
     if not devices:
         raise Refused(f"{device}: lsblk reported no such device")
@@ -265,8 +321,7 @@ def preflight(
     a device too small for the corpus, and anything over the sanity limit.
     """
     path = Path(device)
-    if not path.exists():
-        raise Refused(f"{device} does not exist")
+    _require_present(device)
     if not path.is_block_device():
         raise Refused(f"{device} is not a block device")
 
@@ -1556,6 +1611,27 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps({"refused": str(refusal), "kind": refusal.kind}, indent=1)
         )
         return 2
+    except OSError as failure:
+        # An I/O failure is not a verdict about the device, so it is reported
+        # as an error with its own exit status, never as a refusal or a SAFE.
+        # Only ``write`` can have modified anything before failing.
+        print(  # noqa: T201
+            json.dumps(
+                {
+                    "error": str(failure),
+                    "kind": "io",
+                    "errno": failure.errno,
+                    "command": args.command,
+                    "device_state": (
+                        "unknown - the write may have been partial"
+                        if args.command == "write"
+                        else "not written by this command"
+                    ),
+                },
+                indent=1,
+            )
+        )
+        return 3
     print(json.dumps(payload, indent=1, default=str))  # noqa: T201
     return 0
 
