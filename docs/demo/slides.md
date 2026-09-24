@@ -1,5 +1,14 @@
 # Slide outline — ten slides
 
+> **Superseded for the final presentation (2026-09-24).** This document
+> describes the earlier six-minute demo, which erased the USB stick live on
+> stage. The final presentation is the 4.5-minute order in
+> [`docs/validation/demo-evidence-index.md`](../validation/demo-evidence-index.md),
+> answered from [`docs/validation/judge-defense-card.md`](../validation/judge-defense-card.md).
+> It performs **no** physical write: the Sanitize beat stops at the approval
+> gate and erase is not pressed. The numbers on these slides are sourced; the demo
+> slide (7) and its timings are not the final order.
+
 Outline only. Each slide carries **one number nobody else in the room has**,
 large, with its source underneath. Everything else on the slide is support for
 that number.

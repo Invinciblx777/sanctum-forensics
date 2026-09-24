@@ -58,7 +58,11 @@ timings were not rehearsed aloud; the windows are the plan.
 | Benchmark | `docs/performance/benchmark.md` | PASS: states SYNTHETIC in its first paragraph |
 
 **Not rehearsed:** the spoken script against a clock, and the live Devices
-screen with the privileged helper and a real device.
+screen with the privileged helper and a real device. The spoken script, its
+measured word counts and the rehearsal table are in
+[`judge-defense-card.md`](judge-defense-card.md); the gates the physical
+benchmark still waits on are in
+[`physical-benchmark-checklist.md`](physical-benchmark-checklist.md).
 
 **Do not use the tamper step on the fallback files directly.** The Audit
 screen's *Simulate tampering* works on a server-side scratch copy and never
@@ -100,11 +104,15 @@ these captures of the physical stick.
 
 | File | What it must show | Runbook line |
 |---|---|---|
-| `docs/demo/fallback/devices.png` | Devices screen, stick listed, `CLEAR ONLY` badge, tooltip open | `docs/demo/runbook.md:260` |
-| `docs/demo/fallback/recovery.png` | Recovery filtered to HIGH, a candidate selected, all score components readable | `docs/demo/runbook.md:523` |
-| `docs/demo/fallback/wipe-start.mp4` | confirm dialog, PREFLIGHT, plan panel, `CONTROLLER_WRITE_ELISION` at HIGH, residual risk **high** | `docs/demo/runbook.md:371` |
+| `docs/demo/fallback/devices.png` | Devices screen, stick listed, `CLEAR ONLY` badge, tooltip open | `docs/demo/runbook.md:269` |
+| `docs/demo/fallback/recovery.png` | Recovery filtered to HIGH, a candidate selected, all score components readable | `docs/demo/runbook.md:532` |
+| `docs/demo/fallback/wipe-start.mp4` | confirm dialog, PREFLIGHT, plan panel, `CONTROLLER_WRITE_ELISION` at HIGH, residual risk **high** | `docs/demo/runbook.md:380` |
 
 Line numbers were read on 2026-09-24 and move when the runbook is edited.
+
+`wipe-start.mp4` belongs to the superseded six-minute demo, which erased the
+stick on stage. The final 4.5-minute order above writes nothing, so it does
+not need that capture, and none should be made for it during the freeze.
 
 ## What must not be said
 

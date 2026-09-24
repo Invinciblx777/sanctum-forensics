@@ -1,5 +1,14 @@
 # Six-minute demo runbook
 
+> **Superseded for the final presentation (2026-09-24).** This document
+> describes the earlier six-minute demo, which erased the USB stick live on
+> stage. The final presentation is the 4.5-minute order in
+> [`docs/validation/demo-evidence-index.md`](../validation/demo-evidence-index.md),
+> answered from [`docs/validation/judge-defense-card.md`](../validation/judge-defense-card.md).
+> It performs **no** physical write: the Sanitize beat stops at the approval
+> gate and erase is not pressed. Keep this file for its measured numbers and
+> fallback commands. Do not rehearse from its timings.
+
 Read this as a script, not as notes. Every command is copy-pasteable, every
 expected output is what the tool actually printed on the validation host, and
 every beat has a fallback that needs no hardware.

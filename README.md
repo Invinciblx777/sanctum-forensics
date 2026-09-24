@@ -27,8 +27,8 @@ forensic report that a third party verifies with a tool they run themselves.
 
 Implemented and under test. `make check` runs ruff, four `mypy --strict` passes
 (Linux, plus `--platform win32` and `--platform darwin` for the platform
-adapters) and the suite: **1649 passing, 34 skipped, 0 failing** as of
-2026-09-22 on this Linux host. Each skip names its reason; on this host they
+adapters) and the suite: **1835 passing, 34 skipped, 0 failing** as of
+2026-09-24 on this Linux host. Each skip names its reason; on this host they
 need root and `losetup` (10), a Windows host (10) or a macOS host (8), and on a
 host whose libewf build cannot write E01 that adds a few more. The Windows and
 macOS skips are not gaps — those suites run on their own runner in

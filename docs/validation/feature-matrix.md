@@ -142,7 +142,7 @@ Evidence populations are kept apart everywhere in this file: **SYNTHETIC**
 | SIH requirement | Capability | Status | Evidence | Limitation |
 |---|---|---|---|---|
 | Precision, recall, false positives, corrupt recoveries | `testkit/benchmark.py`, `testkit/calibrate.py` | IMPLEMENTED + TESTED + DEMONSTRABLE (SYNTHETIC) | `docs/performance/benchmark.md`, `calibration-pooled.md` | Synthetic images only |
-| Physical benchmark | `scripts/media_benchmark.py` | PARTIAL | preflight only; run blocked on the methodology decision (`methodology-open-decision.md`) | No result under the registered methodology exists. Three Phase B physical recovery passes on one stick are recorded separately in `hardware.md` and are not this benchmark |
+| Physical benchmark | `scripts/media_benchmark.py` | PARTIAL | preflight only; run blocked on the methodology decision (`methodology-open-decision.md`) and the gates in `physical-benchmark-checklist.md` | No result under the registered methodology exists. Three Phase B physical recovery passes on one stick are recorded separately in `hardware.md` and are not this benchmark |
 | Deterministic corpus with ground truth | `testkit/generate_corpus.py`, `testkit/damage.py`, `testkit/fsimage.py` | IMPLEMENTED + TESTED + DEMONSTRABLE (SYNTHETIC) | `tests/testkit/` | Fragmented PNG/PDF cases are not reconstructable |
 | Throughput and memory | 1 GiB and 7 GiB runs, peak RSS | IMPLEMENTED + TESTED + DEMONSTRABLE (SYNTHETIC) | `docs/validation/large-image.md` | Measured on one host |
 
@@ -165,6 +165,7 @@ See `docs/platform-support.md` for the full matrix.
 | Executive summary screen | six answers on the Overview: Secure Erasure, Evidence Recovery, Verification, Integrity, Safety, and Limitations led by what is not physically validated; dry runs never counted as erasures | IMPLEMENTED + TESTED + DEMONSTRABLE | `ui/tests/summary.test.ts`; browser: fits 1366 x 768 without scrolling (`01`) | The design-fact lines are fixed text backed by this matrix, not computed; the case lines are computed |
 | Demo runbook | `docs/demo/runbook.md`; timed 4.5-minute order in `demo-evidence-index.md` | PARTIAL | automated technical rehearsal 2026-09-24 (every beat's command and screen ran) | Not rehearsed aloud by a presenter; the live physical-stick beats wait on the human methodology gate |
 | Judge Q&A | `docs/demo/qa.md`, 29 questions, each traced to code or a record | DOCUMENTED | `docs/demo/qa.md` | Power loss is answered from design and tests; no real power cut has been recorded |
+| Judge defense card | `docs/validation/judge-defense-card.md`: 34 adversarial questions with evidence and a population label each, seven one-line interruption answers, the timed spoken script | DOCUMENTED | the card; audit 2026-09-24 at `8e1777d` | Spoken and interruption rehearsals not yet done by a presenter; three answers (Q2, Q5, Q30) are marked NOT CURRENTLY PROVEN |
 
 ## N. Standards
 

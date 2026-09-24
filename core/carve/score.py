@@ -16,7 +16,9 @@ image HIGH precision was 86.6% before the footer-bound fix). Anything that
 renders this number must not format it as a percentage; see
 ``ui/src/lib/format.ts:evidenceScore``.
 
-The components, and what each one is evidence of:
+The components, and what each one is evidence of. The weights are the ones
+in force (:data:`CALIBRATED_WEIGHTS`); :data:`ORIGINAL_WEIGHTS` keeps the
+starting values:
 
 ============================  ======  ====================================
 component                     weight  what it establishes
@@ -26,8 +28,10 @@ component                     weight  what it establishes
 ``exact_length``                1500  the end was derived - a footer was
                                       found, or a parser walked the format's
                                       own length fields - rather than guessed
-``decoder``                     3500  a real decoder read the whole object
-                                      (1500 when it read a prefix and ran out)
+``decoder``                     4000  a real decoder read the whole object
+                                      (1000 when it read a prefix and ran
+                                      out, 1000 when no decoder exists for
+                                      the format, 0 when it read corrupt)
 ``entropy``                     1000  the byte distribution matches what this
                                       format produces
 ``fs_metadata``                 1500  a surviving filesystem record agrees
