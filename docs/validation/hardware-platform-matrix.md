@@ -18,7 +18,7 @@ Four states, and they are not interchangeable:
 
 | Target | State | Evidence |
 |---|---|---|
-| Linux, USB flash (TransMemory 7.76 GB), Clear by overwrite | **VALIDATED** | `docs/validation/hardware.md`, six recorded runs |
+| Linux, USB flash (TransMemory 7.76 GB), Clear by overwrite | **VALIDATED** | `docs/validation/hardware.md`: three Phase A runs, the third (2026-09-05) clean |
 | Linux, SATA/NVMe internal, Clear | NOT YET VALIDATED | refused on this host: internal disks hold the running system |
 | Linux, firmware Purge (ATA SANITIZE, SECURITY ERASE, NVMe sanitize/format, Opal) | NOT YET VALIDATED | selected and dispatched in code; no drive has executed it here |
 | Linux, HPA/DCO unlock on a drive that has one | NOT YET VALIDATED | probe exercised; no device with an HPA was available |
