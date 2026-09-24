@@ -13,6 +13,7 @@ delete an assertion rather than quietly widen a condition.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,14 @@ from scripts.media_benchmark import MEDIA_SIZE, Refused, _kernel_serial, preflig
 
 SERIAL = "B103B9C19DE1CCC1BD535ACB"
 SYSFS_SERIAL = "/sys/devices/pci0000:00/usb8/8-1/serial"
+
+# The sysfs fixtures below mirror real kernel names ("8-1:1.0", "0:0:0:0"),
+# which NTFS rejects, and link them with a symlink, which NT gates behind a
+# privilege. sysfs itself exists only on Linux, so that is the only host the
+# reader has anything to read on.
+linux_sysfs = pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="sysfs exists only on Linux"
+)
 
 
 def _disk(**overrides: Any) -> dict[str, Any]:
@@ -179,6 +188,7 @@ def _sysfs(root: Path, device_dir: Path) -> None:
     (root / "sdb" / "device").symlink_to(device_dir)
 
 
+@linux_sysfs
 def test_the_kernel_serial_of_a_usb_disk_is_its_usb_device_serial(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -194,6 +204,7 @@ def test_the_kernel_serial_of_a_usb_disk_is_its_usb_device_serial(
     assert _kernel_serial("sdb", "usb") == (SERIAL, str(usb / "serial"))
 
 
+@linux_sysfs
 def test_the_kernel_serial_of_a_scsi_disk_comes_from_its_vpd_page(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -206,6 +217,7 @@ def test_the_kernel_serial_of_a_scsi_disk_comes_from_its_vpd_page(
     assert _kernel_serial("sdb", "sata") == ("WD-ABC123", str(scsi / "vpd_pg80"))
 
 
+@linux_sysfs
 def test_a_missing_kernel_serial_is_not_invented(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
