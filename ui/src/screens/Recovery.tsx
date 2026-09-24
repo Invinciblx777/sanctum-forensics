@@ -947,7 +947,7 @@ export default function Recovery() {
 
             <Panel
               title={selected ? 'Score breakdown' : 'Select a candidate'}
-              subtitle={selected ? 'Six components, each with its basis points.' : undefined}
+              subtitle={selected ? 'Six evidence components and the reassembly hold, each in basis points.' : undefined}
             >
               {selected ? (
                 <div className="col loose">

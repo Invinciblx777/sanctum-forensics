@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import type { CaseDetail, OperationRecord, PlatformStatus } from '../src/lib/api.ts'
-import { executiveSummary } from '../src/lib/summary.ts'
+import { NOT_PHYSICALLY_VALIDATED, executiveSummary, judgeSummary } from '../src/lib/summary.ts'
 
 function op(type: string, status: string, params: Record<string, unknown> = {}, recovered = 0): OperationRecord {
   return {
@@ -93,4 +93,30 @@ test('no open case says so in every column it can', () => {
 test('the chain line uses a correct plural', () => {
   const s = executiveSummary(detail([]), platform)
   assert.ok(s.verified.includes('Audit chain VALID over 5 entries'))
+})
+
+test('the judge summary answers all six questions even with no case open', () => {
+  const summary = judgeSummary(null, null, 'UNREAD')
+  for (const key of ['erasure', 'recovery', 'verification', 'integrity', 'safety', 'limitations'] as const) {
+    assert.ok(summary[key].length > 0, key)
+  }
+  assert.ok(summary.integrity.includes('Audit chain: UNREAD.'))
+})
+
+test('the limitations always lead with what is not physically validated', () => {
+  const summary = judgeSummary(detail([op('carve', 'complete', {}, 3)]), null, 'VALID')
+  assert.deepEqual(summary.limitations.slice(0, NOT_PHYSICALLY_VALIDATED.length), [...NOT_PHYSICALLY_VALIDATED])
+  assert.ok(summary.limitations.some((line) => line.includes('SYNTHETIC')))
+})
+
+test('the judge summary never counts a dry run as an erasure', () => {
+  const summary = judgeSummary(detail([op('erase-drive', 'complete', { dry_run: true })]), null, 'VALID')
+  assert.ok(!summary.erasure.some((line) => /drive sanitization completed/.test(line)))
+  assert.ok(summary.erasure.some((line) => line.includes('SIMULATION')))
+})
+
+test('no judge summary line states a percentage', () => {
+  const summary = judgeSummary(detail([op('carve', 'complete', {}, 3)]), null, 'VALID')
+  const lines = Object.values(summary).flat()
+  assert.ok(!lines.some((line) => /\d+(\.\d+)?%/.test(line)))
 })

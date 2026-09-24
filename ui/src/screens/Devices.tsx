@@ -222,12 +222,16 @@ export default function Devices({
                   const badge = capabilityBadge(row.capabilities)
                   const barred =
                     row.device.is_system_disk || row.device.mounted_at.length > 0
+                  // The same words as the workflow state machine: BLOCKED,
+                  // then WHY. The remedy is a human act; nothing here
+                  // unmounts or reboots on the operator's behalf.
                   const reason = row.device.is_system_disk
-                    ? 'Locked: this device hosts the running root filesystem. ' +
+                    ? 'This device hosts the running root filesystem. ' +
                       'Boot from separate media and run the erase against it as ' +
                       'a non-system disk.'
-                    : `Locked: mounted at ${row.device.mounted_at.join(', ')}. ` +
-                      'Unmount every filesystem on the device and retry.'
+                    : `Filesystem is mounted at ${row.device.mounted_at.join(', ')}. ` +
+                      'Human unmount required: unmount every filesystem on the ' +
+                      'device yourself, then rescan.'
                   const open = openPath === row.device.path
                   return (
                     <Fragment key={row.device.path}>
@@ -288,7 +292,9 @@ export default function Devices({
                             <i />
                           </td>
                           <td colSpan={7}>
-                            <span className="lock-reason">{reason}</span>
+                            <span className="lock-reason">
+                              <strong>BLOCKED</strong> · WHY BLOCKED: {reason}
+                            </span>
                           </td>
                         </tr>
                       )}

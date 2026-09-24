@@ -3,7 +3,7 @@ import { api } from '../lib/api'
 import type { CaseDetail, OperationCapability, PlatformStatus } from '../lib/api'
 import { useCase } from '../lib/caseContext'
 import { statusWord } from '../lib/platform'
-import { executiveSummary } from '../lib/summary'
+import { judgeSummary } from '../lib/summary'
 import { Panel } from '../components/widgets'
 
 /**
@@ -17,6 +17,9 @@ import { Panel } from '../components/widgets'
  * word. The summary counts only what the case record holds; a dry run is a
  * simulation and is never counted as an erasure.
  */
+
+/** Lines shown before the rest is left to the Platform screen. */
+const LIMITATION_LINES = 5
 
 export type WorkflowTarget = 'recovery' | 'sanitize' | 'files' | 'audit'
 
@@ -76,7 +79,7 @@ export default function Home({ onOpen }: { onOpen: (target: WorkflowTarget) => v
   }, [openCase])
 
   const detail = openCase && fetched?.id === openCase.case_id ? fetched.body : null
-  const summary = executiveSummary(detail, platform)
+  const summary = judgeSummary(detail, platform, chain)
 
   const cards: {
     target: WorkflowTarget
@@ -144,14 +147,30 @@ export default function Home({ onOpen }: { onOpen: (target: WorkflowTarget) => v
         </div>
 
         <Panel
-          title={openCase ? `Case ${openCase.case_id}` : 'No case open'}
-          subtitle="Counted from the case record, the chain and the platform probe"
+          title="Executive summary"
+          subtitle={
+            openCase
+              ? `Case ${openCase.case_id}: counted from the case record, the chain and the platform probe`
+              : 'No case open: host capability, chain and design facts only'
+          }
         >
-          <div className="summary-grid">
-            <Column title="WHAT WAS FOUND" lines={summary.found} />
-            <Column title="WHAT WAS ERASED" lines={summary.erased} />
-            <Column title="HOW IT WAS VERIFIED" lines={summary.verified} />
-            <Column title="WHAT REMAINS UNVERIFIED" lines={summary.unverified} />
+          <div className="summary-grid is-six" data-testid="executive-summary">
+            <Column title="SECURE ERASURE" lines={summary.erasure} />
+            <Column title="EVIDENCE RECOVERY" lines={summary.recovery} />
+            <Column title="VERIFICATION" lines={summary.verification} />
+            <Column title="INTEGRITY" lines={summary.integrity} />
+            <Column title="SAFETY" lines={summary.safety} />
+            <Column
+              title="LIMITATIONS: NOT PHYSICALLY VALIDATED"
+              lines={
+                summary.limitations.length > LIMITATION_LINES
+                  ? [
+                      ...summary.limitations.slice(0, LIMITATION_LINES),
+                      `${summary.limitations.length - LIMITATION_LINES} more on the Platform screen.`,
+                    ]
+                  : summary.limitations
+              }
+            />
           </div>
         </Panel>
       </div>

@@ -9,6 +9,7 @@
  * disappearing, because a missing line reads as "nothing to report".
  */
 import type { CaseDetail, PlatformStatus } from './api'
+import { statusWord } from './platform.ts'
 
 export interface ExecutiveSummary {
   found: string[]
@@ -90,4 +91,83 @@ export function executiveSummary(
   if (!unverified.length) unverified.push('none recorded')
 
   return { found, erased, verified, unverified }
+}
+
+/**
+ * The six questions a judge asks, answered on one screen.
+ *
+ * The case-dependent lines come from {@link executiveSummary}, the capability
+ * lines from the platform probe and the chain line from the server's own
+ * verification. The fixed lines state design facts that the tests and the
+ * validation record back, and the limitations always lead with what has not
+ * been run on physical hardware: that list does not shrink because a case
+ * happens to be empty.
+ */
+export interface JudgeSummary {
+  erasure: string[]
+  recovery: string[]
+  verification: string[]
+  integrity: string[]
+  safety: string[]
+  limitations: string[]
+}
+
+/** Not validated on a physical device, from docs/validation/feature-matrix.md. */
+export const NOT_PHYSICALLY_VALIDATED: readonly string[] = [
+  'Registered physical carve benchmark: not run. Benchmark figures are SYNTHETIC (three physical recovery passes are recorded separately).',
+  'Firmware Purge (ATA/NVMe sanitize, crypto erase): fixture-tested, never run on a drive.',
+  'HPA/DCO unlock: not run on hardware.',
+  'Backup restoration before a destructive write: never validated.',
+  'Whole-drive sanitization: Linux only.',
+]
+
+const SAFETY_LINES: readonly string[] = [
+  'Dry run is the default. Nothing is written unless it is turned off.',
+  'A real erase needs the device serial typed; the helper re-reads it from the device and refuses a mismatch.',
+  'The system disk and any device with a mounted filesystem are refused, never unmounted for you.',
+  'No automatic sudo, no automatic unmount, and no substitute device when the named one is missing.',
+]
+
+function capabilityLine(platform: PlatformStatus | null, operation: string, name: string): string {
+  const row = platform?.operations.find((item) => item.operation === operation)
+  if (!row) return `${name}: not probed on this host.`
+  return `${name}: ${statusWord(row.status).word}.`
+}
+
+export function judgeSummary(
+  detail: CaseDetail | null,
+  platform: PlatformStatus | null,
+  chainStatus: string,
+): JudgeSummary {
+  const base = executiveSummary(detail, platform)
+  return {
+    erasure: [
+      capabilityLine(platform, 'whole_drive_clear', 'Whole-drive Clear'),
+      capabilityLine(platform, 'whole_drive_purge', 'Whole-drive Purge'),
+      'The method is selected from the drive\'s probed capability, never from operator preference.',
+      'Physically run: overwrite Clear on one 7.76 GB USB flash stick, one clean recorded run after two defective ones.',
+      ...(detail ? base.erased : []),
+    ],
+    recovery: [
+      ...base.found,
+      'Evidence score: a sum of six evidence components, not a probability.',
+      'Fragmented reassembly: baseline JPEG and PNG, exactly two runs.',
+    ],
+    verification: [
+      ...(detail ? base.verified : []),
+      'Erase: read-back of the medium, full read up to 64 GiB, seeded sample above.',
+      'Report: five independent checks and a graded verdict.',
+    ],
+    integrity: [
+      `Audit chain: ${chainStatus}.`,
+      'Each ledger entry holds the SHA-256 of the one before it.',
+      'Reports are Ed25519-signed; changing one field makes verification fail.',
+      'The embedded key proves the report was not altered, not who signed it.',
+    ],
+    safety: [...SAFETY_LINES],
+    limitations: [
+      ...NOT_PHYSICALLY_VALIDATED,
+      ...base.unverified.filter((line) => !NOT_PHYSICALLY_VALIDATED.includes(line) && line !== 'none recorded'),
+    ],
+  }
 }
