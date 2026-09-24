@@ -1,7 +1,8 @@
 # Feature matrix: SIH 26149 requirements against what the code does
 
 **Audit date:** 2026-09-23, starting from `761dffe`; updated 2026-09-24 after the
-upgrade waves. This matrix and [`demo-evidence-index.md`](demo-evidence-index.md)
+upgrade waves, and again after the release-quality wave that browser-checked
+the UI (`docs/validation/browser-2026-09-24/`). This matrix and [`demo-evidence-index.md`](demo-evidence-index.md)
 are the source of truth for the presentation. A row states what the code does,
 where it is, what tests it, and what it does not do. It does not describe plans
 as features.
@@ -20,6 +21,7 @@ requirement areas (A to P) in the upgrade brief dated 2026-09-23.
 | **HARDWARE-UNVERIFIED** | The software path is tested, but no physical device of that kind has run it in a recorded session. |
 | **UNVERIFIED** | Code exists but has not been executed in the environment named. |
 | **UNSUPPORTED** | Deliberately unavailable. The software refuses and says why. |
+| **DOCUMENTED** | A written artifact for people, not software. Its evidence is the document and what it cites. |
 
 Evidence populations are kept apart everywhere in this file: **SYNTHETIC**
 (generated images on host storage), **PHYSICAL** (a real device, recorded in
@@ -37,11 +39,11 @@ Evidence populations are kept apart everywhere in this file: **SYNTHETIC**
 | ATA SANITIZE (block, overwrite, crypto scramble) | `ATA_SANITIZE_*` methods | HARDWARE-UNVERIFIED | fixture tests | Never executed on a drive in a recorded run |
 | NVMe Sanitize / Format (SES1) | `NVME_SANITIZE_BLOCK`, `NVME_FORMAT_SES1` via `nvme-cli` | HARDWARE-UNVERIFIED | fixture tests | Format is per namespace; a multi-namespace controller needs sanitize |
 | Cryptographic erase | `ATA_SANITIZE_CRYPTO_SCRAMBLE`, `SED_CRYPTO_ERASE` (TCG Opal, not Pyrite) | HARDWARE-UNVERIFIED | fixture tests | Pyrite is deliberately not counted as Opal |
-| Overwrite Clear | `SINGLE_PASS_OVERWRITE` with `O_DIRECT`, 0xA5 write calibration | IMPLEMENTED + TESTED + DEMONSTRABLE (PHYSICAL) | `docs/validation/hardware.md`, six recorded runs on a USB flash stick | Overwrite cannot reach remapped or over-provisioned flash; stated in every report |
+| Overwrite Clear | `SINGLE_PASS_OVERWRITE` with `O_DIRECT`, 0xA5 write calibration | IMPLEMENTED + TESTED + DEMONSTRABLE (PHYSICAL) | `docs/validation/hardware.md`: three Phase A runs on one USB flash stick, the third (2026-09-05) clean | Overwrite cannot reach remapped or over-provisioned flash; stated in every report |
 | Removable-media clearing | same engine, flash detected by transport, not by `rotational` (`core/device/media.py`) | IMPLEMENTED + TESTED + DEMONSTRABLE (PHYSICAL) | hardware.md; `tests/device/` | Some controllers elide zero fills (`CONTROLLER_WRITE_ELISION` finding) |
 | Verification after the operation | `core/erase/verify.py`: full read to 64 GiB, seeded sampling above | IMPLEMENTED + TESTED + DEMONSTRABLE | `tests/erase/test_verify.py`; hardware.md | Sampled above 64 GiB; drive attestation is the drive's claim about itself |
 | HPA / DCO detection and unlock | `core/device/hidden_areas.py` | IMPLEMENTED + TESTED + NOT YET DEMONSTRATED | `tests/device/` | Linux only; needs ATA pass-through, which USB bridges usually block |
-| Sector size, logical and physical capacity | report `device_identity.logical_block_size`, `physical_block_size`, `size_bytes` | IMPLEMENTED + TESTED + DEMONSTRABLE | `core/report/render.py:build_report` | none recorded |
+| Sector size, logical and physical capacity | report `device_identity.logical_block_size`, `physical_block_size`, `size_bytes` | IMPLEMENTED + TESTED + DEMONSTRABLE | `core/report/render.py:build_report`, `tests/report/test_render.py` | none recorded |
 | Removable and read-only status | enumeration and preflight refuse a read-only or non-removable device without override | IMPLEMENTED + TESTED + DEMONSTRABLE | `tests/device/`, `tests/scripts/test_media_benchmark*.py` | none recorded |
 | Encryption state | Opal SSC detected from `sedutil-cli`; macOS FileVault/APFS roles in `core/platform/macos.py` | PARTIAL | `tests/device/`, `tests/platform/` | No LUKS or BitLocker volume detection on the drive-erase path |
 | Device health (SMART) | none | UNSUPPORTED | none | Not queried. Not a sanitization input; would be an observation only |
@@ -99,7 +101,7 @@ Evidence populations are kept apart everywhere in this file: **SYNTHETIC**
 | Hash-chained ledger | entry N holds SHA-256 of N-1; BROKEN vs INCOMPLETE_TAIL (`core/ledger/chain.py`) | IMPLEMENTED + TESTED + DEMONSTRABLE | `tests/ledger/` | An insider with the whole state directory can rebuild it; only an external anchor prevents that, and none is configured by default |
 | Evidence hashing | SHA-256 and BLAKE3 at acquisition; SHA-256 per carved object | IMPLEMENTED + TESTED + DEMONSTRABLE | `tests/carve/` | none recorded |
 | Case ID, operator, timestamps, tool version | report `case_identity` | IMPLEMENTED + TESTED + DEMONSTRABLE | `tests/api/test_cases.py`, `tests/api/test_operator_identity.py` | Operator is a local account, not a verified person |
-| Source device identity and serial | report `device_identity`, by-id path | IMPLEMENTED + TESTED + DEMONSTRABLE | report section 2 | none recorded |
+| Source device identity and serial | report `device_identity`, by-id path | IMPLEMENTED + TESTED + DEMONSTRABLE | report section 2; `tests/report/test_render.py` | none recorded |
 | JSON report (authoritative) | Ed25519 over canonical JSON | IMPLEMENTED + TESTED + DEMONSTRABLE | `tests/report/` | Embedded key proves consistency, not identity |
 | PDF report (human-readable) | `render_pdf`, states it is not authoritative | IMPLEMENTED + TESTED + DEMONSTRABLE | `tests/report/test_render.py` | Not signed; editable by design |
 | HTML report | none | UNSUPPORTED | none | The PDF and the UI cover human reading |
@@ -125,46 +127,49 @@ Evidence populations are kept apart everywhere in this file: **SYNTHETIC**
 | Typed serial, acknowledgement, dry-run default | API and `media_benchmark.py write` | IMPLEMENTED + TESTED + DEMONSTRABLE | `tests/scripts/`, `tests/api/` | none recorded |
 | Verified backup on another disk, hash and extent binding | `verify_backup`, re-run by `write_image` | IMPLEMENTED + TESTED + NOT YET DEMONSTRATED | `tests/scripts/test_media_benchmark*.py` | Restoration never validated |
 | No automatic sudo or unmount | no code path does either | IMPLEMENTED + TESTED + DEMONSTRABLE | refusal text | none recorded |
-| Visible workflow state machine | `core/workflow.py`: eleven states, `derive()` with WHY BLOCKED and next action, `advance()` refuses illegal transitions; printed at the top of the benchmark `plan` | IMPLEMENTED + TESTED + NOT YET DEMONSTRATED | `tests/test_workflow.py`, `tests/scripts/test_media_benchmark_boundary.py` | A model, not a gate: the write path still re-checks everything itself and does not read it. Not yet shown in the Sanitize screen |
-| Missing device path in `plan` / `verify-backup` | these two commands raise a `CalledProcessError` traceback instead of a clean refusal when the path does not exist | PARTIAL | observed 2026-09-24 | Fails closed: nothing is created or written, and `write` checks the path first. Left unchanged because the harness is protected |
+| Visible workflow state machine | `core/workflow.py`: eleven states, `derive()` with WHY BLOCKED and next action, `advance()` refuses illegal transitions; printed at the top of the benchmark `plan`; the Sanitize screen draws DISCOVERED → PREFLIGHT → HUMAN APPROVAL REQUIRED → EXECUTING → VERIFYING → COMPLETE, with BLOCKED or FAILED and the reason (`ui/src/lib/workflowState.ts`) | IMPLEMENTED + TESTED + DEMONSTRABLE | `tests/test_workflow.py`, `tests/scripts/test_media_benchmark_boundary.py`, `ui/tests/workflowState.test.ts`, `tests/ui/test_workflow_vocabulary.py` (UI names = `core/workflow.py` names); browser `07`–`10` in `browser-2026-09-24/` | A model, not a gate: every destructive path re-checks its own gates and does not read it. Whole-drive sanitization has no backup gate, so BACKUP_REQUIRED appears only in the benchmark write, and the screen says so. Browser check used fixture devices |
+| Missing or stale device path in `media_benchmark.py` | every subcommand checks the path before any probe: a missing path or a dangling `/dev/disk/by-id` link is a structured refusal (`kind: unavailable`, exit 2), an `lsblk` failure is the same refusal, and any other I/O error is `kind: io`, exit 3, never a verdict; no other device is tried | IMPLEMENTED + TESTED + DEMONSTRABLE | `tests/scripts/test_media_benchmark_absent_device.py` (missing, stale by-id, `lsblk` failure, unparseable output, unrelated I/O error, I/O error during `write`, permission path preserved); `scripts/media_benchmark.py plan --device /dev/disk/by-id/usb-DOES_NOT_EXIST …` run 2026-09-24 | Scope is `media_benchmark.py`. The other harness scripts were not audited for this case in this wave |
 
 ## F. Simulation mode
 
 | SIH requirement | Capability | Status | Evidence | Limitation |
 |---|---|---|---|---|
-| Full workflow with no device | dry run for erase jobs; offline demo state (`scripts/demo_setup.py`); fallback report; `scripts/demo_fragmented.py` | PARTIAL | `tests/scripts/test_demo_workflow.py`, `tests/scripts/test_demo_fragmented.py` | No single mode walks discovery to certificate on its own; the demo index strings the real steps together |
-| Simulation label on screen | *SIMULATION / NO PHYSICAL DEVICE MODIFIED* on every screen showing a dry-run job, decided from the flag the server recorded | IMPLEMENTED + TESTED + NOT YET DEMONSTRATED | `ui/tests/simulation.test.ts` | Not checked in a browser in this work |
+| Full workflow with no device | `scripts/demo_simulation.py`: DISCOVER → PREFLIGHT (a mounted medium BLOCKED by `core.device.guard` and `core.workflow.derive`) → PLAN (`select_method`) → SIMULATED SANITIZATION (`core.erase.drive.execute`, a real overwrite of a host file) → SIMULATED VERIFICATION (the same run's full read-back) → FORENSIC REPORT (`build_report`, graded) → CERTIFICATE (Ed25519, then a changed copy is rejected) | IMPLEMENTED + TESTED + DEMONSTRABLE (SIMULATION) | `tests/scripts/test_demo_simulation.py` (every stage bannered, the blocked medium byte-identical, nothing under `/dev` opened, the engine refuses any target that is not its own file); run 2026-09-24 in 0.4 s | The media are host files. Two engine calls are substituted because a file cannot answer them (BLKGETSIZE64, the sysfs serial re-read), and the journey says so in its report. Capability is declared for the simulated medium, not probed. Terminal only, not a UI mode |
+| Simulation label on screen | *SIMULATION / NO PHYSICAL DEVICE MODIFIED* on every screen showing a dry-run job, decided from the flag the server recorded; also on the Sanitize screen before a dry run starts | IMPLEMENTED + TESTED + DEMONSTRABLE | `ui/tests/simulation.test.ts`, `ui/tests/workflowState.test.ts`; browser: File eraser dry run on the real API (`05`), Sanitize on fixtures (`07`, `09`) | The Sanitize dry run was browser-checked on fixture devices only; no real device was offered to the browser |
 
 ## G/H/I. Benchmarking, demo corpus, performance
 
 | SIH requirement | Capability | Status | Evidence | Limitation |
 |---|---|---|---|---|
 | Precision, recall, false positives, corrupt recoveries | `testkit/benchmark.py`, `testkit/calibrate.py` | IMPLEMENTED + TESTED + DEMONSTRABLE (SYNTHETIC) | `docs/performance/benchmark.md`, `calibration-pooled.md` | Synthetic images only |
-| Physical benchmark | `scripts/media_benchmark.py` | PARTIAL | preflight only; run blocked on the methodology decision | No physical result exists |
+| Physical benchmark | `scripts/media_benchmark.py` | PARTIAL | preflight only; run blocked on the methodology decision (`methodology-open-decision.md`) | No result under the registered methodology exists. Three Phase B physical recovery passes on one stick are recorded separately in `hardware.md` and are not this benchmark |
 | Deterministic corpus with ground truth | `testkit/generate_corpus.py`, `testkit/damage.py`, `testkit/fsimage.py` | IMPLEMENTED + TESTED + DEMONSTRABLE (SYNTHETIC) | `tests/testkit/` | Fragmented PNG/PDF cases are not reconstructable |
 | Throughput and memory | 1 GiB and 7 GiB runs, peak RSS | IMPLEMENTED + TESTED + DEMONSTRABLE (SYNTHETIC) | `docs/validation/large-image.md` | Measured on one host |
 
 ## J. Cross-platform
 
-See `docs/platform-support.md` for the full matrix. Summary: whole-drive
-sanitization is Linux only and UNSUPPORTED on Windows and macOS, with a
-reason. File erase is validated in CI on all three. Packages build in CI and
-are unsigned and not notarized.
+See `docs/platform-support.md` for the full matrix.
+
+| SIH requirement | Capability | Status | Evidence | Limitation |
+|---|---|---|---|---|
+| Whole-drive sanitization on Windows and macOS | refused with a reason and a remedy (`core/platform/windows.py`, `core/platform/macos.py`) | UNSUPPORTED | `tests/platform/`; browser `10-sanitize-blocked-fixture.png` | Linux only |
+| File erase on Linux, Windows, macOS | `core/erase/files.py` through each platform adapter | IMPLEMENTED + TESTED + DEMONSTRABLE (CI) | CI on all three (`docs/platform-support.md`) | Copy-on-write filesystems report NOT VERIFIABLE |
+| Packages | Linux AppImage and portable, Windows and macOS builds | PARTIAL | CI build jobs (`scripts/build-*.sh`, `scripts/build-windows.ps1`) | Unsigned and not notarized |
 
 ## K/L/M. UI, demo, judge questions
 
 | SIH requirement | Capability | Status | Evidence | Limitation |
 |---|---|---|---|---|
-| Device card with capability and blocked reason | Devices and Sanitize screens | IMPLEMENTED + TESTED + DEMONSTRABLE | `ui/src/screens/Devices.tsx`, `Sanitize.tsx` | none recorded |
-| Landing screen with four workflows | Overview screen: Recover Evidence, Secure Erase, File / Folder Erase, Verify Report, each with the server's live status | IMPLEMENTED + TESTED + NOT YET DEMONSTRATED | `ui/src/screens/Home.tsx`; TypeScript build | Not checked in a browser in this work |
-| Executive summary screen | WHAT WAS FOUND / ERASED / HOW VERIFIED / WHAT REMAINS UNVERIFIED from the case record; dry runs never counted as erasures | IMPLEMENTED + TESTED + NOT YET DEMONSTRATED | `ui/tests/summary.test.ts` | Not checked in a browser in this work |
-| Demo runbook | `docs/demo/runbook.md` | IMPLEMENTED | rehearsal pending | Needs the physical stick for the live beats |
-| Judge Q&A | `docs/demo/qa.md`, 29 questions, each traced to code or a record | IMPLEMENTED | `docs/demo/qa.md` | Power loss is answered from design and tests; no real power cut has been recorded |
+| Device card with capability and blocked reason | Devices and Sanitize screens; a locked row reads `BLOCKED · WHY BLOCKED:` and the reason, with the human remedy | IMPLEMENTED + TESTED + DEMONSTRABLE | `ui/src/screens/Devices.tsx`, `Sanitize.tsx`; browser `06-devices-fixture.png` | Browser-checked on fixture devices; the live host's devices were not offered to the browser |
+| Landing screen with four workflows | Overview screen: Recover Evidence, Secure Erase, File / Folder Erase, Verify Report, each with the server's live status | IMPLEMENTED + TESTED + DEMONSTRABLE | `ui/src/screens/Home.tsx`; browser `01-overview-case-open.png` on the real API | none recorded |
+| Executive summary screen | six answers on the Overview: Secure Erasure, Evidence Recovery, Verification, Integrity, Safety, and Limitations led by what is not physically validated; dry runs never counted as erasures | IMPLEMENTED + TESTED + DEMONSTRABLE | `ui/tests/summary.test.ts`; browser: fits 1366 x 768 without scrolling (`01`) | The design-fact lines are fixed text backed by this matrix, not computed; the case lines are computed |
+| Demo runbook | `docs/demo/runbook.md`; timed 4.5-minute order in `demo-evidence-index.md` | PARTIAL | automated technical rehearsal 2026-09-24 (every beat's command and screen ran) | Not rehearsed aloud by a presenter; the live physical-stick beats wait on the human methodology gate |
+| Judge Q&A | `docs/demo/qa.md`, 29 questions, each traced to code or a record | DOCUMENTED | `docs/demo/qa.md` | Power loss is answered from design and tests; no real power cut has been recorded |
 
 ## N. Standards
 
-| Claim | Status | Evidence |
-|---|---|---|
-| NIST SP 800-88 Rev. 2 vocabulary (Clear / Purge / Destroy) | Aligned, including `CLAUDE.md`. Rev. 1 withdrawn 2025-09-26 | `docs/compliance.md` |
-| IEEE 2883-2022, ISO/IEC 27040:2024 | Mapped, not claimed as compliance | `docs/compliance.md` |
-| DoD 5220.22-M | Legacy method offered by the engine with a warning; not offered in the UI; no compliance claim | `docs/compliance.md`, `core/erase/drive.py` |
+| Requirement | Capability | Status | Evidence | Limitation |
+|---|---|---|---|---|
+| NIST SP 800-88 Rev. 2 vocabulary (Clear / Purge / Destroy) | every level, report and screen uses the three words; Rev. 1 was withdrawn 2025-09-26 | DOCUMENTED | `docs/compliance.md`, `CLAUDE.md`, report `method.standards` | Vocabulary and mapping only; no certification is claimed |
+| IEEE 2883-2022, ISO/IEC 27040:2024 | mapped section by section | DOCUMENTED | `docs/compliance.md` | Mapped, not claimed as compliance |
+| DoD 5220.22-M | legacy method offered by the engine with a warning; not offered in the UI | IMPLEMENTED + TESTED + NOT YET DEMONSTRATED | `docs/compliance.md`, `core/erase/drive.py`, `tests/erase/test_select_method.py` | No compliance claim; the UI deliberately has no method chooser |
