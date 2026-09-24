@@ -8,6 +8,7 @@ import { CaseProvider, useCase } from './lib/caseContext'
 import Audit from './screens/Audit'
 import Cases from './screens/Cases'
 import Devices from './screens/Devices'
+import Home from './screens/Home'
 import FileEraser from './screens/FileEraser'
 import Recovery from './screens/Recovery'
 import Sanitize from './screens/Sanitize'
@@ -15,7 +16,9 @@ import Sanitize from './screens/Sanitize'
 /**
  * Navigation, in the order an investigation happens.
  *
- * Cases first, because everything else files itself against one. The previous
+ * Overview first: the four workflows and the open case's summary, so the tool
+ * explains itself in one screen. Then Cases, because everything else files
+ * itself against one. The previous
  * order started at Devices, which is the order the *tool* was built in and not
  * the order the work is done in: an examiner opens a case, registers what was
  * seized, recovers from it or sanitizes it, and then reports. A sidebar that
@@ -23,6 +26,7 @@ import Sanitize from './screens/Sanitize'
  * before anything recorded why.
  */
 type ScreenId =
+  | 'home'
   | 'cases'
   | 'devices'
   | 'sanitize'
@@ -32,6 +36,7 @@ type ScreenId =
   | 'platform'
 
 const SCREENS: { id: ScreenId; label: string; hint: string }[] = [
+  { id: 'home', label: 'Overview', hint: 'The four workflows and the open case, at a glance' },
   { id: 'cases', label: 'Cases', hint: 'Evidence, operations, reports, audit' },
   { id: 'devices', label: 'Devices', hint: 'Enumerate and probe' },
   { id: 'recovery', label: 'Recovery', hint: 'Carve and undelete, read-only' },
@@ -129,7 +134,7 @@ function StatusStrip({ selected }: { selected: DeviceRow | null }) {
 }
 
 function Shell() {
-  const [screen, setScreen] = useState<ScreenId>('cases')
+  const [screen, setScreen] = useState<ScreenId>('home')
   const [selected, setSelected] = useState<DeviceRow | null>(null)
   const [health, setHealth] = useState<Record<string, unknown> | null>(null)
   const { openCase } = useCase()
@@ -209,6 +214,7 @@ function Shell() {
       </nav>
 
       <main className="main">
+        {screen === 'home' && <Home onOpen={(target) => setScreen(target)} />}
         {screen === 'cases' && <Cases />}
         {screen === 'devices' && (
           <Devices

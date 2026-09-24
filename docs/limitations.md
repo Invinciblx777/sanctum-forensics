@@ -462,12 +462,15 @@ the form type four bytes later. Both are in the table and both are checked.
 
 ## Bifragment reassembly is narrow, and depends on the volume's cluster size
 
-`core/carve/fragmentation.py` rebuilds a JPEG split into two runs. What it can be
-trusted with is exactly this and no more:
+`core/carve/fragmentation.py` rebuilds a baseline JPEG or a PNG split into two runs.
+PNG's reach and refusals are measured separately in
+[`validation/png-reassembly.md`](validation/png-reassembly.md): 120 of 120 layouts to
+a 7 MiB gap, 0 of 800 adversarial joins accepted, on synthetic images. The rest of
+this section is about JPEG. What it can be trusted with is exactly this and no more:
 
 * **One baseline JPEG, exactly two runs, both still on the medium.** Progressive,
-  arithmetic-coded, lossless and multi-scan JPEGs are never reassembled, and neither is
-  any other format. A file in three or more pieces is not recovered.
+  arithmetic-coded, lossless and multi-scan JPEGs are never reassembled, and no format
+  other than JPEG and PNG is. A file in three or more pieces is not recovered.
 * **Reach: the gap between the runs at most 2 MiB (2,097,152 bytes).** Measured over
   ten random layouts at each of 64 KiB, 128 KiB, 256 KiB, 512 KiB, 1 MiB and 2 MiB, on
   512-byte and 4096-byte clusters with the size known: all recovered byte for byte.
@@ -893,10 +896,18 @@ elsewhere rather than offer a shim that would have to fake `O_DIRECT` alignment,
 `core/erase/files.py` stays cross-platform.
 
 **The Windows file-erasure backend (`core/erase/_platform/win.py`) is
-type-checked under `--platform win32` and has not been executed on a Windows
-host in this project's recorded validation.** Its behaviour on NTFS alternate
-data streams, the USN journal and Windows file locking is implemented from
-documentation and is unverified.
+type-checked under `--platform win32` and now also runs on a real Windows 11
+runner in CI** — see "The Windows backend: what has now run, and what has not"
+above, which is the authoritative statement, and the `file_folder_erase` /
+Windows 11 row of `core/platform/validation_record.json`. Alternate data
+streams, resident MFT data and a real directory junction are covered there. The
+USN journal and Windows file locking are still implemented from documentation
+and exercised by no test, and **no erase has run on physical Windows media**: a
+CI runner has a virtual disk and no removable device.
+
+This paragraph previously said the backend had never executed on a Windows
+host. That stopped being true when `platform-ci` began running the suites on a
+Windows runner, and the sentence outlived the fact.
 
 **E01 limits.** Acquisition to E01 is uncompressed (see above). E01 reading
 depends on the `libewf-python` build; the tests that need an E01-writing build

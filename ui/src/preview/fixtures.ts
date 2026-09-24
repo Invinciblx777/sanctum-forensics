@@ -276,6 +276,11 @@ export const REPORT_VERIFICATION: ReportVerification = {
   json_url: '/artifacts/reports/erase-drive-3f9c2a.forensic.json',
   pdf_url: '/artifacts/reports/erase-drive-3f9c2a.forensic.pdf',
   passed: false,
+  verdict: 'FAILED_VERIFICATION',
+  verdict_reasons: [
+    'signature failed: signature does not match the report contents; the ' +
+      'report was altered after signing, or signed by a different key',
+  ],
   fingerprint: 'SHA256:9f2c1a7e4b0d8365c1ae92f0d47b6a83',
   ledger_digest: '4a7d1ed414474e4033ac29ccb8653d9b1ee2b0bd0d4a3a3a1c1f7f5a2b3c4d5e',
   // False, matching `passed: false` above: this fixture is the tampered case,

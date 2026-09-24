@@ -1,5 +1,13 @@
 # SIH 26149 readiness — what is implemented, measured, and not verified
 
+> **Historical snapshot (2026-09-21, `20a6439`).** Superseded by
+> [`feature-matrix.md`](feature-matrix.md),
+> [`demo-evidence-index.md`](demo-evidence-index.md) and
+> [`judge-defense-card.md`](judge-defense-card.md). Several statements below
+> were true on that date and are not now: the UI has since been checked in a
+> real browser (`browser-2026-09-24/`), PNG bifragment reassembly was added,
+> and the test counts have grown. Quote the newer documents.
+
 **Date:** 2026-09-21 · **Base commit:** `20a6439` · Every figure below is
 measured on this host (Fedora 44, Linux 6.19.10, 16 logical CPUs, NVMe,
 Python 3.11.16) and each links to its raw result. Nothing here is estimated.

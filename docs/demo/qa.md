@@ -1,4 +1,4 @@
-# Twenty-one questions an NTRO panel asks, and the answers
+# Twenty-nine questions an NTRO panel asks, and the answers
 
 Every number here is traceable to a file in this repository. Where the answer is
 "we cannot", the answer includes the measurement that shows why — those are the
@@ -218,6 +218,20 @@ report relies on.
 > there by promoting **237 candidates no decoder ever confirmed** — so 1500 is the
 > largest value the evidence permits.
 
+**First, the question underneath it: what is the number?** An evidence score out
+of 10000, not a probability that the object is correct. Six components fire or
+do not, each worth a fixed number of basis points; they come to 10,500 when all
+six fire, so a candidate showing `10000 / 10000` hit the clamp rather than a
+measurement of certainty. That is why the screen shows a score against its
+denominator and not a percentage. **What is calibrated is the bucket**, and its
+precision on a stated population: pooled over eight seeds and 173 candidates,
+104 of 104 HIGH candidates matched a planted object byte for byte
+(`docs/performance/calibration-pooled.md`). Say the limit in the same breath —
+those are synthetic corpora, and on the 7 GiB image HIGH precision was **86.6%**
+until the footer-bound fix of 2026-09-21. If a judge asks "so is a HIGH file
+100% certain?", the answer is no: *every HIGH candidate in that population was
+correct, and the population is small and synthetic.*
+
 **The full written answer, for the follow-up:**
 
 By measuring them against ground truth, then publishing the sweep.
@@ -269,7 +283,7 @@ shipped code that every existing test passed.
 ## 5 · What stops someone forging your report?
 
 > **Say it out loud:** Five independent checks, and the one that matters against
-> forgery is `chain_store` — it re-verifies **all 43 ledger entries from the store
+> forgery is `chain_store` — it re-verifies **every ledger entry from the store
 > itself**, not from the copy inside the report, so a forged report cannot make it
 > agree. Change one byte and the signature fails while the other four hold. And
 > the honest half: an embedded key proves internal consistency, never identity —
@@ -308,11 +322,12 @@ owns the machine.
 ## 6 · Why does your chain check say `VERIFIED_PARTIAL` and not just valid?
 
 > **Say it out loud:** Because the excerpt genuinely is partial, and calling it
-> complete would be the exact lie this project exists not to tell. The report
-> carries **37 entries out of 43** — its own job plus genesis — and declares the
-> six-entry gap *under its own signature*, in a field called `excerpt_gaps`. An
-> earlier build called that a broken chain; reporting a gap as a gap is the
-> difference between a tool you can put in front of a court and one you cannot.
+> complete would be the exact lie this project exists not to tell. On the
+> validation run the report carried **37 entries out of 43** — its own job plus
+> genesis — and declared the six-entry gap *under its own signature*, in a field
+> called `excerpt_gaps`. An earlier build called that a broken chain; reporting
+> a gap as a gap is the difference between a report an examiner can defend and
+> one they cannot.
 
 **The full written answer, for the follow-up:**
 
@@ -341,8 +356,9 @@ broken link, so it reported `FAIL` in all three tamper stages for a store where
 all 42 entries verified. It was invisible synthetically because every loop-device
 run had one job on a fresh ledger.
 
-**A tool that reports a gap as a gap can go in front of a court. One that reports
-it as a break, or hides it, cannot.**
+**Reporting a gap as a gap is the difference between a report an examiner can
+defend and one they cannot. A report that calls it a break, or hides it, cannot
+be defended.**
 
 ---
 
@@ -921,3 +937,179 @@ the filesystem recovery logic is media-independent and we have measured it on
 real removable media. What we do not claim is that a card reader's controller
 behaves like this USB bridge's — and after what the bridge did to run 1, we
 would not assume it.
+
+---
+
+## 22 · What happens if power is lost in the middle of an erase?
+
+> **Say it out loud:** The device is left partially sanitized, and the tool says
+> so instead of guessing. The ledger is append-only, so a torn last write shows
+> up as `INCOMPLETE_TAIL`, not as a broken chain, and everything before it still
+> verifies. An overwrite resumes from the last checkpoint the ledger recorded.
+> A firmware sanitize is started again from the beginning. No certificate is
+> issued for a job that did not finish and verify.
+
+**The full written answer, for the follow-up:**
+
+- **The chain survives a torn write.** A power cut during an append leaves at
+  most a partial last line. `core/ledger/chain.py` reports that as
+  `INCOMPLETE_TAIL`, distinct from `BROKEN`, and the entries before it verify.
+- **Overwrite resumes from a ledgered checkpoint.** `GET/POST /jobs/{id}/resume`
+  restarts the overwrite at the last checkpoint the chain holds
+  (`tests/api/test_resume.py`). This is Linux only.
+- **Firmware methods restart.** ATA SANITIZE, SECURITY ERASE and NVMe
+  sanitize/format are re-issued from the beginning. The tool does not rely on
+  a drive resuming its own operation after power returns.
+- **No certificate for an unfinished job.** A job that did not reach
+  verification gets no sanitization level and no certificate. The ledger entry
+  says **PARTIALLY SANITIZED** (`docs/user-manual.md` §10).
+- **Not tested with a real power cut.** Cancellation and a vanished client are
+  tested. Pulling power from a device mid-write has not been done in a recorded
+  run.
+
+---
+
+## 23 · What happens if the device lies about its capacity?
+
+> **Say it out loud:** Some lies we can see and some we cannot, and we say which.
+> A Host Protected Area or DCO makes the drive report less than it has. We read
+> both the accessible and the native maximum and report any difference. A
+> controller that lies consistently to every host read cannot be caught from the
+> host, and no software tool can catch it. That is why flash reports always say
+> overwrite cannot reach remapped or over-provisioned blocks.
+
+**The full written answer, for the follow-up:**
+
+- **HPA and DCO.** `core/device/hidden_areas.py` reads `hdparm -N` and
+  `hdparm --dco-identify`, both read-only. It compares accessible with native
+  max sectors, and the report's `hidden_areas` section records the difference.
+- **A bridge that answers nonsense is caught.** A USB bridge answered
+  `max sectors = 0/1, HPA setting seems invalid` and exited 0. That once
+  produced a 512-byte "erase" of a 7.76 GB stick. The tool now discards that
+  reading and records that no HPA/DCO determination was made, rather than
+  trusting the exit code (`core/device/hidden_areas.py`,
+  `docs/validation/hardware.md`).
+- **Over-provisioning is not host-addressable.** No host read or write reaches
+  it. Every flash report carries that sentence (`core/platform/base.py:
+  FLASH_LIMITATION`) and a residual-risk level to match.
+- **The benchmark harness refuses implausible sizes.** Its preflight refuses a
+  device smaller than the corpus or larger than 128 GiB.
+
+---
+
+## 24 · What happens if the filesystem is mounted?
+
+> **Say it out loud:** It refuses, and it will not unmount anything for you. We
+> ran that preflight on the attached stick on 23 September and it said: *has
+> mounted filesystems: /run/media/…/SANCTUMREC. Unmount them yourself - if you
+> did not know it was mounted, you do not yet know what is on it.* No sudo, no
+> automatic unmount, and zero I/O to the device.
+
+**The full written answer, for the follow-up:**
+
+- The preflight in `scripts/media_benchmark.py` and the device guard in
+  `core/device/guard.py` refuse any device with a mounted filesystem, the root
+  filesystem, or a system or boot role.
+- The refusal was recorded on the physical stick on 2026-09-23.
+  `/sys/block/sda/stat` was identical before and after, so the check did no I/O.
+- The workflow state for that device reads `BLOCKED`, and WHY BLOCKED quotes the
+  refusal (`core/workflow.py`).
+
+---
+
+## 25 · What happens if backup verification fails?
+
+> **Say it out loud:** The write refuses. It does not trust a report someone
+> read; it runs the whole backup verification again itself, straight before
+> writing. A backup must cover every byte the write can reach, sit on another
+> physical disk, come from this serial and this device path, and be bound to
+> the image's exact SHA-256. If any of that fails, nothing is written.
+
+**The full written answer, for the follow-up:**
+
+- `verify_backup` checks coverage of the write extent, backup location on a
+  different disk, serial, device string, extent, byte count, backup hash, image
+  path and image hash.
+- `write_image` re-runs it and refuses unless
+  `sufficient_for_restoring_the_modified_region` is true. It then writes the
+  exact bytes that were hashed, read once before the device is opened.
+- **Exit 0 from `verify-backup` does not mean "verified".** It means the command
+  ran. The answer is the field `sufficient_for_restoring_the_modified_region`.
+- A backup that has never been restored is not a proven restore, and the tool
+  says so: `restoration: "backup captured; restoration not validated"`.
+
+---
+
+## 26 · What platforms are actually supported?
+
+> **Say it out loud:** Whole-drive sanitization runs on Linux only, and is
+> refused on Windows and macOS with the reason. File and folder erase is
+> validated in CI on all three. Firmware Purge has been selected and dispatched,
+> but never executed on a real drive in a recorded run. The packages are
+> unsigned and not notarized.
+
+**The full written answer, for the follow-up:** `docs/platform-support.md` has
+the matrix. Its legend keeps VALIDATED, PARTIAL, UNVERIFIED, UNSUPPORTED and
+HARDWARE-UNVERIFIED apart. **CI-validated is not hardware-validated.** CI
+runners have virtual disks and no removable device.
+
+---
+
+## 27 · What is simulation, and what is real hardware?
+
+> **Say it out loud:** Every erase is a dry run until someone turns that off and
+> types the device serial. A dry run writes nothing, and every screen showing
+> one says *SIMULATION / NO PHYSICAL DEVICE MODIFIED*. Our measurements carry a
+> population label: synthetic images, the one physical USB stick, or CI virtual
+> disks. We never mix them. The physical recovery benchmark has not been run
+> yet, so no physical benchmark result exists.
+
+**The full written answer, for the follow-up:**
+
+- `dry_run` defaults to true in every erase request model (`api/routes/models.py`).
+- The UI decides the banner from the flag the server recorded for the job, not
+  from the form toggle (`ui/src/lib/simulation.ts`).
+- The physical media recorded in `docs/validation/hardware.md` is one Toshiba
+  TransMemory USB stick. Recovery calibration and benchmarks are synthetic.
+- The physical benchmark (`scripts/media_benchmark.py`) is at preflight. It is
+  blocked on the experiment owner's methodology decision and on a mounted
+  device.
+
+---
+
+## 28 · How do you reconstruct fragmented files?
+
+> **Say it out loud:** For two formats, and only when the file's own bytes prove
+> the join. A baseline JPEG is checked with an exact Huffman scan count. A PNG
+> is checked with every chunk's CRC-32 plus a zlib stream that must inflate to
+> exactly the size in its header. On synthetic images, PNG recovered 120 of 120
+> layouts up to a 7 MiB gap and accepted 0 of 800 deliberately wrong joins. A
+> file in three or more pieces is not reconstructed, and we say so.
+
+**The full written answer, for the follow-up:**
+
+- Two runs only. A second passing join means the medium does not say where the
+  file was, so the object is refused.
+- A reassembled object is held one point below HIGH, and the report lists its
+  runs so anyone can re-read the same bytes.
+- JPEG figures: `docs/limitations.md`. PNG figures and the script that
+  reproduces them: `docs/validation/png-reassembly.md`.
+- The CRC-32 and Adler-32 are not cryptographic. They defend against
+  accidental joins, not against someone who forges the gap bytes.
+
+---
+
+## 29 · Your verifier says `VERIFIED_WITH_LIMITATIONS`. Is the report good or not?
+
+> **Say it out loud:** The report is authentic. All five checks ran and passed.
+> The verdict is not a plain `VERIFIED` because the report itself declares what
+> it could not do: on this stick, that overwrite cannot reach remapped flash, and
+> that HPA/DCO could not be probed through the USB bridge. The verifier will not
+> round that up to a clean pass.
+
+**The full written answer, for the follow-up:** there are four verdicts, in
+fixed precedence. `FAILED_VERIFICATION` means a check failed. `PARTIAL` means a
+check could not run. `VERIFIED_WITH_LIMITATIONS` means the report declares
+limitations, residual risk above low, a failed self-verification, or excerpt
+gaps. `VERIFIED` means none of those apply. The exit code still follows
+`Result:`. The implementation is `core/report/verify_report.py:grade_report`.

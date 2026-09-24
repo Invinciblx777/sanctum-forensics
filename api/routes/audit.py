@@ -862,6 +862,11 @@ def verify_report_endpoint(
             target.name.removesuffix(".json") + ".pdf"
         )),
         "passed": verification.ok,
+        # The graded word and its reasons. "passed" says every check that ran
+        # passed; the verdict also says whether every check could run and
+        # whether the report declares limits on what it proves.
+        "verdict": verification.verdict.value,
+        "verdict_reasons": list(verification.verdict_reasons),
         "fingerprint": verification.fingerprint,
         # Whether the file on disk is still the bytes the chain recorded when
         # this report was generated. Reported alongside the checks rather than

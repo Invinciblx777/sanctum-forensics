@@ -8,6 +8,8 @@ import {
   STEPS,
   statusWord,
 } from '../lib/platform'
+import { BACKUP_NOTE } from '../lib/workflowState'
+import type { SanitizeWorkflow } from '../lib/workflowState'
 import { Limitations, Notice, Panel, Railed } from './widgets'
 
 /** The eight-step tracker. The current step is computed, never clicked. */
@@ -151,5 +153,49 @@ export function AssessmentSummary({
         {device.limitations.length > 0 && <Limitations items={device.limitations} />}
       </div>
     </Panel>
+  )
+}
+
+/**
+ * Where the job is in the destructive-workflow state machine, and why it
+ * cannot move on. The state is derived by `lib/workflowState.ts`; this only
+ * draws it. BLOCKED and FAILED list their reasons under WHY BLOCKED.
+ */
+export function WorkflowStrip({ flow }: { flow: SanitizeWorkflow }) {
+  const stopped = flow.state === 'BLOCKED' || flow.state === 'FAILED'
+  const index = flow.path.indexOf(flow.state)
+  return (
+    <section className="workflow-state" data-testid="workflow-state" aria-label="Workflow state">
+      <ol className="workflow-path">
+        {flow.path.map((state, at) => (
+          <li
+            key={state}
+            className={
+              state === flow.state
+                ? `is-current${stopped ? ' is-stopped' : ''}`
+                : at < index
+                  ? 'is-done'
+                  : ''
+            }
+            aria-current={state === flow.state ? 'step' : undefined}
+          >
+            {state.replace(/_/g, ' ')}
+          </li>
+        ))}
+      </ol>
+      <p className={`workflow-headline${stopped ? ' is-stopped' : ''}`}>{flow.headline}</p>
+      {flow.whyBlocked.length > 0 && (
+        <div className="why-blocked">
+          <strong>{flow.state === 'FAILED' ? 'WHY IT FAILED' : 'WHY BLOCKED'}</strong>
+          <ul>
+            {flow.whyBlocked.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <p className="note">{flow.nextAction}</p>
+      <p className="note-faint">{BACKUP_NOTE}</p>
+    </section>
   )
 }

@@ -11,7 +11,8 @@ import type {
   ResumeState,
 } from '../lib/api'
 import { currentStep, runnableStatus } from '../lib/platform'
-import { AssessmentSummary, FlowSteps } from '../components/sanitizeFlow'
+import { AssessmentSummary, FlowSteps, WorkflowStrip } from '../components/sanitizeFlow'
+import { sanitizeWorkflow } from '../lib/workflowState'
 import { verificationWord } from '../lib/artifacts'
 import { useCase } from '../lib/caseContext'
 import {
@@ -34,10 +35,12 @@ import {
   Panel,
   ProgressView,
   Railed,
+  SimulationBanner,
   Stat,
   Verdict,
 } from '../components/widgets'
 import type { Tone } from '../components/widgets'
+import { isSimulation } from '../lib/simulation'
 
 /**
  * The tone of a NIST level.
@@ -522,6 +525,17 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
     verified: Boolean(verificationResult) || dryRun,
     certified: Boolean(report),
   })
+  const flow = sanitizeWorkflow({
+    assessment,
+    offered,
+    canRun,
+    planRefusal: plan?.refusal ?? '',
+    dryRun,
+    confirming,
+    running,
+    phase: progress?.phase ?? null,
+    status: finished ? status : null,
+  })
 
   return (
     <>
@@ -536,6 +550,8 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
 
       <div className="screen-body">
         <FlowSteps current={step} />
+        {flow.simulation && (jobId || dryRun) && <SimulationBanner />}
+        <WorkflowStrip flow={flow} />
         <ErrorNotice error={error} />
 
         {normalized && assessment && (
@@ -930,6 +946,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
               </Panel>
             )}
 
+            {jobId && isSimulation(status) && <SimulationBanner />}
             {jobId && (
               <Panel title="Progress">
                 <ProgressView progress={progress} destructive={!dryRun} />

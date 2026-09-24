@@ -3,9 +3,9 @@ Integrated secure data sanitization + forensic file recovery. Three modules:
 M1 Secure Drive Eraser, M2 Secure File & Folder Eraser, M3 Advanced File Carving & Recovery.
 
 ## Non-negotiables
-- NIST SP 800-88 Rev.1 vocabulary everywhere: Clear / Purge / Destroy. Never claim
-  "military-grade" or Gutmann-for-SSD. Erase method is selected from probed device
-  capability, never from user preference alone.
+- NIST SP 800-88 Rev. 2 vocabulary everywhere (Rev. 1 was withdrawn on 2025-09-26):
+  Clear / Purge / Destroy. Never claim "military-grade" or Gutmann-for-SSD. Erase
+  method is selected from probed device capability, never from user preference alone.
 - Destructive ops are opt-in twice: dry-run is the default, and the user types the device
   serial to confirm. Refuse any device with a mounted filesystem or the root filesystem.
 - The evidence path is read-only. Carving code never opens a device or image O_RDWR.

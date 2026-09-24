@@ -984,3 +984,59 @@ details.tech > .tech-body { display: flex; flex-direction: column; gap: 14px; }
 }
 .link-button:hover { color: var(--text-primary); }
 .link-button:focus-visible { outline: 2px solid var(--text-primary); outline-offset: 2px; }
+
+/* Home: four workflow cards and the four-question summary. */
+.workflows {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-3);
+}
+.workflow-card {
+  display: flex; flex-direction: column; align-items: flex-start;
+  gap: var(--space-2); text-align: left; cursor: pointer;
+  background: var(--bg-panel); border: 1px solid var(--line);
+  color: inherit; font: inherit; padding: 12px;
+}
+.workflow-card:hover { border-color: var(--accent-dim); }
+.workflow-title { font-weight: 600; font-size: var(--type-md); }
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--space-4);
+}
+/* Six answers in two rows of three, so the overview fits a 1366x768
+   projector without scrolling. */
+@media (min-width: 1100px) {
+  .summary-grid.is-six { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3) var(--space-4); }
+  .summary-grid.is-six .summary-column { gap: 3px; }
+}
+.summary-title { font-weight: 600; letter-spacing: 0.04em; font-size: var(--type-sm); }
+
+.simulation-banner {
+  border: 1px dashed var(--accent-dim);
+  padding: 8px 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-align: center;
+}
+
+/* The destructive-workflow state, named with core/workflow.py's words. The
+   current state is the only one in full weight; a stopped state is drawn in
+   the destructive colour because the reason under it is the point. */
+.workflow-state {
+  display: flex; flex-direction: column; gap: var(--space-2);
+  border: 1px solid var(--line); background: var(--bg-panel); padding: 12px;
+}
+.workflow-path {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-wrap: wrap; gap: 4px 0;
+  font-family: var(--font-mono); font-size: var(--type-sm); color: var(--text-muted);
+}
+.workflow-path li + li::before { content: "\2192"; padding: 0 6px; color: var(--text-muted); font-weight: 400; }
+.workflow-path li.is-done { color: var(--text-secondary); }
+.workflow-path li.is-current { color: var(--text-primary); font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+.workflow-path li.is-stopped { color: var(--state-destructive); }
+.workflow-headline { margin: 0; font-weight: 600; letter-spacing: 0.04em; font-size: var(--type-md); }
+.workflow-headline.is-stopped { color: var(--state-destructive); }
+.why-blocked strong { letter-spacing: 0.06em; font-size: var(--type-sm); }
+.why-blocked ul { margin: 4px 0 0; padding-left: 18px; }

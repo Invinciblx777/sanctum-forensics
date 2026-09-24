@@ -119,10 +119,19 @@ def test_every_candidate_carries_a_decomposed_score(carved: dict[str, Any]) -> N
     )
 
 
-def test_every_confidence_equals_the_sum_of_its_components(
+def test_every_confidence_equals_the_clamped_sum_of_its_components(
     carved: dict[str, Any],
 ) -> None:
-    """A total that does not reconcile is a total from somewhere else."""
+    """A total that does not reconcile is a total from somewhere else.
+
+    Reconciliation is against the **clamped** sum, which is what
+    ``score_candidate`` stores. Asserting plain equality passes on this image -
+    it is flat, so nothing awards ``fs_metadata`` and no candidate exceeds
+    9000 - and is false for the candidate the demo puts on screen: with a
+    surviving filesystem record the six components come to 10,500 and the
+    stored total is 10000. See
+    ``tests/carve/score/test_clamp_reconciliation.py``.
+    """
     offenders = [
         {
             "offset": item["offset"],
@@ -132,7 +141,8 @@ def test_every_confidence_equals_the_sum_of_its_components(
             "component_sum": sum(item["score_components"].values()),
         }
         for item in carved["candidates"]
-        if sum(item["score_components"].values()) != item["confidence_bp"]
+        if max(0, min(10_000, sum(item["score_components"].values())))
+        != item["confidence_bp"]
     ]
     assert not offenders, f"confidence does not reconcile with components: {offenders}"
 

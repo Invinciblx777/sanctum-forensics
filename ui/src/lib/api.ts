@@ -567,6 +567,9 @@ export interface ReportVerification {
   json_url: string
   pdf_url: string
   passed: boolean
+  /** The graded verdict core computed, and why it is not VERIFIED. */
+  verdict: string
+  verdict_reasons: string[]
   fingerprint: string
   /** The identity caveat, written by core and passed through verbatim. */
   caveat: string

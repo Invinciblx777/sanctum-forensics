@@ -768,14 +768,25 @@ def build_carve_report(
                 "reassembly",
             ],
             "note": (
-                "Confidence is the sum of six measured components in basis "
-                "points, clamped and never scaled, plus a seventh, reassembly, "
-                "that is zero unless the object was rebuilt from separate runs, "
-                "where it holds the total below HIGH because the layout across "
-                "the gap is inferred. The weights were calibrated against a "
-                "ground-truth corpus and bounded from above by that measurement; "
-                "see docs/performance/calibration.md. A bucket is a reading of "
-                "the number, not a substitute for it."
+                "confidence_bp is an EVIDENCE SCORE, NOT A PROBABILITY that "
+                "the object is correct. It is the sum of six measured "
+                "components in basis points, clamped and never scaled, plus a "
+                "seventh, reassembly, that is zero unless the object was "
+                "rebuilt from separate runs, where it holds the total below "
+                "HIGH because the layout across the gap is inferred. The "
+                "components come to 10500 when every one is established, so "
+                "10000 is where the clamp lands and not a claim of certainty. "
+                "The weights were calibrated against a ground-truth corpus and "
+                "bounded from above by that measurement; see "
+                "docs/performance/calibration.md. What the calibration "
+                "establishes is per-bucket precision on that population: "
+                "pooled over eight seeds and 173 candidates, 104 of 104 HIGH "
+                "candidates matched a planted object byte for byte "
+                "(docs/performance/calibration-pooled.md). That is a property "
+                "of those synthetic corpora, not a rate for seized media: on a "
+                "7 GiB image HIGH precision was 86.6% before the footer-bound "
+                "fix of 2026-09-21. A bucket is a reading of the number, not a "
+                "substitute for it."
             ),
         },
         "limitations": {"items": _or_none_recorded(list(limitations))},

@@ -36,9 +36,39 @@ export function duration(seconds: number): string {
   return `${rest}s`
 }
 
-/** Basis points to a percentage. 10000 bp is 100.00%. */
+/**
+ * Basis points to a percentage. 10000 bp is 100.00%.
+ *
+ * Only for quantities that really are a proportion or a probability — the
+ * post-erase verification's detection probability, which comes out of
+ * `core/erase/verify.py` as either a full read (10000) or the sampling
+ * formula. **Not for a carve candidate's evidence score**: see
+ * `evidenceScore` below for why a percent sign there is a false claim.
+ */
 export function percent(basisPoints: number, decimals = 1): string {
   return `${(basisPoints / 100).toFixed(decimals)}%`
+}
+
+/**
+ * A carve candidate's evidence score, rendered so it cannot be read as a
+ * probability.
+ *
+ * `confidence_bp` is the sum of seven named components in basis points,
+ * clamped at 10000 and never scaled (`core/carve/score.py`). The components
+ * come to 10,500 when every one fires, so 10000 is where the clamp lands, not
+ * a statement that the object is certainly correct. Rendering it as
+ * "100.00%" invited exactly that reading, so the number is shown against its
+ * own denominator instead.
+ *
+ * What the calibration does support is the *bucket*: pooled over eight seeds
+ * and 173 candidates, every one of the 104 HIGH candidates matched a planted
+ * object byte for byte (docs/performance/calibration-pooled.md). That is a
+ * property of those corpora — on the 7 GiB image HIGH precision was 86.6%
+ * before the footer-bound fix — and it is a precision figure for a bucket,
+ * never a probability for one candidate.
+ */
+export function evidenceScore(basisPoints: number): string {
+  return `${basisPoints} / 10000`
 }
 
 export function hex(offset: number): string {

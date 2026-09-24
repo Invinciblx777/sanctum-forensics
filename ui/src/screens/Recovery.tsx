@@ -8,7 +8,7 @@ import type {
 } from '../lib/api'
 import { artifactFor } from '../lib/artifacts'
 import { useCase } from '../lib/caseContext'
-import { bytes, hex, percent } from '../lib/format'
+import { bytes, evidenceScore, hex, percent } from '../lib/format'
 import {
   matchesPii,
   PII_KINDS,
@@ -72,10 +72,13 @@ const COMPONENT_MEANING: Record<string, string> = {
 
 function ScoreBreakdown({ candidate }: { candidate: CarveCandidate }) {
   const entries = Object.entries(candidate.score_components)
-  const total = Math.min(
-    entries.reduce((sum, [, value]) => sum + value, 0),
-    10000,
-  )
+  // The raw sum and the stored score are different numbers whenever every
+  // component fires: the six come to 10,500 and the engine clamps. Showing
+  // only the clamped one made 10000 look like a measurement instead of a
+  // ceiling, so both are rendered and the clamp is named where it happens.
+  const rawTotal = entries.reduce((sum, [, value]) => sum + value, 0)
+  const total = Math.min(rawTotal, 10000)
+  const clamped = rawTotal > total
   const tone = BUCKET_TONE[candidate.bucket] ?? 'unknown'
 
   return (
@@ -85,11 +88,30 @@ function ScoreBreakdown({ candidate }: { candidate: CarveCandidate }) {
       <Railed tone={tone}>
         <Verdict
           level={candidate.bucket}
-          basis={`${percent(candidate.confidence_bp, 2)} · ${total} of 10000 basis points`}
+          basis={`evidence score ${evidenceScore(total)}`}
           tone={tone}
         />
         <span className="note-faint">
           HIGH at 8000, MEDIUM at 5000. The total is clamped, never scaled.
+          {clamped && (
+            <>
+              {' '}
+              The components below come to <strong>{rawTotal}</strong>, so this
+              object is at the ceiling: 10000 is where the clamp lands, not a
+              measurement.
+            </>
+          )}
+        </span>
+        {/* The sentence the percentage used to make unnecessary, and then
+            made false. A reader who sees a bounded number beside a word like
+            HIGH will supply "probability" if nothing else is offered. */}
+        <span className="note-faint">
+          This is a sum of measured evidence, <strong>not</strong> a
+          probability that the object is correct. What the calibration
+          measured is the bucket: over eight seeds and 173 candidates, all 104
+          HIGH candidates matched a planted object byte for byte — on those
+          corpora. On a 7 GiB image HIGH precision was 86.6% before the
+          footer-bound fix.
         </span>
       </Railed>
 
@@ -240,7 +262,7 @@ function GalleryCard({
         <Verdict
           tight
           level={candidate.bucket}
-          basis={percent(candidate.confidence_bp, 2)}
+          basis={evidenceScore(candidate.confidence_bp)}
           tone={tone}
         />
         <span className="gallery-meta mono">
@@ -461,7 +483,7 @@ function ReassemblyExplainer({ candidate }: { candidate: CarveCandidate }) {
       <Railed tone={candidate.validation === 'VALID' || candidate.validation === 'valid' ? 'success' : 'warning'}>
         <Verdict
           level="MCU ACCOUNTING: JOIN ACCEPTED"
-          basis={`confidence cap applied: reassembly ${reassemblyScore} bp`}
+          basis={`evidence-score cap applied: reassembly ${reassemblyScore} bp`}
           tone={candidate.validation === 'VALID' || candidate.validation === 'valid' ? 'success' : 'warning'}
         />
         <span className="note">
@@ -477,9 +499,9 @@ function ReassemblyExplainer({ candidate }: { candidate: CarveCandidate }) {
         on the medium, with a gap of at most 2&nbsp;MiB, on a volume whose
         cluster size is known. Three fragments, a missing tail, a progressive
         JPEG, a non-JPEG or a layout off the volume&apos;s grid are reported as
-        ordinary candidates and never as a reconstruction. Confidence is held
-        one basis point under HIGH for this object because where the gap was is
-        inferred, not read.
+        ordinary candidates and never as a reconstruction. The evidence score
+        is held one basis point under HIGH for this object because where the
+        gap was is inferred, not read.
       </Notice>
     </div>
   )
@@ -728,7 +750,7 @@ export default function Recovery() {
                     value={filterBucket}
                     onChange={(e) => setFilterBucket(e.target.value)}
                   >
-                    <option value="">all confidence</option>
+                    <option value="">all buckets</option>
                     <option value="HIGH">HIGH</option>
                     <option value="MEDIUM">MEDIUM</option>
                     <option value="LOW">LOW</option>
@@ -827,8 +849,9 @@ export default function Recovery() {
               {/* This table runs to hundreds of rows on a real image, which is
                   the one place the two-line verdict is the wrong trade. Rows
                   are one line and a fixed 30px, the layout is fixed, and the
-                  confidence cell keeps the word and its percentage on a single
-                  baseline. Nothing here reflows as the list is filtered. */}
+                  evidence-score cell keeps the bucket word and the score on a
+                  single baseline. Nothing here reflows as the list is
+                  filtered. */}
               <div
                 className="scroll-y"
                 style={{
@@ -855,7 +878,11 @@ export default function Recovery() {
                       <th>Type</th>
                       <th>Size</th>
                       <th>Source</th>
-                      <th>Confidence</th>
+                      {/* "Confidence" alone invited the probability reading
+                          this column never supported. */}
+                      <th title="Sum of measured evidence components, out of 10000. Not a probability that the object is correct.">
+                        Evidence score
+                      </th>
                       <th>Identifiers</th>
                     </tr>
                   </thead>
@@ -889,10 +916,11 @@ export default function Recovery() {
                             <Verdict
                               tight
                               level={item.bucket}
-                              // Two decimals: a reassembled object is
-                              // held at 7999 bp, which one decimal rounds
-                              // to "80.0%" beside the word MEDIUM.
-                              basis={percent(item.confidence_bp, 2)}
+                              // The exact integer, not a rounded percentage:
+                              // a reassembled object is held at 7999 bp
+                              // precisely so it reads below the 8000 HIGH
+                              // floor, and any rounding hides that.
+                              basis={evidenceScore(item.confidence_bp)}
                               tone={tone}
                             />
                           </td>
@@ -919,7 +947,7 @@ export default function Recovery() {
 
             <Panel
               title={selected ? 'Score breakdown' : 'Select a candidate'}
-              subtitle={selected ? 'Six components, each with its basis points.' : undefined}
+              subtitle={selected ? 'Six evidence components and the reassembly hold, each in basis points.' : undefined}
             >
               {selected ? (
                 <div className="col loose">

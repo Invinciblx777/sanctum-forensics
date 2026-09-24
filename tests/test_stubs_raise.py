@@ -53,6 +53,8 @@ IMPLEMENTED = (
     "core.erase._platform",
     # Covered by tests/platform/ (adapters from fixtures on every host).
     "core.platform",
+    # Covered by tests/test_workflow.py.
+    "core.workflow",
 )
 
 

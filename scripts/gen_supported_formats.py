@@ -29,6 +29,12 @@ sys.path.insert(0, str(ROOT))
 
 DOC = ROOT / "docs" / "supported-formats.md"
 
+#: What the reassembler for each format accepts, in the table's words.
+_REASSEMBLY_SCOPE = {
+    "JPEG": "yes (baseline only)",
+    "PNG": "yes (chunk CRC + exact zlib length)",
+}
+
 
 def render() -> str:
     from core.carve.signature import load_signatures
@@ -57,7 +63,9 @@ def render() -> str:
     for signature in signatures:
         parser = PARSERS.get(signature.name)
         reassembly = (
-            "yes (baseline only)" if signature.name in _FRAGMENT_CAPABLE else "no"
+            _REASSEMBLY_SCOPE.get(signature.name, "yes")
+            if signature.name in _FRAGMENT_CAPABLE
+            else "no"
         )
         lines.append(
             f"| {signature.name} | `{signature.ext}` "

@@ -1,8 +1,9 @@
 """Bifragment gap carving, and the honest limit around it.
 
-Only JPEG gets reconstruction. Everything else is flagged possibly_fragmented
-and left alone. General fragment reassembly is an open research problem, and a
-tool that claims to solve it is a tool a panel will take apart.
+Only JPEG and PNG get reconstruction. Everything else is flagged
+possibly_fragmented and left alone. General fragment reassembly is an open
+research problem, and a tool that claims to solve it is a tool a panel will take
+apart.
 """
 
 from __future__ import annotations
@@ -105,10 +106,15 @@ def test_search_is_bounded_and_gives_up_rather_than_grinding() -> None:
     assert MAX_GAP_CANDIDATES <= 64
 
 
-def test_non_jpeg_fragmentation_is_flagged_never_reconstructed() -> None:
-    """PNG gets flagged and left alone: no reassembly is attempted, by design."""
+def test_formats_without_a_reassembler_are_flagged_never_reconstructed() -> None:
+    """A split PNG whose tail is not on the medium: flagged, never rebuilt.
+
+    PNG gained a reassembler with an exact oracle (see test_png_fragmentation);
+    what must still hold is that an object nothing can account for is left as
+    the span that is really there, marked possibly_fragmented, and not valid.
+    """
     png = make_noisy_png()
-    laid = _split_across_gap(png, head_bytes=CLUSTER, gap=8192)
+    laid = png[:CLUSTER] + bytes((index * 7 + 3) & 0xFF for index in range(8192))
     image = lay_out([Embedded(ext="png", offset=0, data=laid)], len(laid) + 4096)
 
     candidates = [c for c in carve_structures(BytesEvidence(image)) if c.ext == "png"]
@@ -118,3 +124,4 @@ def test_non_jpeg_fragmentation_is_flagged_never_reconstructed() -> None:
         "a fragmented PNG must never be reported valid"
     )
     assert any(c.possibly_fragmented for c in candidates)
+    assert all(not c.fragments for c in candidates)
