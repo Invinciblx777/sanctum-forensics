@@ -29,6 +29,13 @@ hidden = (
     + collect_submodules("api")
     + collect_submodules("helper")
     + collect_submodules("uvicorn")
+    # reportlab.graphics.barcode imports its symbologies (code128, qr, ...)
+    # through exec() of a string, which PyInstaller's analysis cannot see. The
+    # certificate draws its QR code through that package; without these the
+    # packaged app failed every PDF with ModuleNotFoundError. Until 2026-09-25
+    # the old renderer caught the ImportError, so packaged PDFs had silently
+    # shipped with no QR code at all.
+    + collect_submodules("reportlab.graphics.barcode")
 )
 datas = [(str(UI_DIST), "ui/dist")]
 # What the platform test suites recorded (scripts/record_platform_validation.py).
