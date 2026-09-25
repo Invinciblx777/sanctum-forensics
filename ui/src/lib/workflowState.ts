@@ -15,11 +15,11 @@
  * - A dry run is labelled a simulation at every state it reaches, including
  *   COMPLETE, because a completed dry run wrote nothing.
  *
- * BACKUP_REQUIRED and BACKUP_VERIFIED are not on this path. Whole-drive
- * sanitization destroys the data by intent, so the drive engine has no backup
- * gate; the backup states belong to the physical benchmark write in
- * `scripts/media_benchmark.py`, which enforces them. The screen says so rather
- * than drawing a gate that nothing enforces.
+ * A simulation needs no backup, so SANITIZE_PATH has no backup state. A real
+ * erase does: the server verifies a backup image when the workflow opens
+ * (POST /workflow/erase-drive) and the helper re-checks it before the engine
+ * starts, so REAL_ERASE_PATH draws BACKUP_VERIFIED. The physical benchmark
+ * write in `scripts/media_benchmark.py` has its own backup gate on top.
  */
 import type { DeviceAssessment, JobStatus } from './api'
 import { isSafetyRefusal } from './refusal.ts'

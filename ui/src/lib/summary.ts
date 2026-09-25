@@ -146,6 +146,7 @@ export interface JudgeSummary {
 
 /** Not validated on a physical device, from docs/validation/feature-matrix.md. */
 export const NOT_PHYSICALLY_VALIDATED: readonly string[] = [
+  'This release: no physical validation. Every physical run on record (2026-09-05, 2026-09-23) used an earlier build.',
   'Registered physical carve benchmark: not run. Benchmark figures are SYNTHETIC (three physical recovery passes are recorded separately).',
   'Firmware Purge (ATA/NVMe sanitize, crypto erase): fixture-tested, never run on a drive.',
   'HPA/DCO unlock: not run on hardware.',
@@ -179,7 +180,7 @@ export function judgeSummary(
       capabilityLine(platform, 'whole_drive_clear', 'Whole-drive Clear'),
       capabilityLine(platform, 'whole_drive_purge', 'Whole-drive Purge'),
       'The method is selected from the drive\'s probed capability, never from operator preference.',
-      'Physically run: overwrite Clear on one 7.76 GB USB flash stick, one clean recorded run after two defective ones.',
+      'Physically run on 2026-09-05, on an earlier build and not repeated for this release: overwrite Clear on one 7.76 GB USB flash stick, one clean recorded run after two defective ones.',
       ...(caseLines ? base.erased : []),
     ],
     recovery: [
