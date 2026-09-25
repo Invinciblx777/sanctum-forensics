@@ -28,7 +28,11 @@ Limits, stated plainly:
   (`ui/src/lib/workflowState.ts` `BACKUP_NOTE`). The API now requires one,
   because `core/workflow.py` requires it for `PLAN_READY`. The Sanitize screen
   does not yet drive the new workflow calls; a real erase from the UI is refused
-  until it does.
+  until it does. **Superseded 2026-09-25:** the Sanitize screen now drives
+  `/workflow/erase-drive`, `.../approve` and `/jobs/erase-drive` with the
+  server-issued `authorization_id`. Evidence: `browser-2026-09-25/` (fixture
+  server, synthetic helper, not a physical device) and
+  `final-audit-2026-09-25.md`.
 
 ## L3
 

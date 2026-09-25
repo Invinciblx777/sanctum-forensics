@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import type { DeviceAssessment, JobStatus, SafetyCheck } from '../src/lib/api.ts'
-import { SANITIZE_PATH, sanitizeWorkflow } from '../src/lib/workflowState.ts'
+import { REAL_ERASE_PATH, SANITIZE_PATH, refusalFrom, sanitizeWorkflow } from '../src/lib/workflowState.ts'
 import type { SanitizeFacts } from '../src/lib/workflowState.ts'
 
 function check(key: string, label: string, passed: boolean | null, detail: string): SafetyCheck {
@@ -102,6 +102,7 @@ test('a real erase waits for HUMAN APPROVAL and shows no execution', () => {
   const open = sanitizeWorkflow(facts({ confirming: true }))
   assert.equal(open.state, 'HUMAN_APPROVAL_REQUIRED')
   assert.match(open.nextAction, /serial/)
+  assert.match(open.nextAction, /backup/)
 })
 
 test('a dry run before it starts is PREFLIGHT and labelled SIMULATION', () => {
@@ -147,4 +148,113 @@ test('a failed real erase is FAILED with the reason and an unknown device state'
   assert.equal(flow.state, 'FAILED')
   assert.deepEqual(flow.whyBlocked, ['device went away'])
   assert.match(flow.nextAction, /unknown state/)
+})
+
+const server = (state: string, why: string[] = []) => ({
+  state,
+  why_blocked: why,
+  next_action: `server says ${state}`,
+})
+
+test('a real erase shows the state the server derived, in its words', () => {
+  for (const state of ['HUMAN_APPROVAL_REQUIRED', 'PLAN_READY', 'BACKUP_VERIFIED']) {
+    const flow = sanitizeWorkflow(facts({ server: server(state, ['no person approved']) }))
+    assert.equal(flow.state, state)
+    assert.equal(flow.nextAction, `server says ${state}`)
+    assert.deepEqual(flow.whyBlocked, [], `${state} is not a block`)
+    assert.deepEqual(flow.path, [...REAL_ERASE_PATH])
+  }
+  const blocked = sanitizeWorkflow(facts({ server: server('BLOCKED', ['device identity changed']) }))
+  assert.equal(blocked.state, 'BLOCKED')
+  assert.deepEqual(blocked.whyBlocked, ['device identity changed'])
+  const noBackup = sanitizeWorkflow(facts({ server: server('BACKUP_REQUIRED', ['backup gone']) }))
+  assert.deepEqual(noBackup.path, ['DISCOVERED', 'PREFLIGHT', 'BACKUP_REQUIRED'])
+})
+
+test('an unknown server state is never invented into a screen state', () => {
+  const flow = sanitizeWorkflow(facts({ server: server('SOMETHING_NEW') }))
+  assert.equal(flow.state, 'HUMAN_APPROVAL_REQUIRED')
+})
+
+test('a server refusal is BLOCKED with its WHY BLOCKED, not a generic failure', () => {
+  const refusal = refusalFrom({
+    message: 'REFUSED: nothing was erased',
+    remediation: 'open the workflow',
+    whyBlocked: ['authorization auth-1 was already used'],
+    workflowState: 'BLOCKED',
+    physicalDeviceModified: false,
+  })
+  const flow = sanitizeWorkflow(facts({ refusal, server: server('PLAN_READY') }))
+  assert.equal(flow.state, 'BLOCKED')
+  assert.deepEqual(flow.whyBlocked, ['authorization auth-1 was already used'])
+  assert.match(flow.nextAction, /PHYSICAL DEVICE MODIFIED: FALSE/)
+})
+
+test('a refusal never says the device is untouched unless the server said so', () => {
+  const unknown = refusalFrom({
+    message: 'x',
+    remediation: '',
+    whyBlocked: [],
+    workflowState: '',
+    physicalDeviceModified: null,
+  })
+  assert.equal(unknown.physicalDeviceModified, null)
+  assert.deepEqual(unknown.whyBlocked, ['x'])
+  assert.equal(
+    refusalFrom({ ...unknown, whyBlocked: [] }, true).physicalDeviceModified,
+    false,
+    'open and approve have no write path',
+  )
+})
+
+test('a dry run ignores any server record and never leaves SIMULATION', () => {
+  const flow = sanitizeWorkflow(facts({ dryRun: true, server: server('PLAN_READY') }))
+  assert.equal(flow.state, 'PREFLIGHT')
+  assert.equal(flow.simulation, true)
+})
+
+function realJob(verification: unknown): JobStatus {
+  return { state: 'complete', params: { dry_run: false }, result: { verification }, error: null } as unknown as JobStatus
+}
+
+test('a finished real job whose read-back FAILED is FAILED, never COMPLETE', () => {
+  const flow = sanitizeWorkflow(
+    facts({ status: realJob({ passed: false, failed_offsets: [0, 4096] }) }),
+  )
+  assert.equal(flow.state, 'FAILED')
+  assert.match(flow.whyBlocked[0], /verification FAILED at 2/)
+  assert.match(flow.nextAction, /NOT sanitized/)
+})
+
+test('COMPLETE on a real job only claims what verification supports', () => {
+  const passed = sanitizeWorkflow(facts({ status: realJob({ passed: true, failed_offsets: [] }) }))
+  assert.equal(passed.state, 'COMPLETE')
+  assert.doesNotMatch(passed.nextAction, /Do not treat/)
+  for (const verification of [{ passed: null, failed_offsets: [] }, undefined]) {
+    const flow = sanitizeWorkflow(facts({ status: realJob(verification) }))
+    assert.equal(flow.state, 'COMPLETE')
+    assert.match(flow.nextAction, /Do not treat the medium as verified/)
+  }
+})
+
+test('a simulation is never shown as a physical completion', () => {
+  const flow = sanitizeWorkflow(facts({ status: job('complete', true) }))
+  assert.equal(flow.simulation, true)
+  assert.equal(flow.headline, 'COMPLETE (SIMULATION)')
+  assert.match(flow.nextAction, /Nothing was written/)
+})
+
+test('a helper refusal at the write seam is BLOCKED, not a failed erase', () => {
+  const status = {
+    state: 'failed',
+    params: { dry_run: false },
+    error: 'REFUSED at the write seam: model changed. Nothing was erased.',
+    error_kind: 'WorkflowGateRefused',
+  } as unknown as JobStatus
+  const flow = sanitizeWorkflow(facts({ status }))
+  assert.equal(flow.state, 'BLOCKED')
+  assert.match(flow.whyBlocked[0], /model changed/)
+  assert.match(flow.nextAction, /new workflow/)
+  const other = { ...status, error_kind: 'OverwriteIncomplete' } as unknown as JobStatus
+  assert.equal(sanitizeWorkflow(facts({ status: other })).state, 'FAILED')
 })

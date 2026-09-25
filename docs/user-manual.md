@@ -286,8 +286,9 @@ Use the **Devices** screen to pick a target, then **Sanitize**.
 ### The method is selected from probed capability, never from preference
 
 You choose a *level* — CLEAR or PURGE. The tool chooses the *mechanism*. The
-request the browser sends carries `path`, `level`, `dry_run` and `typed_serial`,
-and has no field for a method at all; `core/erase/drive.py:select_method` reads a
+request the browser sends carries `path`, `level`, `dry_run` and `typed_serial`
+(plus, for a real erase only, the `authorization_id` the server issued), and has
+no field for a method at all; `core/erase/drive.py:select_method` reads a
 decision table over what the capability probe returned.
 
 There is no method chooser on the Sanitize screen. An earlier build had one: an

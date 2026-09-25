@@ -42,7 +42,10 @@ Each of these is enforced by a test, not by convention.
 ## How a job flows
 
 ```
-UI            POST /jobs/erase-drive          (dry_run, typed_serial)
+UI            POST /jobs/erase-drive          (dry_run; a real erase also carries
+ │                                            authorization_id, issued by the server
+ │                                            from POST /workflow/erase-drive and
+ │                                            .../approve - see api/authorization.py)
  │
 API           api/routes/jobs.py              builds the job, opens the Ledger,
  │                                            hands the generator to the registry

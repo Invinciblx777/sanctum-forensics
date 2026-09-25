@@ -84,6 +84,10 @@ itself was never targeted with a real erase.
   in the UI and plan. `README.md` and `judge-defense-card.md` Q11 describe approval as
   "dry run off + typed serial", so the documents are honest. The brief's word "approval
   recorded" is not what the API checks.
+- **Status update 2026-09-25 (docs only; the rows above are the campaign record):** L2
+  and L3 were fixed after this matrix was written - see
+  `l2-fix-and-m2c-procedure.md` and `final-audit-2026-09-25.md`. Both are
+  SYNTHETIC-VALIDATED only; neither was exercised on the physical stick.
 - **L3.** `/health` reports the build record (`930ee2c`, branch
   `release/cross-platform-validation`, built 2026-09-21), not the running `HEAD`.
 - **L4.** The serial-mismatch gate and the write-open permission gate were not reached on
