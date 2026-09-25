@@ -11,7 +11,7 @@ import type {
   ReportResult,
   ResumeState,
 } from '../lib/api'
-import { currentStep, runnableStatus } from '../lib/platform'
+import { currentStep, offeredOption } from '../lib/platform'
 import { AssessmentSummary, FlowSteps, WorkflowStrip } from '../components/sanitizeFlow'
 import { EraseApproval } from '../components/eraseApproval'
 import { createEpoch } from '../lib/epoch'
@@ -639,7 +639,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
   const offered =
     !assessment ||
     (assessment.headline !== 'NOT AVAILABLE' &&
-      runnableStatus(assessment.recommended?.status))
+      offeredOption(assessment.recommended))
   // `settled`, not just terminal: the job's outcome has reached the chain, so
   // the certificate can be built from it.
   const finished = Boolean(

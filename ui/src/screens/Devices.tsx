@@ -1,81 +1,11 @@
 import { Fragment, useEffect, useState } from 'react'
 import { api, RequestFailed } from '../lib/api'
-import type { Capabilities, DeviceRow, HiddenAreaReport } from '../lib/api'
+import type { DeviceRow, HiddenAreaReport } from '../lib/api'
+import { capabilityBadge } from '../lib/capability'
 import { bytes, exactBytes } from '../lib/format'
 import { flashOf } from '../lib/erasePlan'
 import { Empty, ErrorNotice, Limitations, Panel, Verdict } from '../components/widgets'
-import type { Tone } from '../components/widgets'
 import { DestroyRecordPanel } from '../components/destroyRecord'
-
-/**
- * The capability verdict.
- *
- * It states what the drive can actually deliver, derived from what was probed
- * rather than from what was requested. "Clear only" is not a downgrade the UI
- * chose - it is what the hardware reported, and saying "Purge" over a device
- * that cannot purge is the single most dangerous thing this screen could do.
- *
- * Three strings, not one: the word, the probe result it was derived from, and
- * the full sentence the operator opens when a judge asks. `Verdict` renders
- * the first two and the sub-row carries the third; see the component's note in
- * components/widgets.tsx for why none of it lives behind a hover.
- */
-export function capabilityBadge(caps: Capabilities | null): {
-  label: string
-  tone: Tone
-  basis: string
-  why: string
-} {
-  if (!caps) {
-    return {
-      label: 'Not probed',
-      tone: 'unknown',
-      basis: 'probe did not complete',
-      why: 'The capability probe did not complete, so nothing is claimed.',
-    }
-  }
-  if (caps.is_sed_opal) {
-    // Opal supports a cryptographic erase; Pyrite is the same command set
-    // *without* it, and calling both "SED" would imply a capability half of
-    // them do not have.
-    const cryptoCapable =
-      caps.achievable_levels.includes('PURGE') ||
-      caps.ata_sanitize_ops.includes('CRYPTO_SCRAMBLE_EXT')
-    return cryptoCapable
-      ? {
-          label: 'SED · OPAL',
-          tone: 'success',
-          basis: 'crypto erase available',
-          why: 'Self-encrypting drive with a usable cryptographic erase.',
-        }
-      : {
-          label: 'SED · PYRITE',
-          tone: 'warning',
-          basis: 'no crypto erase',
-          why:
-            'Pyrite implements the Opal command set without media encryption, ' +
-            'so there is no key to destroy and a crypto erase would erase nothing.',
-        }
-  }
-  if (caps.achievable_levels.includes('PURGE')) {
-    const ops = caps.ata_sanitize_ops.join(', ') || 'NVMe SANICAP'
-    return {
-      label: 'PURGE AVAILABLE',
-      tone: 'success',
-      basis: ops,
-      why: `Firmware sanitize reported: ${ops}.`,
-    }
-  }
-  return {
-    label: 'CLEAR ONLY',
-    tone: 'warning',
-    basis: 'no firmware sanitize reported',
-    why:
-      'No firmware sanitize or cryptographic erase was reported, so a host ' +
-      'overwrite is the strongest available result. On flash media that ' +
-      'leaves remapped and over-provisioned blocks untouched.',
-  }
-}
 
 /**
  * Hidden areas.
@@ -221,7 +151,7 @@ export default function Devices({
                 </thead>
                 <tbody>
                   {rows.map((row) => {
-                    const badge = capabilityBadge(row.capabilities)
+                    const badge = capabilityBadge(row.capabilities, row.assessment)
                     const barred =
                       row.device.is_system_disk || row.device.mounted_at.length > 0
                     // The same words as the workflow state machine: BLOCKED,

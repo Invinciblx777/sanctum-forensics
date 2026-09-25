@@ -233,17 +233,30 @@ def options_from_preview(
         limited = bool(plan.limitations) or (level == "CLEAR" and preview.flash)
         sentence = _verification_sentence(plan, size_bytes)
         verification = verification or sentence
+        why = _option_why(plan, preview.flash)
+        status = (
+            CapabilityStatus.SUPPORTED_WITH_LIMITATIONS
+            if limited
+            else CapabilityStatus.SUPPORTED
+        )
+        if level == "PURGE" and not hardware_passed("linux", "whole_drive_purge"):
+            # The drive reported the command and the engine can issue it, but
+            # no firmware sanitize has been recorded on a physical drive. The
+            # option stays offered, and says it is unverified rather than
+            # supported: the status is a claim about evidence.
+            status = CapabilityStatus.UNVERIFIED
+            why += (
+                " UNVERIFIED: the drive reports this command, but no firmware "
+                "sanitize has been run on a physical drive by this project; "
+                "the path is fixture-tested only."
+            )
         options.append(
             SanitizeOption(
                 level=level,
                 title=_option_title(level, method),
-                status=(
-                    CapabilityStatus.SUPPORTED_WITH_LIMITATIONS
-                    if limited
-                    else CapabilityStatus.SUPPORTED
-                ),
+                status=status,
                 method=method,
-                why=_option_why(plan, preview.flash),
+                why=why,
                 technical=technical,
                 verification=sentence,
             )

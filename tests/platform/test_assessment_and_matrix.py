@@ -287,6 +287,43 @@ def test_purge_is_recommended_first_when_the_drive_can_do_it() -> None:
     assert "attested" in assessment.recommended.verification
 
 
+def test_a_per_device_purge_is_unverified_without_a_hardware_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The drive reporting SANITIZE is not evidence the purge path works.
+
+    The option stays offered - the code exists and the drive reported the
+    command - but under UNVERIFIED, never SUPPORTED, and it says why.
+    """
+    path = tmp_path / "validation_record.json"
+    path.write_text(json.dumps({"suites": {}, "hardware": {}}), encoding="utf-8")
+    monkeypatch.setattr("core.platform.validation.RECORD_PATH", path)
+    adapter = _Fixed(ROOT, _linux_options(purge_reachable=True, flash=False))
+
+    assessment = adapter.assess_device(_device(interface="sata", media_type="hdd"))
+
+    assert assessment.headline == "READY"
+    assert assessment.recommended is not None
+    assert assessment.recommended.level == "PURGE"
+    assert assessment.recommended.status is CapabilityStatus.UNVERIFIED
+    assert assessment.status is CapabilityStatus.UNVERIFIED
+    assert "UNVERIFIED" in assessment.recommended.why
+    assert "physical drive" in assessment.recommended.why
+    clear = assessment.alternatives[0]
+    assert clear.level == "CLEAR"
+    assert clear.status is CapabilityStatus.SUPPORTED
+
+    recorded_pass = {"linux": {"whole_drive_purge": {"state": "PASS"}}}
+    path.write_text(
+        json.dumps({"suites": {}, "hardware": recorded_pass}), encoding="utf-8"
+    )
+    adapter = _Fixed(ROOT, _linux_options(purge_reachable=True, flash=False))
+    recorded = adapter.assess_device(_device(interface="sata", media_type="hdd"))
+    assert recorded.recommended is not None
+    assert recorded.recommended.status is CapabilityStatus.SUPPORTED
+    assert "UNVERIFIED" not in recorded.recommended.why
+
+
 def test_an_unprivileged_host_is_not_authorized_not_ready() -> None:
     adapter = _Fixed(USER, _linux_options(purge_reachable=True, flash=False))
 

@@ -71,6 +71,18 @@ _RUNNABLE = frozenset(
 )
 
 
+def _offerable(option: SanitizeOption) -> bool:
+    """Whether a drive option is offered to the operator.
+
+    A runnable status, or UNVERIFIED with a method the engine would run: the
+    code path exists and the drive reported the command, but no hardware
+    result is recorded. It is offered under that word, never as supported.
+    """
+    if option.status in _RUNNABLE:
+        return True
+    return option.status is CapabilityStatus.UNVERIFIED and option.method is not None
+
+
 def row(
     operation: Operation,
     status: CapabilityStatus,
@@ -380,8 +392,8 @@ class BaseAdapter:
         privilege = self.privilege_state()
         checks = self.safety_checks(device, privilege)
         options, verification = self.drive_options(device)
-        runnable = [item for item in options if item.status in _RUNNABLE]
-        unavailable = [item for item in options if item.status not in _RUNNABLE]
+        runnable = [item for item in options if _offerable(item)]
+        unavailable = [item for item in options if not _offerable(item)]
         recommended = runnable[0] if runnable else None
         flash_note = FLASH_LIMITATION if device.media_type in {"ssd", "flash"} else ""
 

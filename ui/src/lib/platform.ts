@@ -73,6 +73,21 @@ export function runnableStatus(status: CapabilityStatus | undefined): boolean {
   return status === 'SUPPORTED' || status === 'SUPPORTED_WITH_LIMITATIONS'
 }
 
+/**
+ * Whether a drive option is offered, mirroring `core/platform/base.py`.
+ *
+ * A runnable status, or UNVERIFIED with a method the engine would run: the
+ * drive reported the command and the code exists, but no hardware result is
+ * recorded. It is offered under the word Unverified, never as supported.
+ */
+export function offeredOption(
+  option: { status: CapabilityStatus; method?: string | null } | null | undefined,
+): boolean {
+  if (!option) return false
+  if (runnableStatus(option.status)) return true
+  return option.status === 'UNVERIFIED' && Boolean(option.method)
+}
+
 export function privilegeWord(privilege: PrivilegeState | null): string {
   if (!privilege) return 'Unknown'
   if (privilege.helper === 'socket') return 'Privileged helper'

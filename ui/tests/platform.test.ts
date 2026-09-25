@@ -6,6 +6,7 @@ import {
   currentStep,
   deviceKind,
   headlineTone,
+  offeredOption,
   runnableStatus,
   STATUS_MEANINGS,
   statusWord,
@@ -97,6 +98,14 @@ test('a stopped flow stays where it stopped, and never reaches Verify', () => {
   // Refused by the helper, failed or cancelled: the job ended at Sanitize.
   assert.equal(currentStep({ ...s, finished: true, failed: true }), 5)
   assert.equal(currentStep({ ...s, finished: true, failed: true, verified: true }), 5)
+})
+
+test('an UNVERIFIED option with a method is offered; one without is not', () => {
+  assert.equal(offeredOption({ status: 'UNVERIFIED', method: 'ATA_SANITIZE_BLOCK_ERASE' }), true)
+  assert.equal(offeredOption({ status: 'UNVERIFIED', method: null }), false)
+  assert.equal(offeredOption({ status: 'SUPPORTED', method: 'SINGLE_PASS_OVERWRITE' }), true)
+  assert.equal(offeredOption({ status: 'UNSUPPORTED', method: 'X' }), false)
+  assert.equal(offeredOption(null), false)
 })
 
 test('headline tone', () => {
