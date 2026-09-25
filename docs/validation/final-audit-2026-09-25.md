@@ -53,7 +53,8 @@ nothing was skipped. Mitigation: group arguments by directory, or pass directori
 - The workflow record only derives pre-execution states. EXECUTING, VERIFYING, COMPLETE
   and FAILED shown on screen come from the job's own status.
 - Packaged artifacts (`dist/*.deb`, `*.AppImage`, 2026-09-21/22, record `930ee2c`) were
-  not rebuilt and contain the old Sanitize screen. Package identity was not validated.
+  not rebuilt at the time of this audit and contained the old Sanitize screen.
+  **Superseded:** rebuilt from commit `0127172`; see `release-report-2026-09-25.md`.
 
 ## Physical device
 
