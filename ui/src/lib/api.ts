@@ -704,6 +704,12 @@ export interface FileEraseRecord {
   limitations: string[]
   error: string | null
   error_kind: string | null
+  /**
+   * True once the erase steps began, false when refused or stopped before any
+   * ran. Absent from an older server: whether a failed path was touched is
+   * then unknown.
+   */
+  attempted?: boolean
   verification: { passed: boolean | null; strategy: string; reason: string } | null
 }
 
@@ -959,6 +965,14 @@ export interface OperationRecord {
   result_ref: string
   recovered_artifacts: number
   params: Record<string, unknown>
+  /**
+   * The job's structured failure kind, once it ended. `WorkflowGateRefused` is
+   * a safety refusal before any write. Absent from a record written before
+   * the server kept it.
+   */
+  error_kind?: string
+  /** The drive erase's read-back verdict, when it reported one. */
+  verification_passed?: boolean
 }
 
 export interface CaseReportRecord {

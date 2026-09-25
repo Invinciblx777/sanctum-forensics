@@ -23,6 +23,7 @@ import {
 } from '../components/widgets'
 import type { Tone } from '../components/widgets'
 import { isSimulation } from '../lib/simulation'
+import { fileOutcome } from '../lib/fileOutcome'
 
 function worstSeverity(findings: ResidualFinding[]): string | null {
   const order = ['HIGH', 'MEDIUM', 'LOW']
@@ -243,8 +244,15 @@ export default function FileEraser() {
                       const worst = worstSeverity(record.findings)
                       // A refused path has no findings because nothing ran.
                       // Rendering that as NONE in success green would report
-                      // the absence of an attempt as a clean result.
-                      const tone = record.ok ? severityTone(worst) : 'unknown'
+                      // the absence of an attempt as a clean result. A path
+                      // whose erase started and failed is in an unknown state
+                      // and never reads as "not attempted".
+                      const outcome = fileOutcome(record)
+                      const tone: Tone = record.ok
+                        ? severityTone(worst)
+                        : record.attempted
+                          ? 'destructive'
+                          : 'unknown'
                       const open = expanded === record.path
                       return (
                         <Fragment key={record.path}>
@@ -263,34 +271,27 @@ export default function FileEraser() {
                               <FilePath value={record.path} />
                             </td>
                             <td>
-                              {record.ok ? (
-                                <span
-                                  className={
-                                    record.dry_run
-                                      ? 'state-mark is-muted'
-                                      : 'state-mark is-success'
-                                  }
-                                >
-                                  {record.dry_run ? 'simulated' : 'erased'}
-                                </span>
-                              ) : (
-                                <span
-                                  className="state-mark is-destructive"
-                                  title={record.error ?? ''}
-                                >
-                                  {record.error_kind ?? 'failed'}
-                                </span>
-                              )}
+                              <span
+                                className={
+                                  outcome.tone === 'unknown'
+                                    ? 'state-mark is-muted'
+                                    : `state-mark is-${outcome.tone}`
+                                }
+                                title={record.ok ? undefined : (record.error ?? '')}
+                                data-testid="file-outcome"
+                              >
+                                {outcome.word}
+                              </span>
                             </td>
                             <td className="mono">{bytes(record.bytes_overwritten)}</td>
                             <td>
                               <Verdict
                                 tight
-                                level={record.ok ? (worst ?? 'NONE') : 'NOT RUN'}
+                                level={record.ok ? (worst ?? 'NONE') : outcome.residual}
                                 basis={
                                   record.ok
                                     ? `${record.findings.length} finding${record.findings.length === 1 ? '' : 's'}`
-                                    : 'not attempted'
+                                    : outcome.basis
                                 }
                                 tone={tone}
                               />

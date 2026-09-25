@@ -11,7 +11,7 @@ import type {
   ReportResult,
   ResumeState,
 } from '../lib/api'
-import { currentStep, offeredOption } from '../lib/platform'
+import { currentStep, offeredOption, readBack } from '../lib/platform'
 import { AssessmentSummary, FlowSteps, WorkflowStrip } from '../components/sanitizeFlow'
 import { EraseApproval } from '../components/eraseApproval'
 import { createEpoch } from '../lib/epoch'
@@ -647,6 +647,10 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
   )
   const verificationResult =
     (status?.result?.verification as EraseVerification | undefined) ?? null
+  // The job's own record decides dry run once it exists, as in the workflow.
+  const jobDryRun = status ? status.params?.dry_run !== false : dryRun
+  const { verified, verifyFailed } = readBack(verificationResult, jobDryRun)
+  const readBackFailed = finished && status?.state === 'complete' && verifyFailed
   const step = currentStep({
     hasDevice: true,
     hasAssessment: Boolean(assessment) || Boolean(preview),
@@ -654,13 +658,15 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
     confirming,
     running,
     finished,
-    verified: Boolean(verificationResult) || dryRun,
-    // A signed record of a job that did not complete is not a certificate.
-    certified: Boolean(report) && status?.state === 'complete',
+    verified,
+    // A signed record of a job that did not complete, or whose read-back did
+    // not pass, does not move the tracker past Verify.
+    certified: Boolean(report) && status?.state === 'complete' && verified,
     refused: Boolean(refusal) && !jobId,
     failed: finished && status?.state !== 'complete',
+    verifyFailed: readBackFailed,
   })
-  const wording = signedRecordWording(status?.state ?? '', dryRun)
+  const wording = signedRecordWording(status?.state ?? '', dryRun, readBackFailed)
   const flow = sanitizeWorkflow({
     assessment,
     offered,

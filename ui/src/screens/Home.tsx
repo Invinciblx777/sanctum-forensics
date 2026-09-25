@@ -106,7 +106,8 @@ function figuresFor(
       (op) =>
         ['erase-drive', 'erase-files', 'wipe-free-space'].includes(op.type) &&
         op.params?.dry_run === false &&
-        op.status === 'complete',
+        op.status === 'complete' &&
+        op.verification_passed !== false,
     ).length
     return [
       sealed,
@@ -141,6 +142,9 @@ export default function Home({ onOpen }: { onOpen: (target: WorkflowTarget) => v
   const [cases, setCases] = useState<CaseSummary[]>([])
   // Keyed by case id, so a stale answer for a previous case is never shown.
   const [fetched, setFetched] = useState<{ id: string; body: CaseDetail } | null>(null)
+  // A failed read of the open case, keyed the same way. Kept apart from "no
+  // case open" so the overview never reads a server failure as an empty case.
+  const [unread, setUnread] = useState<{ id: string; message: string } | null>(null)
 
   useEffect(() => {
     void api.platform().then(setPlatform).catch(() => setPlatform(null))
@@ -169,12 +173,19 @@ export default function Home({ onOpen }: { onOpen: (target: WorkflowTarget) => v
     const id = openCase.case_id
     void api
       .case(id)
-      .then((body) => setFetched({ id, body }))
-      .catch(() => setFetched(null))
+      .then((body) => {
+        setFetched({ id, body })
+        setUnread(null)
+      })
+      .catch((exc: unknown) => {
+        setFetched(null)
+        setUnread({ id, message: exc instanceof Error ? exc.message : String(exc) })
+      })
   }, [openCase])
 
   const detail = openCase && fetched?.id === openCase.case_id ? fetched.body : null
-  const summary = judgeSummary(detail, platform, chain.status)
+  const requestFailed = openCase && unread?.id === openCase.case_id ? unread.message : ''
+  const summary = judgeSummary(detail, platform, chain.status, requestFailed)
   const oldestFirst = [...entries].reverse()
   const head = entries[0]
   const figures = figuresFor(

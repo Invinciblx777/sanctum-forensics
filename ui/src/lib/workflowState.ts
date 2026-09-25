@@ -22,6 +22,7 @@
  * than drawing a gate that nothing enforces.
  */
 import type { DeviceAssessment, JobStatus } from './api'
+import { isSafetyRefusal } from './refusal.ts'
 
 export type WorkflowStateName =
   | 'DISCOVERED'
@@ -219,7 +220,7 @@ export function sanitizeWorkflow(facts: SanitizeFacts): SanitizeWorkflow {
           : 'Read the verification and the residual risk before relying on the result.',
       )
     }
-    if (!simulation && status.error_kind === 'WorkflowGateRefused') {
+    if (!simulation && isSafetyRefusal(status.error_kind)) {
       // The helper re-checked the authorization at the write seam and refused
       // before entering the engine. That is a refusal, not a failed erase.
       return result(
@@ -359,9 +360,25 @@ export interface SignedRecordWording {
  *
  * A failed, refused or cancelled job still gets a signed record - the audit
  * trail needs one - but calling that a certificate would put the word next to
- * a sanitization that did not happen.
+ * a sanitization that did not happen. A job that ran to the end but whose
+ * read-back FAILED gets the same signed record, never a certificate.
  */
-export function signedRecordWording(state: string, dryRun: boolean): SignedRecordWording {
+export function signedRecordWording(
+  state: string,
+  dryRun: boolean,
+  readBackFailed = false,
+): SignedRecordWording {
+  if (state === 'complete' && readBackFailed) {
+    return {
+      title: 'Signed record',
+      action: 'Get signed record',
+      issued: 'Signed record issued - not a sanitization certificate',
+      tone: 'warning',
+      note:
+        'The erase ran, but read-back verification FAILED. The signed record documents ' +
+        'what happened; it is not a sanitization certificate.',
+    }
+  }
   if (state === 'complete') {
     return {
       title: 'Certificate',

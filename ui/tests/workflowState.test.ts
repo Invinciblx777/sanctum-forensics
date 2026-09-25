@@ -275,4 +275,9 @@ test('only a completed job is offered a certificate', () => {
     assert.match(wording.issued, /not a sanitization certificate/)
     assert.equal(wording.tone, 'warning')
   }
+  // Ran to the end, read-back FAILED: a signed record, never a certificate.
+  const failedReadBack = signedRecordWording('complete', false, true)
+  assert.equal(failedReadBack.title, 'Signed record')
+  assert.match(failedReadBack.issued, /not a sanitization certificate/)
+  assert.match(failedReadBack.note, /read-back verification FAILED/)
 })

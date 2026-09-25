@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   caseFacts,
+  caseRequestFailed,
   isSimulation,
   operationStatus,
   operationType,
@@ -79,11 +80,45 @@ test('job kinds read as words, and an unknown kind keeps its name', () => {
 })
 
 test('job states keep the registry word; failure is never inferred', () => {
-  assert.deepEqual(operationStatus('complete'), { word: 'COMPLETE', tone: 'success' })
-  assert.deepEqual(operationStatus('failed'), { word: 'FAILED', tone: 'destructive' })
-  assert.equal(operationStatus('cancelled').word, 'CANCELLED')
-  assert.deepEqual(operationStatus('odd'), { word: 'ODD', tone: 'unknown' })
-  assert.deepEqual(operationStatus(''), { word: 'UNKNOWN', tone: 'unknown' })
+  assert.deepEqual(operationStatus({ status: 'complete' }), { word: 'COMPLETE', tone: 'success' })
+  assert.deepEqual(operationStatus({ status: 'failed' }), { word: 'FAILED', tone: 'destructive' })
+  assert.equal(operationStatus({ status: 'cancelled' }).word, 'CANCELLED')
+  assert.deepEqual(operationStatus({ status: 'odd' }), { word: 'ODD', tone: 'unknown' })
+  assert.deepEqual(operationStatus({ status: '' }), { word: 'UNKNOWN', tone: 'unknown' })
+})
+
+test('a write-seam refusal is BLOCKED, never a FAILED erase', () => {
+  const refused = operationStatus({ status: 'failed', error_kind: 'WorkflowGateRefused' })
+  assert.deepEqual(refused, { word: 'BLOCKED', tone: 'warning' })
+  // Any other kind is still a failure; the message is never read.
+  assert.equal(operationStatus({ status: 'failed', error_kind: 'OverwriteIncomplete' }).word, 'FAILED')
+  assert.equal(operationStatus({ status: 'failed', error_kind: 'RpcError' }).word, 'FAILED')
+})
+
+test('a completed run whose read-back FAILED is not COMPLETE', () => {
+  const outcome = operationStatus({ status: 'complete', verification_passed: false })
+  assert.equal(outcome.word, 'VERIFY FAILED')
+  assert.equal(outcome.tone, 'destructive')
+  assert.equal(operationStatus({ status: 'complete', verification_passed: true }).word, 'COMPLETE')
+})
+
+test('the overview line counts a refusal as blocked, not failed', () => {
+  const facts = caseFacts(
+    detail({
+      operations: [
+        op({ operation_id: 'a', type: 'erase-drive', status: 'failed', error_kind: 'WorkflowGateRefused', params: { dry_run: false } }),
+        op({ operation_id: 'b', type: 'erase-drive', status: 'failed', error_kind: 'OverwriteIncomplete', params: { dry_run: false } }),
+      ],
+    }),
+  )
+  assert.match(facts.operations, /1 blocked/)
+  assert.match(facts.operations, /1 failed/)
+})
+
+test('a case that cannot be read says REQUEST FAILED, not BLOCKED', () => {
+  const words = caseRequestFailed('500 Internal Server Error')
+  assert.match(words, /^REQUEST FAILED/)
+  assert.doesNotMatch(words, /BLOCKED|refus/i)
 })
 
 test('only an explicit dry run is a simulation', () => {

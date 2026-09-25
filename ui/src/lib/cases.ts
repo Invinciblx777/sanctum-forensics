@@ -5,6 +5,7 @@
 
 import type { CaseDetail, CaseReportRecord, OperationRecord } from './api'
 import type { Tone } from '../components/widgets'
+import { isSafetyRefusal } from './refusal.ts'
 
 /** The job kinds api/routes/jobs.py files against a case, in words. */
 const OPERATION_TYPES: Record<string, string> = {
@@ -21,19 +22,31 @@ export function operationType(type: string): string {
 }
 
 /**
- * The job state, in the job registry's own word, capitalised.
+ * The job state, in the job registry's own word, capitalised - except where
+ * the record carries a fact that word would misstate.
+ *
+ * - A `failed` job whose structured `error_kind` is a safety refusal is
+ *   BLOCKED: the helper refused before any write, so it is not a failed erase.
+ * - A `complete` drive erase whose read-back verdict is recorded as failed is
+ *   VERIFY FAILED: the run ended, the medium is not verified sanitized.
  *
  * `cancelled` stays CANCELLED: the registry records that the job was stopped
- * before it finished, and renaming it here would put a word in the case
- * screen that the chain does not contain. A state this file does not know is
- * shown as itself, in the unknown tone - never as a failure it was not.
+ * on request before it finished, and renaming it here would put a word in the
+ * case screen that the chain does not contain. A state this file does not know
+ * is shown as itself, in the unknown tone - never as a failure it was not.
  */
-export function operationStatus(status: string): { word: string; tone: Tone } {
-  switch (status) {
+export function operationStatus(
+  operation: Pick<OperationRecord, 'status' | 'error_kind' | 'verification_passed'>,
+): { word: string; tone: Tone } {
+  switch (operation.status) {
     case 'complete':
-      return { word: 'COMPLETE', tone: 'success' }
+      return operation.verification_passed === false
+        ? { word: 'VERIFY FAILED', tone: 'destructive' }
+        : { word: 'COMPLETE', tone: 'success' }
     case 'failed':
-      return { word: 'FAILED', tone: 'destructive' }
+      return isSafetyRefusal(operation.error_kind)
+        ? { word: 'BLOCKED', tone: 'warning' }
+        : { word: 'FAILED', tone: 'destructive' }
     case 'cancelled':
       return { word: 'CANCELLED', tone: 'warning' }
     case 'running':
@@ -41,8 +54,13 @@ export function operationStatus(status: string): { word: string; tone: Tone } {
     case 'pending':
       return { word: 'PENDING', tone: 'unknown' }
     default:
-      return { word: (status || 'unknown').toUpperCase(), tone: 'unknown' }
+      return { word: (operation.status || 'unknown').toUpperCase(), tone: 'unknown' }
   }
+}
+
+/** The words the Cases screen shows when the case record itself cannot be read. */
+export function caseRequestFailed(message: string): string {
+  return `REQUEST FAILED - the case record could not be read (${message}). Nothing is inferred about its operations.`
 }
 
 /**
@@ -85,7 +103,7 @@ export interface CaseFacts {
 export function caseFacts(detail: CaseDetail): CaseFacts {
   const counts = new Map<string, number>()
   for (const op of detail.operations) {
-    const word = operationStatus(op.status).word.toLowerCase()
+    const word = operationStatus(op).word.toLowerCase()
     counts.set(word, (counts.get(word) ?? 0) + 1)
   }
   const simulated = detail.operations.filter(isSimulation).length

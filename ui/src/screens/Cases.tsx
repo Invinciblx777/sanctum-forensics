@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { api, artifactUrl, RequestFailed } from '../lib/api'
-import type { CaseDetail, CaseSummary } from '../lib/api'
+import type { CaseDetail, CaseSummary, OperationRecord } from '../lib/api'
 import { useCase } from '../lib/caseContext'
 import {
   caseFacts,
+  caseRequestFailed,
   isSimulation,
   operationStatus,
   operationType,
@@ -264,8 +265,8 @@ function sourceName(source: string): string {
 }
 
 /** A job state in the registry's word, coloured by the shared tones. */
-function OperationState({ status }: { status: string }) {
-  const { word, tone } = operationStatus(status)
+function OperationState({ operation }: { operation: OperationRecord }) {
+  const { word, tone } = operationStatus(operation)
   return <span className={`state-mark is-${tone}`}>{word}</span>
 }
 
@@ -527,7 +528,7 @@ function OperationsTab({ detail }: { detail: CaseDetail }) {
               return (
                 <tr key={item.operation_id} className="irow">
                   <td
-                    className={`rail is-${operationStatus(item.status).tone}`}
+                    className={`rail is-${operationStatus(item).tone}`}
                     aria-hidden
                   >
                     <i />
@@ -547,7 +548,7 @@ function OperationsTab({ detail }: { detail: CaseDetail }) {
                     </span>
                   </td>
                   <td>
-                    <OperationState status={item.status} />
+                    <OperationState operation={item} />
                   </td>
                   <td className="mono" title={item.operator}>
                     {item.operator}
@@ -730,7 +731,7 @@ export default function Cases() {
       const failure = exc as RequestFailed
       setDetail(null)
       setError({
-        message: failure.message,
+        message: caseRequestFailed(failure.message),
         kind: failure.kind,
         remediation: failure.remediation,
       })

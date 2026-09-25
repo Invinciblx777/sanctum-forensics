@@ -221,6 +221,7 @@ def erase_one(  # noqa: C901 - eleven ordered steps, read top to bottom
         return record
 
     host = backend()
+    record.attempted = True
     try:
         if inspection.is_immutable is True and not options.dry_run:
             cleared, why = host.clear_immutable(target)

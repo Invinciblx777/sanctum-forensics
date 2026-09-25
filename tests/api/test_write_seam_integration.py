@@ -176,6 +176,80 @@ def test_a_device_changed_after_the_api_gate_is_refused_by_the_helper(
     )
 
 
+def test_a_write_seam_refusal_reaches_the_case_as_a_refusal(
+    seam_client: TestClient,
+    seam_services: AppServices,
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The case record carries the structured kind, so Cases can say BLOCKED.
+
+    Without it the case screen and the overview see only ``failed`` and call a
+    refusal that wrote nothing a failed, partially sanitizing erase.
+    """
+    opened = seam_client.post("/cases", json={"case_id": "CASE-SEAM-1"})
+    assert opened.status_code == 200, opened.text
+    auth_id = open_workflow(seam_client, seam_services)
+    approve_workflow(seam_client, auth_id)
+    real_stream = seam_services.helper.call_stream
+
+    def swapped_before_helper_starts(method: str, params: dict[str, Any]) -> Any:
+        world.fields["model"] = "A-DIFFERENT-DISK"
+        return real_stream(method, params)
+
+    monkeypatch.setattr(
+        seam_services.helper, "call_stream", swapped_before_helper_starts
+    )
+    accepted = seam_client.post(
+        "/jobs/erase-drive",
+        json={**REAL, "authorization_id": auth_id, "case_id": "CASE-SEAM-1"},
+    )
+    job_id = accepted.json()["job_id"]
+    assert _finish(seam_client, job_id)["error_kind"] == "WorkflowGateRefused"
+
+    detail = seam_client.get("/cases/CASE-SEAM-1").json()
+    [operation] = detail["operations"]
+    assert operation["operation_id"] == job_id
+    assert operation["status"] == "failed"
+    assert operation["error_kind"] == "WorkflowGateRefused"
+    assert "verification_passed" not in operation
+    assert world.engine_entries == []
+
+
+def test_a_failed_read_back_reaches_the_case_as_a_failed_verification(
+    seam_client: TestClient,
+    seam_services: AppServices,
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A job that completes with a FAILED read-back is not a completed erasure."""
+
+    def engine(self: Any, params: dict[str, Any]) -> Any:
+        world.engine_entries.append(params.get("dry_run"))
+        yield from ()
+        return {"result": {"verification": {"passed": False, "failed_offsets": [4096]}}}
+
+    monkeypatch.setattr(
+        "core.platform.linux.LinuxAdapter.execute_drive_sanitization", engine
+    )
+    opened = seam_client.post("/cases", json={"case_id": "CASE-READBACK-1"})
+    assert opened.status_code == 200, opened.text
+    auth_id = open_workflow(seam_client, seam_services)
+    approve_workflow(seam_client, auth_id)
+    accepted = seam_client.post(
+        "/jobs/erase-drive",
+        json={**REAL, "authorization_id": auth_id, "case_id": "CASE-READBACK-1"},
+    )
+    status = _finish(seam_client, accepted.json()["job_id"])
+    assert status["state"] == "complete", status
+    assert status["result"]["verification"]["passed"] is False
+
+    [operation] = seam_client.get("/cases/CASE-READBACK-1").json()["operations"]
+    assert operation["status"] == "complete"
+    assert operation["verification_passed"] is False
+    assert "error_kind" not in operation
+
+
 def test_a_backup_changed_after_the_api_gate_is_refused_by_the_helper(
     seam_client: TestClient,
     seam_services: AppServices,

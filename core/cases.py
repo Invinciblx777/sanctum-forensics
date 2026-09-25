@@ -378,8 +378,16 @@ def update_operation(
     result_ref: str = "",
     recovered_artifacts: int = 0,
     completed_at: str = "",
+    error_kind: str = "",
+    verification_passed: bool | None = None,
 ) -> None:
-    """Move an operation to its terminal state. Silent when unknown."""
+    """Move an operation to its terminal state. Silent when unknown.
+
+    ``error_kind`` is the job's own structured failure kind, so the case screen
+    can tell a safety refusal (``WorkflowGateRefused``: nothing written) from an
+    erase that started and failed. ``verification_passed`` is the drive erase's
+    read-back verdict when it reported one; ``None`` records nothing.
+    """
     try:
         case = _touch(root, case_id)
     except CaseError:
@@ -394,6 +402,10 @@ def update_operation(
             item["result_ref"] = result_ref
         if recovered_artifacts:
             item["recovered_artifacts"] = recovered_artifacts
+        if error_kind:
+            item["error_kind"] = error_kind
+        if verification_passed is not None:
+            item["verification_passed"] = verification_passed
         changed = True
     if changed:
         save_case(root, case)

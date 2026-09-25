@@ -1064,6 +1064,11 @@ class FileEraseRecord(BaseModel):
     #: Populated instead of raising. A batch never aborts for one bad file.
     error: str | None = None
     error_kind: str | None = None
+    #: True once every refusal check passed and the erase steps began. A
+    #: failed record with this False was refused before anything ran; with it
+    #: True the erase started and stopped partway, and the path is in an
+    #: unknown state.
+    attempted: bool = False
 
     @property
     def highest_severity(self) -> Severity | None:

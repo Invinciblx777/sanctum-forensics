@@ -153,13 +153,33 @@ export interface FlowState {
   confirming: boolean
   running: boolean
   finished: boolean
-  /** Read back and confirmed, or a dry run, which has nothing to read back. */
+  /** Read back and passed, or a dry run, which has nothing to read back. */
   verified: boolean
   certified: boolean
   /** The server refused the erase at its gate: no job was created. */
   refused?: boolean
   /** The job ended without completing: refused by the helper, failed or cancelled. */
   failed?: boolean
+  /** The job completed but its read-back verification FAILED. */
+  verifyFailed?: boolean
+}
+
+/**
+ * What a job's read-back says about the Verify step.
+ *
+ * A verification object existing is not a pass: only `passed === true`
+ * verifies. `passed === false` on a real run is a failed read-back, and a
+ * dry run has nothing to read back.
+ */
+export function readBack(
+  verification: { passed: boolean | null } | null | undefined,
+  dryRun: boolean,
+): { verified: boolean; verifyFailed: boolean } {
+  if (dryRun) return { verified: true, verifyFailed: false }
+  return {
+    verified: verification?.passed === true,
+    verifyFailed: verification?.passed === false,
+  }
 }
 
 /**
@@ -167,11 +187,13 @@ export interface FlowState {
  *
  * A flow that stopped stays on the step where it stopped. A refused or failed
  * job never advances the tracker to Verify: nothing was completed there, and a
- * tracker that moved on would say the erase ran.
+ * tracker that moved on would say the erase ran. A failed read-back stops on
+ * Verify and never reaches Certificate, whatever else is set.
  */
 export function currentStep(state: FlowState): number {
   if (!state.hasDevice) return 0
   if (!state.hasAssessment) return 1
+  if (state.verifyFailed) return 6
   if (state.certified) return 7
   if (state.failed) return 5
   if (state.finished) return state.verified ? 7 : 6
