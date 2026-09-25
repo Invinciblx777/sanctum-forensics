@@ -268,6 +268,7 @@ export interface StreamHandlers {
  */
 export function streamJob(jobId: string, handlers: StreamHandlers): () => void {
   const source = new EventSource(`/jobs/${jobId}/stream`)
+  let closed = false
 
   source.addEventListener('progress', (event) => {
     handlers.onProgress(JSON.parse((event as MessageEvent).data) as Progress)
@@ -279,6 +280,27 @@ export function streamJob(jobId: string, handlers: StreamHandlers): () => void {
     // browser never retries a finished job - EventSource would otherwise
     // reconnect on its own and re-replay the whole run forever.
     source.close()
+    // That event leaves as soon as the job ends, which can be before its
+    // outcome reaches the chain (`settled: false`). A screen that waits for
+    // `settled` would then never hear again, so read the job until it has.
+    if (state.settled === false && TERMINAL_STATES.has(state.state)) {
+      void (async () => {
+        for (let attempt = 0; attempt < SETTLE_POLLS && !closed; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, SETTLE_POLL_MS))
+          if (closed) return
+          try {
+            const next = await api.job(jobId)
+            if (next.settled !== false) {
+              handlers.onState(next)
+              return
+            }
+          } catch {
+            // A failed read is retried at the next poll; the screen keeps
+            // the unsettled state it has, which it never shows as final.
+          }
+        }
+      })()
+    }
   })
   source.addEventListener('error', () => {
     // EventSource reconnects by itself, so this is a notification and not a
@@ -287,8 +309,16 @@ export function streamJob(jobId: string, handlers: StreamHandlers): () => void {
     handlers.onError?.('stream interrupted; the browser will retry')
   })
 
-  return () => source.close()
+  return () => {
+    closed = true
+    source.close()
+  }
 }
+
+const TERMINAL_STATES: ReadonlySet<string> = new Set(['complete', 'failed', 'cancelled'])
+/** Up to 30 s for a finished job's outcome to reach the chain. */
+const SETTLE_POLL_MS = 250
+const SETTLE_POLLS = 120
 
 // ---------------------------------------------------------------------------
 // Shapes
