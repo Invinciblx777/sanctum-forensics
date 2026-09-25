@@ -10,7 +10,7 @@
     },
     "sim:preflight_state": {
       "ok": true,
-      "detail": "DISCOVERED\nPREFLIGHT\nHUMAN APPROVAL REQUIRED\nEXECUTING\nVERIFYING\nCOMPLETE\n\nPREFLIGHT (SIMULATION)\n\nPreflight passed. A dry run writes nothing and needs no approval. A real erase needs HUMAN APPROVAL: the typed device serial.\n\nA real erase needs a verified backup image and a recorded human approval; the server enforces both (POST /workflow/erase-drive, then /approve). A simulation needs neither and writes nothing."
+      "detail": "DISCOVERED\nPREFLIGHT\nHUMAN APPROVAL REQUIRED\nEXECUTING\nVERIFYING\nCOMPLETE\n\nPREFLIGHT (SIMULATION)\n\nPreflight passed. A dry run writes nothing and needs no approval. A real erase needs HUMAN APPROVAL: the typed device serial.\n\nA real erase needs a backup image the server has hashed and sized, and a recorded approval; the server enforces both (POST /workflow/erase-drive, then /approve). Neither proves the image is a copy of this device or who approved. A simulation needs neither and writes nothing"
     },
     "sim:banner_visible": {
       "ok": true,
@@ -22,7 +22,7 @@
     },
     "sim:complete_state": {
       "ok": true,
-      "detail": "DISCOVERED\nPREFLIGHT\nHUMAN APPROVAL REQUIRED\nEXECUTING\nVERIFYING\nCOMPLETE\n\nCOMPLETE (SIMULATION)\n\nNothing was written. Get the certificate to record the dry run.\n\nA real erase needs a verified backup image and a recorded human approval; the server enforces both (POST /workflow/erase-drive, then /approve). A simulation needs neither and writes nothing."
+      "detail": "DISCOVERED\nPREFLIGHT\nHUMAN APPROVAL REQUIRED\nEXECUTING\nVERIFYING\nCOMPLETE\n\nCOMPLETE (SIMULATION)\n\nNothing was written. Get the certificate to record the dry run.\n\nA real erase needs a backup image the server has hashed and sized, and a recorded approval; the server enforces both (POST /workflow/erase-drive, then /approve). Neither proves the image is a copy of this device or who approved. A simulation needs neither and writes nothing."
     },
     "sim:banner_on_complete": {
       "ok": true,
@@ -30,7 +30,7 @@
     },
     "sim:no_workflow_or_authorization_requested": {
       "ok": true,
-      "detail": "['POST /jobs/erase-drive', 'GET /jobs/erase-drive-9b4c1988a3e2/stream', 'GET /jobs/erase-drive-9b4c1988a3e2/resume']"
+      "detail": "['POST /jobs/erase-drive', 'GET /jobs/erase-drive-bf214a8efd29/stream', 'GET /jobs/erase-drive-bf214a8efd29/resume']"
     },
     "sim:helper_never_saw_a_real_write": {
       "ok": true,
@@ -42,7 +42,7 @@
     },
     "real:initial_state_human_approval_required": {
       "ok": true,
-      "detail": "DISCOVERED\nPREFLIGHT\nBACKUP VERIFIED\nHUMAN APPROVAL REQUIRED\nPLAN READY\nEXECUTING\nVERIFYING\nCOMPLETE\n\nHUMAN APPROVAL REQUIRED\n\nGive a backup image, open the workflow, then approve with the typed serial. The server re-reads the device and refuses a mismatch.\n\nA real erase needs a verified backup image and a recorded human approval; the server enforces both (POST /workflow/erase-drive, then /approve). A simulation needs neither and writes nothing."
+      "detail": "DISCOVERED\nPREFLIGHT\nBACKUP VERIFIED\nHUMAN APPROVAL REQUIRED\nPLAN READY\nEXECUTING\nVERIFYING\nCOMPLETE\n\nHUMAN APPROVAL REQUIRED\n\nGive a backup image, open the workflow, then approve with the typed serial. The server re-reads the device and refuses a mismatch.\n\nA real erase needs a backup image the server has hashed and sized, and a recorded approval; the server enforces both (POST /workflow/erase-drive, then /approve). Neither proves the image is a copy of this device or who approved. A simulation"
     },
     "real:no_authorization_before_server_issues_one": {
       "ok": true,
@@ -70,15 +70,15 @@
     },
     "refusal:strip_state_is_blocked": {
       "ok": true,
-      "detail": "DISCOVERED\nPREFLIGHT\nBLOCKED\n\nBLOCKED\n\nWHY BLOCKED\nRefusing to open an erase workflow for /dev/sdz: the device is mounted or hosts the running system.\nUnmount by hand or choose another device. Nothing here unmounts.\n\nThe server refused at the workflow gate. PHYSICAL DEVICE MODIFIED: FALSE\n\nA real erase needs a verified backup image and a recorded human approval; the server enforces both (POST /workflow/erase-drive, then /approve). A simulation needs neither and writes nothing."
+      "detail": "DISCOVERED\nPREFLIGHT\nBLOCKED\n\nBLOCKED\n\nWHY BLOCKED\nRefusing to open an erase workflow for /dev/sdz: the device is mounted or hosts the running system.\nUnmount by hand or choose another device. Nothing here unmounts.\n\nThe server refused at the workflow gate. PHYSICAL DEVICE MODIFIED: FALSE\n\nA real erase needs a backup image the server has hashed and sized, and a recorded approval; the server enforces both (POST /workflow/erase-drive, then /approve). Neither proves the image is a copy of this devi"
     },
     "plan:shows_server_backup_and_plan": {
       "ok": true,
-      "detail": "HUMAN APPROVAL REQUIRED: IRREVERSIBLE ERASURE\nThis permanently destroys every byte on /dev/sdz (64.0 MiB). There is no undo. Nothing is written until the server holds a verified backup, your recorded approval and the device serial you type.\nDEVICE\nSYNTHETIC-PURGE (/dev/sdz)\nSERIAL\nSYN-PURGE-1\nCAPACITY\n67,108,864 bytes\nLEVEL\nPURGE\nMETHOD\nATA_SANITIZE_BLOCK_ERASE\nBACKUP\n/tmp/claude-1000/-home-v0idsai-Projects-sanctum-forensics/4f39e2ba-8f2d-4d25-81db-0038fa619a77/scratchpad/b1/app/evidence/backup."
+      "detail": "HUMAN APPROVAL REQUIRED: IRREVERSIBLE ERASURE\nThis permanently destroys every byte on /dev/sdz (64.0 MiB). There is no undo. Nothing is written until the server holds a verified backup, your recorded approval and the device serial you type.\nDEVICE\nSYNTHETIC-PURGE (/dev/sdz)\nSERIAL\nSYN-PURGE-1\nCAPACITY\n67,108,864 bytes\nLEVEL\nPURGE\nMETHOD\nATA_SANITIZE_BLOCK_ERASE\nBACKUP\n/tmp/claude-1000/-home-v0idsai-Projects-sanctum-forensics/4f39e2ba-8f2d-4d25-81db-0038fa619a77/scratchpad/b2/app/evidence/backup."
     },
     "plan:state_still_human_approval": {
       "ok": true,
-      "detail": "DISCOVERED\nPREFLIGHT\nBACKUP VERIFIED\nHUMAN APPROVAL REQUIRED\nPLAN READY\nEXECUTING\nVERIFYING\nCOMPLETE\n\nHUMAN APPROVAL REQUIRED\n\na person reviews the plan and records an explicit approval; this software cannot approve on anyone's behalf\n\nA real erase needs a verified backup image and a recorded human approval; the server enforces both (POST /workflow/erase-drive, then /approve). A simulation needs neither and writes nothing."
+      "detail": "DISCOVERED\nPREFLIGHT\nBACKUP VERIFIED\nHUMAN APPROVAL REQUIRED\nPLAN READY\nEXECUTING\nVERIFYING\nCOMPLETE\n\nHUMAN APPROVAL REQUIRED\n\na person reviews the plan and records an explicit approval; this software cannot approve on anyone's behalf\n\nA real erase needs a backup image the server has hashed and sized, and a recorded approval; the server enforces both (POST /workflow/erase-drive, then /approve). Neither proves the image is a copy of this device or who approved. A simulation needs neither and writ"
     },
     "layout:1366x768:modal_inside_viewport": {
       "ok": true,
@@ -134,11 +134,11 @@
     },
     "auth:server_issued_id": {
       "ok": true,
-      "detail": "auth-3fe0827f373a7978"
+      "detail": "auth-2ec45fd04b4e4030"
     },
     "auth:state_plan_ready": {
       "ok": true,
-      "detail": "DISCOVERED\nPREFLIGHT\nBACKUP VERIFIED\nHUMAN APPROVAL REQUIRED\nPLAN READY\nEXECUTING\nVERIFYING\nCOMPLETE\n\nPLAN READY\n\nthe approved operator runs the destructive command, typing the device serial by hand\n\nA real erase needs a verified backup image and a recorded human approval; the server enforces both (POST /workflow/erase-drive, then /approve). A simulation needs neither and writes nothing."
+      "detail": "DISCOVERED\nPREFLIGHT\nBACKUP VERIFIED\nHUMAN APPROVAL REQUIRED\nPLAN READY\nEXECUTING\nVERIFYING\nCOMPLETE\n\nPLAN READY\n\nthe approved operator runs the destructive command, typing the device serial by hand\n\nA real erase needs a backup image the server has hashed and sized, and a recorded approval; the server enforces both (POST /workflow/erase-drive, then /approve). Neither proves the image is a copy of this device or who approved. A simulation needs neither and writes nothing."
     },
     "auth:execute_needs_serial_again": {
       "ok": true,
@@ -162,11 +162,11 @@
     },
     "exec:complete_on_fixture": {
       "ok": true,
-      "detail": "DISCOVERED\nPREFLIGHT\nBACKUP VERIFIED\nHUMAN APPROVAL REQUIRED\nPLAN READY\nEXECUTING\nVERIFYING\nCOMPLETE\n\nCOMPLETE\n\nThe run finished but verification did not confirm it (inconclusive or not attempted). Do not treat the medium as verified sanitized; read the residual risk.\n\nA real erase needs a verified backup image and a recorded human approval; the server enforces both (POST /workflow/erase-drive, then /approve). A simulation needs neither and writes nothing."
+      "detail": "DISCOVERED\nPREFLIGHT\nBACKUP VERIFIED\nHUMAN APPROVAL REQUIRED\nPLAN READY\nEXECUTING\nVERIFYING\nCOMPLETE\n\nCOMPLETE\n\nThe run finished but verification did not confirm it (inconclusive or not attempted). Do not treat the medium as verified sanitized; read the residual risk.\n\nA real erase needs a backup image the server has hashed and sized, and a recorded approval; the server enforces both (POST /workflow/erase-drive, then /approve). Neither proves the image is a copy of this device or who approved. A"
     },
     "exec:existing_write_path_reached_once_on_synthetic_helper": {
       "ok": true,
-      "detail": "[{'method': 'probe_capabilities', 'dry_run': None}, {'method': 'probe_capabilities', 'dry_run': None}, {'method': 'run_erase', 'dry_run': False}]"
+      "detail": "[{'method': 'probe_capabilities', 'dry_run': None, 'refused_at_seam': False}, {'method': 'probe_capabilities', 'dry_run': None, 'refused_at_seam': False}, {'method': 'run_erase', 'dry_run': False, 'refused_at_seam': False}]"
     },
     "bypass:reused_authorization_refused": {
       "ok": true,
@@ -196,9 +196,21 @@
       "ok": true,
       "detail": ""
     },
+    "seam:refusal_shown_as_blocked_not_failed": {
+      "ok": true,
+      "detail": "DISCOVERED\nPREFLIGHT\nBLOCKED\n\nBLOCKED\n\nWHY BLOCKED\nREFUSED at the write seam: model changed since the backup and approval. Nothing was erased.\n\nThe helper refused at the write seam, before any write. The authorization is spent: open a new workflow.\n\nA real erase needs a backup image the server has hashed and sized, and a recorded approval; the server enforces both (POST /workflow/erase-drive, then /approve). Neither proves the image is a copy of this device or who approved. A simulation needs ne"
+    },
+    "seam:record_is_not_called_a_certificate": {
+      "ok": true,
+      "detail": ": the chain holds no erase entries for job 'erase-drive-d9e7a87bc6f8'. There is nothing recorded to continue.\nProgress\nNo progress reported yet.\nJob failed: REFUSED at the write seam: model changed since the backup and approval. Nothing was erased.\n\nOpen a new workflow.\n\nResidual risk\nWhat this run can claim, and what it cannot.\nPURGE\nATA SANITIZE \u2014 block erase\nCAPACITY\n64.0 MiB\nESTIMATED\n2m 00s\nHIDDEN AREAS\nnone measured\nPLATFORM: Fedora Linux 44 (Forty Four)\nPRIVILEGE: Privileged helper\nDEVICE"
+    },
+    "seam:no_write_counted": {
+      "ok": true,
+      "detail": ""
+    },
     "failure:server_error_shown_as_request_failed": {
       "ok": true,
-      "detail": "REQUEST FAILED (not a safety refusal: InternalError). The request failed for a reason this layer did not anticipate. Incident 1a1709434985. The failure was logged on the server with this incident id. Search the API log for '1a1709434985' to see what went wrong; the message is withheld here because an unanticipated error usually quotes a host path."
+      "detail": "REQUEST FAILED (not a safety refusal: InternalError). The request failed for a reason this layer did not anticipate. Incident f1e36f85ed4c. The failure was logged on the server with this incident id. Search the API log for 'f1e36f85ed4c' to see what went wrong; the message is withheld here because an unanticipated error usually quotes a host path."
     },
     "failure:not_rendered_as_blocked_refusal": {
       "ok": true,
@@ -246,26 +258,31 @@
   ],
   "workflow_requests": [
     "POST /jobs/erase-drive",
-    "GET /jobs/erase-drive-9b4c1988a3e2/stream",
-    "GET /jobs/erase-drive-9b4c1988a3e2/resume",
+    "GET /jobs/erase-drive-bf214a8efd29/stream",
+    "GET /jobs/erase-drive-bf214a8efd29/resume",
     "POST /workflow/erase-drive",
     "POST /workflow/erase-drive",
-    "POST /workflow/erase-drive/auth-3fe0827f373a7978/approve",
+    "POST /workflow/erase-drive/auth-2ec45fd04b4e4030/approve",
     "POST /jobs/erase-drive",
     "POST /workflow/erase-drive",
-    "POST /workflow/erase-drive/auth-b218742896102e89/approve",
+    "POST /workflow/erase-drive/auth-48b0fb767f6daad7/approve",
     "POST /jobs/erase-drive",
-    "GET /jobs/erase-drive-e363e5fbf592/stream",
-    "GET /jobs/erase-drive-e363e5fbf592/resume",
+    "GET /jobs/erase-drive-1307301d31a1/stream",
+    "GET /jobs/erase-drive-1307301d31a1/resume",
     "POST /jobs/erase-drive",
     "POST /jobs/erase-drive",
     "POST /jobs/erase-drive",
     "POST /workflow/erase-drive",
-    "POST /workflow/erase-drive/auth-e8693b37c94e0a9c/approve",
+    "POST /workflow/erase-drive/auth-cfedc03ff43e14f1/approve",
     "POST /jobs/erase-drive",
+    "POST /workflow/erase-drive",
+    "POST /workflow/erase-drive/auth-44ca2e94a8788e41/approve",
+    "POST /jobs/erase-drive",
+    "GET /jobs/erase-drive-d9e7a87bc6f8/stream",
+    "GET /jobs/erase-drive-d9e7a87bc6f8/resume",
     "POST /workflow/erase-drive",
     "POST /workflow/erase-drive"
   ],
-  "passed": 56,
-  "total": 56
+  "passed": 59,
+  "total": 59
 }

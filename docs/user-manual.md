@@ -345,7 +345,7 @@ red, *"This build cannot issue this method"*, and the PURGE radio is disabled. A
 Clear with a single-pass overwrite remains available and **achieves Clear, not
 Purge; the report will say so.**
 
-### The two gates
+### The gates
 
 Destructive erasure is opt-in twice, and both gates are re-checked inside the root
 helper, not in the browser:
@@ -358,7 +358,27 @@ helper, not in the browser:
    by typing its full `/dev/disk/by-id/...` path instead — still a value you read
    off the capability report, never one you can guess.
 
-Before either gate matters, the tool refuses outright to touch a device that holds
+A real erase also needs a **workflow authorization** the server issues and spends
+once (added 2026-09-25):
+
+3. **A backup image.** *Open workflow and verify backup* names an image inside the
+   evidence directory, at least as large as the device. The server hashes and
+   sizes it read-only and records its size, mtime, ctime and inode. This does not
+   prove the image is a copy of this device.
+4. **An approval.** Tick the acknowledgement and type the serial, then *Approve
+   erasure*. The approval is recorded against the OS account the helper reports;
+   the API does not authenticate a person.
+5. **The authorization, once.** Type the serial again and *Erase*. The request
+   carries the authorization id the server returned; a second use, a changed
+   device, plan or backup, or a missing id is `REFUSED` with a **WHY BLOCKED**
+   list, and nothing is written. The helper checks the same things again, from
+   its own read of the device and the image, before the engine starts.
+
+A refusal is shown as `BLOCKED`. A server failure is shown as *Request failed*,
+never as a refusal. A job that did not complete gets a *signed record*, not a
+certificate.
+
+Before any gate matters, the tool refuses outright to touch a device that holds
 the running system (root, `/boot` or active swap) or that has any mounted
 filesystem. Unmount first; there is no override.
 

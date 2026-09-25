@@ -37,7 +37,7 @@ Sanctum puts those jobs in one system, with one audit trail, and keeps every
 destructive step behind gates a human has to pass on purpose.
 
 ```text
-SANITIZE   DISCOVER → PREFLIGHT → PLAN → HUMAN APPROVAL → EXECUTE → VERIFY → REPORT
+SANITIZE   DISCOVER → PREFLIGHT → BACKUP → PLAN → HUMAN APPROVAL → EXECUTE → VERIFY → REPORT
 RECOVER    ACQUIRE  → CARVE     → VALIDATE → SCORE → EXPLAIN → REPORT
                                               │
                         both append to one hash-chained ledger
@@ -92,14 +92,14 @@ DISCOVERED
    ↓
 PREFLIGHT ─────────────→ BLOCKED   device absent, mounted, system disk,
    ↓                               serial sources disagree …
-(BACKUP REQUIRED → BACKUP VERIFIED)   physical benchmark write only
+BACKUP REQUIRED → BACKUP VERIFIED   an image the server hashed and sized
    ↓
-HUMAN APPROVAL REQUIRED   a person reviews the plan; dry run off
+HUMAN APPROVAL REQUIRED   dry run off; acknowledge and type the serial
    ↓
-PLAN READY                operator types the device serial
+PLAN READY                approval recorded; a one-use authorization issued
    ↓
-EXECUTING
-   ↓
+EXECUTING                 serial typed again; the helper re-reads device,
+   ↓                      plan and backup before the engine starts
 VERIFYING
    ↓
 COMPLETE / FAILED
@@ -112,8 +112,12 @@ COMPLETE / FAILED
   device and raises `DeviceVanished` if the serial or by-id link changed.
 - **Nothing is substituted.** A missing or stale device path is a structured
   refusal; no other device is tried.
-- **Dry run is the default.** A write needs dry run turned off and the serial
-  typed; the erase button stays disabled until it matches.
+- **Dry run is the default.** A real erase needs a backup image the server has
+  hashed and sized, an approval with the acknowledgement and the typed serial,
+  and the one-use authorization the server returns. The helper re-checks device,
+  plan and backup before its first write. SYNTHETIC VALIDATION only; the backup
+  is not proven to be a copy of the device, and the API does not authenticate
+  who approved.
 - **Privilege is explicit.** The UI and API run unprivileged. Raw device work
   goes through one helper that a human starts with `sudo`, over a static
   allowlist of typed operations ([privilege boundary](docs/privilege-boundary.md)).
@@ -209,20 +213,30 @@ How to verify a report on your own machine:
 
 ## Validation
 
-**Automated.** 1835 passed · 34 skipped · 0 failed on the Linux host
-(2026-09-24). Each skip names its reason: root and `losetup` (10), a Windows
-host (10), a macOS host (8); the rest name their own host condition. The Windows and
-macOS suites run on their own runners in `platform-ci`.
+**Automated.** 1950 passed · 33 skipped · 0 failed on the Linux host
+(2026-09-25). Each skip names its reason: root and `losetup` (10), Windows-only
+behaviour (12), macOS-only behaviour (10), one Pillow TIFF byte-order case. The suite
+refuses any access to a host block device beyond the disk holding its own files, and
+fails the run if one is attempted (`tests/_host_device_guard.py`); these runs had none.
+The Windows and macOS suites run on their own runners in `platform-ci`.
 
 **Static analysis.** Ruff clean. Four `mypy --strict` passes clean: Linux,
 two `--platform win32` passes, and `--platform darwin`.
 
-**UI.** 66 of 66 unit tests pass (`cd ui && npm test`, 2026-09-24).
+**UI.** 78 of 78 unit tests pass (`cd ui && npm test`, 2026-09-25).
 
 **Browser.** Playwright in Chromium at 1366 × 768: 24 of 24 checks on the real
 API, 16 of 16 on fixture devices, no page errors
-([`browser-2026-09-24/`](docs/validation/browser-2026-09-24/README.md)). The
+([`browser-2026-09-24/`](docs/validation/browser-2026-09-24/README.md)); the
+Sanitize workflow, 59 of 59 against the real API over a synthetic helper, the server
+in a sandbox with no block device
+([`browser-2026-09-25/`](docs/validation/browser-2026-09-25/README.md)). The
 Devices and Sanitize screens were checked against fixtures, not real devices.
+
+**Packages.** AppImage and `.deb` rebuilt from `b163834`; every packaged
+`core`/`api`/`helper` module is bytecode-identical to that commit, and both packages
+pass the smoke test inside a no-device sandbox
+([`package-2026-09-25/`](docs/validation/package-2026-09-25/README.md)).
 
 **Recovery (synthetic).** Against PhotoRec and Foremost on the same 25
 volumes, carve only: Sanctum 423 of 446 byte-identical, PhotoRec 372,

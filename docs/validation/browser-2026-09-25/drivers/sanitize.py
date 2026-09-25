@@ -46,7 +46,9 @@ def real_writes() -> int:
     return sum(
         1
         for c in helper_calls()
-        if c["method"] == "run_erase" and c["dry_run"] is False
+        if c["method"] == "run_erase"
+        and c["dry_run"] is False
+        and not c.get("refused_at_seam")
     )
 
 
@@ -427,6 +429,40 @@ with sync_playwright() as p:
     )
     check("refusal:identity_change_no_extra_write", real_writes() == 1)
     (STATE / "serial.flag").unlink()
+
+    # ---- A refusal at the helper's write seam is BLOCKED, not a failed erase -
+    # The API gate passes; the helper refuses before the engine. The job fails
+    # with the helper's own kind, and the screen must not call its record a
+    # certificate.
+    open_sanitize(page)
+    to_approval_modal(page)
+    open_workflow(page)
+    page.wait_for_selector("[data-testid=workflow-plan]", timeout=8000)
+    page.get_by_test_id("acknowledge").check()
+    page.get_by_test_id("typed-serial").fill(SERIAL)
+    page.get_by_test_id("approve").click()
+    page.wait_for_selector("[data-testid=authorization-id]", timeout=8000)
+    (STATE / "seam.flag").write_text("x")
+    page.get_by_test_id("typed-serial").fill(SERIAL)
+    page.get_by_test_id("execute").click()
+    page.wait_for_selector("text=/write seam/", timeout=20000)
+    page.wait_for_timeout(500)
+    strip = flow_text(page)
+    body = page.inner_text("body")
+    check(
+        "seam:refusal_shown_as_blocked_not_failed",
+        "BLOCKED" in strip and "write seam" in strip and "FAILED" not in strip,
+        strip,
+    )
+    check(
+        "seam:record_is_not_called_a_certificate",
+        "Get signed record" in body and "Get certificate" not in body,
+        body[-600:],
+    )
+    check("seam:no_write_counted", real_writes() == 1)
+    page.get_by_test_id("workflow-state").scroll_into_view_if_needed()
+    page.screenshot(path=str(OUT / "10-sanitize-refused-at-write-seam.png"))
+    (STATE / "seam.flag").unlink()
 
     # ---- A server failure is not a safety refusal ---------------------------
     open_sanitize(page)

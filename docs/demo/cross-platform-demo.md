@@ -20,7 +20,8 @@ data, and never on the laptop's own disk except to show the refusal.
    (device, what will happen, can it be verified); the flash limitation; Purge
    listed under *Unavailable, and why* (the USB bridge blocks pass-through) -
    no silent downgrade.
-5. *Review plan* → dry run → *Erase this device* → re-read → type the serial.
+5. *Review plan* → dry run → *Erase this device* → backup image → acknowledge and
+   type the serial → *Approve* → type the serial again → *Erase*.
 6. Watch progress; verification result; *Get certificate*; verify it on the
    **Audit** screen.
 

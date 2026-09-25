@@ -707,7 +707,11 @@ been exercised against a real device.
 
 In the tool: dry run is the default and writes nothing — verified by hashing the
 whole device before and after, not a sample, and the SHA-256 was identical. Then
-the operator must type the device serial, and it must match.
+the operator must type the device serial, and it must match. Since 2026-09-25 a
+real erase also needs a one-use authorization the server issues after a backup
+image and an explicit approval, bound to the device's serial, model and size, the
+plan and the backup; the privileged helper re-checks all of it immediately before
+the engine starts. That part is SYNTHETICALLY VALIDATED only.
 
 Refusals, tested against real devices on the validation host:
 

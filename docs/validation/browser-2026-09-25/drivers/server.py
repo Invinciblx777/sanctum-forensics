@@ -16,6 +16,8 @@ between steps, which is how a refusal is provoked through the real UI:
     serial.flag    /dev/sdz reports a different serial
 
     boom.flag      the helper probe raises an unexpected RuntimeError (HTTP 500)
+    seam.flag      a real run_erase is refused the way the helper's write-seam
+                   check refuses one (WorkflowGateRefused), before any write
 
 A ``calls.log`` records every helper call, so the driver can prove that a
 refusal never reached ``run_erase`` with ``dry_run=false``.
@@ -116,9 +118,20 @@ class FlagHelper(RecordingHelper):
     def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "probe_capabilities" and (state / "boom.flag").exists():
             raise RuntimeError("synthetic unexpected failure at /var/lib/secret/path")
+        seam = (
+            method == "run_erase"
+            and params.get("dry_run") is False
+            and (state / "seam.flag").exists()
+        )
         with (state / "calls.log").open("a", encoding="utf-8") as log:
-            log.write(
-                json.dumps({"method": method, "dry_run": params.get("dry_run")}) + "\n"
+            entry = {"method": method, "dry_run": params.get("dry_run")}
+            log.write(json.dumps({**entry, "refused_at_seam": seam}) + "\n")
+        if seam:
+            raise RpcError(
+                "REFUSED at the write seam: model changed since the backup and "
+                "approval. Nothing was erased.",
+                remediation="Open a new workflow.",
+                kind="WorkflowGateRefused",
             )
         if method == "enumerate_devices":
             return {"devices": ADAPTER.device_rows()}

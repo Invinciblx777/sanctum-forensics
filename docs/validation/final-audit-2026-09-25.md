@@ -86,3 +86,17 @@ Not established: race freedom in general. The record and markers are files the o
 write, so a same-user process can forge a consistent set (the socket permissions keep other
 users out, not this check); the backup is not re-hashed; the interval between the helper's
 check and the first write remains. The destructive engine was never run on a device.
+
+## Correction, later the same day
+
+This audit said "Nothing in this audit opened, read, wrote, acquired or restored" the
+stick. No open or I/O is known to have happened, but the full test runs it relied on
+ran real host discovery (`lsblk -J -O -b` over sysfs, and `/dev/disk/by-id` and
+`/sys/block` listings on the fallback) from five platform tests and one helper test,
+which enumerates every attached disk's metadata, the stick's included. File-erase tests
+also asked to open the system disk read-only and were refused by the kernel. Details,
+the guard that now refuses all of it, and the re-run with 0 refusals are in
+[`release-report-2026-09-25.md`](release-report-2026-09-25.md).
+
+The `error_kind` the job registry recorded for any helper failure was `RpcError`, so the
+Sanitize screen showed a write-seam refusal as FAILED; fixed in `db38ea7`.
