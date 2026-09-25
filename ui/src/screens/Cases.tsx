@@ -264,7 +264,7 @@ function sourceName(source: string): string {
   return cut >= 0 ? cleaned.slice(cut + 1) : cleaned
 }
 
-/** A job state in the registry's word, coloured by the shared tones. */
+/** A job state in the registry's word (or BLOCKED / VERIFY FAILED), coloured by the shared tones. */
 function OperationState({ operation }: { operation: OperationRecord }) {
   const { word, tone } = operationStatus(operation)
   return <span className={`state-mark is-${tone}`}>{word}</span>
@@ -571,9 +571,12 @@ function OperationsTab({ detail }: { detail: CaseDetail }) {
         </table>
       </div>
       <p className="note-faint">
-        The job state is the job registry&apos;s word for how the run ended; a
-        sanitization&apos;s verification verdict is on its report. Generate a
-        report from the Audit screen with the operation id.
+        The job state is the job registry&apos;s word for how the run ended,
+        with two exceptions: BLOCKED is a safety refusal before any write (the
+        registry says failed), and VERIFY FAILED is a drive erase that ran but
+        whose read-back failed (the registry says complete). The full
+        verification is on the report. Generate one from the Audit screen with
+        the operation id.
       </p>
     </div>
   )
