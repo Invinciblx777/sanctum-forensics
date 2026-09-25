@@ -413,6 +413,40 @@ the medium back: exhaustively at or below 64 GiB, and above that the first and l
 detection-probability formula and the seed rather than a bare percentage — so a
 third party can redraw the same sample.
 
+### Destroy: recording a physical destruction
+
+NIST SP 800-88 Rev. 2 has a third outcome, **Destroy**, for media that cannot be
+cleared or purged or must never be reused. A shredder, a disintegrator or a furnace
+performs it; no software can, and none can watch it happen. So the application
+does not offer Destroy as a method. It records what the people who did it attest.
+
+On the **Devices** screen, open *Record a physical destruction*. Pick a detected
+device to fill in its serial, model and capacity, or type them. Enter the technique
+(shred, disintegrate, pulverize, incinerate, melt, or other with a description), the
+largest fragment in millimetres if it was measured, when and where it was done, who
+did it, who witnessed it, a vendor certificate number if a vendor did it, and why the
+medium was destroyed rather than cleared or purged. *Record the destruction* writes
+one `destroy.recorded` ledger entry; *Get the signed record* signs it.
+
+The record is titled **Record of Destruction** and its headline is *Destruction
+attested, not observed*. The date it was destroyed is the attesters' statement; the
+date it was recorded is this machine's clock, and the two are separate fields. A
+date after this machine's clock is refused. The limitations say that the tool did
+not see the destruction, that the names were typed in and not authenticated, and
+that whether the technique reaches Destroy for that media is the facility's call.
+A record with no witness or no fragment size says so.
+
+The same through the API:
+
+```bash
+curl -s -X POST http://127.0.0.1:8787/jobs/record-destroy \
+  -H 'Content-Type: application/json' \
+  -d '{"serial":"WD-WX41A12345","media_type":"HDD","technique":"SHRED",
+       "particle_size_mm":20,"reason":"Heads failed; Purge cannot be issued.",
+       "performed_by":"A. Rao","witnessed_by":"S. Iyer",
+       "performed_at":"2026-09-24T15:30:00+05:30","case_id":"CASE-001"}'
+```
+
 ---
 
 ## 5. Erase files and folders (M2)
@@ -460,6 +494,42 @@ reallocation, EFS encryption, sparse unwritten regions, likely backup copies. A 
 erase lists each as a residual finding with a severity; a free-space wipe lists the
 ones it does not reach under `not_reached`. The tool tells you what the filesystem
 kept; it does not claim to have removed it.
+
+### Traces the desktop kept of the file
+
+Overwriting a file does not reach what the desktop made of it. After the erase,
+the *Remove what the desktop kept* option (on by default; `sweep_traces` in the
+API) searches for:
+
+| Trace | Where | Tied to the file by |
+|---|---|---|
+| Thumbnail, failed-thumbnail marker | `~/.cache/thumbnails`, `~/.thumbnails` | its name is the MD5 of the file's URI; its `Thumb::URI` is checked |
+| Recent-files entry | `~/.local/share/recently-used.xbel` | the entry's `href` |
+| KDE recent document | `~/.local/share/RecentDocuments/*.desktop` | its `URL=` |
+| Trash copy and its record | the home Trash, and `.Trash-<uid>` on the file's own volume | the `.trashinfo` `Path=` |
+| Recycle Bin copy and its record (Windows) | `<volume>\$Recycle.Bin\<SID>` | the `$I` record's original path |
+| Recent shortcut (Windows) | `%APPDATA%\Microsoft\Windows\Recent` | the shortcut's LinkInfo target |
+| Possible copy (macOS) | `~/.Trash` | a same name only: **reported, never removed** |
+
+A dry run lists every trace and removes nothing. A real run removes only the
+traces tied to an erased path on evidence. A trace file is erased through the same
+steps as a target, so the same residual findings apply to it. An entry in a shared
+list is cut out and the list is overwritten in place, padded to its old length, so
+the bytes that named the file are overwritten rather than freed. Nothing follows a
+link: a thumbnail that is a link is refused, and a Trash folder reached through a
+link is not searched. A list that changed while it was being read is left alone.
+A running application that holds the recent list in memory can write an entry
+back, so close file managers and viewers first.
+
+For a folder, a thumbnail whose `Thumb::URI` names any file inside it is also
+found, including files deleted from it long ago. A Trash folder that once held
+the file loses only the copy of that file; the folder's other contents stay.
+
+The file report adds a **6. Desktop Traces** section: every trace with its
+evidence and what became of it, every place searched, and the places on this
+platform that keep traces and were not searched (application caches, search
+indexes, jump lists, snapshots, sync clients). Each trace also gets an
+`erase.file.trace` ledger entry, and the sweep closes with `erase.file.traces`.
 
 **A per-file erase is usually unverifiable, and is reported as unverifiable rather
 than as a pass.** Verification needs a physical extent map, which needs FIEMAP; on a
@@ -617,6 +687,19 @@ reading. Omit `out_dir` entirely and nothing is written: you get the candidate l
 only. Written filenames encode what produced them:
 `000000001337_09000_carved-000000001337.jpg` is offset 1337, confidence 9000 basis
 points.
+
+`media_map` (on by default) runs first and draws the **media map** on the Recovery
+screen: the image as one strip, each region coloured by the class most of its
+4 KiB blocks fell into, with ticks where known file headers sit on sector
+boundaries. The classes are *zeroed* (all 0x00), *fill pattern* (one byte
+repeated: 0xFF from erased flash, 0xA5 from the free-space wipe), *text*,
+*structured binary* and *high entropy* (compressed, encrypted or random; the bytes
+alone do not say which). Hover a region for its offsets, class share, entropy and
+headers. An image up to 64 MiB is read in full; a larger one is sampled evenly
+within a 64 MiB budget, and the result says so. The map is ledgered as
+`carve.mediamap` and summarised in the report's evidence section. An image of a
+wiped medium maps as zero or fill throughout, which makes the map a quick
+corroboration of a wipe; it is not a verification.
 
 `undelete` walks filesystem metadata for deleted entries; `carve_signatures` runs
 the signature and structure carvers over the image. The undelete pass also returns

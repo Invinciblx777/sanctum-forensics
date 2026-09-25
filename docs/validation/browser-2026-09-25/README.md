@@ -1,5 +1,11 @@
 # Sanitize screen browser run, 2026-09-25
 
+**Re-run at `e21f88d`**, after the design-system v2 redesign and the stopped-step fix:
+59 of 59 again, and the screenshots here are from that run. The tracker now stays on
+the step where a flow stopped (`10-sanitize-refused-at-write-seam.png`: *Sanitize,
+stopped*), and a preflight READY from before a refusal is labelled as the earlier
+answer. The first run, at the commit this README first described, is in git history.
+
 The real Sanitize screen, driven in Chromium (headless shell, revision 1243,
 Playwright 1.63.0 from a separate venv), against the **real API app** (real routes,
 workflow state machine, authorization store, job registry, ledger) over the synthetic

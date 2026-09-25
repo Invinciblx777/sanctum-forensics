@@ -17,25 +17,25 @@ physical destructive operation; SANCTUMREC is not touched.
 
 ## UI/UX (U)
 
-- [ ] U1 Design system v2: self-hosted Inter + JetBrains Mono, tokens with a brand
+- [x] U1 Design system v2: self-hosted Atkinson Hyperlegible Next and Mono (chosen over Inter + JetBrains Mono for 0/O and 1/l/I legibility), tokens with a brand
       accent that never collides with the destructive red, Lucide icons, AA+ contrast
-- [ ] U2 Shell: grouped icon navigation, page headers, compact status bar
-- [ ] U3 Overview dashboard: module cards, KPI tiles, chain widget, activity, standards
-- [ ] U4 Audit: chain explorer (blocks and hash links), tamper demo on the chain
+- [x] U2 Shell: grouped icon navigation, page headers, compact status bar
+- [x] U3 Overview dashboard: module cards, KPI tiles, chain widget, activity, standards
+- [x] U4 Audit: chain explorer (blocks and hash links), tamper demo on the chain
 - [ ] U5 Screens: Devices, Sanitize, File eraser, Recovery, Cases, Platform
 - [ ] U6 Visual QA at 1366x768 and 1920x1080; browser checks kept green
 
 ## Features (F) and certificate (C)
 
-- [ ] C1 Certificate of Sanitization PDF: NIST 800-88r2 fields, verdict, QR with the
+- [x] C1 Certificate of Sanitization PDF: NIST 800-88r2 fields, verdict, QR with the
       report hash, chain head, signature block; fix empty level fields
-- [ ] F1 Trace sweep for erased files: thumbnails, recently-used, Trash copies
+- [x] F1 Trace sweep for erased files: thumbnails, recently-used, Trash copies
       (Linux), Recent and Recycle Bin (Windows), Trash (macOS); dry run, ledger, report
-- [ ] F2 Media map for recovery: region classes from byte statistics
-- [ ] F3 Destroy record: a signed record of physical destruction, attested by a person
+- [x] F2 Media map for recovery: region classes from byte statistics
+- [x] F3 Destroy record: a signed record of physical destruction, attested by a person
 
 ## Documentation and delivery (D)
 
-- [ ] D1 README and user manual updated for the new UI and features
+- [x] D1 README and user manual updated for the new UI and features
 - [ ] D2 Screenshots and browser evidence regenerated
 - [ ] D3 Packages rebuilt, identity-checked, isolated smoke

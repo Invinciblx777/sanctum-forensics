@@ -42,7 +42,7 @@ not physical validation.
 | "How is this different from PhotoRec?" | PhotoRec returns files. Sanctum also returns why it believes each one: six named evidence components, a bucket calibrated against ground truth, and a split file rebuilt only when its own bytes prove the join. Every run is written to a signed, hash-chained record. | Recovery screen score breakdown; `scripts/demo_fragmented.py` |
 | "How is this different from formatting the drive?" | A format rewrites filesystem metadata and leaves the data. On the physical stick, after a FAT32 quick format, carving still recovered all 10 of the 10 carvable planted files byte-exact. Sanitization overwrites or purges every addressable sector, verifies it by reading it back, and says what it could not reach. | `hardware.md` Phase B, `results-20260905T082656Z` |
 
-## Adversarial audit: 34 questions
+## Adversarial audit: 37 questions
 
 Status is one of the five labels above, or **NOT CURRENTLY PROVEN**. Paths
 are relative to the repository root.
@@ -96,6 +96,14 @@ are relative to the repository root.
 | 28 | What if the device reports misleading capacity? | HPA and DCO are detected by comparing accessible and native max sectors. A nonsense reading from a USB bridge is discarded and recorded as "no determination", after it once produced a 512-byte "erase". The engine erases no less than the kernel's `BLKGETSIZE64`. A controller that lies consistently to every read cannot be caught from the host, and the report says so. | `core/device/hidden_areas.py`; `tests/device/test_hidden_areas.py`; `core/erase/drive.py` (kernel size floor); `qa.md` §23; `hardware.md` run 1 | Bridge case PHYSICALLY VALIDATED; HPA/DCO on a SATA drive HARDWARE-UNVERIFIED |
 | 29 | How are HPA/DCO limitations handled? | Detected and reported, unlocked only when the method needs it, and restored afterwards. Linux only, and it needs ATA pass-through, which most USB bridges block. When it cannot be probed, the report and the verdict (`VERIFIED_WITH_LIMITATIONS`) say so. | `core/device/hidden_areas.py`; `tests/erase/test_hidden_area_phases.py`; `qa.md` §29 | Detection SYNTHETICALLY VALIDATED; unlock HARDWARE-UNVERIFIED |
 | 30 | What happens after power loss? | The ledger survives a torn write (`INCOMPLETE_TAIL`). An overwrite resumes from the last ledgered checkpoint. A firmware method restarts from the beginning. No certificate for a job that did not finish and verify. | `core/ledger/chain.py`; `tests/api/test_resume.py`; `tests/erase/test_cancelled_erase.py`; `qa.md` §22 | SYNTHETICALLY VALIDATED (cancel and torn tail). A real power cut during an erase: NOT CURRENTLY PROVEN. The power-cycle in `hardware.md` was after the erase finished, not during it |
+
+### Added 2026-09-25: traces, Destroy, the media map
+
+| # | Question | Answer | Evidence | Status |
+|---|---|---|---|---|
+| 35 | The file is erased, but its thumbnail and its recent-files entry are still there. | Not any more. After a file erase the sweep finds the thumbnail named by the MD5 of the file's URI, the recent-files entry, and older copies in the Trash or Recycle Bin, and removes the ones tied to the path on evidence. A same-name file in the macOS Trash is reported, not removed. Each report lists what was searched and what was not. | `core/erase/traces.py`; `tests/erase/files/test_trace_sweep.py` (31 tests, synthetic homes); report section 6 | SYNTHETICALLY VALIDATED. No test ran against a real desktop session |
+| 36 | Where is Destroy? | Destroy is physical: a shredder does it and no software can, or can watch it. Sanctum records what the people who did it attest, chains it and signs it, and the record says the tool observed nothing and did not authenticate the names. | `core/destroy.py`; `tests/test_destroy.py`, `tests/api/test_destroy_record_api.py`; Devices screen, *Record a physical destruction* | SYNTHETICALLY VALIDATED (the record, not a destruction) |
+| 37 | What does "intelligent carving" mean here? | Three things you can check: every candidate's score is six named evidence components; a split JPEG or PNG is rebuilt only when its own bytes prove the join; and the media map shows, before carving, where the image is zeroed, filled, text or high-entropy and where file headers sit. The map does not identify content, and says so. | `core/carve/score.py`, `core/carve/fragmentation.py`, `core/carve/mediamap.py`; `tests/carve/test_mediamap.py` | SYNTHETICALLY VALIDATED |
 
 ### Evidence
 

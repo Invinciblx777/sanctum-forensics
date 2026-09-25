@@ -2,7 +2,7 @@
   "checks": {
     "blocked:mounted_device_shows_why_blocked": {
       "ok": true,
-      "detail": "Sanctum\nforensics\nCASE\nnone open\nOverview\nCases\nDevices\nRecovery\nSanitization\nFile eraser\nAudit\nPlatform\nsanctum-forensics/0.0.0\n127.0.0.1 only\nDevices\n\nEnumerated from the host, capability probed, hidden areas measured.\n\nRescan\nBlock devices (2)\nCapability is what the probe reported, not what was requested.\n\tPATH\tMODEL\tSERIAL\tSIZE\tBUS\tCAPABILITY\tHIDDEN AREAS\n\n\t\n/dev/sdz\n\tSYNTHETIC-PURGE\tSYN-PURGE"
+      "detail": "Sanctum\nSanitize, recover, prove\nCase\nnone open\nOverview\nCases\nSanitize\nDevices\nDrive eraser\nFile & folder eraser\nRecover\nRecovery\nProve\nAudit\nPlatform\nsanctum-forensics/0.0.0\nbuild e21f88dd4270\nListening on 127.0.0.1 only\nDevices\n\nEnumerated from the host, capability probed, hidden areas measured.\n\nRescan\nBlock devices (2)\nCapability is what the probe reported, not what was requested.\n\tPath\tModel"
     },
     "blocked:mounted_device_not_openable": {
       "ok": true,
@@ -10,7 +10,7 @@
     },
     "sim:preflight_state": {
       "ok": true,
-      "detail": "DISCOVERED\nPREFLIGHT\nHUMAN APPROVAL REQUIRED\nEXECUTING\nVERIFYING\nCOMPLETE\n\nPREFLIGHT (SIMULATION)\n\nPreflight passed. A dry run writes nothing and needs no approval. A real erase needs HUMAN APPROVAL: the typed device serial.\n\nA real erase needs a backup image the server has hashed and sized, and a recorded approval; the server enforces both (POST /workflow/erase-drive, then /approve). Neither proves the image is a copy of this device or who approved. A simulation needs neither and writes nothing"
+      "detail": "DISCOVERED\nPREFLIGHT\nHUMAN APPROVAL REQUIRED\nEXECUTING\nVERIFYING\nCOMPLETE\n\nPREFLIGHT (SIMULATION)\n\nPreflight passed. A dry run writes nothing and needs no approval. A real erase needs a backup image, an approval with the typed serial, and a one-use authorization from the server.\n\nA real erase needs a backup image the server has hashed and sized, and a recorded approval; the server enforces both (POST /workflow/erase-drive, then /approve). Neither proves the image is a copy of this device or who "
     },
     "sim:banner_visible": {
       "ok": true,
@@ -30,7 +30,7 @@
     },
     "sim:no_workflow_or_authorization_requested": {
       "ok": true,
-      "detail": "['POST /jobs/erase-drive', 'GET /jobs/erase-drive-bf214a8efd29/stream', 'GET /jobs/erase-drive-bf214a8efd29/resume']"
+      "detail": "['POST /jobs/erase-drive', 'GET /jobs/erase-drive-e6a8979f55b3/stream', 'GET /jobs/erase-drive-e6a8979f55b3/resume']"
     },
     "sim:helper_never_saw_a_real_write": {
       "ok": true,
@@ -74,7 +74,7 @@
     },
     "plan:shows_server_backup_and_plan": {
       "ok": true,
-      "detail": "HUMAN APPROVAL REQUIRED: IRREVERSIBLE ERASURE\nThis permanently destroys every byte on /dev/sdz (64.0 MiB). There is no undo. Nothing is written until the server holds a verified backup, your recorded approval and the device serial you type.\nDEVICE\nSYNTHETIC-PURGE (/dev/sdz)\nSERIAL\nSYN-PURGE-1\nCAPACITY\n67,108,864 bytes\nLEVEL\nPURGE\nMETHOD\nATA_SANITIZE_BLOCK_ERASE\nBACKUP\n/tmp/claude-1000/-home-v0idsai-Projects-sanctum-forensics/4f39e2ba-8f2d-4d25-81db-0038fa619a77/scratchpad/b2/app/evidence/backup."
+      "detail": "HUMAN APPROVAL REQUIRED: irreversible erasure\nThis permanently destroys every byte on /dev/sdz (64.0 MiB). There is no undo. Nothing is written until the server holds a verified backup, your recorded approval and the device serial you type.\nDevice\nSYNTHETIC-PURGE (/dev/sdz)\nSerial\nSYN-PURGE-1\nCapacity\n67,108,864 bytes\nLevel\nPURGE\nMethod\nATA_SANITIZE_BLOCK_ERASE\nBackup\n/tmp/claude-1000/-home-v0idsai-Projects-sanctum-forensics/4f39e2ba-8f2d-4d25-81db-0038fa619a77/scratchpad/d2/state/app/evidence/b"
     },
     "plan:state_still_human_approval": {
       "ok": true,
@@ -82,7 +82,7 @@
     },
     "layout:1366x768:modal_inside_viewport": {
       "ok": true,
-      "detail": "{'x': 423, 'y': 23.046875, 'width': 520, 'height': 721.90625} in {'width': 1366, 'height': 768}"
+      "detail": "{'x': 403, 'y': 23.046875, 'width': 560, 'height': 721.90625} in {'width': 1366, 'height': 768}"
     },
     "layout:1366x768:body_scrolls_or_fits": {
       "ok": true,
@@ -90,15 +90,15 @@
     },
     "layout:1366x768:warning_visible_unclipped": {
       "ok": true,
-      "detail": "{'x': 451, 'y': 87.046875, 'width': 262.71875, 'height': 19}"
+      "detail": "{'x': 433, 'y': 96.546875, 'width': 243, 'height': 18}"
     },
     "layout:1366x768:action_row_on_screen": {
       "ok": true,
-      "detail": "{'x': 424, 'y': 691.953125, 'width': 518, 'height': 52}"
+      "detail": "{'x': 404, 'y': 684.953125, 'width': 558, 'height': 59}"
     },
     "layout:1024x768:modal_inside_viewport": {
       "ok": true,
-      "detail": "{'x': 252, 'y': 23.046875, 'width': 520, 'height': 721.90625} in {'width': 1024, 'height': 768}"
+      "detail": "{'x': 232, 'y': 23.046875, 'width': 560, 'height': 721.90625} in {'width': 1024, 'height': 768}"
     },
     "layout:1024x768:body_scrolls_or_fits": {
       "ok": true,
@@ -106,11 +106,11 @@
     },
     "layout:1024x768:warning_visible_unclipped": {
       "ok": true,
-      "detail": "{'x': 280, 'y': 87.046875, 'width': 262.71875, 'height': 19}"
+      "detail": "{'x': 262, 'y': 96.546875, 'width': 243, 'height': 18}"
     },
     "layout:1024x768:action_row_on_screen": {
       "ok": true,
-      "detail": "{'x': 253, 'y': 691.953125, 'width': 518, 'height': 52}"
+      "detail": "{'x': 233, 'y': 684.953125, 'width': 558, 'height': 59}"
     },
     "gate:approve_disabled_initially": {
       "ok": true,
@@ -134,7 +134,7 @@
     },
     "auth:server_issued_id": {
       "ok": true,
-      "detail": "auth-2ec45fd04b4e4030"
+      "detail": "auth-93eadf9c781d6ac5"
     },
     "auth:state_plan_ready": {
       "ok": true,
@@ -162,7 +162,7 @@
     },
     "exec:complete_on_fixture": {
       "ok": true,
-      "detail": "DISCOVERED\nPREFLIGHT\nBACKUP VERIFIED\nHUMAN APPROVAL REQUIRED\nPLAN READY\nEXECUTING\nVERIFYING\nCOMPLETE\n\nCOMPLETE\n\nThe run finished but verification did not confirm it (inconclusive or not attempted). Do not treat the medium as verified sanitized; read the residual risk.\n\nA real erase needs a backup image the server has hashed and sized, and a recorded approval; the server enforces both (POST /workflow/erase-drive, then /approve). Neither proves the image is a copy of this device or who approved. A"
+      "detail": "DISCOVERED\nPREFLIGHT\nBACKUP VERIFIED\nHUMAN APPROVAL REQUIRED\nPLAN READY\nEXECUTING\nVERIFYING\nCOMPLETE\n\nCOMPLETE\n\nRead the verification and the residual risk before relying on the result.\n\nA real erase needs a backup image the server has hashed and sized, and a recorded approval; the server enforces both (POST /workflow/erase-drive, then /approve). Neither proves the image is a copy of this device or who approved. A simulation needs neither and writes nothing."
     },
     "exec:existing_write_path_reached_once_on_synthetic_helper": {
       "ok": true,
@@ -202,7 +202,7 @@
     },
     "seam:record_is_not_called_a_certificate": {
       "ok": true,
-      "detail": ": the chain holds no erase entries for job 'erase-drive-d9e7a87bc6f8'. There is nothing recorded to continue.\nProgress\nNo progress reported yet.\nJob failed: REFUSED at the write seam: model changed since the backup and approval. Nothing was erased.\n\nOpen a new workflow.\n\nResidual risk\nWhat this run can claim, and what it cannot.\nPURGE\nATA SANITIZE \u2014 block erase\nCAPACITY\n64.0 MiB\nESTIMATED\n2m 00s\nHIDDEN AREAS\nnone measured\nPLATFORM: Fedora Linux 44 (Forty Four)\nPRIVILEGE: Privileged helper\nDEVICE"
+      "detail": "E NOT AVAILABLE: the chain holds no erase entries for job 'erase-drive-959b9edd8fd2'. There is nothing recorded to continue.\nProgress\nNo progress reported yet.\nJob failed: REFUSED at the write seam: model changed since the backup and approval. Nothing was erased.\n\nOpen a new workflow.\n\nResidual risk\nWhat this run can claim, and what it cannot.\nPURGE\nATA SANITIZE \u2014 block erase\nCapacity\n64.0 MiB\nEstimated\n2m 00s\nHidden areas\nnone measured\nPlatform\nFedora Linux 44\nPrivilege\nPrivileged helper\nDevice"
     },
     "seam:no_write_counted": {
       "ok": true,
@@ -210,7 +210,7 @@
     },
     "failure:server_error_shown_as_request_failed": {
       "ok": true,
-      "detail": "REQUEST FAILED (not a safety refusal: InternalError). The request failed for a reason this layer did not anticipate. Incident f1e36f85ed4c. The failure was logged on the server with this incident id. Search the API log for 'f1e36f85ed4c' to see what went wrong; the message is withheld here because an unanticipated error usually quotes a host path."
+      "detail": "REQUEST FAILED (not a safety refusal: InternalError). The request failed for a reason this layer did not anticipate. Incident 7a59633d8e3b. The failure was logged on the server with this incident id. Search the API log for '7a59633d8e3b' to see what went wrong; the message is withheld here because an unanticipated error usually quotes a host path."
     },
     "failure:not_rendered_as_blocked_refusal": {
       "ok": true,
@@ -258,28 +258,28 @@
   ],
   "workflow_requests": [
     "POST /jobs/erase-drive",
-    "GET /jobs/erase-drive-bf214a8efd29/stream",
-    "GET /jobs/erase-drive-bf214a8efd29/resume",
+    "GET /jobs/erase-drive-e6a8979f55b3/stream",
+    "GET /jobs/erase-drive-e6a8979f55b3/resume",
     "POST /workflow/erase-drive",
     "POST /workflow/erase-drive",
-    "POST /workflow/erase-drive/auth-2ec45fd04b4e4030/approve",
+    "POST /workflow/erase-drive/auth-93eadf9c781d6ac5/approve",
     "POST /jobs/erase-drive",
     "POST /workflow/erase-drive",
-    "POST /workflow/erase-drive/auth-48b0fb767f6daad7/approve",
+    "POST /workflow/erase-drive/auth-fedc222e6c7bd4d9/approve",
     "POST /jobs/erase-drive",
-    "GET /jobs/erase-drive-1307301d31a1/stream",
-    "GET /jobs/erase-drive-1307301d31a1/resume",
+    "GET /jobs/erase-drive-093da84db13f/stream",
+    "GET /jobs/erase-drive-093da84db13f/resume",
     "POST /jobs/erase-drive",
     "POST /jobs/erase-drive",
-    "POST /jobs/erase-drive",
-    "POST /workflow/erase-drive",
-    "POST /workflow/erase-drive/auth-cfedc03ff43e14f1/approve",
     "POST /jobs/erase-drive",
     "POST /workflow/erase-drive",
-    "POST /workflow/erase-drive/auth-44ca2e94a8788e41/approve",
+    "POST /workflow/erase-drive/auth-5d0c912ac93bd676/approve",
     "POST /jobs/erase-drive",
-    "GET /jobs/erase-drive-d9e7a87bc6f8/stream",
-    "GET /jobs/erase-drive-d9e7a87bc6f8/resume",
+    "POST /workflow/erase-drive",
+    "POST /workflow/erase-drive/auth-65f414983745cee6/approve",
+    "POST /jobs/erase-drive",
+    "GET /jobs/erase-drive-959b9edd8fd2/stream",
+    "GET /jobs/erase-drive-959b9edd8fd2/resume",
     "POST /workflow/erase-drive",
     "POST /workflow/erase-drive"
   ],

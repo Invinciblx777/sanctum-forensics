@@ -46,9 +46,9 @@ RECOVER    ACQUIRE  → CARVE     → VALIDATE → SCORE → EXPLAIN → REPORT
 
 | Module | What it does |
 |---|---|
-| **M1 Secure Drive Eraser** | Whole-drive Clear / Purge / Destroy in NIST SP 800-88 Rev. 2 vocabulary, method chosen from probed device capability |
-| **M2 Secure File & Folder Eraser** | File, folder and batch erasure, document metadata cleansing, and a report of what the filesystem kept anyway |
-| **M3 File Carving & Recovery** | Read-only acquisition, filesystem-aware undelete, signature and structure carving, bifragment reconstruction, decoder validation, evidence scoring |
+| **M1 Secure Drive Eraser** | Whole-drive Clear or Purge in NIST SP 800-88 Rev. 2 vocabulary, method chosen from probed device capability; Destroy recorded as a signed attestation by the people who did it |
+| **M2 Secure File & Folder Eraser** | File, folder and batch erasure, document metadata cleansing, a sweep of the thumbnails, recent-files entries and Trash copies the desktop kept, and a report of what the filesystem kept anyway |
+| **M3 File Carving & Recovery** | Read-only acquisition, a media map of the image, filesystem-aware undelete, signature and structure carving, bifragment reconstruction, decoder validation, evidence scoring |
 
 ## What makes it different
 
@@ -60,6 +60,19 @@ NOT AUTHORIZED; it never silently downgrades.
 **Destructive-operation safety.** Serial and `/dev/disk/by-id` binding, a
 typed-serial confirmation, refusal of mounted and system disks, dry run by
 default, and no automatic `sudo` or unmount. See [The safety model](#the-safety-model).
+
+**Residual traces, not only residual data.** Erasing a file leaves what the
+desktop made of it: a thumbnail named by the MD5 of its URI, a recent-files
+entry, an older copy in the Trash or Recycle Bin. After a file erase, Sanctum
+finds those and removes the ones it can tie to the erased path on evidence
+(`core/erase/traces.py`). Anything weaker, such as a same-name file in the macOS
+Trash, is reported and left alone. The report names every place searched and
+the places on that platform it did not search.
+
+**Destroy, recorded honestly.** No software can shred a drive or watch one being
+shredded. When a medium is physically destroyed, Sanctum chains and signs what
+the people who did it attest: technique, fragment size, who, witness, when. The
+signed record states that the tool observed nothing (`core/destroy.py`).
 
 **Explainable recovery.** Every candidate is bounded by its format's own
 length fields, read by a real decoder, and scored on named evidence. A file
@@ -133,6 +146,8 @@ COMPLETE / FAILED
 ```text
 Acquisition (O_RDONLY, SHA-256 + BLAKE3)
    ↓
+Media map                   every region classed by its bytes: zero, fill,
+   ↓                        text, structured, high-entropy; headers counted
 Filesystem-aware undelete   NTFS, FAT12/16/32, exFAT, ext2/3/4
    ↓
 Signature carving           24 signatures
@@ -149,7 +164,17 @@ Explainable candidate       offset, runs, SHA-256, score breakdown
 ```
 
 The evidence path is read-only: `core/carve/evidence.py` opens `O_RDONLY` and
-has no write method. Format coverage is generated from the code into
+has no write method.
+
+**The media map.** Before anything is carved, the Recovery screen draws the
+image as one strip: where it is zeroed, where it holds a fill pattern (erased
+flash reads 0xFF; the free-space wipe leaves 0xA5), where the text, structured
+binary and high-entropy data are, and where known file headers sit on sector
+boundaries (`core/carve/mediamap.py`). An image of a wiped medium maps as zero
+or fill from end to end, so the map is also a quick check of a wipe. Byte
+statistics do not identify content: high entropy is compressed, encrypted or
+random, and the map says so. Above 64 MiB it samples evenly within a fixed read
+budget and says that too. Format coverage is generated from the code into
 [`docs/supported-formats.md`](docs/supported-formats.md), and a test fails if
 it drifts.
 
@@ -367,6 +392,13 @@ All 34 questions, with evidence and a status for each:
   extents), and is reported as such rather than as a pass.
 - ext4 undelete recovers almost nothing, because the kernel zeroes the extent
   tree on unlink. That is measured.
+- Destroy is not performed or observed. A Destroy record is what the people
+  named in it attest, and the application does not authenticate them.
+- The trace sweep covers the desktop's shared thumbnail cache, recent-files
+  lists, Trash and Recycle Bin. Application caches, search indexes, jump lists,
+  snapshots and sync clients are listed in each report as not searched.
+- The media map classes bytes by their statistics. It does not identify
+  content, and a sampled map can miss what its samples did not read.
 
 **When the evidence is insufficient, Sanctum reports the limitation instead of
 upgrading it into a guarantee.** The full list is

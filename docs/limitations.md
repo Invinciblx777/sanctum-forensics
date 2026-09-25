@@ -918,3 +918,32 @@ are among the suite's skips and name their reason.
 `SanitizationLevel.DESTROY` is never achievable in software and is never
 returned by method selection. It means physical destruction: shred, disintegrate,
 incinerate, melt.
+
+The application records a destruction but cannot perform or observe one. A
+**Record of Destruction** (`POST /jobs/record-destroy`, the Devices screen) chains
+and signs what the people named in it attest. Its signature proves the record has
+not changed since it was signed, not that the destruction happened; the names are
+typed in and not authenticated; and whether the technique and fragment size reach
+Destroy for that media is the facility's determination, not the tool's.
+
+## Trace sweep
+
+The sweep after a file erase searches the desktop's shared thumbnail cache,
+recent-files lists (GTK and KDE), the home Trash, the Trash on the file's volume,
+the Windows Recycle Bin and Recent shortcuts, and the macOS Trash. It does not
+search application caches and history (office suites, viewers, browsers), search
+and activity indexes (Tracker, the KDE activity database, Windows Search,
+Spotlight), jump lists, `thumbcache_*.db`, the QuickLook cache, snapshots, backups
+or sync clients; every report lists these as not searched. A thumbnail made under a
+URI other than the one the file was erased by (through a link, another mount point
+or a network share) is found only when its `Thumb::URI` names a file inside an
+erased folder. On macOS the Trash records where an item came from only in its
+`.DS_Store`, which is not parsed, so a same-name item is reported and never removed.
+
+## Media map
+
+The map classes bytes by statistics over 4 KiB blocks. It does not identify
+content. Above 64 MiB it reads evenly spaced samples within a 64 MiB budget, so a
+region is classed by its samples and can hold what they missed. Header counts are
+of headers on 512-byte sector boundaries, not validated files, and two-byte
+signatures (`MZ`, `BM`) are not counted at all.
