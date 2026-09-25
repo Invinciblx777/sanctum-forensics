@@ -739,6 +739,25 @@ sixteen minutes.
 
 Then take questions. `docs/demo/qa.md` has twenty of them with answers.
 
+### If a question opens the door: three 30-second beats (added 2026-09-25)
+
+Each runs on synthetic material, labelled as such, and needs nothing staged but
+`docs/validation/features-2026-09-25/drivers/seed.py` run into a state directory
+beforehand. None touches a device. Recorded screenshots are in that directory if
+there is no time to run them.
+
+* **"Erasing the file leaves its thumbnail."** File & folder eraser, the seeded
+  `case-2149` folder, *Simulate*: seven traces, each with its evidence. Say:
+  *"A dry run removes nothing. A real run removes only what it can tie to the
+  file on evidence, and the report lists every place it did not search."*
+* **"What is intelligent about the carving?"** Recovery, the seeded image: the
+  media map draws before the carve. Say: *"Zeros, fill, text, high entropy, and
+  where the JPEG headers sit. Statistics, not identification, and the map says
+  so."*
+* **"Where is Destroy?"** Devices, *Record a physical destruction*. Say: *"No
+  software shreds a drive or can watch one shredded. This records what the
+  people who did it attest, signed, and the record says we observed nothing."*
+
 ---
 
 ## Why one stick is enough
