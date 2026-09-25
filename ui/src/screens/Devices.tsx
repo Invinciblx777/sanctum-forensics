@@ -184,164 +184,166 @@ export default function Devices({
                 : 'No block devices were reported. The privileged helper may not be running.'}
             </Empty>
           ) : (
-            <table className="itable">
-              {/* Fixed widths so the columns line up down the table and the
-                  header never truncates mid-word. Capability takes what is
-                  left, and its basis line ellipsises rather than wrapping -
-                  the full sentence is one click away on the sub-row. */}
-              {/* Widths are sized to the longest real value each column
-                  holds, not divided evenly. A serial is typed character by
-                  character into the confirm dialog, so it gets the 24
-                  monospace characters it needs and never ellipsises; so do
-                  size and bus, which are short by nature. Model is the only
-                  column that can lose its tail without costing anything, so
-                  Model is the one that flexes. */}
-              <colgroup>
-                <col style={{ width: 'var(--gutter)' }} />
-                <col style={{ width: 140 }} />
-                <col />
-                <col style={{ width: 186 }} />
-                <col style={{ width: 92 }} />
-                <col style={{ width: 104 }} />
-                <col style={{ width: 238 }} />
-                <col style={{ width: 140 }} />
-              </colgroup>
-              <thead>
-                <tr>
-                  <th className="rail" />
-                  <th>Path</th>
-                  <th>Model</th>
-                  <th>Serial</th>
-                  <th>Size</th>
-                  <th>Bus</th>
-                  <th>Capability</th>
-                  <th>Hidden areas</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row) => {
-                  const badge = capabilityBadge(row.capabilities)
-                  const barred =
-                    row.device.is_system_disk || row.device.mounted_at.length > 0
-                  // The same words as the workflow state machine: BLOCKED,
-                  // then WHY. The remedy is a human act; nothing here
-                  // unmounts or reboots on the operator's behalf.
-                  const reason = row.device.is_system_disk
-                    ? 'This device hosts the running root filesystem. ' +
-                      'Boot from separate media and run the erase against it as ' +
-                      'a non-system disk.'
-                    : `Filesystem is mounted at ${row.device.mounted_at.join(', ')}. ` +
-                      'Human unmount required: unmount every filesystem on the ' +
-                      'device yourself, then rescan.'
-                  const open = openPath === row.device.path
-                  return (
-                    <Fragment key={row.device.path}>
-                      <tr
-                        className={
-                          barred ? 'irow is-barred' : 'irow is-openable'
-                        }
-                        onClick={() => !barred && onSelect(row)}
-                      >
-                        <td
-                          className={barred ? 'rail is-destructive' : 'rail'}
-                          aria-hidden
+            <div className="scroll-x-narrow">
+              <table className="itable" style={{ minWidth: 1000 }}>
+                {/* Fixed widths so the columns line up down the table and the
+                    header never truncates mid-word. Capability takes what is
+                    left, and its basis line ellipsises rather than wrapping -
+                    the full sentence is one click away on the sub-row. */}
+                {/* Widths are sized to the longest real value each column
+                    holds, not divided evenly. A serial is typed character by
+                    character into the confirm dialog, so it gets the 24
+                    monospace characters it needs and never ellipsises; so do
+                    size and bus, which are short by nature. Model is the only
+                    column that can lose its tail without costing anything, so
+                    Model is the one that flexes. */}
+                <colgroup>
+                  <col style={{ width: 'var(--gutter)' }} />
+                  <col style={{ width: 140 }} />
+                  <col />
+                  <col style={{ width: 186 }} />
+                  <col style={{ width: 92 }} />
+                  <col style={{ width: 104 }} />
+                  <col style={{ width: 238 }} />
+                  <col style={{ width: 140 }} />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th className="rail" />
+                    <th>Path</th>
+                    <th>Model</th>
+                    <th>Serial</th>
+                    <th>Size</th>
+                    <th>Bus</th>
+                    <th>Capability</th>
+                    <th>Hidden areas</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row) => {
+                    const badge = capabilityBadge(row.capabilities)
+                    const barred =
+                      row.device.is_system_disk || row.device.mounted_at.length > 0
+                    // The same words as the workflow state machine: BLOCKED,
+                    // then WHY. The remedy is a human act; nothing here
+                    // unmounts or reboots on the operator's behalf.
+                    const reason = row.device.is_system_disk
+                      ? 'This device hosts the running root filesystem. ' +
+                        'Boot from separate media and run the erase against it as ' +
+                        'a non-system disk.'
+                      : `Filesystem is mounted at ${row.device.mounted_at.join(', ')}. ` +
+                        'Human unmount required: unmount every filesystem on the ' +
+                        'device yourself, then rescan.'
+                    const open = openPath === row.device.path
+                    return (
+                      <Fragment key={row.device.path}>
+                        <tr
+                          className={
+                            barred ? 'irow is-barred' : 'irow is-openable'
+                          }
+                          onClick={() => !barred && onSelect(row)}
                         >
-                          <i />
-                        </td>
-                        {/* Path and a shackle. Nothing else: the refusal is a
-                            sentence and belongs on a row wide enough to hold
-                            one. */}
-                        <td className="path">
-                          {barred ? (
-                            <span className="lockup">
-                              <Shackle />
-                              <span className="path">{row.device.path}</span>
-                            </span>
-                          ) : (
-                            row.device.path
-                          )}
-                        </td>
-                        <td title={row.device.model}>{row.device.model}</td>
-                        <td className="serial">{row.device.serial}</td>
-                        <td className="mono" title={exactBytes(row.device.size_bytes)}>
-                          {bytes(row.device.size_bytes)}
-                        </td>
-                        {/* The engine's determination, not `rotational`: a USB
-                            bridge leaves that flag set on a flash stick. */}
-                        <td className="mono" title={flashOf(row).reason}>
-                          {row.device.transport}
-                          {flashOf(row).flash ? ' flash' : ''}
-                        </td>
-                        <td>
-                          <Verdict
-                            level={badge.label}
-                            basis={badge.basis}
-                            tone={badge.tone}
-                            open={open}
-                            onToggle={() =>
-                              setOpenPath(open ? null : row.device.path)
-                            }
-                          />
-                        </td>
-                        <td>
-                          <HiddenAreas report={row.hidden_areas} />
-                        </td>
-                      </tr>
-                      {barred && (
-                        <tr className="subrow is-locked">
-                          <td className="rail is-destructive" aria-hidden>
+                          <td
+                            className={barred ? 'rail is-destructive' : 'rail'}
+                            aria-hidden
+                          >
                             <i />
                           </td>
-                          <td colSpan={7}>
-                            <span className="lock-reason">
-                              <strong>BLOCKED</strong> · WHY BLOCKED: {reason}
-                            </span>
+                          {/* Path and a shackle. Nothing else: the refusal is a
+                              sentence and belongs on a row wide enough to hold
+                              one. */}
+                          <td className="path">
+                            {barred ? (
+                              <span className="lockup">
+                                <Shackle />
+                                <span className="path">{row.device.path}</span>
+                              </span>
+                            ) : (
+                              row.device.path
+                            )}
+                          </td>
+                          <td title={row.device.model}>{row.device.model}</td>
+                          <td className="serial">{row.device.serial}</td>
+                          <td className="mono" title={exactBytes(row.device.size_bytes)}>
+                            {bytes(row.device.size_bytes)}
+                          </td>
+                          {/* The engine's determination, not `rotational`: a USB
+                              bridge leaves that flag set on a flash stick. */}
+                          <td className="mono" title={flashOf(row).reason}>
+                            {row.device.transport}
+                            {flashOf(row).flash ? ' flash' : ''}
+                          </td>
+                          <td>
+                            <Verdict
+                              level={badge.label}
+                              basis={badge.basis}
+                              tone={badge.tone}
+                              open={open}
+                              onToggle={() =>
+                                setOpenPath(open ? null : row.device.path)
+                              }
+                            />
+                          </td>
+                          <td>
+                            <HiddenAreas report={row.hidden_areas} />
                           </td>
                         </tr>
-                      )}
-                      {open && (
-                        <tr className="subrow">
-                          <td className="rail" aria-hidden>
-                            <i />
-                          </td>
-                          <td colSpan={7}>
-                            <dl className="evidence">
-                              <dt>Claim</dt>
-                              <dd>{badge.label}</dd>
-                              <dt>Because</dt>
-                              <dd>{badge.why}</dd>
-                              <dt>Levels</dt>
-                              <dd className="mono">
-                                {row.capabilities?.achievable_levels.join(', ') ||
-                                  'none reported'}
-                              </dd>
-                              <dt>Sanitize ops</dt>
-                              <dd className="mono">
-                                {row.capabilities?.ata_sanitize_ops.join(', ') ||
-                                  'none reported'}
-                              </dd>
-                              {row.hidden_areas && row.hidden_areas.hidden_bytes > 0 && (
-                                <>
-                                  <dt>Hidden</dt>
-                                  <dd>
-                                    {exactBytes(row.hidden_areas.hidden_bytes)} lie beyond
-                                    the accessible max (
-                                    {row.hidden_areas.accessible_sectors} of{' '}
-                                    {row.hidden_areas.native_max_sectors} sectors). An
-                                    overwrite does not reach them unless the native max is
-                                    unlocked first.
-                                  </dd>
-                                </>
-                              )}
-                            </dl>
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
-                  )
-                })}
-              </tbody>
-            </table>
+                        {barred && (
+                          <tr className="subrow is-locked">
+                            <td className="rail is-destructive" aria-hidden>
+                              <i />
+                            </td>
+                            <td colSpan={7}>
+                              <span className="lock-reason">
+                                <strong>BLOCKED</strong> · WHY BLOCKED: {reason}
+                              </span>
+                            </td>
+                          </tr>
+                        )}
+                        {open && (
+                          <tr className="subrow">
+                            <td className="rail" aria-hidden>
+                              <i />
+                            </td>
+                            <td colSpan={7}>
+                              <dl className="evidence">
+                                <dt>Claim</dt>
+                                <dd>{badge.label}</dd>
+                                <dt>Because</dt>
+                                <dd>{badge.why}</dd>
+                                <dt>Levels</dt>
+                                <dd className="mono">
+                                  {row.capabilities?.achievable_levels.join(', ') ||
+                                    'none reported'}
+                                </dd>
+                                <dt>Sanitize ops</dt>
+                                <dd className="mono">
+                                  {row.capabilities?.ata_sanitize_ops.join(', ') ||
+                                    'none reported'}
+                                </dd>
+                                {row.hidden_areas && row.hidden_areas.hidden_bytes > 0 && (
+                                  <>
+                                    <dt>Hidden</dt>
+                                    <dd>
+                                      {exactBytes(row.hidden_areas.hidden_bytes)} lie beyond
+                                      the accessible max (
+                                      {row.hidden_areas.accessible_sectors} of{' '}
+                                      {row.hidden_areas.native_max_sectors} sectors). An
+                                      overwrite does not reach them unless the native max is
+                                      unlocked first.
+                                    </dd>
+                                  </>
+                                )}
+                              </dl>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
           )}
         </Panel>
 

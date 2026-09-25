@@ -300,13 +300,18 @@ export function ProgressView({
   )
 }
 
-export function Limitations({ items }: { items: string[] }) {
+export function Limitations({
+  items,
+  title = 'What this run could not guarantee',
+}: {
+  items: readonly string[]
+  /** The heading; the default is for a run's result, not a standing limit. */
+  title?: string
+}) {
   if (items.length === 0) return null
   return (
     <div className="notice warn">
-      <strong style={{ fontSize: 'var(--type-sm)' }}>
-        What this run could not guarantee
-      </strong>
+      <strong style={{ fontSize: 'var(--type-sm)' }}>{title}</strong>
       <ul className="limitations">
         {items.map((item, index) => (
           <li key={index}>{item}</li>

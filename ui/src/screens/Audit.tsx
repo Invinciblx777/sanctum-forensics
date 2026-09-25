@@ -411,12 +411,12 @@ export default function Audit() {
           {!chain || chain.entries.length === 0 ? (
             <Empty>No ledger entries yet.</Empty>
           ) : (
-            <div className="scroll-y" style={{ maxHeight: '38vh' }}>
-              <table className="itable">
+            <div className="scroll-y scroll-x" style={{ maxHeight: '38vh' }}>
+              <table className="itable" style={{ minWidth: 900 }}>
                 <colgroup>
                   <col style={{ width: 'var(--gutter)' }} />
                   <col style={{ width: 56 }} />
-                  <col style={{ width: 176 }} />
+                  <col style={{ width: 196 }} />
                   <col style={{ width: 122 }} />
                   <col />
                   <col style={{ width: 152 }} />

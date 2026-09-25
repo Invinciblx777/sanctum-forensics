@@ -7,6 +7,7 @@ import {
   deviceKind,
   headlineTone,
   runnableStatus,
+  STATUS_MEANINGS,
   statusWord,
 } from '../src/lib/platform.ts'
 import type { DeviceAssessment, NormalizedDevice } from '../src/lib/api.ts'
@@ -103,4 +104,23 @@ test('headline tone', () => {
   assert.equal(headlineTone(a), 'destructive')
   assert.equal(headlineTone({ ...a, headline: 'READY', status: 'SUPPORTED' }), 'success')
   assert.equal(headlineTone(null), 'unknown')
+})
+
+test('the legend explains every status once, and none of them as a pass it is not', () => {
+  const statuses = STATUS_MEANINGS.map((row) => row.status)
+  assert.equal(new Set(statuses).size, 7)
+  for (const status of [
+    'SUPPORTED',
+    'SUPPORTED_WITH_LIMITATIONS',
+    'NOT_AUTHORIZED',
+    'NOT_VERIFIABLE',
+    'UNVERIFIED',
+    'INCONCLUSIVE',
+    'UNSUPPORTED',
+  ] as const) {
+    assert.ok(statuses.includes(status), status)
+  }
+  const unverified = STATUS_MEANINGS.find((row) => row.status === 'UNVERIFIED')
+  assert.match(unverified?.meaning ?? '', /Not a claim that it works/)
+  assert.equal(statusWord('UNVERIFIED').tone, 'unknown')
 })

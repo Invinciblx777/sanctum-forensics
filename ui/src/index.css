@@ -93,6 +93,8 @@ h2 { font-size: var(--type-md); color: var(--text-primary); }
 h3 { font-size: var(--type-sm); color: var(--text-secondary); }
 
 a { color: var(--accent); }
+/* A link drawn as a button reads as a button: no underline. */
+a.btn { text-decoration: none; }
 
 svg.icon { flex: none; stroke-width: 1.8; }
 
@@ -1163,6 +1165,44 @@ button.chain-block:hover { border-color: var(--seal); }
 }
 .media-legend li { display: contents; }
 .media-legend i { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+
+/* ==================================================================== *
+ * Cases
+ * ==================================================================== */
+
+/* The case list beside the form that opens one; stacked once the list would
+   have to drop its title column to fit. */
+.cases-split { display: grid; grid-template-columns: minmax(0, 1fr) 340px;
+               gap: var(--space-4); align-items: start; }
+@media (max-width: 1180px) { .cases-split { grid-template-columns: 1fr; } }
+
+/* A tab's count, in the mono face every other count uses. */
+.tab-count { font-family: var(--mono); font-size: var(--type-xs);
+             font-variant-numeric: tabular-nums; opacity: 0.7; }
+
+/* Two lines in one cell of a 54px row, each ellipsised on its own. */
+.cell-stack { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cell-stack > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* A figure that opens the tab it counts. */
+button.figure.is-link { text-align: left; font: inherit; color: inherit;
+                        background: var(--surface-sunken);
+                        cursor: pointer; transition: border-color 120ms ease; }
+button.figure.is-link:hover { border-color: var(--rule-strong); }
+
+/* Platform: each status word beside what it means. */
+.status-legend { margin: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.status-legend > div { display: flex; flex-direction: column; gap: 1px; }
+.status-legend dt .state-mark { font-size: var(--type-sm); }
+.status-legend dd { margin: 0; font-size: var(--type-sm); color: var(--text-secondary); }
+
+/* A wide table scrolls sideways at a narrow width rather than crushing its
+   one flexible column to nothing. */
+.scroll-x { overflow-x: auto; }
+/* The same, only once the viewport is too narrow for the table: above that
+   the wrapper stays inert, so a long table's header still sticks to the
+   screen's own scroll. */
+@media (max-width: 1180px) { .scroll-x-narrow { overflow-x: auto; } }
 
 /* Two-column form, label above control; collapses to one column when narrow. */
 .form-grid {

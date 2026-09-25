@@ -31,6 +31,43 @@ export function statusWord(status: CapabilityStatus): { word: string; tone: Tone
   }
 }
 
+/**
+ * What each status word means, in the order a reader meets them. Paraphrases
+ * the definitions in core/platform/model.py; the server decides the status,
+ * and this only explains the word.
+ */
+export const STATUS_MEANINGS: readonly { status: CapabilityStatus; meaning: string }[] = [
+  {
+    status: 'SUPPORTED',
+    meaning: 'A real backend runs on this computer and has a way to check its result.',
+  },
+  {
+    status: 'SUPPORTED_WITH_LIMITATIONS',
+    meaning: 'It runs, but part of the claim cannot be made here. Why? names the limits.',
+  },
+  {
+    status: 'NOT_AUTHORIZED',
+    meaning: 'A backend exists, but this process lacks the privilege it needs.',
+  },
+  {
+    status: 'NOT_VERIFIABLE',
+    meaning: 'It can run, but nothing on this computer can check the result.',
+  },
+  {
+    status: 'UNVERIFIED',
+    meaning:
+      'The code exists, but no passing test run on this platform, or no run on physical hardware, is recorded for it. Not a claim that it works.',
+  },
+  {
+    status: 'INCONCLUSIVE',
+    meaning: 'A probe ran and could not settle the question.',
+  },
+  {
+    status: 'UNSUPPORTED',
+    meaning: 'Not available on this platform in this build, or refused outright.',
+  },
+]
+
 /** Whether an option can actually be started on this host. */
 export function runnableStatus(status: CapabilityStatus | undefined): boolean {
   return status === 'SUPPORTED' || status === 'SUPPORTED_WITH_LIMITATIONS'

@@ -121,7 +121,7 @@ export const NOT_PHYSICALLY_VALIDATED: readonly string[] = [
   'Whole-drive sanitization: Linux only.',
 ]
 
-const SAFETY_LINES: readonly string[] = [
+export const SAFETY_LINES: readonly string[] = [
   'Dry run is the default. Nothing is written unless it is turned off.',
   'A real erase needs a backup image, an approval with the typed serial, and a one-use authorization the server issues; the helper re-checks device, plan and backup before it writes.',
   'The system disk and any device with a mounted filesystem are refused, never unmounted for you.',

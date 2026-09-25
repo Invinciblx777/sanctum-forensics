@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { api, RequestFailed } from '../lib/api'
 import type { CapabilityStatus, OperationCapability, PlatformStatus } from '../lib/api'
-import { privilegeWord, statusWord } from '../lib/platform'
-import { Empty, ErrorNotice, Evidence, Limitations, Panel } from '../components/widgets'
+import { privilegeWord, STATUS_MEANINGS, statusWord } from '../lib/platform'
+import { NOT_PHYSICALLY_VALIDATED, SAFETY_LINES } from '../lib/summary'
+import { Empty, ErrorNotice, Evidence, Limitations, Panel, Stat } from '../components/widgets'
 
 /**
  * Sanctum platform status.
@@ -13,7 +14,10 @@ import { Empty, ErrorNotice, Evidence, Limitations, Panel } from '../components/
  * Technical details for the judge who asks.
  *
  * There is no checkmark in this file. A status the server did not compute
- * cannot appear, and UNVERIFIED is drawn as unverified.
+ * cannot appear, and UNVERIFIED is drawn as unverified. What a status is
+ * *not* - a run on the storage attached now, or a result on physical
+ * hardware - is said on the page, beside the statuses, rather than left to be
+ * inferred from a green word.
  */
 
 /** The rows a non-specialist cares about, in the order they matter. */
@@ -59,7 +63,9 @@ function CapabilityRow({ row }: { row: OperationCapability }) {
               {row.verification}
             </p>
           )}
-          {row.limitations.length > 0 && <Limitations items={row.limitations} />}
+          {row.limitations.length > 0 && (
+            <Limitations items={row.limitations} title="Limits" />
+          )}
           <p className="note-faint mono">Established by: {row.source}</p>
         </div>
       )}
@@ -81,6 +87,16 @@ const PLATFORMS: { key: string; label: string }[] = [
   { key: 'windows', label: 'Windows' },
   { key: 'macos', label: 'macOS' },
 ]
+
+/** "4c8102155b6f · git checkout (live)", or the packaged build's own record. */
+function buildIdentity(status: PlatformStatus): string {
+  const build = status.platform.build ?? {}
+  const commit = build.commit ? build.commit.slice(0, 12) : 'commit not recorded'
+  if (status.platform.packaged) {
+    return `${commit} · packaged ${build.version || status.platform.app_version}`
+  }
+  return `${commit} · ${build.source || 'source checkout'}`
+}
 
 export default function Platform() {
   const [status, setStatus] = useState<PlatformStatus | null>(null)
@@ -109,11 +125,13 @@ export default function Platform() {
     (row) => !HEADLINE_ROWS.includes(row.operation),
   )
   const build = status?.platform.build ?? {}
+  const detected = (status?.media_classes ?? []).filter((row) => row.detected_now > 0)
+  const detectedTotal = detected.reduce((sum, row) => sum + row.detected_now, 0)
 
   return (
     <>
       <div className="screen-head">
-        <h1>Sanctum platform status</h1>
+        <h1>Platform</h1>
         <p>What this computer can do, and why.</p>
       </div>
       <div className="screen-body">
@@ -123,30 +141,84 @@ export default function Platform() {
           <>
             <Panel title="This computer">
               <div className="row wrap" style={{ gap: 'var(--space-6)' }}>
-                <span className="stat">
-                  <span className="stat-label">platform</span>
-                  <span className="stat-value">{status.platform.os_name}</span>
-                </span>
-                <span className="stat">
-                  <span className="stat-label">application</span>
-                  <span className="stat-value">
-                    Sanctum {status.platform.app_version}
-                    {status.platform.packaged ? '' : ' (from source)'}
-                  </span>
-                </span>
-                <span className="stat">
-                  <span className="stat-label">privilege</span>
-                  <span className="stat-value">{privilegeWord(status.privilege)}</span>
-                </span>
+                <Stat label="Operating system" value={status.platform.os_name} />
+                <Stat
+                  label="Application"
+                  value={`Sanctum ${status.platform.app_version}${status.platform.packaged ? '' : ' (from source)'}`}
+                />
+                <Stat label="Build" value={buildIdentity(status)} />
+                <Stat label="Privilege" value={privilegeWord(status.privilege)} />
               </div>
             </Panel>
 
-            <Panel title="Device support">
-              <div className="cap-rows">
-                {headline.map((row) => (
-                  <CapabilityRow key={row.operation} row={row} />
-                ))}
-              </div>
+            <div className="overview-grid">
+              <Panel
+                title="Device support"
+                subtitle="Decided before anything runs, from this build, this platform and this privilege."
+              >
+                <div className="col">
+                  <div className="cap-rows">
+                    {headline.map((row) => (
+                      <CapabilityRow key={row.operation} row={row} />
+                    ))}
+                  </div>
+                  <p className="note" data-testid="detected-now">
+                    <strong>Detected now: </strong>
+                    {detectedTotal === 0
+                      ? 'no storage device of a listed kind.'
+                      : `${detectedTotal} storage device${detectedTotal === 1 ? '' : 's'} (${detected
+                          .map((row) => `${row.detected_now} ${row.media_class}`)
+                          .join(', ')}).`}{' '}
+                    Detecting a device is not supporting it: each one is assessed
+                    on its own on the Devices screen.
+                  </p>
+                </div>
+              </Panel>
+
+              <Panel title="How to read a status">
+                <div className="col">
+                  <dl className="status-legend">
+                    {STATUS_MEANINGS.map((row) => (
+                      <div key={row.status}>
+                        <dt>
+                          <Status status={row.status} />
+                        </dt>
+                        <dd>{row.meaning}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                  <p className="note">
+                    A status says what this build can do here. It is not a
+                    record that the operation was run on the storage attached
+                    now.
+                  </p>
+                </div>
+              </Panel>
+            </div>
+
+            <div className="overview-grid">
+              <Panel title="Safety restrictions" subtitle="The same on every platform.">
+                <ul className="limitations" data-testid="safety-restrictions">
+                  {SAFETY_LINES.map((line) => (
+                    <li key={line}>{line}</li>
+                  ))}
+                </ul>
+              </Panel>
+
+              <Panel title="Not yet proven on hardware">
+                <ul className="limitations" data-testid="not-on-hardware">
+                  {NOT_PHYSICALLY_VALIDATED.map((line) => (
+                    <li key={line}>{line}</li>
+                  ))}
+                </ul>
+              </Panel>
+            </div>
+
+            <Panel title="What this computer cannot do">
+              <Limitations
+                items={status.restrictions}
+                title="Restrictions on this platform, in this release"
+              />
             </Panel>
 
             <details className="tech">
@@ -179,6 +251,7 @@ export default function Platform() {
                       },
                       { label: 'Signed', value: build.signed === 'yes' ? 'yes' : 'no' },
                       { label: 'Privilege basis', value: status.privilege.basis },
+                      { label: 'Helper', value: status.privilege.helper_basis || status.privilege.helper },
                       { label: 'Adapter', value: status.adapter, kind: 'mono' },
                       {
                         label: 'OS build',
@@ -192,34 +265,36 @@ export default function Platform() {
                   title="Storage support"
                   subtitle="By kind of device. The count is what this computer has now."
                 >
-                  <table className="itable cap-table">
-                    <thead>
-                      <tr>
-                        <th style={{ width: '22%' }}>Storage</th>
-                        <th>Found now</th>
-                        <th>Discovery</th>
-                        <th>File erase</th>
-                        <th>Whole drive</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {status.media_classes.map((row) => (
-                        <tr key={row.media_class} title={row.reason}>
-                          <td>{row.media_class}</td>
-                          <td className="mono">{row.detected_now}</td>
-                          <td>
-                            <Status status={row.discovery} />
-                          </td>
-                          <td>
-                            <Status status={row.file_erase} />
-                          </td>
-                          <td>
-                            <Status status={row.whole_drive} />
-                          </td>
+                  <div className="scroll-x">
+                    <table className="itable cap-table" style={{ minWidth: 640 }}>
+                      <thead>
+                        <tr>
+                          <th style={{ width: '22%' }}>Storage</th>
+                          <th>Found now</th>
+                          <th>Discovery</th>
+                          <th>File erase</th>
+                          <th>Whole drive</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {status.media_classes.map((row) => (
+                          <tr key={row.media_class} title={row.reason}>
+                            <td>{row.media_class}</td>
+                            <td className="mono">{row.detected_now}</td>
+                            <td>
+                              <Status status={row.discovery} />
+                            </td>
+                            <td>
+                              <Status status={row.file_erase} />
+                            </td>
+                            <td>
+                              <Status status={row.whole_drive} />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </Panel>
 
                 <Panel
@@ -240,44 +315,39 @@ export default function Platform() {
                     ))}
                   </div>
                   {fs && (
-                    <table
-                      className="itable cap-table"
-                      style={{ marginTop: 'var(--space-3)' }}
-                    >
-                      <thead>
-                        <tr>
-                          <th style={{ width: '22%' }}>{fs.filesystem}</th>
-                          {PLATFORMS.map((p) => (
-                            <th key={p.key}>
-                              {p.label}
-                              {p.key === status.platform.family ? ' (this computer)' : ''}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {FS_ROWS.map((r) => (
-                          <tr key={r.key} title={fs.notes[r.key]}>
-                            <td>{r.label}</td>
+                    <div className="scroll-x" style={{ marginTop: 'var(--space-3)' }}>
+                      <table className="itable cap-table" style={{ minWidth: 640 }}>
+                        <thead>
+                          <tr>
+                            <th style={{ width: '22%' }}>{fs.filesystem}</th>
                             {PLATFORMS.map((p) => (
-                              <td key={p.key}>
-                                <Status
-                                  status={fs.cells[r.key]?.[p.key] ?? 'UNSUPPORTED'}
-                                />
-                              </td>
+                              <th key={p.key}>
+                                {p.label}
+                                {p.key === status.platform.family ? ' (this computer)' : ''}
+                              </th>
                             ))}
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody>
+                          {FS_ROWS.map((r) => (
+                            <tr key={r.key} title={fs.notes[r.key]}>
+                              <td>{r.label}</td>
+                              {PLATFORMS.map((p) => (
+                                <td key={p.key}>
+                                  <Status
+                                    status={fs.cells[r.key]?.[p.key] ?? 'UNSUPPORTED'}
+                                  />
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   )}
                 </Panel>
               </div>
             </details>
-
-            <Panel title="What this computer cannot do">
-              <Limitations items={status.restrictions} />
-            </Panel>
           </>
         )}
       </div>
