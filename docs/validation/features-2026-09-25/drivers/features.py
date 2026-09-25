@@ -35,8 +35,19 @@ def pdf_page(page, url: str, stem: str) -> None:
     target = OUT / f"{stem}.pdf"
     target.write_bytes(body)
     subprocess.run(
-        ["pdftoppm", "-r", "80", "-f", "1", "-l", "1", "-png", "-singlefile",
-         str(target), str(OUT / stem)],
+        [
+            "pdftoppm",
+            "-r",
+            "80",
+            "-f",
+            "1",
+            "-l",
+            "1",
+            "-png",
+            "-singlefile",
+            str(target),
+            str(OUT / stem),
+        ],
         check=True,
     )
     target.unlink()
@@ -45,14 +56,21 @@ def pdf_page(page, url: str, stem: str) -> None:
 with sync_playwright() as p:
     browser = p.chromium.launch(executable_path=os.environ["SANCTUM_BROWSER_EXE"])
     page = browser.new_page(viewport={"width": 1366, "height": 768})
-    page.on("console", lambda m: results["console_errors"].append(m.text) if m.type == "error" else None)
+    page.on(
+        "console",
+        lambda m: (
+            results["console_errors"].append(m.text) if m.type == "error" else None
+        ),
+    )
     page.on("pageerror", lambda e: results["page_errors"].append(str(e)))
     accepted: list[dict] = []
     page.on(
         "response",
-        lambda r: accepted.append(r.json())
-        if r.request.method == "POST" and "/jobs/" in r.url and r.ok
-        else None,
+        lambda r: (
+            accepted.append(r.json())
+            if r.request.method == "POST" and "/jobs/" in r.url and r.ok
+            else None
+        ),
     )
     page.goto(f"{BASE}/session/browsercheck-token-0002")
     page.wait_for_timeout(800)
@@ -60,29 +78,43 @@ with sync_playwright() as p:
 
     # ---- media map -------------------------------------------------------
     nav.get_by_role("button", name="Recovery", exact=True).click()
-    page.get_by_placeholder("/path/to/case.dd or case.E01").fill("/cases/images/case2149.dd")
+    page.get_by_placeholder("/path/to/case.dd or case.E01").fill(
+        "/cases/images/case2149.dd"
+    )
     page.get_by_role("button", name="Scan", exact=True).click()
     mapped = page.get_by_test_id("media-map")
     mapped.wait_for(timeout=60000)
     text = mapped.inner_text()
     for word in ("Zeroed", "Fill pattern", "Text", "High entropy"):
         check(f"media map names {word}", word in text, text)
-    check("media map counts the four sector-aligned JPEG headers", "4 jpg" in text, text)
-    check("media map says every byte was read", "every byte read" in page.inner_text("main"))
+    check(
+        "media map counts the four sector-aligned JPEG headers", "4 jpg" in text, text
+    )
+    check(
+        "media map says every byte was read",
+        "every byte read" in page.inner_text("main"),
+    )
     mapped.scroll_into_view_if_needed()
     page.screenshot(path=str(OUT / "01-recovery-media-map.png"))
 
     # ---- trace sweep: dry run --------------------------------------------
     nav.get_by_role("button", name="File & folder eraser", exact=True).click()
-    page.get_by_placeholder("/absolute/path/to/file-or-directory").fill("/cases/files/case-2149")
+    page.get_by_placeholder("/absolute/path/to/file-or-directory").fill(
+        "/cases/files/case-2149"
+    )
     page.get_by_role("button", name="Add", exact=True).click()
     page.get_by_role("button", name="Simulate 1 path(s)").click()
     table = page.get_by_test_id("trace-table")
     table.wait_for(timeout=30000)
     rows = table.locator("tbody tr")
     check("dry run finds seven traces", rows.count() == 7, str(rows.count()))
-    outcomes = [cell.strip() for cell in table.locator("tbody tr td:last-child").all_inner_texts()]
-    check("dry run removes nothing", outcomes == ["would be removed"] * 7, str(outcomes))
+    outcomes = [
+        cell.strip()
+        for cell in table.locator("tbody tr td:last-child").all_inner_texts()
+    ]
+    check(
+        "dry run removes nothing", outcomes == ["would be removed"] * 7, str(outcomes)
+    )
     home = STATE / "home"
     thumbs = list((home / ".cache/thumbnails/normal").glob("*.png"))
     check("thumbnails still on disk after the dry run", len(thumbs) == 2, str(thumbs))
@@ -94,13 +126,17 @@ with sync_playwright() as p:
     page.get_by_label("Confirm — the second gate, required when dry run is off").check()
     page.get_by_role("button", name="Erase 1 path(s)").click()
     page.wait_for_function(
-        "() => [...document.querySelectorAll('[data-testid=trace-table] tbody tr td:last-child')]"
+        "() => [...document.querySelectorAll("
+        "'[data-testid=trace-table] tbody tr td:last-child')]"
         ".some((cell) => cell.innerText.trim() === 'erased')",
         timeout=30000,
     )
     page.wait_for_timeout(500)
     table = page.get_by_test_id("trace-table")
-    outcomes = [cell.strip() for cell in table.locator("tbody tr td:last-child").all_inner_texts()]
+    outcomes = [
+        cell.strip()
+        for cell in table.locator("tbody tr td:last-child").all_inner_texts()
+    ]
     check(
         "real erase removes all seven traces",
         len(outcomes) == 7 and all(o in ("erased", "entry removed") for o in outcomes),
@@ -119,17 +155,28 @@ with sync_playwright() as p:
         "Trash copy and its record gone",
         not any((trash / "files").iterdir()) and not any((trash / "info").iterdir()),
     )
-    check("the erased files are gone", not any((STATE / "files/case-2149").iterdir()) if (STATE / "files/case-2149").exists() else True)
+    check(
+        "the erased files are gone",
+        not any((STATE / "files/case-2149").iterdir())
+        if (STATE / "files/case-2149").exists()
+        else True,
+    )
     table.scroll_into_view_if_needed()
     page.screenshot(path=str(OUT / "03-file-eraser-traces-removed.png"))
 
-    erase_job = next(a["job_id"] for a in reversed(accepted) if a.get("kind") == "erase-files")
+    erase_job = next(
+        a["job_id"] for a in reversed(accepted) if a.get("kind") == "erase-files"
+    )
     report = page.request.post(
         f"{BASE}/reports/{erase_job}", data={"case_id": "", "operator": ""}
     ).json()
     signed = page.request.get(BASE + report["json_url"]).json()
     section = signed["sections"]["traces"]
-    check("file report lists seven traces, seven removed", (section["found"], section["removed"]) == (7, 7), json.dumps(section)[:400])
+    check(
+        "file report lists seven traces, seven removed",
+        (section["found"], section["removed"]) == (7, 7),
+        json.dumps(section)[:400],
+    )
     check("file report names what was not searched", len(section["not_searched"]) >= 3)
     pdf_page(page, report["pdf_url"], "04-file-erase-certificate")
 
@@ -155,13 +202,21 @@ with sync_playwright() as p:
     seal = page.locator(".state-mark.is-seal", has_text="Signed record")
     seal.wait_for(timeout=20000)
     recorded = page.get_by_test_id("destroy-recorded").inner_text()
-    check("destroy record says attested, not observed", "attested, not observed" in recorded, recorded)
+    check(
+        "destroy record says attested, not observed",
+        "attested, not observed" in recorded,
+        recorded,
+    )
     page.get_by_test_id("destroy-recorded").scroll_into_view_if_needed()
     page.screenshot(path=str(OUT / "06-destroy-record-signed.png"))
     href = page.get_by_role("link", name="Open PDF").get_attribute("href")
     pdf_page(page, href, "07-record-of-destruction")
 
-    check("no console errors", not results["console_errors"], str(results["console_errors"]))
+    check(
+        "no console errors",
+        not results["console_errors"],
+        str(results["console_errors"]),
+    )
     check("no page errors", not results["page_errors"], str(results["page_errors"]))
     browser.close()
 

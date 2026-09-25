@@ -1,42 +1,48 @@
 # Package verification, 2026-09-25
 
-**Rebuilt at `e81f491`** (later on 2026-09-25) with the trace sweep, the media map, the
-Record of Destruction, the new certificate and the redesigned UI. The first build at
-`e81f491`'s predecessor `43d0fa6` **failed** the isolated smoke: every certificate
-request was a 500, `ModuleNotFoundError: reportlab.graphics.barcode.code128`.
-reportlab imports its barcode symbologies through `exec()`, which PyInstaller cannot
-see, and the certificate draws its QR code through that package. `e81f491` collects
-them (`packaging/sanctum.spec`, guarded by `tests/test_packaging_spec.py`). The
-renderer before the certificate rewrite caught that ImportError, so the earlier
-packages built at `b163834` (this README's previous version, in git history) shipped
-PDFs with no QR code; the JSON report, which is the authoritative artifact, and its
-signature were unaffected.
+**Rebuilt at `d95603d`** (the final polish, later on 2026-09-25), after two commits that
+change packaged code: `0d14af2` (the Platform screen reads firmware Purge as Unverified
+until a hardware result is recorded) and `d95603d` (the Cases and Platform screens, and
+narrow-width table layout on Audit and Devices). The previous build, at `e81f491`, is
+this README's previous version in git history.
+
+`e81f491` is where the reportlab fix landed: reportlab imports its barcode symbologies
+through `exec()`, which PyInstaller cannot see, and the certificate draws its QR code
+through that package, so a build without it answers every certificate request with a
+500 (`ModuleNotFoundError: reportlab.graphics.barcode.code128`). The fix is still in
+`packaging/sanctum.spec`, guarded by `tests/test_packaging_spec.py`, and the isolated
+smoke below issues and verifies a certificate from each package.
+
+**What `dist/` held before this rebuild.** Not the `e81f491` packages this record then
+named: its AppImage and `.deb` hashed `5d8d59f4…` and `18b85962…`, the `b163834` build
+(no QR code in any PDF). Both were replaced by the `d95603d` build below.
 
 Packages built with `scripts/build-linux-portable.sh` (podman, `python:3.11-bullseye`,
-glibc 2.31 image) from a clean clone checked out at
-**`e81f491`**, the last commit that changes packaged code. Later commits change documentation, tests and `scripts/` only, none of which is
-packaged (`packaging/sanctum.spec` collects `core`, `api`, `helper`, `ui/dist` and
-build metadata). Check that for any later HEAD with:
+glibc 2.31 image) from a clean clone checked out at **`d95603d`**, with `ui/dist`
+built in that clone. Later commits change documentation and evidence only, none of
+which is packaged (`packaging/sanctum.spec` collects `core`, `api`, `helper`,
+`ui/dist` and build metadata). Check that for any later HEAD with:
 
 ```sh
-git diff --stat e81f491 HEAD -- api core helper ui/src packaging pyproject.toml constraints.txt
+git diff --stat d95603d HEAD -- api core helper ui/src packaging pyproject.toml constraints.txt
 ```
 
 An empty result means the packages still hold that HEAD's code. The packages report
 **the build commit**, not the repository HEAD; `/health` from a source checkout reports
-the live HEAD instead.
+the live HEAD instead. `build_info.json` records the branch as `HEAD`, because the
+clone was a detached checkout of the commit.
 
 | Artifact | SHA-256 |
 |---|---|
-| `Sanctum-0.0.0-x86_64.AppImage` | `bbbadf170b0668ffd3fef5cea8a08d2324e8387835fc524f692e2d5ef6d0950e` |
-| `sanctum_0.0.0_amd64.deb` | `6386c4612da665541e56edb20929234080cad70ddf2e0107c681ea7c398409b6` |
+| `Sanctum-0.0.0-x86_64.AppImage` | `d3f1fe6cb7ad6ec68edce5ede9190439c8a21172cdab257e5aa085a1045a02ff` |
+| `sanctum_0.0.0_amd64.deb` | `ebe9f43d3500c2224442fd7b1d367f052c41ce6209346d24e626c0595f0afe4d` |
 
 ## Identity: `identity.py`
 
 Reads the unpacked payloads; nothing from a package is executed.
 `identity-appimage.json` and `identity-deb.json`, both **PASS**:
 
-- `build_info.json` names `e81f491…` exactly, with no `+dirty`.
+- `build_info.json` names `d95603d…` exactly, with no `+dirty`.
 - All **92 of 92** Python modules under `core/`, `api/` and `helper/` at that commit are
   in the frozen archive, and every archived code object equals the one Python 3.11
   compiles from the commit's source. None missing, none extra. This includes

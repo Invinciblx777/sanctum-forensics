@@ -3,6 +3,52 @@
 Population: SYNTHETIC VALIDATION, SIMULATION and PACKAGE IDENTITY. **PHYSICAL
 VALIDATION: none.** No sudo was used. Nothing was pushed.
 
+## Final polish: Cases, Platform, rebuilt packages
+
+This section supersedes every package and test figure further down. Population
+unchanged: SYNTHETIC, SIMULATION and PACKAGE IDENTITY; **PHYSICAL VALIDATION: none**. No
+sudo, no physical device enumerated, opened or written, no erase, acquisition or
+restore, no push. SANCTUMREC was not accessed.
+
+| Commit | Content |
+|---|---|
+| `0d14af2` | Platform: firmware Purge reads **Unverified** until the validation record's hardware section records a run; Clear names HPA/DCO unlock as not run on hardware. The row gates nothing; the per-device assessment is unchanged |
+| `d95603d` | UI: Cases and Platform reorganised for a first-time reader; Audit and Devices tables scroll sideways at a narrow width instead of crushing a column. **Packages built here** |
+| this record's commit | documentation, evidence, and line-length fixes in the 2026-09-25 feature driver |
+
+**Why `0d14af2`.** The Platform screen said *Supported with limits* for hardware Purge
+whenever `hdparm` or `nvme` was installed, beside a `limitations.md` that says firmware
+Purge has never run on hardware and that the path is UNVERIFIED. The model defines
+UNVERIFIED as exactly that. The screen now agrees with the document.
+
+| Check | Result |
+|---|---|
+| Full pytest at `d95603d` | **2041 passed, 34 skipped, 0 failed**; host-device guard 0 refusals. Run with pytest's temporary directory on ext4 |
+| The one skip more than before | `tests/erase/files/test_platform.py:134` tests a filesystem *without* extent mapping and skips on ext4, which has it; on tmpfs it runs and passes |
+| The same suite with `/tmp` on tmpfs | 2041 passed, 33 skipped, **1 failed**: `test_a_large_candidate_set_holds_one_payload_at_a_time` writes 2000 MiB and hit the tmpfs per-user quota (`OSError: [Errno 122] Disk quota exceeded`), filled by other sessions' scratch files. It passes on ext4. An environment limit, recorded rather than hidden |
+| Ruff | clean. `ruff check .` was not clean at `4c81021`: 13 E501 and 1 I001 in `features-2026-09-25/drivers/`, fixed here without changing behaviour (the feature run passed again after) |
+| mypy `--strict` (Linux, two win32, darwin) | clean |
+| UI unit tests; `tsc -b`; build | **103 of 103**; clean; built |
+| Browser, Sanitize, sandboxed | **59 of 59** at `d95603d` (`browser-2026-09-25/`; pinned screenshots not regenerated) |
+| Browser, trace sweep / media map / Record of Destruction | **19 of 19** at `d95603d` (`features-2026-09-25/`; pinned screenshots not regenerated) |
+| Browser, Cases / Platform / Audit / Recovery at 1366 × 768 and 1024 × 768 | **66 of 66** (`polish-2026-09-25/`) |
+| Packages at `d95603d`: identity | **PASS** both: 92 of 92 modules bytecode-identical, UI 8 of 8, same executable, `.deb` 202 files `root:root`, no maintainer scripts, `Depends: libc6 (>= 2.30), zlib1g` |
+| Packages at `d95603d`: isolated smoke | **22 PASS, 2 NOT RUN** each (the two need a real device); a certificate is issued and verifies, so the reportlab QR fix holds |
+
+| Artifact at `d95603d` | SHA-256 |
+|---|---|
+| `Sanctum-0.0.0-x86_64.AppImage` | `d3f1fe6cb7ad6ec68edce5ede9190439c8a21172cdab257e5aa085a1045a02ff` |
+| `sanctum_0.0.0_amd64.deb` | `ebe9f43d3500c2224442fd7b1d367f052c41ce6209346d24e626c0595f0afe4d` |
+
+**Found while rebuilding.** `dist/` did not hold the `e81f491` packages the section
+below names: it held the `b163834` build (`5d8d59f4…`, `18b85962…`), whose PDFs carry
+no QR code. It now holds the `d95603d` build above.
+
+Not established, unchanged: anything on physical hardware (firmware Purge, HPA/DCO
+unlock, backup restoration, a live desktop trace sweep); race freedom between the
+helper's check and the first write; that a backup image is a copy of the device; who
+approved.
+
 ## Later the same day: features, redesign, rebuilt packages
 
 This section supersedes the package and test figures further down, which describe the

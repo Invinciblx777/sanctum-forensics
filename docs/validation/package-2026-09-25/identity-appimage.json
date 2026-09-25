@@ -1,12 +1,12 @@
 {
-  "commit": "e81f491c76795d60d5f4e70d44d912a1a16d816b",
+  "commit": "d95603d84e6a461a8a4394c31b749e9a5665bbff",
   "python": "3.11.16",
   "build_info": {
     "architecture": "x86_64",
     "branch": "HEAD",
-    "build_date": "2026-09-25T12:22:45Z",
+    "build_date": "2026-09-25T13:51:19Z",
     "builder": "local build",
-    "commit": "e81f491c76795d60d5f4e70d44d912a1a16d816b",
+    "commit": "d95603d84e6a461a8a4394c31b749e9a5665bbff",
     "node": "not recorded",
     "platform": "linux",
     "python": "3.11.13",
@@ -27,7 +27,7 @@
       "core.authorization": true
     }
   },
-  "executable_sha256": "48298c5a87c8926847d26d66d4b36a2ca7dcb3fee4fba19868c2469300d8da30",
+  "executable_sha256": "cc36553bf4bd6fee5b0561a3aeceeaab59b8eaaabdd0c6c1d0d3200dad8bfcd4",
   "ui": {
     "files": 8,
     "identical": 8,

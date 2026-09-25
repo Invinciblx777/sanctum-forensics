@@ -109,7 +109,7 @@ Evidence populations are kept apart everywhere in this file: **SYNTHETIC**
 | Graded report verdict | `VERIFIED`, `VERIFIED_WITH_LIMITATIONS`, `PARTIAL`, `FAILED_VERIFICATION`, with a reason for every downgrade; CLI, API and Audit screen | IMPLEMENTED + TESTED + DEMONSTRABLE | `tests/report/test_report_verdict.py`, `tests/api/test_report_verdict_api.py`, `ui/tests/verdict.test.ts`; fallback reads `VERIFIED_WITH_LIMITATIONS` | Exit code still follows `Result:`, not the verdict |
 | Tamper demonstration | server-side copy, real verifier (`api/routes/audit.py:tamper_demo`) | IMPLEMENTED + TESTED + DEMONSTRABLE | `tests/api/test_tamper_demo.py` | none recorded |
 | Merkle root and anchor receipt | in every report | IMPLEMENTED + TESTED + NOT YET DEMONSTRATED | `tests/api/test_report_anchor.py` | No external witness ships |
-| Chain-of-custody timeline UI | Cases screen: evidence, operations, reports, audit events | PARTIAL | `ui/src/screens/Cases.tsx` | Not presented as one who/what/when timeline |
+| Chain-of-custody timeline UI | Cases screen: the chain verdict, evidence, operations (with job state, SIMULATION and report status), reports, audit events | PARTIAL | `ui/src/screens/Cases.tsx`, `ui/tests/cases.test.ts`; browser `polish-2026-09-25/` (66 of 66, synthetic) | Not presented as one who/what/when timeline |
 
 ## D. Certificate
 

@@ -23,9 +23,8 @@ import sys
 from pathlib import Path
 from urllib.parse import quote
 
-from PIL import Image
-
 from core.erase.traces import file_uris
+from PIL import Image
 from tests.erase.files.test_trace_sweep import XBEL_HEAD, png, xbel_entry
 
 state = Path(sys.argv[1]).resolve()

@@ -739,7 +739,7 @@ sixteen minutes.
 
 Then take questions. `docs/demo/qa.md` has twenty of them with answers.
 
-### If a question opens the door: three 30-second beats (added 2026-09-25)
+### If a question opens the door: 30-second beats (added 2026-09-25)
 
 Each runs on synthetic material, labelled as such, and needs nothing staged but
 `docs/validation/features-2026-09-25/drivers/seed.py` run into a state directory
@@ -757,6 +757,17 @@ there is no time to run them.
 * **"Where is Destroy?"** Devices, *Record a physical destruction*. Say: *"No
   software shreds a drive or can watch one shredded. This records what the
   people who did it attest, signed, and the record says we observed nothing."*
+* **"What can it actually do on this machine?"** Platform. Point at hardware
+  Purge reading *Unverified* and at *Not yet proven on hardware*. Say: *"Every
+  status comes from a probe or a recorded test run, with its source one click
+  away. Firmware Purge is dispatched from the drive's own capability, and it
+  says Unverified because no drive has run it in a recorded test."*
+* **"Show me everything for one investigation."** Cases, the open case: the
+  chain verdict at the top, then evidence, operations, reports and audit
+  entries, each a tab with its count. Say: *"The counts come from the case
+  index; the integrity verdict comes from the hash chain. If they ever
+  disagree, the chain is right."* A dry run carries its SIMULATION label here
+  too.
 
 ---
 

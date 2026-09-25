@@ -8,7 +8,7 @@ record of both that a third party can check on their own machine.
 
 `SECURE ERASE` · `FILE ERASURE` · `FORENSIC RECOVERY` · `VERIFICATION` · `AUDIT`
 
-![tests](https://img.shields.io/badge/pytest-2039%20passed%20·%2033%20skipped%20·%200%20failed-2ea44f)
+![tests](https://img.shields.io/badge/pytest-2041%20passed%20·%2034%20skipped%20·%200%20failed-2ea44f)
 ![python](https://img.shields.io/badge/Python-3.11-3776ab)
 ![stack](https://img.shields.io/badge/FastAPI%20%2B%20React-localhost%20only-555)
 ![signing](https://img.shields.io/badge/reports-Ed25519-555)
@@ -19,8 +19,8 @@ record of both that a third party can check on their own machine.
 >
 > | | |
 > |---|---|
-> | Release | branch `docs/readme-redesign`, packages built at `e81f491` (2026-09-25); see [`release-report-2026-09-25.md`](docs/validation/release-report-2026-09-25.md) |
-> | Test suite | 2039 passed · 33 skipped · 0 failed (Linux host, 2026-09-25), host-device guard 0 refusals; Windows and macOS suites run in `platform-ci` |
+> | Release | branch `docs/readme-redesign`, packages built at `d95603d` (2026-09-25); see [`release-report-2026-09-25.md`](docs/validation/release-report-2026-09-25.md) |
+> | Test suite | 2041 passed · 34 skipped · 0 failed (Linux host, 2026-09-25, at `d95603d`), host-device guard 0 refusals; Windows and macOS suites run in `platform-ci` |
 > | Primary platform | Linux. Whole-drive sanitization runs only there |
 > | Physically validated | One USB flash stick (Toshiba TransMemory, 7.76 GB): overwrite Clear with full read-back, three recovery passes, mounted-device refusal |
 > | Hardware-unverified | Firmware Purge (ATA SANITIZE, SECURITY ERASE, NVMe sanitize/format, crypto erase), HPA/DCO unlock, backup restoration, the registered physical recovery benchmark, any Windows or macOS physical device |
@@ -238,10 +238,11 @@ How to verify a report on your own machine:
 
 ## Validation
 
-**Automated.** 2039 passed · 33 skipped · 0 failed on the Linux host
-(2026-09-25, at `e21f88d`; the two tests added since in `tests/test_packaging_spec.py`
-pass on their own). Each skip names its reason: root and `losetup` (10), Windows-only
-behaviour (12), macOS-only behaviour (10), one Pillow TIFF byte-order case. The suite
+**Automated.** 2041 passed · 34 skipped · 0 failed on the Linux host
+(2026-09-25, at `d95603d`, pytest's temporary directory on ext4). Each skip names its
+reason: root and `losetup` (10), Windows-only behaviour (12), macOS-only behaviour
+(10), one Pillow TIFF byte-order case, and one test of a filesystem *without* extent
+mapping, which ext4 has (on tmpfs that test runs and passes instead). The suite
 refuses any access to a host block device beyond the disk holding its own files, and
 fails the run if one is attempted (`tests/_host_device_guard.py`); these runs had none.
 The Windows and macOS suites run on their own runners in `platform-ci`.
@@ -249,7 +250,7 @@ The Windows and macOS suites run on their own runners in `platform-ci`.
 **Static analysis.** Ruff clean. Four `mypy --strict` passes clean: Linux,
 two `--platform win32` passes, and `--platform darwin`.
 
-**UI.** 97 of 97 unit tests pass (`cd ui && npm test`, 2026-09-25).
+**UI.** 103 of 103 unit tests pass (`cd ui && npm test`, 2026-09-25).
 
 **Browser.** Playwright in Chromium at 1366 × 768: 24 of 24 checks on the real
 API, 16 of 16 on fixture devices, no page errors
@@ -259,14 +260,18 @@ in a sandbox with no block device
 ([`browser-2026-09-25/`](docs/validation/browser-2026-09-25/README.md)), repeated
 after the redesign; the trace sweep, the media map and the Record of Destruction, 19 of
 19 over a synthetic home and image in the same sandbox
-([`features-2026-09-25/`](docs/validation/features-2026-09-25/README.md)). The
-Devices and Sanitize screens were checked against fixtures, not real devices.
+([`features-2026-09-25/`](docs/validation/features-2026-09-25/README.md)); the Cases,
+Platform, Audit and Recovery screens after the final polish, 66 of 66 at 1366 × 768
+and 1024 × 768 ([`polish-2026-09-25/`](docs/validation/polish-2026-09-25/README.md)).
+All three were re-run at `d95603d`. The Devices and Sanitize screens were checked
+against fixtures, not real devices.
 
-**Packages.** AppImage and `.deb` rebuilt from `e81f491`; all 92 packaged
-`core`/`api`/`helper` modules are bytecode-identical to that commit, and both packages
-pass the smoke test inside a no-device sandbox. The first rebuild failed it: the
-packaged app could not render any PDF, a PyInstaller gap the source tree cannot show,
-fixed in `e81f491`
+**Packages.** AppImage and `.deb` rebuilt from `d95603d`; all 92 packaged
+`core`/`api`/`helper` modules are bytecode-identical to that commit, the bundled UI
+matches file for file, and both packages pass the smoke test inside a no-device
+sandbox, a signed certificate included. An earlier rebuild failed it: the packaged app
+could not render any PDF, a PyInstaller gap the source tree cannot show, fixed in
+`e81f491` and still in place
 ([`package-2026-09-25/`](docs/validation/package-2026-09-25/README.md)).
 
 **Recovery (synthetic).** Against PhotoRec and Foremost on the same 25

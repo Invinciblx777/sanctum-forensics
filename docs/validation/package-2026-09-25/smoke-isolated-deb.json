@@ -1,9 +1,9 @@
 {
-  "executable": "/tmp/claude-1000/-home-v0idsai-Projects-sanctum-forensics/4f39e2ba-8f2d-4d25-81db-0038fa619a77/scratchpad/unpack-e81f491/deb/data/opt/sanctum/Sanctum",
-  "size_bytes": 11739792,
+  "executable": "/home/v0idsai/.cache/sanctum-build/unpack/deb/opt/sanctum/Sanctum",
+  "size_bytes": 11740608,
   "platform": "Linux-6.19.10-300.fc44.x86_64-x86_64-with-glibc2.43",
   "machine": "x86_64",
-  "date": "2026-09-25T12:23:46Z",
+  "date": "2026-09-25T13:52:59Z",
   "isolated": true,
   "sandbox": [
     "--unshare-all",
@@ -37,14 +37,14 @@
     "--tmpfs",
     "/run",
     "--bind",
-    "/tmp/sanctum-smoke-jnopxqm9",
-    "/tmp/sanctum-smoke-jnopxqm9",
+    "/tmp/sanctum-smoke-4rohubvx",
+    "/tmp/sanctum-smoke-4rohubvx",
     "--ro-bind",
-    "/tmp/claude-1000/-home-v0idsai-Projects-sanctum-forensics/4f39e2ba-8f2d-4d25-81db-0038fa619a77/scratchpad/unpack-e81f491/deb/data/opt/sanctum",
-    "/tmp/claude-1000/-home-v0idsai-Projects-sanctum-forensics/4f39e2ba-8f2d-4d25-81db-0038fa619a77/scratchpad/unpack-e81f491/deb/data/opt/sanctum",
+    "/home/v0idsai/.cache/sanctum-build/unpack/deb/opt/sanctum",
+    "/home/v0idsai/.cache/sanctum-build/unpack/deb/opt/sanctum",
     "--setenv",
     "HOME",
-    "/tmp/sanctum-smoke-jnopxqm9/home",
+    "/tmp/sanctum-smoke-4rohubvx/home",
     "--setenv",
     "TMPDIR",
     "/tmp",
@@ -57,7 +57,7 @@
     "--unsetenv",
     "DBUS_SESSION_BUS_ADDRESS",
     "--chdir",
-    "/tmp/sanctum-smoke-jnopxqm9"
+    "/tmp/sanctum-smoke-4rohubvx"
   ],
   "sandbox_view": {
     "ok": true,
@@ -126,14 +126,14 @@
       "detail": {
         "status": "ok",
         "tool_version": "sanctum-forensics/0.0.0",
-        "state_dir": "/tmp/sanctum-smoke-jnopxqm9/state",
+        "state_dir": "/tmp/sanctum-smoke-4rohubvx/state",
         "ui_bundled": true,
         "build": {
           "architecture": "x86_64",
           "branch": "HEAD",
-          "build_date": "2026-09-25T12:22:45Z",
+          "build_date": "2026-09-25T13:51:19Z",
           "builder": "local build",
-          "commit": "e81f491c76795d60d5f4e70d44d912a1a16d816b",
+          "commit": "d95603d84e6a461a8a4394c31b749e9a5665bbff",
           "node": "not recorded",
           "platform": "linux",
           "python": "3.11.13",
@@ -144,7 +144,7 @@
         "session_protected": true,
         "limitations": [
           "HELPER_IN_PROCESS: no helper socket was configured, so privileged operations run with this process's own privileges rather than through the root daemon. On an unprivileged process the device operations will fail; nothing is silently escalated.",
-          "NO_SIGNING_KEY: no report signing key exists under /tmp/sanctum-smoke-jnopxqm9/state/keys and no ledger chain has been started. The first job will start the chain with no key fingerprint in its genesis, and fingerprint_matches_genesis will then be SKIP on every report that chain carries. Create the key before the first job: .venv/bin/python scripts/hardware_validation.py keygen --key-dir /tmp/sanctum-smoke-jnopxqm9/state/keys"
+          "NO_SIGNING_KEY: no report signing key exists under /tmp/sanctum-smoke-4rohubvx/state/keys and no ledger chain has been started. The first job will start the chain with no key fingerprint in its genesis, and fingerprint_matches_genesis will then be SKIP on every report that chain carries. Create the key before the first job: .venv/bin/python scripts/hardware_validation.py keygen --key-dir /tmp/sanctum-smoke-4rohubvx/state/keys"
         ]
       }
     },
@@ -200,11 +200,11 @@
       "check": "erase accepted",
       "result": "PASS",
       "detail": {
-        "job_id": "erase-files-0b5aca859b0f",
+        "job_id": "erase-files-0bec56be8452",
         "kind": "erase-files",
         "state": "running",
         "dry_run": false,
-        "stream_url": "/jobs/erase-files-0b5aca859b0f/stream",
+        "stream_url": "/jobs/erase-files-0bec56be8452/stream",
         "notice": ""
       }
     },
@@ -271,5 +271,5 @@
     "every device assessed",
     "protected devices are NOT AVAILABLE"
   ],
-  "app_output_tail": "dger_append                  operation=erase.file.residual.result seq=45\n2026-09-25 17:53:46 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-jnopxqm9/state/ledger/ledger/chain.jsonl size=513\n2026-09-25 17:53:46 [debug    ] ledger_append                  operation=erase.file.verify.result seq=46\n2026-09-25 17:53:46 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-jnopxqm9/state/ledger/ledger/chain.jsonl size=514\n2026-09-25 17:53:46 [debug    ] ledger_append                  operation=erase.file.inspect.result seq=47\n2026-09-25 17:53:46 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-jnopxqm9/state/ledger/ledger/chain.jsonl size=514\n2026-09-25 17:53:46 [debug    ] ledger_append                  operation=erase.file.cleanse.result seq=48\n2026-09-25 17:53:46 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-jnopxqm9/state/ledger/ledger/chain.jsonl size=516\n2026-09-25 17:53:46 [debug    ] ledger_append                  operation=erase.file.overwrite.result seq=49\n2026-09-25 17:53:46 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-jnopxqm9/state/ledger/ledger/chain.jsonl size=514\n2026-09-25 17:53:46 [debug    ] ledger_append                  operation=erase.file.streams.result seq=50\n2026-09-25 17:53:46 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-jnopxqm9/state/ledger/ledger/chain.jsonl size=515\n2026-09-25 17:53:46 [debug    ] ledger_append                  operation=erase.file.truncate.result seq=51\n2026-09-25 17:53:46 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-jnopxqm9/state/ledger/ledger/chain.jsonl size=513\n2026-09-25 17:53:46 [debug    ] ledger_append                  operation=erase.file.rename.result seq=52\n2026-09-25 17:53:46 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-jnopxqm9/state/ledger/ledger/chain.jsonl size=513\n2026-09-25 17:53:46 [debug    ] ledger_append                  operation=erase.file.unlink.result seq=53\n2026-09-25 17:53:46 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-jnopxqm9/state/ledger/ledger/chain.jsonl size=515\n2026-09-25 17:53:46 [debug    ] ledger_append                  operation=erase.file.residual.result seq=54\n2026-09-25 17:53:46 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-jnopxqm9/state/ledger/ledger/chain.jsonl size=513\n2026-09-25 17:53:46 [debug    ] ledger_append                  operation=erase.file.verify.result seq=55\n2026-09-25 17:53:46 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-jnopxqm9/state/ledger/ledger/chain.jsonl size=506\n2026-09-25 17:53:46 [debug    ] ledger_append                  operation=erase.file.traces seq=56\n2026-09-25 17:53:46 [info     ] trace_sweep_complete           dry_run=False found=0 job_id=erase-files-0b5aca859b0f removed=0\n2026-09-25 17:53:46 [info     ] file_erase_complete            failed=0 highest_severity=HIGH job_id=erase-files-0b5aca859b0f succeeded=6 targets=6\n2026-09-25 17:53:46 [info     ] job_finished                   job_id=erase-files-0b5aca859b0f state=complete\n2026-09-25 17:53:46 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-jnopxqm9/state/ledger/ledger/chain.jsonl size=511\n2026-09-25 17:53:46 [debug    ] ledger_append                  operation=job.outcome seq=57\n2026-09-25 17:53:46 [info     ] signing_key_created            path=/tmp/sanctum-smoke-jnopxqm9/state/keys/sanctum-signing.key.pem\n2026-09-25 17:53:46 [info     ] report_written                 json=/tmp/sanctum-smoke-jnopxqm9/state/reports/erase-files-0b5aca859b0f/erase-files-0b5aca859b0f.forensic.json pdf=/tmp/sanctum-smoke-jnopxqm9/state/reports/erase-files-0b5aca859b0f/erase-files-0b5aca859b0f.forensic.pdf\n2026-09-25 17:53:46 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-jnopxqm9/state/ledger/ledger/chain.jsonl size=516\n2026-09-25 17:53:46 [debug    ] ledger_append                  operation=report.generated seq=58\n"
+  "app_output_tail": "dger_append                  operation=erase.file.residual.result seq=45\n2026-09-25 19:22:58 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-4rohubvx/state/ledger/ledger/chain.jsonl size=513\n2026-09-25 19:22:58 [debug    ] ledger_append                  operation=erase.file.verify.result seq=46\n2026-09-25 19:22:58 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-4rohubvx/state/ledger/ledger/chain.jsonl size=514\n2026-09-25 19:22:58 [debug    ] ledger_append                  operation=erase.file.inspect.result seq=47\n2026-09-25 19:22:58 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-4rohubvx/state/ledger/ledger/chain.jsonl size=514\n2026-09-25 19:22:58 [debug    ] ledger_append                  operation=erase.file.cleanse.result seq=48\n2026-09-25 19:22:58 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-4rohubvx/state/ledger/ledger/chain.jsonl size=516\n2026-09-25 19:22:58 [debug    ] ledger_append                  operation=erase.file.overwrite.result seq=49\n2026-09-25 19:22:58 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-4rohubvx/state/ledger/ledger/chain.jsonl size=514\n2026-09-25 19:22:58 [debug    ] ledger_append                  operation=erase.file.streams.result seq=50\n2026-09-25 19:22:58 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-4rohubvx/state/ledger/ledger/chain.jsonl size=515\n2026-09-25 19:22:58 [debug    ] ledger_append                  operation=erase.file.truncate.result seq=51\n2026-09-25 19:22:58 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-4rohubvx/state/ledger/ledger/chain.jsonl size=513\n2026-09-25 19:22:58 [debug    ] ledger_append                  operation=erase.file.rename.result seq=52\n2026-09-25 19:22:58 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-4rohubvx/state/ledger/ledger/chain.jsonl size=513\n2026-09-25 19:22:58 [debug    ] ledger_append                  operation=erase.file.unlink.result seq=53\n2026-09-25 19:22:58 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-4rohubvx/state/ledger/ledger/chain.jsonl size=515\n2026-09-25 19:22:58 [debug    ] ledger_append                  operation=erase.file.residual.result seq=54\n2026-09-25 19:22:58 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-4rohubvx/state/ledger/ledger/chain.jsonl size=513\n2026-09-25 19:22:58 [debug    ] ledger_append                  operation=erase.file.verify.result seq=55\n2026-09-25 19:22:58 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-4rohubvx/state/ledger/ledger/chain.jsonl size=506\n2026-09-25 19:22:58 [debug    ] ledger_append                  operation=erase.file.traces seq=56\n2026-09-25 19:22:58 [info     ] trace_sweep_complete           dry_run=False found=0 job_id=erase-files-0bec56be8452 removed=0\n2026-09-25 19:22:58 [info     ] file_erase_complete            failed=0 highest_severity=HIGH job_id=erase-files-0bec56be8452 succeeded=6 targets=6\n2026-09-25 19:22:58 [info     ] job_finished                   job_id=erase-files-0bec56be8452 state=complete\n2026-09-25 19:22:58 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-4rohubvx/state/ledger/ledger/chain.jsonl size=511\n2026-09-25 19:22:58 [debug    ] ledger_append                  operation=job.outcome seq=57\n2026-09-25 19:22:59 [info     ] signing_key_created            path=/tmp/sanctum-smoke-4rohubvx/state/keys/sanctum-signing.key.pem\n2026-09-25 19:22:59 [info     ] report_written                 json=/tmp/sanctum-smoke-4rohubvx/state/reports/erase-files-0bec56be8452/erase-files-0bec56be8452.forensic.json pdf=/tmp/sanctum-smoke-4rohubvx/state/reports/erase-files-0bec56be8452/erase-files-0bec56be8452.forensic.pdf\n2026-09-25 19:22:59 [debug    ] ledger_line_appended           path=/tmp/sanctum-smoke-4rohubvx/state/ledger/ledger/chain.jsonl size=516\n2026-09-25 19:22:59 [debug    ] ledger_append                  operation=report.generated seq=58\n"
 }

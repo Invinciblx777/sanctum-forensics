@@ -11,9 +11,11 @@ data, and never on the laptop's own disk except to show the refusal.
 
 1. Launch `Sanctum-<ver>-x86_64.AppImage` (helper running as in
    `docs/packaging.md` for whole-drive work).
-2. **Platform** screen: Linux, privilege *Privileged helper*, whole-drive Clear
-   *Supported with limits*, Purge *Supported with limits* (decided per device),
-   each row with its source. Point at a filesystem row: detect ≠ support.
+2. **Platform** screen: Linux, privilege *Privileged helper*, the build's commit,
+   whole-drive Clear *Supported with limits*, hardware Purge *Unverified* (the
+   tools and the per-device probe exist; no firmware sanitize has been recorded on
+   a physical drive), each row with its source. Point at *How to read a status*
+   and *Not yet proven on hardware*, then at a filesystem row: detect ≠ support.
 3. **Devices**: the laptop's own disk is locked — *holds the running root
    filesystem*. Select the designated USB stick.
 4. **Sanitization**: the step tracker; *Ready to sanitize*; the three answers

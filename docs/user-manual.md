@@ -1407,11 +1407,17 @@ brackets.
 **Cases** (`tests/api/test_cases.py`). Open one on the **Cases** screen before
 doing evidence work. The sidebar shows the open case on every screen, and every
 recovery, acquisition and drive erase started while it is open is filed against
-it; a report generated later inherits its id. The case screen's tabs show the
-exhibits, the operations and their status, the reports (with Open/Download
-links), and the chain entries belonging to the case. **The integrity verdict on
-that screen is the ledger's**; the case file itself is an index and proves
-nothing. `POST /cases`, `GET /cases`, `GET /cases/{id}`,
+it; a report generated later inherits its id. The open case is the first thing
+on the screen: its id and title, the case status and the chain verdict, then
+tabs that carry their counts. *Overview* shows the integrity verdict and one
+figure each for evidence, operations, reports and audit entries (click a figure
+to open its tab). *Operations* names each job in words over the id the Audit
+screen asks for, with its job state in the registry's own word (COMPLETE,
+FAILED, CANCELLED, RUNNING), a **SIMULATION** label on a dry run, and whether a
+signed report exists. *Reports* has Open/Download links and marks each SIGNED
+or UNSIGNED; *Audit* lists the chain entries that name the case. **The
+integrity verdict on that screen is the ledger's**; the case file itself is an
+index and proves nothing. `POST /cases`, `GET /cases`, `GET /cases/{id}`,
 `POST /cases/{id}/evidence`.
 
 **Operator identity** (`tests/api/test_operator_identity.py`). The actor in the
@@ -1476,7 +1482,13 @@ status - *Supported*, *Supported with limits*, *Needs privilege*, *Runs, not
 verifiable*, *Unverified*, *Inconclusive*, *Unsupported* - and, underneath,
 the probe or code that decided it. *Unverified* means the code exists but its
 tests have not been recorded as passing on this operating system for this
-build; treat it as not yet proven.
+build, or, for hardware Purge, that no firmware sanitize has been recorded on a
+physical drive; treat it as not yet proven. The screen also names this build's
+commit, says how many storage devices it detects now (detecting is not
+supporting), explains every status word under *How to read a status*, and lists
+the safety restrictions and what is *Not yet proven on hardware*. A status says
+what this build can do here; it is not a record that anything was run on the
+storage attached now.
 
 **The status strip** at the bottom of every screen shows the platform, your
 privilege, the selected device, whether it can be sanitized, whether the
