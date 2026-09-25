@@ -80,6 +80,24 @@ test('the step follows the flow', () => {
   assert.equal(currentStep({ ...s, finished: true, verified: true }), 7)
 })
 
+test('a stopped flow stays where it stopped, and never reaches Verify', () => {
+  const s = {
+    hasDevice: true,
+    hasAssessment: true,
+    reviewing: true,
+    confirming: false,
+    running: false,
+    finished: false,
+    verified: false,
+    certified: false,
+  }
+  // Refused at the API gate: no job, the modal may already be closed.
+  assert.equal(currentStep({ ...s, refused: true }), 4)
+  // Refused by the helper, failed or cancelled: the job ended at Sanitize.
+  assert.equal(currentStep({ ...s, finished: true, failed: true }), 5)
+  assert.equal(currentStep({ ...s, finished: true, failed: true, verified: true }), 5)
+})
+
 test('headline tone', () => {
   const a = { headline: 'NOT AVAILABLE', status: 'UNSUPPORTED' } as DeviceAssessment
   assert.equal(headlineTone(a), 'destructive')

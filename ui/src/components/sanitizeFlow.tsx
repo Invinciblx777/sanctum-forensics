@@ -13,18 +13,32 @@ import type { SanitizeWorkflow } from '../lib/workflowState'
 import { Limitations, Notice, Panel, Railed } from './widgets'
 
 /** The eight-step tracker. The current step is computed, never clicked. */
-export function FlowSteps({ current }: { current: number }) {
+export function FlowSteps({
+  current,
+  stopped = false,
+}: {
+  current: number
+  /** The flow stopped on the current step: refused, blocked or failed there. */
+  stopped?: boolean
+}) {
   return (
     <ol className="flow-steps" aria-label="Sanitization steps">
       {STEPS.map((label, index) => (
         <li
           key={label}
           className={
-            index === current ? 'is-current' : index < current ? 'is-done' : ''
+            index === current
+              ? stopped
+                ? 'is-current is-stopped'
+                : 'is-current'
+              : index < current
+                ? 'is-done'
+                : ''
           }
           aria-current={index === current ? 'step' : undefined}
         >
           {label}
+          {index === current && stopped && <span className="step-stopped">stopped</span>}
         </li>
       ))}
     </ol>
@@ -58,19 +72,37 @@ function Option({ option }: { option: SanitizeOption }) {
 export function AssessmentSummary({
   device,
   assessment,
+  superseded = false,
 }: {
   device: NormalizedDevice
   assessment: DeviceAssessment
+  /**
+   * A later answer - a refusal, a block, a failed job - has replaced this
+   * preflight. The panel then says it is the earlier answer, so a READY from
+   * before the refusal never sits beside the BLOCKED that replaced it.
+   */
+  superseded?: boolean
 }) {
-  const tone = headlineTone(assessment)
+  const tone = superseded ? 'unknown' : headlineTone(assessment)
   const recommended = assessment.recommended
   const available = assessment.headline === 'READY' || assessment.headline === 'NOT AUTHORIZED'
   const verifyTone = recommended?.verification ? 'success' : 'unknown'
+  const title = superseded
+    ? 'Preflight, before the erase was stopped'
+    : available
+      ? 'Ready to sanitize'
+      : 'Sanitization not available'
 
   return (
-    <Panel title={available ? 'Ready to sanitize' : 'Sanitization not available'}>
+    <Panel title={title}>
       <div className="col" style={{ gap: 'var(--space-4)' }}>
         <div className="headline-block">
+          {superseded && (
+            <p className="note" data-testid="assessment-superseded">
+              The preflight said {assessment.headline}. The erase was stopped after
+              it: the state above is the current answer.
+            </p>
+          )}
           <p className={`headline-word is-${tone}`} data-testid="assessment-headline">
             {assessment.headline}
           </p>

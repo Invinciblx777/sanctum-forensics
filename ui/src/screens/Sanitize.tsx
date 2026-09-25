@@ -657,6 +657,8 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
     verified: Boolean(verificationResult) || dryRun,
     // A signed record of a job that did not complete is not a certificate.
     certified: Boolean(report) && status?.state === 'complete',
+    refused: Boolean(refusal) && !jobId,
+    failed: finished && status?.state !== 'complete',
   })
   const wording = signedRecordWording(status?.state ?? '', dryRun)
   const flow = sanitizeWorkflow({
@@ -672,6 +674,10 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
     server: view?.workflow ?? null,
     refusal,
   })
+  // Stopped where it stands: refused, blocked or failed. A preflight READY
+  // from before a refusal is then an earlier answer, and is shown as one.
+  const stopped = flow.state === 'BLOCKED' || flow.state === 'FAILED'
+  const superseded = stopped && (Boolean(refusal) || Boolean(jobId))
 
   return (
     <>
@@ -685,13 +691,17 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
       </div>
 
       <div className="screen-body">
-        <FlowSteps current={step} />
+        <FlowSteps current={step} stopped={stopped} />
         {(jobId ? flow.simulation : dryRun) && <SimulationBanner />}
         <WorkflowStrip flow={flow} />
         <ErrorNotice error={error} />
 
         {normalized && assessment && (
-          <AssessmentSummary device={normalized} assessment={assessment} />
+          <AssessmentSummary
+            device={normalized}
+            assessment={assessment}
+            superseded={superseded}
+          />
         )}
 
         {offered && canRun && !reviewing && !jobId && (

@@ -848,6 +848,12 @@ button.verdict:hover .verdict-basis { color: var(--text-primary); }
   font-weight: var(--weight-medium);
   border-top-color: var(--text-primary);
 }
+.flow-steps li.is-stopped { border-top-color: var(--state-destructive); }
+.flow-steps .step-stopped {
+  color: var(--state-destructive);
+  font-size: var(--type-xs);
+  font-weight: var(--weight-medium);
+}
 
 /* Three questions, answered side by side. */
 .answers {

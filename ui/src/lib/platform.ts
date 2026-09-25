@@ -101,18 +101,30 @@ export interface FlowState {
   confirming: boolean
   running: boolean
   finished: boolean
+  /** Read back and confirmed, or a dry run, which has nothing to read back. */
   verified: boolean
   certified: boolean
+  /** The server refused the erase at its gate: no job was created. */
+  refused?: boolean
+  /** The job ended without completing: refused by the helper, failed or cancelled. */
+  failed?: boolean
 }
 
-/** Index of the step the operator is on (0-based). */
+/**
+ * Index of the step the operator is on (0-based).
+ *
+ * A flow that stopped stays on the step where it stopped. A refused or failed
+ * job never advances the tracker to Verify: nothing was completed there, and a
+ * tracker that moved on would say the erase ran.
+ */
 export function currentStep(state: FlowState): number {
   if (!state.hasDevice) return 0
   if (!state.hasAssessment) return 1
   if (state.certified) return 7
+  if (state.failed) return 5
   if (state.finished) return state.verified ? 7 : 6
   if (state.running) return 5
-  if (state.confirming) return 4
+  if (state.refused || state.confirming) return 4
   if (state.reviewing) return 3
   return 2
 }
