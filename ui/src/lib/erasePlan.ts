@@ -85,12 +85,16 @@ export function eraseBody(
   level: Level,
   dryRun: boolean,
   typedSerial: string,
+  authorizationId = '',
 ): EraseDriveBody {
+  // A dry run never carries a serial or an authorization: it has no use for
+  // either, and sending one would suggest a simulation can be authorized.
   return {
     path,
     level,
     dry_run: dryRun,
     typed_serial: dryRun ? '' : typedSerial,
+    ...(dryRun ? {} : { authorization_id: authorizationId }),
   }
 }
 

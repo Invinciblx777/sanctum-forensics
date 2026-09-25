@@ -4,6 +4,7 @@ import type {
   DeviceAssessment,
   DeviceRow,
   EraseVerification,
+  EraseWorkflowView,
   JobStatus,
   Level,
   Progress,
@@ -12,7 +13,10 @@ import type {
 } from '../lib/api'
 import { currentStep, runnableStatus } from '../lib/platform'
 import { AssessmentSummary, FlowSteps, WorkflowStrip } from '../components/sanitizeFlow'
-import { sanitizeWorkflow } from '../lib/workflowState'
+import { EraseApproval } from '../components/eraseApproval'
+import { createEpoch } from '../lib/epoch'
+import { refusalFrom, sanitizeWorkflow } from '../lib/workflowState'
+import type { ServerRefusal } from '../lib/workflowState'
 import { verificationWord } from '../lib/artifacts'
 import { useCase } from '../lib/caseContext'
 import {
@@ -295,6 +299,21 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
   const [dryRun, setDryRun] = useState(true)
   const [typed, setTyped] = useState('')
   const [confirming, setConfirming] = useState(false)
+  // The real-erase workflow. Everything here is the server's answer, held so it
+  // can be drawn; none of it is a decision made by this screen.
+  const [backupImage, setBackupImage] = useState('')
+  const [acknowledged, setAcknowledged] = useState(false)
+  const [view, setView] = useState<EraseWorkflowView | null>(null)
+  const [refusal, setRefusal] = useState<ServerRefusal | null>(null)
+  const [approvalBusy, setApprovalBusy] = useState(false)
+  // A request that failed for a reason that is not a safety refusal: the server
+  // errored, the platform cannot do this. Shown as such, never as BLOCKED.
+  const [requestFailure, setRequestFailure] = useState<{
+    message: string
+    kind?: string
+    remediation?: string
+  } | null>(null)
+  const epoch = useRef(createEpoch()).current
   const [jobId, setJobId] = useState<string | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
   const [status, setStatus] = useState<JobStatus | null>(null)
@@ -320,6 +339,19 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
 
   useEffect(() => setLevel(defaultLevel(selected)), [selected])
 
+  function resetWorkflow() {
+    epoch.bump()
+    setApprovalBusy(false)
+    setRequestFailure(null)
+    setView(null)
+    setRefusal(null)
+    setAcknowledged(false)
+    setTyped('')
+    setConfirming(false)
+  }
+  // A record belongs to one device, level and mode. Change any and it is gone.
+  useEffect(resetWorkflow, [selected, level, dryRun])
+
   // Step 2, "Analyse": re-read the device now rather than trusting the row the
   // device list loaded. A failure leaves the list's assessment in place.
   useEffect(() => {
@@ -328,10 +360,17 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
     setReport(null)
     const id = selected?.normalized?.id
     if (!id) return
+    // A slow answer for a device the operator has since left is dropped.
+    let stale = false
     void api
       .assessment(id)
-      .then((answer) => setAssessment(answer.assessment))
+      .then((answer) => {
+        if (!stale) setAssessment(answer.assessment)
+      })
       .catch(() => undefined)
+    return () => {
+      stale = true
+    }
   }, [selected])
   useEffect(() => () => detach.current?.(), [])
 
@@ -390,6 +429,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
   async function openConfirmation() {
     const id = selected?.normalized?.id
     if (!id) {
+      resetWorkflow()
       setConfirming(true)
       return
     }
@@ -412,6 +452,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
         })
         return
       }
+      resetWorkflow()
       setConfirming(true)
     } catch (exc) {
       const failure = exc as RequestFailed
@@ -447,16 +488,86 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
     }
   }
 
-  async function start() {
+  async function openWorkflow() {
+    if (!device || approvalBusy) return
+    const token = epoch.current()
+    setApprovalBusy(true)
+    setRefusal(null)
+    setRequestFailure(null)
+    try {
+      const opened = await api.openEraseWorkflow({
+        path: device.path,
+        level,
+        backup_image: backupImage.trim(),
+      })
+      if (epoch.isCurrent(token)) setView(opened)
+    } catch (exc) {
+      if (epoch.isCurrent(token)) reportFailure(exc as RequestFailed, true)
+    } finally {
+      if (epoch.isCurrent(token)) setApprovalBusy(false)
+    }
+  }
+
+  /**
+   * A 4xx from the workflow is the server refusing on a safety or precondition
+   * ground: BLOCKED, with its reasons. Anything else (a 5xx, an unreachable
+   * platform) is a failure of the request itself and is not dressed as a
+   * refusal, because "the erase was refused" and "the server broke" call for
+   * different operator responses.
+   */
+  function reportFailure(exc: RequestFailed, noWritePath: boolean) {
+    if (exc.status >= 400 && exc.status < 500 && exc.kind) {
+      setRefusal(refusalFrom(exc, noWritePath))
+    } else {
+      setRequestFailure({ message: exc.message, kind: exc.kind, remediation: exc.remediation })
+    }
+  }
+
+  async function approve() {
+    if (!view || approvalBusy) return
+    const token = epoch.current()
+    setApprovalBusy(true)
+    setRefusal(null)
+    setRequestFailure(null)
+    try {
+      const approved = await api.approveErase(view.authorization_id, {
+        typed_serial: typed,
+        acknowledge_data_destruction: acknowledged,
+      })
+      if (epoch.isCurrent(token)) {
+        setView(approved)
+        // The serial is typed again to execute: one entry is not two decisions.
+        setTyped('')
+      }
+    } catch (exc) {
+      if (epoch.isCurrent(token)) reportFailure(exc as RequestFailed, true)
+    } finally {
+      if (epoch.isCurrent(token)) setApprovalBusy(false)
+    }
+  }
+
+  /**
+   * Starts the job. A real erase carries the id the server issued and nothing
+   * else can stand in for it; a dry run carries none and never asks for one.
+   */
+  async function start(authorizationId = '') {
     if (!device || !canRun) return
+    if (!dryRun && !authorizationId) return
+    if (approvalBusy) return
+    const token = epoch.current()
+    setApprovalBusy(true)
     setError(null)
+    setRefusal(null)
+    setRequestFailure(null)
     try {
       const accepted = await api.eraseDrive({
-        ...eraseBody(device.path, level, dryRun, typed),
+        ...eraseBody(device.path, level, dryRun, typed, authorizationId),
         // Filed against the open case, so the wipe appears on the case screen
         // and its certificate inherits the case id.
         case_id: openCase?.case_id ?? '',
       })
+      // The job exists now whatever happened to the dialog meanwhile: the id
+      // is the only handle on it, so it is always kept.
       setJobId(accepted.job_id)
       setProgress(null)
       setStatus(null)
@@ -467,13 +578,34 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
         onState: setStatus,
       })
     } catch (exc) {
-      const failure = exc as RequestFailed
+      if (!epoch.isCurrent(token)) return
+      const failed = exc as RequestFailed
+      if (!dryRun && failed.status === 409) {
+        // A refusal is the server's answer, drawn as such: BLOCKED, why, and
+        // whether the device was touched. Never "something went wrong".
+        setRefusal(refusalFrom(failed))
+        return
+      }
+      if (!dryRun && failed.status >= 500) {
+        // The server broke while a real erase was being requested. Whether the
+        // device was touched is not something this response can say.
+        setRequestFailure({
+          message: failed.message,
+          kind: failed.kind,
+          remediation:
+            failed.remediation +
+            ' The device state is unknown until checked: nothing here confirms it was left untouched.',
+        })
+        return
+      }
       setError({
-        message: failure.message,
-        kind: failure.kind,
-        remediation: failure.remediation,
+        message: failed.message,
+        kind: failed.kind,
+        remediation: failed.remediation,
       })
       setConfirming(false)
+    } finally {
+      if (epoch.isCurrent(token)) setApprovalBusy(false)
     }
   }
 
@@ -535,6 +667,8 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
     running,
     phase: progress?.phase ?? null,
     status: finished ? status : null,
+    server: view?.workflow ?? null,
+    refusal,
   })
 
   return (
@@ -550,7 +684,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
 
       <div className="screen-body">
         <FlowSteps current={step} />
-        {flow.simulation && (jobId || dryRun) && <SimulationBanner />}
+        {(jobId ? flow.simulation : dryRun) && <SimulationBanner />}
         <WorkflowStrip flow={flow} />
         <ErrorNotice error={error} />
 
@@ -1052,89 +1186,26 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
         </details>
       </div>
 
-      {confirming && plan?.method && (
-        <div className="modal-backdrop" onClick={() => setConfirming(false)}>
-          <div
-            className="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="confirm-title"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="modal-head" id="confirm-title">
-              Confirm irreversible erasure
-            </div>
-            <div className="modal-body">
-              <p className="modal-lead">
-                Destroy every byte on{' '}
-                <span className="path">{device.path}</span>
-              </p>
-
-              {/* The method named here is the engine's plan, the same value
-                  the certificate will record. It used to be the radio the
-                  operator clicked, which the request never carried. */}
-              <Railed tone={levelTone(level)}>
-                <Verdict level={level} basis={basis} tone={levelTone(level)} />
-              </Railed>
-
-              <Evidence
-                stacked
-                rows={[
-                  { label: 'Method', value: plan.method, kind: 'mono' },
-                  { label: 'Model', value: device.model },
-                  { label: 'Capacity', value: exactBytes(device.size_bytes) },
-                  { label: 'Serial', value: device.serial, kind: 'serial' },
-                ]}
-              />
-
-              <label>
-                Type the device serial to confirm
-                <input
-                  type="text"
-                  value={typed}
-                  autoFocus
-                  spellCheck={false}
-                  placeholder={device.serial}
-                  onChange={(event) => setTyped(event.target.value)}
-                />
-              </label>
-
-              {typed && (
-                <div className="col tight">
-                  <span
-                    className={
-                      typed === device.serial
-                        ? 'state-mark is-success'
-                        : 'state-mark is-destructive'
-                    }
-                  >
-                    {typed === device.serial
-                      ? 'serial matches'
-                      : 'serial does not match'}
-                  </span>
-                  {typed !== device.serial && (
-                    <span className="note">
-                      The server re-reads the serial from the device itself and
-                      will refuse regardless of what is typed here.
-                    </span>
-                  )}
-                </div>
-              )}
-            </div>
-            <div className="modal-foot">
-              <button className="btn" onClick={() => setConfirming(false)}>
-                Cancel
-              </button>
-              <button
-                className="btn destructive"
-                disabled={typed !== device.serial}
-                onClick={() => void start()}
-              >
-                Erase {device.path}
-              </button>
-            </div>
-          </div>
-        </div>
+      {confirming && !dryRun && plan?.method && (
+        <EraseApproval
+          device={device}
+          level={level}
+          method={plan.method}
+          view={view}
+          refusal={refusal}
+          failure={requestFailure}
+          backupImage={backupImage}
+          acknowledged={acknowledged}
+          typed={typed}
+          busy={approvalBusy}
+          onBackupImage={setBackupImage}
+          onAcknowledge={setAcknowledged}
+          onTyped={setTyped}
+          onOpen={() => void openWorkflow()}
+          onApprove={() => void approve()}
+          onExecute={() => void start(view?.authorization_id ?? '')}
+          onCancel={resetWorkflow}
+        />
       )}
     </>
   )

@@ -22,18 +22,32 @@ export interface ApiError {
   // Written by whoever implemented the operation and passed through verbatim.
   // Never reworded by the API or by this client.
   remediation: string
+  // Present on a workflow-gate refusal (api/authorization.py:GateRefused).
+  verdict?: string
+  workflow_state?: string
+  'WHY BLOCKED'?: string[]
+  physical_device_modified?: boolean
 }
 
 export class RequestFailed extends Error {
   readonly status: number
   readonly kind: string
   readonly remediation: string
+  readonly verdict: string
+  readonly workflowState: string
+  readonly whyBlocked: string[]
+  /** Only an explicit `false` from the server means nothing was written. */
+  readonly physicalDeviceModified: boolean | null
 
   constructor(status: number, detail: ApiError) {
     super(detail.error)
     this.status = status
     this.kind = detail.kind
     this.remediation = detail.remediation
+    this.verdict = detail.verdict ?? ''
+    this.workflowState = detail.workflow_state ?? ''
+    this.whyBlocked = detail['WHY BLOCKED'] ?? []
+    this.physicalDeviceModified = detail.physical_device_modified ?? null
   }
 }
 
@@ -83,6 +97,25 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+
+  /** Opens the authorization record: fresh probe, backup image hashed read-only. */
+  openEraseWorkflow: (body: OpenEraseWorkflowBody) =>
+    request<EraseWorkflowView>('/workflow/erase-drive', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  eraseWorkflow: (authorizationId: string) =>
+    request<EraseWorkflowView>(
+      `/workflow/erase-drive/${encodeURIComponent(authorizationId)}`,
+    ),
+
+  /** Records a person's approval. The only call that can create one. */
+  approveErase: (authorizationId: string, body: ApproveEraseBody) =>
+    request<EraseWorkflowView>(
+      `/workflow/erase-drive/${encodeURIComponent(authorizationId)}/approve`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
 
   eraseFiles: (body: EraseFilesBody) =>
     request<JobAccepted>('/jobs/erase-files', {
@@ -476,6 +509,8 @@ export interface JobAccepted {
   state: string
   dry_run: boolean
   stream_url: string
+  /** SIMULATION / NO PHYSICAL DEVICE MODIFIED on a dry run, else empty. */
+  notice?: string
 }
 
 export interface JobStatus {
@@ -671,8 +706,46 @@ export interface EraseDriveBody {
   level: string
   dry_run: boolean
   typed_serial: string
+  /** Real erase only: the id the server returned from /workflow/erase-drive. */
+  authorization_id?: string
   case_id?: string
   operator?: string
+}
+
+export interface OpenEraseWorkflowBody {
+  path: string
+  level: string
+  backup_image: string
+}
+
+export interface ApproveEraseBody {
+  typed_serial: string
+  acknowledge_data_destruction: boolean
+}
+
+/** api/routes/workflow.py:_view. core/workflow.py:WorkflowStatus.as_dict inside. */
+export interface EraseWorkflowView {
+  authorization_id: string
+  path: string
+  level: string
+  workflow: {
+    state: string
+    why_blocked: string[]
+    next_action: string
+    allowed_next: string[]
+  }
+  approved: boolean
+  approved_by: string
+  backup: { path: string; sha256: string; size_bytes: number }
+  backup_limitation: string
+  plan: {
+    level: string
+    achievable_levels: string[]
+    estimated_seconds: number | null
+    limitations: string[]
+    blocking: string[]
+  }
+  spent: boolean
 }
 
 /** What a sanitization verification concluded. Four outcomes, never three. */

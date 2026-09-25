@@ -296,7 +296,10 @@ table { width: 100%; border-collapse: collapse; }
 .modal {
   background: var(--bg-panel); border: 1px solid var(--danger);
   width: 520px; max-width: 94vw;
+  /* The approval step is tall: the body scrolls, the buttons never leave. */
+  max-height: 94vh; display: flex; flex-direction: column;
 }
+.modal-body { overflow-y: auto; }
 .modal-head { padding: 10px 14px; border-bottom: 1px solid var(--line);
               color: var(--danger); font-weight: 600;
               text-transform: uppercase; letter-spacing: 0.07em;
