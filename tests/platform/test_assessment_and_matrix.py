@@ -58,7 +58,7 @@ def test_every_row_has_a_source_and_a_reason(
 
 
 def test_every_row_carries_a_verification_statement(
-    windows_inventory: dict[str, Any],
+    windows_inventory: dict[str, Any], no_host_discovery: None
 ) -> None:
     """Status, reason, source *and* what would establish the result.
 
@@ -71,7 +71,7 @@ def test_every_row_carries_a_verification_statement(
 
 
 def test_the_rows_hold_up_where_the_engine_does_not_load(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_host_discovery: None
 ) -> None:
     """The Linux adapter's own "no engine here" branch, as macOS sees it.
 
@@ -326,7 +326,8 @@ def test_a_device_with_no_identity_is_never_shown_as_identified() -> None:
     assert checks["identity"].passed is None, "unknown is not a pass"
 
 
-def test_platform_status_is_complete_for_this_host() -> None:
+def test_platform_status_is_complete_for_this_host(no_host_discovery: None) -> None:
+    """This host's platform, privilege and matrix; its disks are not read."""
     from core.platform import current_adapter
 
     status = platform_status(current_adapter())

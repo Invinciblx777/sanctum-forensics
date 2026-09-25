@@ -241,9 +241,9 @@ def test_a_refused_path_comes_back_as_an_error_frame_and_the_daemon_survives(
             assert "outside the helper's state directory" in raised.value.message
 
             # Still serving: a second request is answered rather than timing out
-            # against a process that died on the first.
-            with pytest.raises(rpc.RpcError):
-                client.call("probe_capabilities", {"path": "/dev/definitely-not"})
+            # against a process that died on the first. ``whoami`` touches no
+            # device; a probe would run discovery against this machine's disks.
+            assert client.call("whoami", {})["uid"] == os.getuid()
     finally:
         for leftover in socket_dir.iterdir():
             leftover.unlink()

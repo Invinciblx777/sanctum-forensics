@@ -14,6 +14,7 @@ nothing here proves the window between this check and the first write is closed.
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 from pathlib import Path
@@ -221,6 +222,22 @@ def test_a_changed_backup_is_refused_at_the_seam(
     os.utime(image, ns=(before.st_atime_ns, before.st_mtime_ns))  # mtime restored
     assert "backup" in " ".join(_refused(_request(tmp_path, extras)).why_blocked)
     image.unlink()
+    assert "backup" in " ".join(_refused(_request(tmp_path, extras)).why_blocked)
+    assert reached == []
+
+
+def test_a_record_without_the_backup_fingerprint_is_refused_at_the_seam(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reached: list[Any]
+) -> None:
+    """A record from before inode and ctime were bound: refused, not assumed."""
+    patch_probe(monkeypatch, _device())
+    extras = make_authorization(tmp_path, _device())
+    record_file = Path(extras["authorization_dir"]) / f"{AUTH_ID}.json"
+    record = json.loads(record_file.read_text(encoding="utf-8"))
+    for field in ("ctime_ns", "inode"):
+        record["backup"].pop(field)
+        extras["authorization"]["backup"].pop(field, None)
+    record_file.write_text(json.dumps(record), encoding="utf-8")
     assert "backup" in " ".join(_refused(_request(tmp_path, extras)).why_blocked)
     assert reached == []
 

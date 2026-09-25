@@ -257,3 +257,21 @@ def mac_runner() -> FakeRunner:
         return CommandResult(argv, 1, "", f"unexpected {args}")
 
     return FakeRunner(answer)
+
+
+@pytest.fixture
+def no_host_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Linux discovery finds no devices instead of reading this machine's.
+
+    The capability matrix runs discovery, and on a real host that is ``lsblk``
+    over sysfs against whatever is plugged in - removable media included. The
+    rows these tests check do not depend on which disks exist, so none are
+    read. Every ``LinuxAdapter`` in the test gets the same empty answer.
+    """
+    from core.platform.linux import LinuxAdapter
+
+    def no_devices(self: Any, *, include_virtual: bool = False) -> list[Any]:
+        return []
+
+    monkeypatch.setattr(LinuxAdapter, "core_devices", no_devices)
+    monkeypatch.setattr(LinuxAdapter, "_partitions", lambda self, probe: {})

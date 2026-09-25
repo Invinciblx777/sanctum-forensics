@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import errno
 import logging
+import os
 from datetime import UTC, datetime
+from pathlib import Path
+from tempfile import gettempdir
+from typing import Any
 
 import pytest
 import structlog
@@ -19,6 +24,8 @@ from core.models import (
     SanitizationLevel,
     VerificationResult,
 )
+
+from tests import _host_device_guard
 
 
 @pytest.fixture
@@ -131,9 +138,79 @@ def sample_report(sample_ledger_entry: LedgerEntry) -> ForensicReport:
     )
 
 
+@pytest.fixture(autouse=True)
+def _host_disk_reads_get_eacces(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A file erase's read-back of the host disk gets EACCES, on every host.
+
+    The file eraser verifies an overwrite by reading the file's old physical
+    extents from the block device beneath it. In the suite that is the machine's
+    own disk: an unprivileged run is refused by the kernel, and a root run - a
+    CI container - would read it. Both get the unprivileged answer here, before
+    any open, so the result is the same everywhere and no test reads a host
+    disk. A test that verifies against an image passes a regular file as the
+    device and still gets the real read; a path that does not exist still gets
+    the kernel's ENOENT.
+    """
+    from core.erase import verify
+
+    real = verify._read_physical_extents
+
+    def read(device: str, extents: Any, expected_byte: int) -> Any:
+        if os.path.exists(device) and not os.path.isfile(device):
+            raise PermissionError(
+                errno.EACCES,
+                "raw host-disk reads are not taken in the test suite",
+                device,
+            )
+        return real(device, extents, expected_byte)
+
+    monkeypatch.setattr(verify, "_read_physical_extents", read)
+
+
+@pytest.fixture(autouse=True)
+def _host_uuid_directory_is_not_listed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The host's ``/dev/disk/by-uuid`` is never listed; a UUID from it is unknown.
+
+    ``resolve_volume`` names a volume's filesystem UUID by listing that
+    directory, which lists every volume on the machine, removable media
+    included. No test asserts the UUID of a real volume - the udisks loop tests
+    do not, and the unit tests pass a directory of their own - so in the suite
+    the host's directory answers "unknown" without being read.
+    """
+    from core.erase import freespace
+
+    real = freespace._uuid_for
+    host = Path("/dev/disk/by-uuid")
+
+    def uuid_for(source: str, by_uuid: Path) -> str | None:
+        return None if Path(by_uuid) == host else real(source, by_uuid)
+
+    monkeypatch.setattr(freespace, "_uuid_for", uuid_for)
+
+
 def pytest_configure() -> None:
-    """Silence structlog below WARNING so test output stays readable."""
+    """Silence structlog below WARNING, and refuse host block-device access."""
     structlog.configure(
         wrapper_class=structlog.make_filtering_bound_logger(logging.WARNING),
         cache_logger_on_first_use=True,
     )
+    _host_device_guard.install([str(Path(__file__).resolve().parents[1]), gettempdir()])
+
+
+def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
+    """Name the one disk the suite may inspect, and every refusal."""
+    disks = ", ".join(sorted(_host_device_guard.ALLOWED_DISKS)) or "none"
+    terminalreporter.write_line(
+        f"host-device guard: {len(_host_device_guard.BLOCKED)} refusal(s); sysfs "
+        f"attributes readable only for {disks} (the disk holding the suite's files)"
+    )
+    if _host_device_guard.BLOCKED:
+        terminalreporter.section("host block-device access refused", red=True)
+        for line in _host_device_guard.BLOCKED:
+            terminalreporter.line(line)
+
+
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    """A refusal fails the run, even one a worker thread or handler swallowed."""
+    if _host_device_guard.BLOCKED:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED

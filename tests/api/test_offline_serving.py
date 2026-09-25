@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._loopback import LOOPBACK_BASE_URL
+
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux", reason="unshare --net is Linux-only"
 )
@@ -52,7 +54,7 @@ PROBE = textwrap.dedent(
 
     state = tempfile.mkdtemp()
     app = create_app(state_dir=__import__("pathlib").Path(state), serve_ui=True)
-    with TestClient(app, base_url=LOOPBACK_BASE_URL) as client:
+    with TestClient(app, base_url={loopback!r}) as client:
         index = client.get("/")
         health = client.get("/health")
         assets = []
@@ -76,18 +78,26 @@ PROBE = textwrap.dedent(
 
 
 def _run_isolated(script: str) -> dict[str, object]:
+    # Two questions, kept apart: can this host make the namespace at all (a skip
+    # if not), and did the probe inside it work (a failure if not). One check
+    # for both skipped this test from 2026-09-21 on a NameError in the probe.
+    namespace = ["unshare", "--net", "--map-root-user"]
+    available = subprocess.run(
+        [*namespace, "true"], capture_output=True, text=True, timeout=30
+    )
+    if available.returncode != 0:
+        pytest.skip(
+            "unprivileged network namespaces are unavailable on this host: "
+            f"{available.stderr.strip()[:300]}"
+        )
     completed = subprocess.run(
-        ["unshare", "--net", "--map-root-user", sys.executable, "-c", script],
+        [*namespace, sys.executable, "-c", script],
         capture_output=True,
         text=True,
         timeout=180,
         cwd=REPO,
     )
-    if completed.returncode != 0:
-        pytest.skip(
-            "unprivileged network namespaces are unavailable on this host: "
-            f"{completed.stderr.strip()[:300]}"
-        )
+    assert completed.returncode == 0, completed.stderr[-2000:]
     return json.loads(completed.stdout.strip().splitlines()[-1])
 
 
@@ -97,7 +107,7 @@ def test_the_ui_and_api_work_with_no_route_off_the_machine(ui_dist: Path) -> Non
         pytest.skip("util-linux `unshare` is not installed")
     assert ui_dist.is_dir()
 
-    result = _run_isolated(PROBE.format(repo=str(REPO)))
+    result = _run_isolated(PROBE.format(repo=str(REPO), loopback=LOOPBACK_BASE_URL))
 
     # The namespace has to actually be isolated, or the rest proves nothing.
     assert result["outbound_reachable"] is False, (
