@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.authorization import build_plan, device_identity, stat_fingerprint
 from core.workflow import derive
 from fastapi import APIRouter, Depends
 
@@ -17,8 +18,6 @@ from api.authorization import (
     AuthorizationStore,
     _now,
     _Record,
-    build_plan,
-    device_identity,
     facts_for,
     new_id,
     sha256_of,
@@ -113,7 +112,15 @@ def open_erase_workflow(
             f"Backup image {image} is not a regular file.",
             "Take a backup image onto a different disk under the evidence directory.",
         )
+    before = stat_fingerprint(image)
     digest, size, mtime_ns = sha256_of(image)
+    if stat_fingerprint(image) != before:
+        raise sanctum_error_response(
+            "EvidenceIntegrityError",
+            f"Backup image {image} changed while it was being verified.",
+            "Wait for whatever is writing the image to finish, then open the "
+            "workflow again.",
+        )
     identity = device_identity(probe)
     if size < identity["size_bytes"] or identity["size_bytes"] <= 0:
         raise sanctum_error_response(
@@ -133,6 +140,7 @@ def open_erase_workflow(
             "sha256": digest,
             "size_bytes": size,
             "mtime_ns": mtime_ns,
+            **stat_fingerprint(image),
         },
         plan=build_plan(probe, body.level),
         opened_by=who.actor,
@@ -166,6 +174,16 @@ def approve_erase(
     if record is None:
         raise sanctum_error_response(
             "JobNotKnown", f"No authorization {auth_id!r}.", "Open a workflow first."
+        )
+    if store.is_spent(auth_id) or record.approved_by:
+        # An approval is written once. Overwriting it would let a later caller
+        # replace the recorded approver, and approving a spent record would put
+        # an approval in the chain after the execution it supposedly preceded.
+        raise sanctum_error_response(
+            "ConfirmationMismatch",
+            f"Approval refused: authorization {auth_id} is already "
+            + ("used." if store.is_spent(auth_id) else "approved."),
+            "Open a new workflow if another erase is intended.",
         )
     probe = _probe(services, record.path)
     facts = facts_for(record, probe, level=record.level)

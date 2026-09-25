@@ -123,6 +123,12 @@ class JobRecord:
         }
 
 
+#: Parameters never echoed to a client. The authorization binding repeats the
+#: device serial and names the backup image and state directory; it exists for
+#: the helper, not for a screen.
+_REDACTED_PARAMS = frozenset({"typed_serial", "authorization", "authorization_dir"})
+
+
 def _redact(params: dict[str, Any]) -> dict[str, Any]:
     """Drop the typed serial from an echoed parameter set.
 
@@ -131,7 +137,7 @@ def _redact(params: dict[str, Any]) -> dict[str, Any]:
     one string that authorises a destructive operation.
     """
     return {
-        key: ("<redacted>" if key == "typed_serial" else value)
+        key: ("<redacted>" if key in _REDACTED_PARAMS else value)
         for key, value in params.items()
     }
 

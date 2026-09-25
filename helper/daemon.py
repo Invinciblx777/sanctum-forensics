@@ -130,7 +130,7 @@ Handler = Callable[[dict[str, Any]], dict[str, Any]]
 #: Request fields naming a path the helper may write to or read from. Each is
 #: resolved and confined to the daemon's state directory before any handler
 #: sees it; see :meth:`HelperDaemon.apply_policy`.
-_CONFINED_PATH_PARAMS = ("ledger_root", "dest")
+_CONFINED_PATH_PARAMS = ("ledger_root", "dest", "authorization_dir")
 
 #: A streaming handler yields one JSON-ready progress record at a time and
 #: returns the same result dict its batch counterpart returns.
@@ -385,6 +385,20 @@ def _drain(
             return {**answer, "progress": progress}
 
 
+def _revalidate(params: dict[str, Any]) -> None:
+    """The write seam's own authorization check. See :mod:`helper.authorization`.
+
+    A real erase or resume (``dry_run`` explicitly false) is refused here unless
+    its authorization holds up against a fresh read of the device and backup.
+    Runs before the platform adapter is touched, so a refusal opens nothing.
+    """
+    from helper.authorization import revalidate_execution
+
+    # A host with no whole-drive engine says so first, before any record is read.
+    _require_drive_engine(params)
+    revalidate_execution(params)
+
+
 def _op_run_erase(params: dict[str, Any]) -> dict[str, Any]:
     """Execute a sanitization job, returning its progress in one batch."""
     return _drain(_stream_run_erase(params))
@@ -411,6 +425,7 @@ def _stream_run_erase(
     engine to stop at its next yield; what that leaves on the device is recorded
     by :func:`core.erase.drive.execute` before the exception propagates.
     """
+    _revalidate(params)
     return (yield from _adapter(params).execute_drive_sanitization(params))
 
 
@@ -436,6 +451,7 @@ def _stream_resume_erase(
     the medium, so it is not a lesser operation than the run it continues and
     does not get a lesser confirmation.
     """
+    _revalidate(params)
     return (yield from _adapter(params).resume_drive_sanitization(params))
 
 

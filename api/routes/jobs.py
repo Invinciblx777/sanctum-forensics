@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -73,6 +73,26 @@ def _accepted(job_id: str, kind: str, dry_run: bool) -> JobAccepted:
     )
 
 
+def _refuse_confirmation(message: str, remediation: str) -> HTTPException:
+    """A confirmation refusal in the same shape as a workflow-gate refusal.
+
+    Raised before anything is submitted, so nothing was erased. The extra
+    fields let a client render "BLOCKED / WHY BLOCKED" from the server's own
+    words instead of a generic failure. ``kind`` stays ConfirmationMismatch.
+    """
+    refusal = sanctum_error_response("ConfirmationMismatch", message, remediation)
+    detail = {**cast("dict[str, Any]", refusal.detail)}
+    detail.update(
+        {
+            "verdict": "REFUSED",
+            "workflow_state": "HUMAN_APPROVAL_REQUIRED",
+            "WHY BLOCKED": [message],
+            "physical_device_modified": False,
+        }
+    )
+    return HTTPException(status_code=refusal.status_code, detail=detail)
+
+
 def _gate_real_erase(
     services: AppServices,
     *,
@@ -80,14 +100,14 @@ def _gate_real_erase(
     path: str,
     level: str,
     probe: dict[str, Any],
-) -> None:
+) -> dict[str, Any]:
     """Refuse a real drive erase unless the workflow gates are satisfied.
 
     One call, shared by the erase and the resume, so neither can skip it.
     Runs after the helper probe and before anything is submitted.
     """
     try:
-        authorize_execution(
+        return authorize_execution(
             services,
             auth_id=authorization_id,
             path=path,
@@ -165,8 +185,7 @@ def erase_drive(
     from helper.rpc import RpcError
 
     if not body.dry_run and not body.typed_serial:
-        raise sanctum_error_response(
-            "ConfirmationMismatch",
+        raise _refuse_confirmation(
             f"Refusing to erase {body.path}: dry_run is off but no serial was "
             "typed. Destructive erasure is opt-in twice.",
             "Re-read the device serial from the capability report and type it "
@@ -199,8 +218,7 @@ def erase_drive(
 
     serial = str(probe.get("device", {}).get("serial", ""))
     if not body.dry_run and body.typed_serial != serial:
-        raise sanctum_error_response(
-            "ConfirmationMismatch",
+        raise _refuse_confirmation(
             f"The typed serial {body.typed_serial!r} does not match "
             f"{body.path}, whose serial is {serial!r}. Nothing was erased.",
             "Re-read the device serial from the capability report and type it "
@@ -211,13 +229,17 @@ def erase_drive(
     # approval; a real erase also needs the recorded approval and verified
     # backup, re-derived from a fresh read of the device.
     if not body.dry_run:
-        _gate_real_erase(
+        binding = _gate_real_erase(
             services,
             authorization_id=body.authorization_id,
             path=body.path,
             level=body.level,
             probe=probe,
         )
+        # The helper re-checks this against the host at the write seam. Never
+        # sent on a dry run: a simulation has nothing to authorize.
+        params["authorization"] = binding
+        params["authorization_dir"] = str(services.state_dir / "authorizations")
 
     # Minted here rather than by the registry, for the same reason the carve
     # route mints its own: the ledger entries this run writes are keyed by the
@@ -784,13 +806,14 @@ def resume_erase(
                 "Re-read the device serial from the capability report and type "
                 "it exactly.",
             )
-        _gate_real_erase(
+        params["authorization"] = _gate_real_erase(
             services,
             authorization_id=body.authorization_id,
             path=state["path"],
             level=params["level"],
             probe=probe,
         )
+        params["authorization_dir"] = str(services.state_dir / "authorizations")
 
     # The *same* job id, deliberately. A resume continues one erasure, and
     # giving it a new id would split one device's account of itself across two

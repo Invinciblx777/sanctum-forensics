@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -50,6 +49,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
+from core.authorization import (
+    AUTH_ID,
+    backup_drift,
+    build_plan,
+    device_identity,
+    identity_drift,
+    plan_drift,
+)
 from core.workflow import (
     IllegalTransition,
     WorkflowFacts,
@@ -67,6 +74,7 @@ __all__ = [
     "GateRefused",
     "SIMULATION_MARK",
     "authorize_execution",
+    "execution_binding",
     "facts_for",
 ]
 
@@ -75,7 +83,7 @@ logger = structlog.get_logger(__name__)
 #: Printed on every dry-run answer so a simulation cannot be mistaken for a wipe.
 SIMULATION_MARK = "SIMULATION / NO PHYSICAL DEVICE MODIFIED"
 
-_ID = re.compile(r"^auth-[0-9a-f]{16}$")
+_ID = AUTH_ID
 _CHUNK = 4 * 1024 * 1024
 
 
@@ -189,37 +197,6 @@ def sha256_of(path: Path) -> tuple[str, int, int]:
     return digest.hexdigest(), stat.st_size, stat.st_mtime_ns
 
 
-def device_identity(probe: dict[str, Any]) -> dict[str, Any]:
-    """The fields that must not change between approval and execution."""
-    device = probe.get("device", {})
-    return {
-        "path": str(device.get("path", "")),
-        "serial": str(device.get("serial", "")),
-        "model": str(device.get("model", "")),
-        "size_bytes": int(device.get("size_bytes", 0) or 0),
-    }
-
-
-def build_plan(probe: dict[str, Any], level: str) -> dict[str, Any]:
-    """The plan a person approves: what would run, decided by capability."""
-    caps = probe.get("capabilities") or {}
-    achievable = list(caps.get("achievable_levels", []))
-    return {
-        "level": level,
-        "achievable_levels": achievable,
-        "estimated_seconds": caps.get("est_erase_seconds"),
-        "limitations": list(caps.get("limitations", [])),
-        "blocking": (
-            []
-            if level in achievable
-            else [
-                f"level {level} is not achievable on this device "
-                f"(achievable: {achievable or 'none'})"
-            ]
-        ),
-    }
-
-
 def facts_for(
     record: _Record | None,
     probe: dict[str, Any] | None,
@@ -253,32 +230,14 @@ def facts_for(
         )
 
     now = device_identity(probe)
-    recorded = record.device
-    identity_changed = [
-        f"{key} changed since the backup and approval: recorded "
-        f"{recorded.get(key)!r}, now {now.get(key)!r}"
-        for key in ("path", "serial", "model", "size_bytes")
-        if recorded.get(key) != now.get(key)
-    ]
+    identity_changed = identity_drift(record.device, now)
     if identity_changed and not refusal:
         refusal = "device identity changed: " + "; ".join(identity_changed)
 
-    backup_ok = False
     blocking = list(record.plan.get("blocking", []))
-    backup_path = Path(str(record.backup.get("path", "")))
-    try:
-        stat = backup_path.stat()
-        backup_ok = (
-            stat.st_size == record.backup.get("size_bytes")
-            and stat.st_mtime_ns == record.backup.get("mtime_ns")
-            and stat.st_size >= now["size_bytes"] > 0
-        )
-        if not backup_ok:
-            blocking.append(
-                "the verified backup image changed or no longer covers the device"
-            )
-    except OSError:
-        blocking.append("the verified backup image is no longer readable")
+    backup_problems = backup_drift(record.backup, now["size_bytes"])
+    blocking.extend(backup_problems)
+    blocking.extend(plan_drift(record.plan, build_plan(probe, record.level)))
     if level != record.level:
         blocking.append(f"level {level} differs from the approved level {record.level}")
     achievable = list(caps.get("achievable_levels", [])) if caps else []
@@ -291,7 +250,7 @@ def facts_for(
         preflight_safe=not refusal,
         preflight_refusal=refusal,
         serial_sources_agree=bool(now["serial"]) and not identity_changed,
-        backup_sufficient=backup_ok,
+        backup_sufficient=not backup_problems,
         plan_generated=True,
         plan_blocking=tuple(blocking),
         human_approved=bool(record.approved_by),
@@ -310,8 +269,13 @@ def authorize_execution(
     level: str,
     probe: dict[str, Any],
     actor: str,
-) -> None:
+) -> dict[str, Any]:
     """Pass the workflow gate for a real erase, spend the record, or refuse.
+
+    Returns the binding the privileged helper re-checks at the write seam
+    (``authorization`` beside ``authorization_dir`` in the helper request). The
+    helper does not trust this gate's verdict: it re-reads the device and the
+    backup and refuses on any difference from the binding.
 
     Raises :class:`GateRefused` and does nothing else on refusal: no device is
     opened, no ledger entry claims execution, the record is not spent.
@@ -378,6 +342,19 @@ def authorize_execution(
             [f"authorization {auth_id} was already used; it authorizes one execution"],
             open_hint,
         )
+    return execution_binding(record)
+
+
+def execution_binding(record: _Record) -> dict[str, Any]:
+    """What the helper is told the approval covered. Plain, JSON-able data."""
+    return {
+        "auth_id": record.auth_id,
+        "path": record.path,
+        "level": record.level,
+        "device": dict(record.device),
+        "backup": dict(record.backup),
+        "plan": dict(record.plan),
+    }
 
 
 def _ledger_refusal(

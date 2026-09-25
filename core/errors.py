@@ -22,6 +22,7 @@ __all__ = [
     "LedgerBusy",
     "SignatureInvalid",
     "PlatformUnsupported",
+    "WorkflowGateRefused",
 ]
 
 
@@ -185,3 +186,27 @@ class PlatformUnsupported(SanctumError):
         "use a Linux VM with the controller passed through. File and folder "
         "erasure (core.erase.files) remains available on this platform."
     )
+
+
+class WorkflowGateRefused(SanctumError):
+    """A destructive request did not carry a valid, current authorization.
+
+    Raised at the write seam, in the process that would write, after that
+    process re-read the device and the backup itself. ``why_blocked`` lists every
+    reason found, in words an operator can act on.
+    """
+
+    default_remediation = (
+        "Open a new workflow (POST /workflow/erase-drive), approve it, and "
+        "execute with the authorization it returns. Nothing was erased."
+    )
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        why_blocked: list[str] | None = None,
+        remediation: str | None = None,
+    ) -> None:
+        super().__init__(message, remediation=remediation)
+        self.why_blocked: list[str] = list(why_blocked or [])
