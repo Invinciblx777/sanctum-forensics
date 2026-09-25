@@ -50,6 +50,8 @@ IMPLEMENTED = (
     "core.erase.metadata",
     "core.erase.residual",
     "core.erase.sink",
+    # Covered by tests/erase/files/test_trace_sweep.py.
+    "core.erase.traces",
     "core.erase._platform",
     # Covered by tests/platform/ (adapters from fixtures on every host).
     "core.platform",

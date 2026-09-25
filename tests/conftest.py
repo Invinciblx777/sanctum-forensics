@@ -188,6 +188,31 @@ def _host_uuid_directory_is_not_listed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(freespace, "_uuid_for", uuid_for)
 
 
+@pytest.fixture(autouse=True)
+def _trace_sweep_searches_a_synthetic_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """The trace sweep reads a home made for the test, never the runner's own.
+
+    A file erase submitted through the API sweeps the desktop's thumbnails,
+    recent-files list and Trash for traces of the erased files. Left alone, the
+    suite would read - and on a real run, erase from - the home directory of
+    whoever runs it. The synthetic home is created on first use, and no volume
+    Trash is searched, so the sweep never walks up the host's mounts either.
+    Tests of the sweep itself pass locations of their own.
+    """
+    from core.erase import traces
+
+    made: list[Path] = []
+
+    def synthetic() -> traces.TraceLocations:
+        if not made:
+            made.append(tmp_path_factory.mktemp("home"))
+        return traces.locations_for("linux", {}, made[0])
+
+    monkeypatch.setattr(traces, "default_locations", synthetic)
+
+
 def pytest_configure() -> None:
     """Silence structlog below WARNING, and refuse host block-device access."""
     structlog.configure(

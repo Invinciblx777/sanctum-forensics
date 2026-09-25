@@ -6,8 +6,10 @@ import type {
   JobStatus,
   Progress,
   ResidualFinding,
+  TraceSweep,
 } from '../lib/api'
 import { bytes } from '../lib/format'
+import { traceKind, traceOutcome, traceSummary } from '../lib/traces'
 import {
   Empty,
   ErrorNotice,
@@ -51,6 +53,7 @@ export default function FileEraser() {
   const [confirm, setConfirm] = useState(false)
   const [cleanse, setCleanse] = useState(true)
   const [breakLinks, setBreakLinks] = useState(false)
+  const [sweep, setSweep] = useState(true)
   const [jobId, setJobId] = useState<string | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
   const [status, setStatus] = useState<JobStatus | null>(null)
@@ -81,6 +84,7 @@ export default function FileEraser() {
         cleanse_metadata: cleanse,
         break_hardlinks: breakLinks,
         recursive: true,
+        sweep_traces: sweep,
       })
       setJobId(accepted.job_id)
       setProgress(null)
@@ -101,6 +105,8 @@ export default function FileEraser() {
   }
 
   const records = (status?.result?.records ?? []) as FileEraseRecord[]
+  const traces = (status?.result?.trace_sweep ?? null) as TraceSweep | null
+  const simulated = records.length > 0 && records.every((record) => record.dry_run)
 
   return (
     <>
@@ -373,6 +379,8 @@ export default function FileEraser() {
               </Panel>
             )}
 
+            {traces && <TracePanel sweep={traces} dryRun={simulated} />}
+
             {jobId && isSimulation(status) && <SimulationBanner />}
             {jobId && records.length === 0 && (
               <Panel title="Progress">
@@ -419,11 +427,25 @@ export default function FileEraser() {
                   not give
                 </span>
               </label>
+              <label className="inline">
+                <input
+                  type="checkbox"
+                  checked={sweep}
+                  onChange={(event) => setSweep(event.target.checked)}
+                />
+                <span>
+                  Remove what the desktop kept — thumbnails, recent-files entries
+                  and Trash copies of these files
+                </span>
+              </label>
 
               {!dryRun && (
                 <Notice tone="danger">
-                  Files will be overwritten, renamed eight times and unlinked.
-                  There is no undo.
+                  Files will be overwritten, renamed eight times and unlinked
+                  {sweep
+                    ? ', and so will the thumbnails and Trash copies tied to them'
+                    : ''}
+                  . There is no undo.
                 </Notice>
               )}
 
@@ -445,6 +467,98 @@ export default function FileEraser() {
         <FreeSpacePanel />
       </div>
     </>
+  )
+}
+
+/**
+ * What the desktop kept of the erased files, and what became of each trace.
+ *
+ * The evidence is shown with every row, because a trace is only removed when
+ * something ties it to an erased path, and the operator should be able to see
+ * what that something was. The places searched, and the ones this platform
+ * keeps traces in that were not, sit under the table.
+ */
+function TracePanel({ sweep, dryRun }: { sweep: TraceSweep; dryRun: boolean }) {
+  return (
+    <Panel
+      title={`Desktop traces (${sweep.traces.length})`}
+      subtitle={traceSummary(sweep, dryRun)}
+      tight={sweep.traces.length > 0}
+    >
+      {sweep.traces.length > 0 && (
+        <table className="itable" data-testid="trace-table">
+          <colgroup>
+            <col style={{ width: 'var(--gutter)' }} />
+            <col style={{ width: 176 }} />
+            <col />
+            <col style={{ width: 150 }} />
+          </colgroup>
+          <thead>
+            <tr>
+              <th className="rail" />
+              <th>Trace</th>
+              <th>Where, and why it matches</th>
+              <th>Outcome</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sweep.traces.map((trace) => {
+              const outcome = traceOutcome(trace, dryRun)
+              return (
+                <tr key={`${trace.location}|${trace.kind}`} className="irow">
+                  <td className={`rail is-${outcome.tone}`} aria-hidden>
+                    <i />
+                  </td>
+                  <td>
+                    <div className="col tight">
+                      <strong>{traceKind(trace.kind)}</strong>
+                      <span className="note-faint">
+                        {trace.content_copy ? 'a copy of the content' : 'names the file'}
+                      </span>
+                    </div>
+                  </td>
+                  <td>
+                    <div className="col tight">
+                      <FilePath value={trace.location} />
+                      <span className="note">{trace.evidence}</span>
+                      {trace.error && <span className="note">{trace.error}</span>}
+                    </div>
+                  </td>
+                  <td>
+                    <span className={`state-mark is-${outcome.tone}`}>{outcome.word}</span>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      )}
+      <details className="tech">
+        <summary>
+          Where the sweep looked ({sweep.searched.length}), and where it did not
+        </summary>
+        <div className="tech-body">
+          <ul className="limitations mono">
+            {sweep.searched.map((place) => (
+              <li key={place}>{place}</li>
+            ))}
+          </ul>
+          <strong>Not searched on this platform</strong>
+          <ul className="limitations">
+            {sweep.not_searched.map((place) => (
+              <li key={place}>{place}</li>
+            ))}
+          </ul>
+          {sweep.notes.length > 0 && (
+            <ul className="limitations">
+              {sweep.notes.map((note) => (
+                <li key={note}>{note}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </details>
+    </Panel>
   )
 }
 

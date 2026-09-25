@@ -769,6 +769,35 @@ export interface EraseFilesBody {
   cleanse_metadata: boolean
   break_hardlinks: boolean
   recursive: boolean
+  /** Find and remove the thumbnails, recent entries and Trash copies of these files. */
+  sweep_traces: boolean
+}
+
+/** One trace the desktop kept of an erased file. See core/erase/traces.py. */
+export interface TraceRecord {
+  kind: string
+  /** The erased path this trace belongs to. */
+  target: string
+  /** Where the trace is: a file, or the list that holds an entry. */
+  location: string
+  /** Why it matches, in words. */
+  evidence: string
+  /** A copy of the content, not only a mention of the path. */
+  content_copy: boolean
+  /** Tied to the erased path on evidence. Only exact traces are removed. */
+  exact: boolean
+  action: string
+  removed: boolean
+  bytes_overwritten: number
+  error: string
+}
+
+export interface TraceSweep {
+  searched: string[]
+  not_searched: string[]
+  traces: TraceRecord[]
+  /** Places that were present but could not be read, and why. */
+  notes: string[]
 }
 
 export interface WipeFreeSpaceBody {

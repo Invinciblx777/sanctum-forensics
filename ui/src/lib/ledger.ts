@@ -45,6 +45,8 @@ const EXACT: Record<string, string> = {
   'acquire.complete': 'Acquisition complete',
   'acquire.checkpoint': 'Acquisition checkpoint',
   'acquire.cancelled': 'Acquisition cancelled',
+  'erase.file.trace': 'Trace of an erased file',
+  'erase.file.traces': 'Trace sweep finished',
 }
 
 export function operationKind(operation: string): OperationKind {

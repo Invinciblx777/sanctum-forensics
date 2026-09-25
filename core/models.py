@@ -57,6 +57,8 @@ __all__ = [
     "FileEraseOptions",
     "FileEraseRecord",
     "FileEraseResult",
+    "TraceRecord",
+    "TraceSweepResult",
     "FileVerificationResult",
     "VolumeInfo",
     "FreeSpaceWipeOptions",
@@ -913,6 +915,12 @@ class FileEraseOptions(BaseModel):
     #: Below this many paths the pool is not started; spawn costs more than it
     #: saves. Exposed so tests can force either path.
     pool_threshold: int = 32
+    #: After the erase, find what the desktop kept of these files - thumbnails,
+    #: recent-files entries, Trash and Recycle Bin copies - and, on a real run,
+    #: remove the ones tied to an erased path on evidence. See
+    #: core.erase.traces. Off here, so a library caller opts in; the API turns
+    #: it on, and its dry run lists every trace before anything is removed.
+    sweep_traces: bool = False
 
 
 class FileVerificationResult(BaseModel):
@@ -971,6 +979,46 @@ class FileEraseRecord(BaseModel):
         )
 
 
+class TraceRecord(BaseModel):
+    """One trace the desktop kept of an erased file, and what became of it.
+
+    See :mod:`core.erase.traces`. ``exact`` is True only when the trace was
+    tied to the erased path on evidence - a thumbnail named by the MD5 of the
+    file's URI, a Trash record naming its path - and only exact traces are ever
+    removed.
+    """
+
+    kind: str
+    #: The erased path this trace belongs to.
+    target: str
+    #: Where the trace is: a file, or the list that holds an entry.
+    location: str
+    #: Why it matches, in words.
+    evidence: str
+    #: A copy of the content (a thumbnail, a Trash copy), not only a mention.
+    content_copy: bool
+    exact: bool
+    #: "erased" (put through the same steps as a target), "entry removed" (cut
+    #: out of a shared list, which was overwritten in place), or empty when
+    #: nothing was done: a dry run, an inexact match, or a failure.
+    action: str = ""
+    removed: bool = False
+    bytes_overwritten: int = 0
+    error: str = ""
+
+
+class TraceSweepResult(BaseModel):
+    """What the trace sweep searched, what it did not, and what it found."""
+
+    #: Every place that was searched, including those that were not present.
+    searched: list[str] = []
+    #: Places on this platform that keep traces and were not searched.
+    not_searched: list[str] = []
+    traces: list[TraceRecord] = []
+    #: Places that were present but could not be read, and why.
+    notes: list[str] = []
+
+
 class FileEraseResult(BaseModel):
     """Outcome of one ``erase_paths`` call."""
 
@@ -981,6 +1029,8 @@ class FileEraseResult(BaseModel):
     #: In the order the caller supplied the paths, regardless of completion order.
     records: list[FileEraseRecord] = []
     limitations: list[str] = []
+    #: What the trace sweep found after the erase; None when it was not run.
+    trace_sweep: TraceSweepResult | None = None
 
     @property
     def succeeded(self) -> int:

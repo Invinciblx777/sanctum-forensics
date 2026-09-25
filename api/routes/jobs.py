@@ -339,12 +339,14 @@ def erase_files(
         cleanse_metadata=body.cleanse_metadata,
         break_hardlinks=body.break_hardlinks,
         recursive=body.recursive,
+        sweep_traces=body.sweep_traces,
     )
     params = {
         "paths": body.paths,
         "dry_run": body.dry_run,
         "confirm": body.confirm,
         "break_hardlinks": body.break_hardlinks,
+        "sweep_traces": body.sweep_traces,
     }
     # The id is minted here rather than by the registry, so the same string
     # reaches erase_paths and therefore the ledger. Letting the registry

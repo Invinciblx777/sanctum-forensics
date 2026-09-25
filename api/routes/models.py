@@ -132,6 +132,12 @@ class EraseFilesRequest(BaseModel):
     #: reported either way.
     break_hardlinks: bool = False
     recursive: bool = True
+    #: After the erase, find the thumbnails, recent-files entries and Trash or
+    #: Recycle Bin copies the desktop kept of these files, and remove the ones
+    #: tied to an erased path on evidence. On by default because the problem
+    #: this answers is the operator's; a dry run lists every trace first, and
+    #: nothing is removed without both gates.
+    sweep_traces: bool = True
     case_id: str = ""
     operator: str = "sanctum"
 

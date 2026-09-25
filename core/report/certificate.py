@@ -192,6 +192,18 @@ def _verdict(kind: str, sections: dict[str, Any]) -> tuple[str, str, str]:
     return ("Signed record", "", "neutral")
 
 
+def _trace_words(traces: dict[str, Any]) -> str:
+    """The trace sweep in one line: found, and removed or not."""
+    if not traces.get("swept"):
+        return "not searched for"
+    found = int(traces.get("found") or 0)
+    if not found:
+        return "none found"
+    removed = int(traces.get("removed") or 0)
+    left = found - removed
+    return f"{found} found, {removed} removed" + (f", {left} left" if left else "")
+
+
 def _facts(
     kind: str, sections: dict[str, Any]
 ) -> list[tuple[str, list[tuple[str, str, bool]]]]:
@@ -284,6 +296,7 @@ def _facts(
             )
         )
         severity = findings.get("by_severity") or {}
+        traces = sections.get("traces") or {}
         groups.append(
             (
                 "What may survive",
@@ -294,6 +307,7 @@ def _facts(
                         ", ".join(f"{k} {v}" for k, v in severity.items()) or "none",
                         False,
                     ),
+                    ("Desktop traces", _trace_words(traces), False),
                 ],
             )
         )

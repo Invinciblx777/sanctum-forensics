@@ -51,6 +51,7 @@ __all__ = [
     "sanitization_standards",
     "render_json",
     "render_pdf",
+    "trace_section",
     "write_report",
 ]
 
@@ -191,6 +192,7 @@ _SECTION_TITLES = {
     "results": "3. Results",
     "residual_findings": "4. Residual Findings",
     "erase_verification": "5. Verification",
+    "traces": "6. Desktop Traces",
     # Recovery.
     "evidence": "2. Evidence",
     "acquisition_integrity": "3. Evidential Integrity",
@@ -518,6 +520,61 @@ def _envelope(
     return report
 
 
+def trace_section(sweep: dict[str, Any] | None) -> dict[str, Any]:
+    """What the trace sweep searched, found and removed, for the file report.
+
+    Present whether or not the sweep ran, so a report of a job that did not
+    sweep says so rather than falling silent about thumbnails and Trash copies.
+    """
+    if not sweep:
+        return {
+            "swept": False,
+            "note": (
+                "The trace sweep was not run for this job. Thumbnails, "
+                "recent-files entries and Trash or Recycle Bin copies of these "
+                "files were neither searched for nor removed."
+            ),
+            "items": [NONE_RECORDED],
+        }
+    traces = list(sweep.get("traces") or [])
+    return {
+        "swept": True,
+        "found": len(traces),
+        "exact": sum(1 for trace in traces if trace.get("exact")),
+        "removed": sum(1 for trace in traces if trace.get("removed")),
+        "content_copies": sum(1 for trace in traces if trace.get("content_copy")),
+        "searched": _or_none_recorded(list(sweep.get("searched") or [])),
+        "not_searched": _or_none_recorded(list(sweep.get("not_searched") or [])),
+        "unreadable": _or_none_recorded(list(sweep.get("notes") or [])),
+        "note": (
+            "Only a trace tied to an erased path on evidence is removed: a "
+            "thumbnail named by the MD5 of the file's URI, a list entry or "
+            "shortcut naming its path, a Trash or Recycle Bin record naming "
+            "where the copy came from. A trace file is erased through the same "
+            "steps as a target, so the residual findings above apply to it "
+            "too; a list entry is cut out and the list overwritten in place. A "
+            "running application that holds the list in memory can write an "
+            "entry back."
+        ),
+        "items": _rows_or_none_recorded(
+            [
+                {
+                    "kind": str(trace.get("kind", "")),
+                    "target": str(trace.get("target", "")),
+                    "path": str(trace.get("location", "")),
+                    "evidence": str(trace.get("evidence", "")),
+                    "content_copy": bool(trace.get("content_copy")),
+                    "exact": bool(trace.get("exact")),
+                    "action": str(trace.get("action") or "none"),
+                    "removed": bool(trace.get("removed")),
+                    "error": str(trace.get("error") or ""),
+                }
+                for trace in traces
+            ]
+        ),
+    }
+
+
 def build_file_erase_report(
     *,
     case_id: str,
@@ -535,6 +592,7 @@ def build_file_erase_report(
     signature: Signature | None = None,
     job_state: str | None = None,
     platform: dict[str, Any] | None = None,
+    trace_sweep: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The M2 report: what was erased, and what the filesystem kept anyway.
 
@@ -633,6 +691,7 @@ def build_file_erase_report(
             ]
             or [NONE_RECORDED],
         },
+        "traces": trace_section(trace_sweep),
         "limitations": {"items": _or_none_recorded(list(limitations))},
         "audit_trail": _audit_trail(
             ledger_excerpt=ledger_excerpt,

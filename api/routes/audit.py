@@ -444,6 +444,7 @@ def generate_report(
         fields = common | {
             "records": list(result.get("records") or []),
             "dry_run": bool(params.get("dry_run", False)),
+            "trace_sweep": result.get("trace_sweep") or None,
         }
     elif kind == "carve":
         builder = build_carve_report

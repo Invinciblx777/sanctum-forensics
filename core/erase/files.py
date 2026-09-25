@@ -38,6 +38,7 @@ from pathlib import Path
 import structlog
 
 from core.erase import residual as residual_mod
+from core.erase import traces as traces_mod
 from core.erase._platform import PlatformBackend, backend
 from core.erase.inspect import inspect_path
 from core.erase.metadata import cleanse_only
@@ -51,6 +52,7 @@ from core.models import (
     FileEraseResult,
     FileInspection,
     Progress,
+    TraceSweepResult,
 )
 
 __all__ = [
@@ -752,6 +754,14 @@ def _erase_batch(
             )
     state.phase_entries_recorded = True
 
+    # After the phase entries, so the chain says what happened to every target
+    # before it says anything about their traces.
+    trace_sweep: TraceSweepResult | None = None
+    if settings.sweep_traces:
+        trace_sweep = yield from traces_mod.sweep(
+            ordered, settings, job_id=job_id, ledger=ledger
+        )
+
     finished_at = datetime.now(UTC)
     limitations: list[str] = []
     if settings.dry_run:
@@ -778,6 +788,7 @@ def _erase_batch(
         dry_run=settings.dry_run,
         records=ordered,
         limitations=limitations,
+        trace_sweep=trace_sweep,
     )
     logger.info(
         "file_erase_complete",
