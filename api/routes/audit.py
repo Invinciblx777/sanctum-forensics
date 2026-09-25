@@ -295,6 +295,7 @@ def generate_report(
     """
     from core.report.render import (
         build_carve_report,
+        build_destroy_report,
         build_file_erase_report,
         build_report,
         drive_report_inputs,
@@ -446,10 +447,17 @@ def generate_report(
             "dry_run": bool(params.get("dry_run", False)),
             "trace_sweep": result.get("trace_sweep") or None,
         }
+    elif kind == "destroy-record":
+        builder = build_destroy_report
+        fields = common | {
+            "record": dict(result.get("record") or {}),
+            "recorded_at": str(result.get("recorded_at") or ""),
+        }
     elif kind == "carve":
         builder = build_carve_report
         fields = common | {
             "evidence": _section(result, "evidence"),
+            "media_map": result.get("media_map") or None,
             "candidates": list(result.get("candidates") or []),
             "partitions": list(result.get("partitions") or []),
             "unallocated_bytes": int(result.get("unallocated_bytes") or 0),

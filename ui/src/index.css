@@ -243,7 +243,8 @@ button, input, select, textarea {
 }
 .btn.destructive:hover:not(:disabled) { background: #43150f; color: #fff; }
 
-input[type="text"], input[type="number"], input[type="password"], select, textarea {
+input:not([type]), input[type="text"], input[type="number"], input[type="password"],
+input[type="datetime-local"], select, textarea {
   background: var(--surface-sunken);
   border: 1px solid var(--rule-strong);
   border-radius: var(--radius-sm);
@@ -643,6 +644,9 @@ pre.log {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* A cell whose prose is the point - a trace's evidence - wraps instead. */
+.itable td.is-prose { white-space: normal; }
+.itable td.is-prose .note { overflow-wrap: anywhere; }
 /* Two densities, both fixed, so arriving state never reflows the table. */
 .itable tbody tr.irow { height: 54px; }
 .itable tbody tr.irow.is-compact { height: 32px; }
@@ -1148,3 +1152,23 @@ button.chain-block:hover { border-color: var(--seal); }
              align-items: center; }
 .legend i { width: 10px; height: 10px; border-radius: 2px; display: block; }
 .legend .legend-value { font-family: var(--mono); color: var(--text-secondary); }
+
+/* Media map: the image as one strip, a cell per region. */
+.media-strip { width: 100%; height: 44px; display: block; border-radius: var(--radius-sm); }
+.media-axis { display: flex; justify-content: space-between; font-family: var(--font-mono); }
+.media-legend {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; grid-template-columns: max-content max-content max-content 1fr;
+  gap: var(--space-1) var(--space-3); align-items: center; font-size: var(--type-sm);
+}
+.media-legend li { display: contents; }
+.media-legend i { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+
+/* Two-column form, label above control; collapses to one column when narrow. */
+.form-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3) var(--space-4);
+}
+.form-grid label { display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--type-sm); }
+.form-grid .span-2 { grid-column: 1 / -1; }
+@media (max-width: 900px) { .form-grid { grid-template-columns: 1fr; } }

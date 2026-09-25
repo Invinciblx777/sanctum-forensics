@@ -44,10 +44,12 @@ __all__ = [
     "build_report",
     "build_file_erase_report",
     "build_carve_report",
+    "build_destroy_report",
     "dpdp_erasure_reference",
     "drive_report_inputs",
     "excerpt_gaps",
     "file_erasure_standards",
+    "media_map_summary",
     "sanitization_standards",
     "render_json",
     "render_pdf",
@@ -191,6 +193,10 @@ _SECTION_TITLES = {
     "scope": "2. Scope",
     "results": "3. Results",
     "residual_findings": "4. Residual Findings",
+    # Destruction.
+    "media": "2. Media",
+    "destruction": "3. Destruction",
+    "attestation": "4. Attestation",
     "erase_verification": "5. Verification",
     "traces": "6. Desktop Traces",
     # Recovery.
@@ -575,6 +581,28 @@ def trace_section(sweep: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def media_map_summary(mapped: dict[str, Any] | None) -> dict[str, Any]:
+    """The media map in a report: the totals and how they were reached.
+
+    The region list stays in the job result; the signed report carries what a
+    reader needs to check the claim - bytes per class, headers per type,
+    whether the regions were sampled and how much was read.
+    """
+    if not mapped:
+        return {"mapped": False, "note": "The image was not mapped for this run."}
+    return {
+        "mapped": True,
+        "regions": len(mapped.get("regions") or []),
+        "region_bytes": int(mapped.get("region_bytes") or 0),
+        "sampled": bool(mapped.get("sampled")),
+        "bytes_read": int(mapped.get("bytes_read") or 0),
+        "bytes_by_class": dict(mapped.get("by_kind") or {}) or {"none": 0},
+        "headers_on_sector_boundaries": dict(mapped.get("headers") or {})
+        or {"none": 0},
+        # Its limitations are in the report's own limitations section.
+    }
+
+
 def build_file_erase_report(
     *,
     case_id: str,
@@ -711,6 +739,87 @@ def build_file_erase_report(
     )
 
 
+def build_destroy_report(
+    *,
+    case_id: str,
+    operator: str,
+    generated_at: datetime,
+    tool_version: str,
+    record: dict[str, Any],
+    recorded_at: str,
+    limitations: list[str],
+    ledger_excerpt: list[dict[str, Any]],
+    chain_verification: ChainVerification,
+    pubkey_fingerprint: str,
+    merkle_root: str | None = None,
+    anchor: dict[str, Any] | None = None,
+    signature: Signature | None = None,
+    job_state: str | None = None,
+    platform: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The Destroy record: what people attest they did to a medium.
+
+    The attestation section says, in the signed bytes, that the tool observed
+    nothing. The destruction date is the attesters'; the recording date is
+    this machine's; they are separate fields so neither passes for the other.
+    """
+    sections: dict[str, Any] = {
+        "case_identity": _case_identity(
+            case_id=case_id,
+            operator=operator,
+            generated_at=generated_at,
+            tool_version=tool_version,
+            job_state=job_state,
+            platform=platform,
+        ),
+        "media": {
+            "serial": str(record.get("serial", "")),
+            "model": str(record.get("model") or NONE_RECORDED),
+            "capacity_bytes": record.get("capacity_bytes"),
+            "media_type": str(record.get("media_type", "")),
+        },
+        "destruction": {
+            "sanitization_outcome": "DESTROY (NIST SP 800-88 Rev. 2)",
+            "technique": str(record.get("technique", "")),
+            "technique_detail": str(record.get("technique_detail") or NONE_RECORDED),
+            "particle_size_mm": record.get("particle_size_mm"),
+            "reason": str(record.get("reason", "")),
+            "performed_at": str(record.get("performed_at", "")),
+            "location": str(record.get("location") or NONE_RECORDED),
+            "vendor_certificate": str(
+                record.get("vendor_certificate") or NONE_RECORDED
+            ),
+            "notes": str(record.get("notes") or NONE_RECORDED),
+        },
+        "attestation": {
+            "performed_by": str(record.get("performed_by", "")),
+            "witnessed_by": str(record.get("witnessed_by") or NONE_RECORDED),
+            "recorded_at": recorded_at,
+            "observed_by_tool": False,
+            "statement": (
+                "Attested by the people named above. This tool did not see, "
+                "perform or measure the destruction."
+            ),
+        },
+        "limitations": {"items": _or_none_recorded(list(limitations))},
+        "audit_trail": _audit_trail(
+            ledger_excerpt=ledger_excerpt,
+            chain_verification=chain_verification,
+            merkle_root=merkle_root,
+            anchor=anchor,
+        ),
+        "signature": signature.model_dump() if signature else {},
+    }
+    return _envelope(
+        case_id=case_id,
+        generated_at=generated_at,
+        tool_version=tool_version,
+        pubkey_fingerprint=pubkey_fingerprint,
+        sections=sections,
+        signature=signature,
+    )
+
+
 def build_carve_report(
     *,
     case_id: str,
@@ -731,6 +840,7 @@ def build_carve_report(
     signature: Signature | None = None,
     job_state: str | None = None,
     platform: dict[str, Any] | None = None,
+    media_map: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The M3 report: what was recovered, how sure the tool is, and why.
 
@@ -786,6 +896,7 @@ def build_carve_report(
             "identity": evidence.get("identity", {}),
             "partitions": _rows_or_none_recorded(partitions),
             "unallocated_bytes": unallocated_bytes,
+            "media_map": media_map_summary(media_map),
         },
         "acquisition_integrity": {
             "opened_read_only": True,

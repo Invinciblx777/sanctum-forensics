@@ -5,6 +5,7 @@ import { bytes, exactBytes } from '../lib/format'
 import { flashOf } from '../lib/erasePlan'
 import { Empty, ErrorNotice, Limitations, Panel, Verdict } from '../components/widgets'
 import type { Tone } from '../components/widgets'
+import { DestroyRecordPanel } from '../components/destroyRecord'
 
 /**
  * The capability verdict.
@@ -362,6 +363,8 @@ export default function Devices({
             </ul>
           </Panel>
         )}
+
+        <DestroyRecordPanel rows={rows} />
       </div>
     </>
   )

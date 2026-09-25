@@ -56,6 +56,16 @@
   --seal-surface: #1e1a33;
   --seal-rule: #4b4380;
 
+  /* ---- data hues ------------------------------------------------------- */
+  /* The media map's five byte classes. Categories, not states: none of these
+     is a state hue or near one, and the legend always names the class, so
+     the strip reads in greyscale by its labels. */
+  --map-zero: #2c3842;
+  --map-fill: #5a6975;
+  --map-text: #7fb6e6;
+  --map-structured: #cdb27c;
+  --map-entropy: #e08fd0;
+
   /* ---- type ----------------------------------------------------------- */
   /* Sized for 1366x768 on a projector, where a CSS pixel is roughly twice the
      angular size it has on a laptop. */

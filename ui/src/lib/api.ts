@@ -141,6 +141,12 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  recordDestroy: (body: DestroyRecordBody) =>
+    request<JobAccepted>('/jobs/record-destroy', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
   job: (jobId: string) => request<JobStatus>(`/jobs/${jobId}`),
 
   cancel: (jobId: string) =>
@@ -800,6 +806,35 @@ export interface TraceSweep {
   notes: string[]
 }
 
+export type DestroyMediaType = 'HDD' | 'SSD' | 'USB' | 'SD_CARD' | 'OPTICAL' | 'TAPE' | 'OTHER'
+export type DestroyTechnique =
+  | 'SHRED'
+  | 'DISINTEGRATE'
+  | 'PULVERIZE'
+  | 'INCINERATE'
+  | 'MELT'
+  | 'OTHER'
+
+/** A physical destruction as the people who did it attest. See core/destroy.py. */
+export interface DestroyRecordBody {
+  serial: string
+  model: string
+  capacity_bytes: number | null
+  media_type: DestroyMediaType
+  technique: DestroyTechnique
+  technique_detail: string
+  particle_size_mm: number | null
+  reason: string
+  performed_by: string
+  witnessed_by: string
+  /** ISO 8601 with an offset: when the medium was destroyed, as attested. */
+  performed_at: string
+  location: string
+  vendor_certificate: string
+  notes: string
+  case_id?: string
+}
+
 export interface WipeFreeSpaceBody {
   mount_point: string
   dry_run: boolean
@@ -846,9 +881,37 @@ export interface CarveBody {
   undelete: boolean
   carve_signatures: boolean
   pii_triage: boolean
+  /** Map the image by byte statistics before carving. */
+  media_map?: boolean
   out_dir: string | null
   case_id?: string
   operator?: string
+}
+
+/** One region of an image, classed by its bytes. See core/carve/mediamap.py. */
+export interface MediaRegion {
+  offset: number
+  length: number
+  kind: string
+  share_bp: number
+  /** Mean entropy in millibits per byte, 0 to 8000. */
+  entropy_mb: number
+  fill_byte: number | null
+  headers: Record<string, number>
+  bytes_read: number
+  substituted: boolean
+}
+
+export interface MediaMap {
+  size_bytes: number
+  region_bytes: number
+  block_bytes: number
+  sampled: boolean
+  bytes_read: number
+  regions: MediaRegion[]
+  by_kind: Record<string, number>
+  headers: Record<string, number>
+  limitations: string[]
 }
 
 // ---------------------------------------------------------------------------

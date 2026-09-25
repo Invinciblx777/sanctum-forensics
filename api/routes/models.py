@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from core.models import DestructionRecord
 from pydantic import BaseModel, Field
 
 __all__ = [
@@ -142,6 +143,17 @@ class EraseFilesRequest(BaseModel):
     operator: str = "sanctum"
 
 
+class DestroyRecordRequest(DestructionRecord):
+    """Body for ``POST /jobs/record-destroy``: the attestation, and where to file it.
+
+    Nothing is erased or opened. The record is chained and signed as what the
+    named people attest; see :mod:`core.destroy`.
+    """
+
+    case_id: str = ""
+    operator: str = "sanctum"
+
+
 class WipeFreeSpaceRequest(BaseModel):
     """Body for ``POST /jobs/wipe-free-space``."""
 
@@ -188,6 +200,11 @@ class CarveRequest(BaseModel):
     #: document, database or unclassified object. Kinds and counts only: no
     #: matched value is stored, logged or returned. See :mod:`core.carve.pii`.
     pii_triage: bool = True
+    #: Map the image first: each region classed as zero, fill, text, structured
+    #: or high-entropy from its byte statistics, with the file headers found on
+    #: sector boundaries. Read-only, and sampled within a fixed budget on a
+    #: large image. See :mod:`core.carve.mediamap`.
+    media_map: bool = True
     #: Where recovered objects are written. None means nothing is written and
     #: only the candidate list is returned.
     out_dir: str | None = None

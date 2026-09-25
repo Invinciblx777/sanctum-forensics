@@ -110,7 +110,11 @@ def test_both_entries_carry_the_job_id_the_report_filters_on(
         for entry in ledger.entries()
         if ledger.params_of(entry).get("job_id") == "carve-abc123"
     ]
-    assert {entry.operation for entry in matched} == {"carve.start", "carve.complete"}
+    assert {entry.operation for entry in matched} == {
+        "carve.start",
+        "carve.mediamap",
+        "carve.complete",
+    }
 
 
 def test_the_complete_entry_binds_the_candidate_list_by_digest(
@@ -189,3 +193,38 @@ def test_a_carve_without_a_ledger_still_runs(evidence: Path) -> None:
     result = _carve(evidence, None, "carve-0001")
     assert "candidates" in result
     assert result["evidence"]["path"] == str(evidence)
+
+
+def test_the_media_map_runs_first_and_is_ledgered_against_the_image(
+    tmp_path: Path,
+) -> None:
+    """The map is read from the same image, and its entry names that image."""
+    image = _image_with_two_jpegs(tmp_path / "evidence.dd")
+    ledger = _ledger(tmp_path / "ledger")
+
+    result = _carve(image, ledger, "carve-map")
+
+    mapped = result["media_map"]
+    assert mapped["size_bytes"] == image.stat().st_size
+    # The filler is pseudo-random and the JPEGs sit off sector boundaries.
+    assert mapped["by_kind"]["HIGH_ENTROPY"] > 0
+    assert sum(mapped["by_kind"].values()) == mapped["size_bytes"]
+    operations = [entry.operation for entry in ledger.entries()]
+    assert operations.index("carve.mediamap") == operations.index("carve.start") + 1
+    (entry,) = [e for e in ledger.entries() if e.operation == "carve.mediamap"]
+    params = ledger.params_of(entry)
+    assert params["evidence_identity"] == result["evidence"]["identity"]
+    assert params["by_kind"] == mapped["by_kind"]
+    assert ledger.verify().status is ChainStatus.VALID
+
+
+def test_the_map_can_be_turned_off(tmp_path: Path) -> None:
+    image = _image_with_two_jpegs(tmp_path / "evidence.dd")
+    generator = carve_generator(
+        image, undelete=False, job_id="carve-nomap", ledger=None, media_map=False
+    )
+    try:
+        while True:
+            next(generator)
+    except StopIteration as stop:
+        assert stop.value["media_map"] is None

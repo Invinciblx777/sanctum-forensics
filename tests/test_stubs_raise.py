@@ -42,6 +42,8 @@ IMPLEMENTED = (
     # Covered by tests/carve/test_pii_detectors.py and the no-leak test,
     # tests/api/test_pii_no_leak.py.
     "core.carve.pii",
+    # Covered by tests/carve/test_mediamap.py.
+    "core.carve.mediamap",
     "core.erase.files",
     # Covered by tests/erase/files/test_free_space_gates.py and, on udisks loop
     # volumes, test_free_space_wipe_carve.py.
@@ -57,6 +59,8 @@ IMPLEMENTED = (
     "core.platform",
     # Covered by tests/test_workflow.py.
     "core.workflow",
+    # Covered by tests/test_destroy.py and tests/api/test_destroy_record_api.py.
+    "core.destroy",
     # Covered by tests/api/test_gate_hardening.py and
     # tests/helper/test_write_seam_authorization.py.
     "core.authorization",

@@ -34,6 +34,7 @@ from api.routes.common import (
 from api.routes.models import (
     AcquireRequest,
     CarveRequest,
+    DestroyRecordRequest,
     EraseDriveRequest,
     EraseFilesRequest,
     JobAccepted,
@@ -378,6 +379,64 @@ def erase_files(
     return _accepted(job_id, "erase-files", body.dry_run)
 
 
+# --------------------------------------------------------------------------
+# Record a physical destruction
+# --------------------------------------------------------------------------
+
+
+@router.post("/jobs/record-destroy", response_model=JobAccepted)
+def record_destroy(
+    body: DestroyRecordRequest,
+    services: AppServices = Depends(get_services),
+) -> JobAccepted:
+    """Chain and file a physical destruction, as the people who did it attest.
+
+    Destroy is the NIST SP 800-88 Rev. 2 outcome no software performs. Nothing
+    here opens a device: the job writes one ``destroy.recorded`` entry, and its
+    report says in the signed bytes that the tool observed nothing.
+    """
+    from core.destroy import record_destruction, refuse_a_future_date
+    from core.errors import SanctumError
+    from core.ledger.chain import Ledger
+    from core.models import DestructionRecord
+
+    record = DestructionRecord.model_validate(
+        body.model_dump(exclude={"case_id", "operator"})
+    )
+    try:
+        refuse_a_future_date(record)
+    except SanctumError as exc:
+        raise sanctum_error_response(
+            "DestructionDateInFuture", exc.message, exc.remediation
+        ) from exc
+
+    job_id = f"destroy-{uuid.uuid4().hex[:12]}"
+    ledger = Ledger(
+        services.ledger_root,
+        tool_version=services.tool_version,
+        pubkey_fingerprint=_signing_fingerprint(services),
+    )
+    actor = resolve_identity(services).labelled_actor(body.operator)
+    params = {
+        "serial": record.serial,
+        "technique": record.technique.value,
+        "media_type": record.media_type,
+        "dry_run": False,
+        "observed_by_tool": False,
+    }
+
+    def factory() -> Any:
+        return record_destruction(
+            record, ledger=ledger, job_id=job_id, actor=actor, case_id=body.case_id
+        )
+
+    _submit(
+        services, "destroy-record", params, factory,
+        job_id=job_id, label=body.operator, case_id=body.case_id,
+    )
+    return _accepted(job_id, "destroy-record", dry_run=False)
+
+
 @router.post("/jobs/wipe-free-space", response_model=JobAccepted)
 def wipe_free_space(
     body: WipeFreeSpaceRequest,
@@ -579,6 +638,7 @@ def carve_image(
         "undelete": body.undelete,
         "carve_signatures": body.carve_signatures,
         "pii_triage": body.pii_triage,
+        "media_map": body.media_map,
         "out_dir": str(out_dir) if out_dir else None,
     }
 
@@ -604,6 +664,7 @@ def carve_image(
             operator=resolve_identity(services).labelled_actor(body.operator),
             case_id=body.case_id,
             work_dir=services.work_dir,
+            media_map=body.media_map,
         )
 
     _submit(

@@ -10,7 +10,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 __all__ = [
     "SanitizationLevel",
@@ -35,6 +35,10 @@ __all__ = [
     "MacTimestamps",
     "CarveFragment",
     "CarveCandidate",
+    "MediaRegion",
+    "MediaMap",
+    "DestroyTechnique",
+    "DestructionRecord",
     "SubstitutedRange",
     "BadSectorRange",
     "EvidenceSource",
@@ -638,6 +642,98 @@ class BadSectorRange(BaseModel):
     @property
     def sector_count(self) -> int:
         return self.last_lba - self.first_lba + 1
+
+
+class DestroyTechnique(StrEnum):
+    """How media was physically destroyed, as the people who did it recorded."""
+
+    SHRED = "SHRED"
+    DISINTEGRATE = "DISINTEGRATE"
+    PULVERIZE = "PULVERIZE"
+    INCINERATE = "INCINERATE"
+    MELT = "MELT"
+    OTHER = "OTHER"
+
+
+class DestructionRecord(BaseModel):
+    """A physical destruction, attested by the people who performed it.
+
+    NIST SP 800-88 Rev. 2 names Destroy as the outcome for media that cannot
+    be cleared or purged, or must never be reused. No software performs it,
+    and none can observe it: this is what the operator and the witness state,
+    signed so it cannot change afterwards. See :mod:`core.destroy`.
+    """
+
+    serial: str = Field(min_length=1, max_length=128)
+    model: str = Field(default="", max_length=128)
+    capacity_bytes: int | None = Field(default=None, ge=0)
+    media_type: Literal["HDD", "SSD", "USB", "SD_CARD", "OPTICAL", "TAPE", "OTHER"]
+    technique: DestroyTechnique
+    #: Required when the technique is OTHER.
+    technique_detail: str = Field(default="", max_length=300)
+    #: Largest remaining fragment, as measured or specified by the facility.
+    particle_size_mm: int | None = Field(default=None, gt=0, le=1000)
+    #: Why the medium was destroyed rather than cleared or purged.
+    reason: str = Field(min_length=1, max_length=500)
+    performed_by: str = Field(min_length=1, max_length=120)
+    witnessed_by: str = Field(default="", max_length=120)
+    performed_at: datetime
+    location: str = Field(default="", max_length=200)
+    #: A destruction vendor's certificate number, when a vendor did it.
+    vendor_certificate: str = Field(default="", max_length=120)
+    notes: str = Field(default="", max_length=1000)
+
+    @model_validator(mode="after")
+    def _other_is_described(self) -> DestructionRecord:
+        described = self.technique_detail.strip()
+        if self.technique is DestroyTechnique.OTHER and not described:
+            raise ValueError("technique OTHER needs technique_detail saying what")
+        for name in ("serial", "reason", "performed_by"):
+            if not str(getattr(self, name)).strip():
+                raise ValueError(f"{name} must not be blank")
+        return self
+
+
+class MediaRegion(BaseModel):
+    """One region of an evidence image, classed by the statistics of its bytes.
+
+    See :mod:`core.carve.mediamap`. Every number is an integer, so a map can
+    enter a signed report and the ledger unchanged.
+    """
+
+    offset: int
+    length: int
+    #: The class most of the blocks read here fell into: ZERO, FILL, TEXT,
+    #: STRUCTURED or HIGH_ENTROPY.
+    kind: str
+    #: That class's share of the blocks read, in basis points.
+    share_bp: int
+    #: Mean Shannon entropy of the blocks read, in millibits per byte (0-8000).
+    entropy_mb: int
+    #: For a FILL region, the byte it is filled with.
+    fill_byte: int | None = None
+    #: File headers on sector boundaries in the bytes read, by extension.
+    headers: dict[str, int] = {}
+    #: Bytes of this region actually read.
+    bytes_read: int
+    #: Some byte read here was substituted for an unreadable one.
+    substituted: bool = False
+
+
+class MediaMap(BaseModel):
+    """What an image holds, region by region, and how the answer was reached."""
+
+    size_bytes: int
+    region_bytes: int
+    block_bytes: int
+    #: True when the regions were sampled rather than read in full.
+    sampled: bool
+    bytes_read: int
+    regions: list[MediaRegion] = []
+    #: Bytes of the image in each class, shared out by block count per region.
+    by_kind: dict[str, int] = {}
+    headers: dict[str, int] = {}
+    limitations: list[str] = []
 
 
 class EvidenceSource(BaseModel):

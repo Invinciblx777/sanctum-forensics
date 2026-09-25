@@ -54,6 +54,10 @@ _KIND_TITLES = {
         "Forensic Recovery Report",
         "Carving and recovery from an evidence image opened read-only",
     ),
+    "destroy": (
+        "Record of Destruction",
+        "Physical destruction under NIST SP 800-88 Rev. 2, attested by people",
+    ),
     "other": ("Sanctum Forensics Report", "A signed record of one operation"),
 }
 
@@ -65,6 +69,8 @@ def _kind(sections: dict[str, Any]) -> str:
         return "files"
     if "evidence" in sections and "recovery" in sections:
         return "carve"
+    if "destruction" in sections and "attestation" in sections:
+        return "destroy"
     return "other"
 
 
@@ -188,6 +194,20 @@ def _verdict(kind: str, sections: dict[str, Any]) -> tuple[str, str, str]:
             f"{int(recovery.get('candidates') or 0)} objects recovered"
             + (f": {counts} confidence." if counts else "."),
             "seal",
+        )
+    if kind == "destroy":
+        attestation = sections.get("attestation") or {}
+        witness = str(attestation.get("witnessed_by") or "")
+        return (
+            "Destruction attested, not observed",
+            f"Attested by {_text(attestation.get('performed_by'))}"
+            + (
+                f", witnessed by {witness}."
+                if witness and witness != "none recorded"
+                else ", with no witness recorded."
+            )
+            + " This tool did not see the destruction.",
+            "warning",
         )
     return ("Signed record", "", "neutral")
 
@@ -354,6 +374,60 @@ def _facts(
                         str(int(integrity.get("objects_written") or 0)),
                         False,
                     ),
+                ],
+            )
+        )
+    elif kind == "destroy":
+        media = sections.get("media") or {}
+        destruction = sections.get("destruction") or {}
+        attestation = sections.get("attestation") or {}
+        size = destruction.get("particle_size_mm")
+        groups.append(
+            (
+                "Media",
+                [
+                    ("Serial number", _text(media.get("serial")), True),
+                    ("Model", _text(media.get("model")), False),
+                    ("Type", _text(media.get("media_type")), False),
+                    (
+                        "Capacity",
+                        _bytes(media.get("capacity_bytes"))
+                        if media.get("capacity_bytes") is not None
+                        else "not recorded",
+                        False,
+                    ),
+                ],
+            )
+        )
+        groups.append(
+            (
+                "Destruction",
+                [
+                    ("Technique", _text(destruction.get("technique")), False),
+                    (
+                        "Fragment size",
+                        f"{size} mm" if size is not None else "not recorded",
+                        False,
+                    ),
+                    ("Performed at", _text(destruction.get("performed_at")), True),
+                    ("Where", _text(destruction.get("location")), False),
+                    ("Why Destroy", _text(destruction.get("reason")), False),
+                    (
+                        "Vendor certificate",
+                        _text(destruction.get("vendor_certificate")),
+                        True,
+                    ),
+                ],
+            )
+        )
+        groups.append(
+            (
+                "Attestation",
+                [
+                    ("Performed by", _text(attestation.get("performed_by")), False),
+                    ("Witnessed by", _text(attestation.get("witnessed_by")), False),
+                    ("Recorded at", _text(attestation.get("recorded_at")), True),
+                    ("Observed by this tool", "no", False),
                 ],
             )
         )

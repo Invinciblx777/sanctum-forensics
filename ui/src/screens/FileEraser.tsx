@@ -517,7 +517,7 @@ function TracePanel({ sweep, dryRun }: { sweep: TraceSweep; dryRun: boolean }) {
                       </span>
                     </div>
                   </td>
-                  <td>
+                  <td className="is-prose">
                     <div className="col tight">
                       <FilePath value={trace.location} />
                       <span className="note">{trace.evidence}</span>
