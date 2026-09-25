@@ -242,8 +242,10 @@ only with the laptop screen.
 ```
 
 Hovering the badge shows its evidence string. The badge is `capabilityBadge()`
-in `ui/src/screens/Devices.tsx`; the evidence is not decoration, it is the text
-the panel will ask you about.
+in `ui/src/lib/capability.ts`; the evidence is not decoration, it is the text
+the panel will ask you about. A drive that reports a firmware sanitize reads
+**PURGE · UNVERIFIED**, not a green PURGE AVAILABLE: no firmware sanitize has been
+recorded on a physical drive, so the badge stays in the unknown tone until one is.
 
 **Say — 40 seconds, rehearsed word for word:**
 

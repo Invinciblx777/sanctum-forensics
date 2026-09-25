@@ -1,30 +1,32 @@
 # Package verification, 2026-09-25
 
-**Rebuilt at `d95603d`** (the final polish, later on 2026-09-25), after two commits that
-change packaged code: `0d14af2` (the Platform screen reads firmware Purge as Unverified
-until a hardware result is recorded) and `d95603d` (the Cases and Platform screens, and
-narrow-width table layout on Audit and Devices). The previous build, at `e81f491`, is
-this README's previous version in git history.
+**Rebuilt at `76dde42`** (2026-09-26, the release-hold remediation), after five
+commits that change packaged code: `e9253a3` (a device's firmware Purge option and
+the Devices badge read Unverified without a hardware record), `c71c6b7` (a
+write-seam refusal is BLOCKED in Cases and on the Overview, a failed read-back
+never advances past Verify, a file erase that failed partway is not "not
+attempted"), `338f955` (the overview's physical runs are dated to their builds),
+`644a2e3` (a finished job's status is re-read until its outcome is settled) and
+`76dde42` (the Cases note names BLOCKED and VERIFY FAILED). The previous build, at
+`d95603d`, is this README's previous version in git history; `dist/` held it until
+this rebuild and now holds the `76dde42` build.
 
 `e81f491` is where the reportlab fix landed: reportlab imports its barcode symbologies
 through `exec()`, which PyInstaller cannot see, and the certificate draws its QR code
 through that package, so a build without it answers every certificate request with a
 500 (`ModuleNotFoundError: reportlab.graphics.barcode.code128`). The fix is still in
-`packaging/sanctum.spec`, guarded by `tests/test_packaging_spec.py`, and the isolated
+`packaging/sanctum.spec`, guarded by `tests/test_packaging_spec.py`; the `76dde42`
+archive holds `reportlab.graphics.barcode.code128` and `.qr`, and the isolated
 smoke below issues and verifies a certificate from each package.
 
-**What `dist/` held before this rebuild.** Not the `e81f491` packages this record then
-named: its AppImage and `.deb` hashed `5d8d59f4…` and `18b85962…`, the `b163834` build
-(no QR code in any PDF). Both were replaced by the `d95603d` build below.
-
 Packages built with `scripts/build-linux-portable.sh` (podman, `python:3.11-bullseye`,
-glibc 2.31 image) from a clean clone checked out at **`d95603d`**, with `ui/dist`
+glibc 2.31 image) from a clean clone checked out at **`76dde42`**, with `ui/dist`
 built in that clone. Later commits change documentation and evidence only, none of
 which is packaged (`packaging/sanctum.spec` collects `core`, `api`, `helper`,
 `ui/dist` and build metadata). Check that for any later HEAD with:
 
 ```sh
-git diff --stat d95603d HEAD -- api core helper ui/src packaging pyproject.toml constraints.txt
+git diff --stat 76dde42 HEAD -- api core helper ui/src packaging pyproject.toml constraints.txt
 ```
 
 An empty result means the packages still hold that HEAD's code. The packages report
@@ -34,22 +36,32 @@ clone was a detached checkout of the commit.
 
 | Artifact | SHA-256 |
 |---|---|
-| `Sanctum-0.0.0-x86_64.AppImage` | `d3f1fe6cb7ad6ec68edce5ede9190439c8a21172cdab257e5aa085a1045a02ff` |
-| `sanctum_0.0.0_amd64.deb` | `ebe9f43d3500c2224442fd7b1d367f052c41ce6209346d24e626c0595f0afe4d` |
+| `Sanctum-0.0.0-x86_64.AppImage` | `3997f9c5d62133293a8377f5a864cb595e57d364c554b54f5be22dcfc266f983` |
+| `sanctum_0.0.0_amd64.deb` | `1642bfa308a6948098c487dbc8bdcb541e19c08cc9820605e4672135b38fcbd2` |
 
 ## Identity: `identity.py`
 
 Reads the unpacked payloads; nothing from a package is executed.
 `identity-appimage.json` and `identity-deb.json`, both **PASS**:
 
-- `build_info.json` names `d95603d…` exactly, with no `+dirty`.
+- `build_info.json` names `76dde4246338f4cc5ca261d3b8fa1a275d0dbeaa` exactly, with no `+dirty`.
 - All **92 of 92** Python modules under `core/`, `api/` and `helper/` at that commit are
   in the frozen archive, and every archived code object equals the one Python 3.11
   compiles from the commit's source. None missing, none extra. This includes
   `helper.authorization`, `api.authorization` and `core.authorization`, and the
   2026-09-25 additions `core.erase.traces`, `core.carve.mediamap` and `core.destroy`.
 - The bundled UI equals `ui/dist` built from the same sources, **8 of 8** files
-  (the bundle now carries its own fonts).
+  (the bundle now carries its own fonts). That `ui/dist` is also byte-identical to
+  the one the four browser runs of 2026-09-26 were served.
+- The bundle holds the remediation's words: *BLOCKED by a safety refusal before
+  any write*, *REQUEST FAILED - the case record could not be read*, *VERIFY
+  FAILED*, *read-back verification FAILED*, *PURGE · UNVERIFIED*, *failed
+  partway*, *This release: no physical validation*; and still *Record a physical
+  destruction*, the media map and the trace sweep. The archive holds
+  `core.erase.traces`, `core.carve.mediamap`, `core.destroy`,
+  `helper.authorization` and `api.authorization`, and the packaged
+  `core/platform/validation_record.json` has an empty `hardware` section, which is
+  what makes firmware Purge read Unverified.
 - The two packages carry the same executable and byte-identical payload trees.
 - `.deb`: package `sanctum` 0.0.0 amd64, no maintainer scripts, 202 payload files all
   owned `root:root`, no set-uid, set-gid or world-writable file. It now declares

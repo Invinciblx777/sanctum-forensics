@@ -1,5 +1,10 @@
 # Feature run, 2026-09-25: media map, trace sweep, Record of Destruction
 
+**Repeated 2026-09-26 at `76dde42`** (the release-hold remediation), on a fresh
+sandboxed server and the UI bundle packaged at that commit: 19 of 19, no assertion changed.
+The pinned screenshots here were not regenerated. See
+[`../remediation-2026-09-25/`](../remediation-2026-09-25/README.md).
+
 The three features added on 2026-09-25, driven through the real UI and the real API
 in Chromium (headless shell, revision 1243, Playwright 1.63.0 from a separate venv)
 at commit **`e21f88d`** (the sidebar in each screenshot shows the build).

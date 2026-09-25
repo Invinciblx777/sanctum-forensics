@@ -1,5 +1,13 @@
 # Sanitize screen browser run, 2026-09-25
 
+**Repeated 2026-09-26 at `76dde42`** (the release-hold remediation), on a fresh
+sandboxed server and the UI bundle packaged at that commit: 59 of 59, no assertion changed.
+The pinned screenshots here were not regenerated. See
+[`../remediation-2026-09-25/`](../remediation-2026-09-25/README.md).
+
+`drivers/server.py` gained one flag for that run, `readback.flag` (a real
+`run_erase` completes with a FAILED read-back); this driver does not use it.
+
 **Re-run at `e21f88d`**, after the design-system v2 redesign and the stopped-step fix:
 59 of 59 again, and the screenshots here are from that run. The tracker now stays on
 the step where a flow stopped (`10-sanitize-refused-at-write-seam.png`: *Sanitize,

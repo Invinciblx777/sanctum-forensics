@@ -1,6 +1,6 @@
 # Demo evidence index
 
-**Date:** 2026-09-24, updated after the release-quality wave. This is the
+**Date:** 2026-09-24, updated after the release-quality wave; *What must not be said* extended 2026-09-26 with the release-hold remediation. This is the
 source of truth for the presentation. Every claim a presenter makes maps to
 real software output: a screen, a command, a test that pins it, and the
 recorded artifact behind it. A claim with no row here does not get said.
@@ -131,3 +131,14 @@ not need that capture, and none should be made for it during the freeze.
   vocabulary and mapping to it.
 - That the Devices and Sanitize screens were browser-checked against real
   devices. They were checked against fixtures.
+- That anything was physically validated for the current release. The physical
+  runs are from 2026-09-05 and 2026-09-23, with earlier builds.
+- That HPA/DCO unlock has run on a drive, or that the trace sweep was validated
+  on a live desktop.
+- That a Record of Destruction proves a destruction. It is attested, not
+  observed.
+- That the backup is proven to be a copy of the device, that the helper's
+  check-to-first-write window is race-free, or that the API authenticates who
+  approved.
+- That the packages passed every smoke check. The isolated smoke is 22 PASS and
+  2 NOT RUN: the two need a real device.

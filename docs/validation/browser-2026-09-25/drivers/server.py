@@ -18,6 +18,8 @@ between steps, which is how a refusal is provoked through the real UI:
     boom.flag      the helper probe raises an unexpected RuntimeError (HTTP 500)
     seam.flag      a real run_erase is refused the way the helper's write-seam
                    check refuses one (WorkflowGateRefused), before any write
+    readback.flag  a real run_erase completes but its read-back verification
+                   FAILED (added for the 2026-09-25 remediation run)
 
 A ``calls.log`` records every helper call, so the driver can prove that a
 refusal never reached ``run_erase`` with ``dry_run=false``.
@@ -135,6 +137,16 @@ class FlagHelper(RecordingHelper):
             )
         if method == "enumerate_devices":
             return {"devices": ADAPTER.device_rows()}
+        if (
+            method == "run_erase"
+            and params.get("dry_run") is False
+            and (state / "readback.flag").exists()
+        ):
+            answer = super().call(method, params)
+            answer["result"]["verification"].update(
+                passed=False, failed_offsets=[4096, 1_048_576]
+            )
+            return answer
         if method == "platform_status":
             from core.platform import platform_status
 

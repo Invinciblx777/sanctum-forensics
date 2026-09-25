@@ -1,5 +1,10 @@
 # Final polish run, 2026-09-25: Cases, Platform, Audit, Recovery
 
+**Repeated 2026-09-26 at `76dde42`** (the release-hold remediation), on a fresh
+sandboxed server and the UI bundle packaged at that commit: 66 of 66, no assertion changed.
+The pinned screenshots here were not regenerated. See
+[`../remediation-2026-09-25/`](../remediation-2026-09-25/README.md).
+
 The Cases and Platform screens after the final judge-facing polish, driven through the
 real UI and the real API in Chromium (headless shell, revision 1243, Playwright 1.63.0
 from a separate venv) at commit **`d95603d`**, at **1366 × 768 and 1024 × 768**.

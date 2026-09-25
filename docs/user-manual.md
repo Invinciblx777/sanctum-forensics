@@ -55,7 +55,8 @@ keyboard-level recovery. **Purge** uses a mechanism — a firmware sanitize, a
 cryptographic erase — that makes recovery infeasible with laboratory technique.
 **Destroy** is physical: disintegrate, incinerate, pulverize, shred, melt. This
 tool **never returns Destroy**, because no software can perform it; where Destroy
-is what your policy requires, the tool's job ends at telling you so.
+is what your policy requires, the tool tells you so, and can afterwards record the
+people's attestation that it was done (§4, *Destroy*). It observes nothing.
 
 Which of Clear or Purge you get is decided by what the device reported, never by
 what you selected — see §4. On media where the tool can only Clear, the report
@@ -464,7 +465,11 @@ Eleven steps run per file in a fixed order: inspect, cleanse metadata, overwrite
 alternate data streams, truncate, rename to a **same-length** random name (a shorter
 name leaves the tail of the original in the directory entry), unlink, residual scan,
 verify. A per-file `OSError` sets `ok=false` on that record and the batch continues;
-one bad file does not abort a run.
+one bad file does not abort a run. The record's `attempted` field says whether the
+erase steps had begun: the File eraser shows a path that failed partway as
+**failed partway** with an INCOMPLETE residual (its state is unknown), a path
+refused or stopped before any step ran as NOT RUN, and a record without the field
+(an older server) as UNKNOWN - never "not attempted" for a path it started on.
 
 Two options change what is destroyed:
 
@@ -1189,8 +1194,10 @@ state, then re-probe capabilities.
 **`{level} is not achievable on this device. {reason}`** — HTTP 422, `UnsupportedCapability`
 The probe found no mechanism for that level. The reason names what was observed —
 often the USB-bridge sentence from §4.
-*Do:* Choose one of the reachable levels, which the remediation lists. To reach the
-level you asked for on this media, physical destruction is the remaining option.
+*Do:* Choose one of the reachable levels, which the remediation lists. If your
+policy requires a level this media cannot reach, the remaining outcome is Destroy
+(physical destruction, recorded with *Record a physical destruction*). Destroy is a
+different outcome from Clear and Purge, not a way of reaching either.
 
 **`{method} cannot be requested directly; firmware methods are selected from probed capability only.`** — HTTP 422, `UnsupportedCapability`
 *Do:* Ask for a sanitization level and let capability probing choose the mechanism.
@@ -1198,8 +1205,9 @@ level you asked for on this media, physical destruction is the remaining option.
 **`{device} is an Opal drive; a PSID revert needs the PSID printed on the physical drive label.`** — HTTP 422, `UnsupportedCapability`
 This build has no way to accept a PSID (§4).
 *Do:* Use ATA or NVMe SANITIZE if the drive reports one; otherwise a single-pass
-overwrite achieves Clear, not Purge. Physical destruction is the remaining option
-for Purge on this drive.
+overwrite achieves Clear, not Purge. If policy requires more than Clear on this
+drive, the remaining outcome is Destroy, which is physical destruction and not a
+Purge; the tool records it as an attestation and performs nothing.
 
 **`hdparm could not read {device}: permission denied.`** / **`nvme id-ctrl could not read {device}: permission denied.`** — HTTP 422, `UnsupportedCapability`
 Capability probing needs raw device access and did not have it. **This is not a
@@ -1413,8 +1421,16 @@ tabs that carry their counts. *Overview* shows the integrity verdict and one
 figure each for evidence, operations, reports and audit entries (click a figure
 to open its tab). *Operations* names each job in words over the id the Audit
 screen asks for, with its job state in the registry's own word (COMPLETE,
-FAILED, CANCELLED, RUNNING), a **SIMULATION** label on a dry run, and whether a
-signed report exists. *Reports* has Open/Download links and marks each SIGNED
+FAILED, CANCELLED, RUNNING) except in two cases: **BLOCKED** is a safety refusal
+at the helper's write seam, before any write (the registry says failed; the
+screen reads the job's structured `error_kind`, never its message), and **VERIFY
+FAILED** is a drive erase that ran but whose read-back failed (the registry says
+complete). It adds a **SIMULATION** label on a dry run, and whether a signed
+report exists. A case that cannot be read shows **REQUEST FAILED**, never an
+empty case and never BLOCKED. The Overview's *Secure erasure* column says the
+same four things apart: blocked (nothing was erased), failed (the target may be
+partly overwritten), stopped on request (CANCELLED), and a read-back that
+FAILED. *Reports* has Open/Download links and marks each SIGNED
 or UNSIGNED; *Audit* lists the chain entries that name the case. **The
 integrity verdict on that screen is the ledger's**; the case file itself is an
 index and proves nothing. `POST /cases`, `GET /cases`, `GET /cases/{id}`,
@@ -1497,9 +1513,19 @@ result can be verified, and the state of the audit chain.
 **Sanitizing a device** follows eight steps, shown across the top of the
 screen: choose the target, the app analyses it, you see the recommended
 method, review the warning, confirm by typing the serial, it sanitizes, it
-verifies, you get the certificate. The first panel answers three questions in
-plain words - which device, what will happen, can it be verified - and lists
-the safety checks. The engine's evidence is under *Technical details*.
+verifies, you get the certificate. A flow that stops stays on the step where
+it stopped, marked *stopped*: a refusal never reaches Verify, and a run whose
+read-back FAILED stops on Verify and never reaches Certificate - its signed
+record is not a certificate. Only a read-back that passed moves past Verify. The
+first panel answers three questions in plain words - which device, what will
+happen, can it be verified - and lists the safety checks. The engine's evidence
+is under *Technical details*.
+
+On the Devices screen a drive that reports a firmware sanitize reads **PURGE ·
+UNVERIFIED** (or **SED · OPAL · UNVERIFIED**), not a green PURGE AVAILABLE: no
+firmware sanitize has been recorded on a physical drive. The Purge option on
+the Sanitize screen reads *Unverified* for the same reason. It is still offered;
+it is never presented as a hardware-validated result.
 
 **"Sanitization not available"** is a result, not an error. It names the
 reason (for example: this is the system disk; a volume is in use; this

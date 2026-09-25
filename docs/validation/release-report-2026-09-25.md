@@ -3,6 +3,91 @@
 Population: SYNTHETIC VALIDATION, SIMULATION and PACKAGE IDENTITY. **PHYSICAL
 VALIDATION: none.** No sudo was used. Nothing was pushed.
 
+## Release-hold remediation, 2026-09-26
+
+The final freeze audit at `ea8c9f3` returned HOLD. This section supersedes every
+package, test and browser figure further down. Population: SYNTHETIC, SIMULATION and
+PACKAGE IDENTITY; **PHYSICAL VALIDATION: none**. No sudo, no physical device
+enumerated, opened or written, no erase, acquisition or restore, no push. SANCTUMREC
+was not accessed.
+
+| Commit | Content |
+|---|---|
+| `e9253a3` | Platform: an executable per-device Purge option is UNVERIFIED without a hardware PASS in the validation record, and still offered under that word; the Devices badge reads PURGE · UNVERIFIED (or SED · OPAL · UNVERIFIED), never a green PURGE AVAILABLE. The engine's plan and the server's gates are unchanged |
+| `c71c6b7` | UI: a write-seam refusal (`WorkflowGateRefused`, read from the structured `error_kind`) is BLOCKED in Cases and on the Overview, never a failed or partial erase; the case record keeps the job's `error_kind` and read-back verdict; a case that cannot be read is REQUEST FAILED; the Sanitize tracker passes Verify only on `passed === true`, and a failed read-back stops on Verify with a signed record, not a certificate; a file erase that failed partway reads *failed partway*, not "not attempted" (`FileEraseRecord.attempted`) |
+| `338f955` | UI: the overview's physical-run lines are dated to their builds, and the *not physically validated* list opens with *This release: no physical validation*; a stale source comment on the backup gate corrected |
+| `644a2e3` | UI: `streamJob` re-reads a finished job until its outcome is settled. Found by the remediation browser run (below) |
+| `76dde42` | UI: the Cases note names BLOCKED and VERIFY FAILED. **Packages built here** |
+| this record's commit | documentation and evidence only |
+
+**Refusal flow, traced.** The helper raises `WorkflowGateRefused` at the write seam;
+the job registry records `state: failed` with `error_kind: WorkflowGateRefused`
+(`api/jobs.py`); `GET /cases/{id}` now copies that kind, and the drive erase's
+read-back verdict, onto the case operation (`api/routes/cases.py`,
+`core/cases.py:update_operation`); `ui/src/lib/refusal.ts` is the one place Sanitize,
+Cases and the Overview ask whether a kind is a safety refusal. Before this, Cases
+showed FAILED and the Overview said "failed or cancelled; the target is partially
+sanitized" for a refusal that wrote nothing.
+
+| Check | Result |
+|---|---|
+| Full pytest at `76dde42` | **2046 passed, 34 skipped, 0 failed** of 2080 collected; host-device guard 0 refusals; pytest's temporary directory on ext4 (`/var/tmp`). The five more than `d95603d` are this remediation's new tests. Counted from the run's progress record: with the project's `addopts = "-q"` and a second `-q`, pytest prints no summary line; exit 0 |
+| Helper and authorization (`tests/helper`, `test_authorization_binding.py`, `api/test_gate_hardening.py`, `api/test_write_seam_integration.py`) | **92 passed** |
+| Workflow and resume (`test_workflow.py`, `api/test_workflow_gate.py`, `api/test_workflow_failure_modes.py`, `api/test_resume.py`, `api/test_sanitize_ui_chain.py`) | **74 passed** |
+| Erase (`tests/erase`) | **354 passed, 13 skipped**, 24 min 38 s on ext4: the synced 512-byte writes of the short-write tests are slow on a journalled filesystem |
+| Ruff | `ruff check .` clean |
+| mypy `--strict` (Linux, two win32, darwin) | clean, all four |
+| UI unit tests; `tsc -b`; build | **123 of 123**; clean; built |
+| Browser, remediation (refusal, REQUEST FAILED, Purge Unverified, read-back) | **39 of 39** at `76dde42` (`remediation-2026-09-25/`) |
+| Browser, Sanitize, sandboxed | **59 of 59** at `76dde42`, no assertion changed |
+| Browser, trace sweep / media map / Record of Destruction | **19 of 19** at `76dde42`, no assertion changed |
+| Browser, Cases / Platform / Audit / Recovery, 1366 and 1024 wide | **66 of 66** at `76dde42`, no assertion changed |
+| Packages at `76dde42`: identity | **PASS** both: `build_info.json` names `76dde42…` with no `+dirty`; 92 of 92 modules bytecode-identical; UI 8 of 8, and that bundle is byte-identical to the one the four browser runs were served; same executable, identical payload trees; `.deb` 202 files `root:root`, no maintainer scripts, `Depends: libc6 (>= 2.30), zlib1g` |
+| Packages at `76dde42`: contents | the bundle carries the remediation's words (BLOCKED by a safety refusal, REQUEST FAILED, VERIFY FAILED, read-back verification FAILED, PURGE · UNVERIFIED, failed partway, This release: no physical validation) and still the Record of Destruction, media map and trace sweep; the archive holds `reportlab.graphics.barcode.code128` and `.qr`, `helper.authorization`, `api.authorization`, `core.erase.traces`, `core.carve.mediamap`, `core.destroy`; the packaged validation record's `hardware` section is empty |
+| Packages at `76dde42`: isolated smoke | **22 PASS, 2 NOT RUN** each. The two NOT RUN (*every device assessed*, *protected devices are NOT AVAILABLE*) need a real device and were not run. A certificate is issued and verifies, so the reportlab QR fix holds |
+
+| Artifact at `76dde42` | SHA-256 |
+|---|---|
+| `Sanctum-0.0.0-x86_64.AppImage` | `3997f9c5d62133293a8377f5a864cb595e57d364c554b54f5be22dcfc266f983` |
+| `sanctum_0.0.0_amd64.deb` | `1642bfa308a6948098c487dbc8bdcb541e19c08cc9820605e4672135b38fcbd2` |
+
+`dist/` now holds this build. Two intermediate builds were superseded before being
+recorded: one at `338f955` (identity PASS, smoke 22 PASS and 2 NOT RUN, then
+replaced when the browser run found the settle race) and one at `644a2e3` (built,
+never checked, replaced for the Cases note). One build at an earlier `2aceef1` was
+stopped part-way when a stale source comment was found; that commit was amended
+into `338f955` before anything was pushed.
+
+**Found by the remediation browser run.** A job's terminal stream event can leave
+before its outcome reaches the chain (`settled: false`). The Sanitize screen waits
+for `settled`, and nothing read the job again, so with the full test suite running
+beside the browser the screen stayed on PLAN READY after a write-seam refusal. It
+was a race, not a wrong answer: nothing false was shown, but nothing true either.
+`644a2e3` fixes it; `ui/tests/streamJob.test.ts` pins it.
+
+**The tmpfs record.** The row in *Final polish* below said the tmpfs run's quota was
+"filled by other sessions' scratch files". That was not established, and is
+corrected there. What is established: the spill test passes with pytest's
+temporary directory on ext4; `/tmp` here is a 7.5 GB tmpfs mounted with `usrquota`;
+the same user's other scratch data shares that quota (on 2026-09-26, 3.8 GB of
+session scratch directories under `/tmp/claude-1000`); the test writes 2000 MiB, so
+the failure is an environment and resource limit. How full the quota was at the
+moment of the 2026-09-25 failure was not recorded. **Whether that run modified or
+deleted any other session's files cannot be established**: no inventory of `/tmp`
+was taken before or after it. The suite writes inside pytest's temporary directory,
+and pytest's own retention keeps the three newest `pytest-N` directories under
+`/tmp/pytest-of-<user>` and removes older ones, whichever session made them, so a
+run there can delete an older run's temporary directory by design. This
+remediation's first focused run used that default location and hit the same quota
+error in the same test; every later run, including the full suite above, used an
+ext4 `--basetemp` under `/var/tmp`. The test was not changed.
+
+Not established, unchanged: anything on physical hardware (firmware Purge, HPA/DCO
+unlock, backup restoration, a live-desktop trace sweep); that a backup image is a copy
+of the device; race freedom between the helper's check and the first write; who
+approved (the API does not authenticate a human). A simulation opens the device
+`O_RDONLY` for its size and metadata. Destruction is attested, not observed.
+
 ## Final polish: Cases, Platform, rebuilt packages
 
 This section supersedes every package and test figure further down. Population
@@ -25,7 +110,7 @@ UNVERIFIED as exactly that. The screen now agrees with the document.
 |---|---|
 | Full pytest at `d95603d` | **2041 passed, 34 skipped, 0 failed**; host-device guard 0 refusals. Run with pytest's temporary directory on ext4 |
 | The one skip more than before | `tests/erase/files/test_platform.py:134` tests a filesystem *without* extent mapping and skips on ext4, which has it; on tmpfs it runs and passes |
-| The same suite with `/tmp` on tmpfs | 2041 passed, 33 skipped, **1 failed**: `test_a_large_candidate_set_holds_one_payload_at_a_time` writes 2000 MiB and hit the tmpfs per-user quota (`OSError: [Errno 122] Disk quota exceeded`), filled by other sessions' scratch files. It passes on ext4. An environment limit, recorded rather than hidden |
+| The same suite with `/tmp` on tmpfs | 2041 passed, 33 skipped, **1 failed**: `test_a_large_candidate_set_holds_one_payload_at_a_time` writes 2000 MiB and hit the tmpfs per-user quota (`OSError: [Errno 122] Disk quota exceeded`). The same user's other scratch data shared that quota; how much of it was in use at the moment of the failure was not recorded. It passes on ext4. An environment and resource limit, recorded rather than hidden; the test was not changed. Whether the run modified or deleted another session's files cannot be established: see *Release-hold remediation* above |
 | Ruff | clean. `ruff check .` was not clean at `4c81021`: 13 E501 and 1 I001 in `features-2026-09-25/drivers/`, fixed here without changing behaviour (the feature run passed again after) |
 | mypy `--strict` (Linux, two win32, darwin) | clean |
 | UI unit tests; `tsc -b`; build | **103 of 103**; clean; built |

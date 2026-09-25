@@ -14,6 +14,11 @@ Four states, and they are not interchangeable:
 | **NOT YET VALIDATED** | The software path exists; nobody has run it on hardware of that kind. |
 | **UNSUPPORTED** | Not implemented on that platform. Refused by the app with a reason. |
 
+Every VALIDATED row below is a run from 2026-09-05 or 2026-09-23 with the build of
+that date. **No physical validation was run for the current release** (packages at
+`76dde42`, 2026-09-26). The app shows firmware Purge as *Unverified*, and lists
+HPA/DCO unlock as not run on hardware, until a hardware result is recorded.
+
 ## Whole-drive sanitization
 
 | Target | State | Evidence |
