@@ -45,6 +45,7 @@ __all__ = [
     "build_file_erase_report",
     "build_carve_report",
     "dpdp_erasure_reference",
+    "drive_report_inputs",
     "excerpt_gaps",
     "file_erasure_standards",
     "sanitization_standards",
@@ -261,6 +262,52 @@ def excerpt_gaps(entries: list[dict[str, Any]]) -> list[dict[str, int]]:
                 }
             )
     return gaps
+
+
+def drive_report_inputs(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """The device, method, hidden-area, verification and residual-risk inputs
+    of a drive report, from an erase job's result.
+
+    One function, so the API, the demo and the validation harness cannot
+    drift. The plan carries only ``level``; the level requested and the level
+    achieved are named here, because a certificate that leaves the achieved
+    level blank has left out the one line it exists to state. A dry run
+    achieved nothing and says so. A result recorded before the engine carried
+    these fields yields empty sections, which the report prints as recorded.
+    """
+    if not result:
+        return {
+            "device": {},
+            "method": {},
+            "hidden_areas": {},
+            "verification": {},
+            "residual_risk": {},
+        }
+    plan = dict(result.get("plan") or {})
+    device = dict(result.get("device") or {})
+    for key in ("logical_block_size", "physical_block_size"):
+        if result.get(key):
+            device[key] = result[key]
+    hidden = dict(result.get("hidden_areas") or {})
+    if hidden:
+        hidden["covered"] = bool(result.get("hidden_covered"))
+    achieved = result.get("achieved_level")
+    if result.get("dry_run", False):
+        achieved_text = "NONE (dry run: nothing was written)"
+    else:
+        achieved_text = str(achieved or "")
+    return {
+        "device": device,
+        "method": {
+            **plan,
+            "method": str(plan.get("method") or result.get("method") or ""),
+            "level_requested": str(plan.get("level") or result.get("level") or ""),
+            "level_achieved": achieved_text,
+        },
+        "hidden_areas": hidden,
+        "verification": dict(result.get("verification") or {}),
+        "residual_risk": dict(result.get("residual_risk") or {}),
+    }
 
 
 def build_report(
@@ -818,140 +865,23 @@ def render_json(report: dict[str, Any]) -> bytes:
 # --------------------------------------------------------------------------
 
 
-def _flatten(value: Any, indent: int = 0) -> list[tuple[int, str, str]]:
-    """Flatten a section into ``(indent, key, value)`` lines for the PDF."""
-    lines: list[tuple[int, str, str]] = []
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if isinstance(item, (dict, list)) and item:
-                lines.append((indent, str(key), ""))
-                lines.extend(_flatten(item, indent + 1))
-            else:
-                lines.append((indent, str(key), _scalar(item)))
-    elif isinstance(value, list):
-        for item in value:
-            if isinstance(item, (dict, list)):
-                lines.extend(_flatten(item, indent + 1))
-            else:
-                lines.append((indent, "-", _scalar(item)))
-    else:
-        lines.append((indent, "", _scalar(value)))
-    return lines
-
-
-def _scalar(value: Any) -> str:
-    if value is None:
-        return NONE_RECORDED
-    if isinstance(value, bool):
-        return "yes" if value else "no"
-    if isinstance(value, datetime):
-        return value.isoformat()
-    return str(value)
-
-
-def _wrap(text: str, width: int) -> list[str]:
-    words = text.split()
-    if not words:
-        return [""]
-    lines: list[str] = []
-    current = words[0]
-    for word in words[1:]:
-        if len(current) + 1 + len(word) <= width:
-            current = f"{current} {word}"
-        else:
-            lines.append(current)
-            current = word
-    lines.append(current)
-    return lines
-
-
 def render_pdf(report: dict[str, Any]) -> bytes:
-    """Render the human-readable, non-authoritative PDF."""
-    import io
+    """Render the human-readable, non-authoritative PDF.
 
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.units import mm
-    from reportlab.pdfgen import canvas as pdf_canvas
+    A certificate page first - the medium, the level asked for and achieved,
+    the verification, who ran it, and the SHA-256 of the signed JSON with a QR
+    code carrying it and the signature - then every section in the report's
+    own order. See :mod:`core.report.certificate`.
+    """
+    from core.report.certificate import render_certificate_pdf
 
-    buffer = io.BytesIO()
-    # pageCompression=0 keeps the text streams readable, which makes the PDF
-    # greppable and lets a reviewer confirm what it says without a viewer.
-    page = pdf_canvas.Canvas(buffer, pagesize=A4, pageCompression=0)
-    width, height = A4
-    left = 18 * mm
-    cursor = height - 20 * mm
-    bottom = 20 * mm
-
-    def newline(step: float = 4.6 * mm) -> None:
-        nonlocal cursor
-        cursor -= step
-        if cursor < bottom:
-            page.showPage()
-            cursor = height - 20 * mm
-
-    def draw(text: str, *, size: int = 9, mono: bool = False, indent: int = 0) -> None:
-        page.setFont("Courier" if mono else "Helvetica", size)
-        page.drawString(left + indent * 5 * mm, cursor, text[:200])
-        newline()
-
-    page.setFont("Helvetica-Bold", 15)
-    page.drawString(left, cursor, f"Sanctum Forensics Report - {report['case_id']}")
-    newline(8 * mm)
-
-    page.setFont("Helvetica-Bold", 8)
-    for line in _wrap(PDF_DISCLAIMER, 96):
-        page.setFont("Helvetica-Bold", 8)
-        page.drawString(left, cursor, line)
-        newline(3.8 * mm)
-    newline(3 * mm)
-
-    # The report's own key order, not SECTION_ORDER. A drive erasure, a file
-    # erasure and a recovery are different documents with different sections,
-    # and every builder emits its sections in the order it wants them read.
-    for name, section in report["sections"].items():
-        page.setFont("Helvetica-Bold", 11)
-        page.drawString(left, cursor, _SECTION_TITLES.get(name, name.title()))
-        newline(5.5 * mm)
-        if not section:
-            draw(NONE_RECORDED, indent=1)
-            continue
-        for indent, key, value in _flatten(section, indent=1):
-            mono = key in _MONOSPACE_KEYS or (
-                isinstance(value, str) and len(value) == 64 and value.isalnum()
-            )
-            label = f"{key}: " if key and key != "-" else ("- " if key else "")
-            width = 92 if mono else 104
-            for offset, chunk in enumerate(_wrap(f"{label}{value}", width)):
-                draw(chunk, mono=mono, indent=indent + (1 if offset else 0))
-        newline(2 * mm)
-
-    _draw_signature_qr(page, report, left, cursor)
-    page.showPage()
-    page.save()
-    return buffer.getvalue()
-
-
-def _draw_signature_qr(
-    page: Any, report: dict[str, Any], left: float, cursor: float
-) -> None:
-    """Draw a QR code carrying the detached signature, when one is present."""
-    signature = report.get("signature") or {}
-    payload = signature.get("sig_b64")
-    if not payload:
-        return
-    try:
-        from reportlab.graphics import renderPDF
-        from reportlab.graphics.barcode import qr
-        from reportlab.graphics.shapes import Drawing
-    except ImportError:  # pragma: no cover - reportlab always ships these
-        logger.warning("qr_unavailable")
-        return
-    code = qr.QrCodeWidget(payload)
-    bounds = code.getBounds()
-    drawing = Drawing(90, 90, transform=[90.0 / (bounds[2] - bounds[0]), 0, 0,
-                                         90.0 / (bounds[3] - bounds[1]), 0, 0])
-    drawing.add(code)
-    renderPDF.draw(drawing, page, left, max(cursor - 95, 20))
+    return render_certificate_pdf(
+        report,
+        canonical=render_json(report),
+        disclaimer=PDF_DISCLAIMER,
+        section_titles=_SECTION_TITLES,
+        monospace_keys=_MONOSPACE_KEYS,
+    )
 
 
 def write_report(report: dict[str, Any], out_dir: Path | str) -> tuple[Path, Path]:

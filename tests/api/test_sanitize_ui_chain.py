@@ -303,3 +303,47 @@ def test_a_wrong_serial_at_execution_is_a_structured_refusal_and_spends_nothing(
     assert not AuthorizationStore(services.state_dir / "authorizations").is_spent(
         auth_id
     )
+
+
+def _report_for(client: TestClient, job_id: str) -> dict[str, Any]:
+    import json
+    from pathlib import Path
+
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if client.get(f"/jobs/{job_id}").json()["state"] != "running":
+            break
+        time.sleep(0.02)
+    answer = client.post(
+        f"/reports/{job_id}", json={"case_id": "CASE-CERT", "operator": "t"}
+    )
+    assert answer.status_code == 200, answer.text
+    return dict(json.loads(Path(answer.json()["json_path"]).read_text()))
+
+
+def test_the_certificate_of_a_real_erase_names_device_levels_and_verification(
+    client: TestClient, services: AppServices, helper: RecordingHelper
+) -> None:
+    auth_id = open_workflow(client, services)
+    approve_workflow(client, auth_id)
+    job_id = client.post(
+        "/jobs/erase-drive", json={**REAL, "authorization_id": auth_id}
+    ).json()["job_id"]
+    sections = _report_for(client, job_id)["sections"]
+    assert sections["device_identity"]["serial"] == "SYN-PURGE-1"
+    assert sections["device_identity"]["logical_block_size"] == 512
+    assert sections["method"]["level_requested"] == "CLEAR"
+    assert sections["method"]["level_achieved"] == "CLEAR"
+    assert sections["verification"]["passed"] is True
+
+
+def test_the_certificate_of_a_dry_run_says_nothing_was_achieved(
+    client: TestClient, helper: RecordingHelper
+) -> None:
+    job_id = client.post("/jobs/erase-drive", json={"path": "/dev/sdz"}).json()[
+        "job_id"
+    ]
+    sections = _report_for(client, job_id)["sections"]
+    assert sections["method"]["level_achieved"].startswith("NONE (dry run")
+    assert sections["verification"]["passed"] is False
+    assert sections["verification"]["bytes_checked"] == 0

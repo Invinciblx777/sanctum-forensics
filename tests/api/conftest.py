@@ -180,10 +180,37 @@ class RecordingHelper:
                     ),
                     kind="ConfirmationMismatch",
                 )
+            level = str(params.get("level") or "CLEAR")
             return {
                 "result": {
                     "job_id": params.get("job_id", "erase"),
                     "dry_run": dry_run,
+                    # The shape core.erase.drive.execute returns: the plan, the
+                    # level asked for and the level achieved, and a read-back
+                    # verdict - none of the last two for a dry run.
+                    "method": "SINGLE_PASS_OVERWRITE",
+                    "level": level,
+                    "plan": {
+                        "method": "SINGLE_PASS_OVERWRITE",
+                        "level": level,
+                        "justification": "fixture",
+                        "est_seconds": 1,
+                    },
+                    "achieved_level": None if dry_run else level,
+                    "verification": None
+                    if dry_run
+                    else {
+                        "passed": True,
+                        "strategy": "full_read",
+                        "bytes_checked": int(row["device"]["size_bytes"]),
+                        "sample_count": 0,
+                        "confidence_bp": 10_000,
+                        "failed_offsets": [],
+                        "probability_note": "fixture",
+                        "hw_attested": False,
+                    },
+                    "logical_block_size": 512,
+                    "physical_block_size": 512,
                     "device": row["device"],
                     "residual_risk": {
                         "level": "medium",

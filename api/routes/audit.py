@@ -297,6 +297,7 @@ def generate_report(
         build_carve_report,
         build_file_erase_report,
         build_report,
+        drive_report_inputs,
         write_report,
     )
     from core.report.sign import (
@@ -455,13 +456,7 @@ def generate_report(
         }
     else:
         builder = build_report
-        fields = common | {
-            "device": _section(result, "device"),
-            "method": _section(result, "plan"),
-            "hidden_areas": _section(result, "hidden_areas"),
-            "verification": _section(result, "verification"),
-            "residual_risk": _section(result, "residual_risk"),
-        }
+        fields = common | drive_report_inputs(result)
 
     # Built twice, deliberately. sign_report signs the canonical bytes of the
     # report *without* a signature block, so the document that is signed and

@@ -400,6 +400,21 @@ class EraseResult(BaseModel):
     #: True only when the drive's own sanitize status reported clean completion.
     #: Never sufficient on its own; verification always samples as well.
     hw_attested: bool = False
+    #: The target as the engine read it at preflight, so a report names the
+    #: device this run wrote to, not the one a caller remembered. The block
+    #: sizes are the kernel's, as the engine used them.
+    device: Device | None = None
+    logical_block_size: int = 0
+    physical_block_size: int = 0
+    #: HPA/DCO as measured at preflight (None when not probed), and whether this
+    #: run's erase covered the hidden region.
+    hidden_areas: HiddenAreaReport | None = None
+    hidden_covered: bool = False
+    #: The read-back verdict. None for a dry run: nothing was written, so
+    #: nothing was verified, and a result object would invite a "passed".
+    verification: VerificationResult | None = None
+    #: The level this run may claim (drive._achieved_level). None for a dry run.
+    achieved_level: SanitizationLevel | None = None
 
 
 #: Outcome of a real decode attempt. ``decoder_unavailable`` is not a verdict

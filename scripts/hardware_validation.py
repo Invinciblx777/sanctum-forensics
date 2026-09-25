@@ -436,7 +436,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     """Generate the signed report, tamper one byte, verify, restore, verify."""
     from datetime import UTC, datetime
 
-    from core.report.render import build_report, write_report
+    from core.report.render import build_report, drive_report_inputs, write_report
     from core.report.sign import (
         fingerprint,
         load_or_create_key,
@@ -478,11 +478,11 @@ def cmd_report(args: argparse.Namespace) -> int:
         "operator": args.operator,
         "generated_at": datetime.now(UTC),
         "tool_version": "sanctum-forensics/0.0.0",
-        "device": payload.get("device") or {},
-        "method": payload.get("plan") or {},
-        "hidden_areas": payload.get("hidden_areas") or {},
-        "verification": verification.get("result") or {},
-        "residual_risk": payload.get("residual_risk") or {},
+        **drive_report_inputs(payload),
+        # The harness's own verify step, when it ran one, is the read-back it
+        # watched; otherwise the engine's.
+        "verification": verification.get("result")
+        or drive_report_inputs(payload)["verification"],
         "limitations": list(payload.get("limitations") or []),
         "ledger_excerpt": excerpt,
         "chain_verification": ledger.verify(),
