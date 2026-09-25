@@ -19,9 +19,10 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
+from api.authorization import SIMULATION_MARK, GateRefused, authorize_execution
 from api.deps import AppServices
 from api.identity import resolve as resolve_identity
 from api.identity import sanitise_label
@@ -68,7 +69,34 @@ def _accepted(job_id: str, kind: str, dry_run: bool) -> JobAccepted:
         state="running",
         dry_run=dry_run,
         stream_url=f"/jobs/{job_id}/stream",
+        notice=SIMULATION_MARK if dry_run and kind.startswith("erase-drive") else "",
     )
+
+
+def _gate_real_erase(
+    services: AppServices,
+    *,
+    authorization_id: str,
+    path: str,
+    level: str,
+    probe: dict[str, Any],
+) -> None:
+    """Refuse a real drive erase unless the workflow gates are satisfied.
+
+    One call, shared by the erase and the resume, so neither can skip it.
+    Runs after the helper probe and before anything is submitted.
+    """
+    try:
+        authorize_execution(
+            services,
+            auth_id=authorization_id,
+            path=path,
+            level=level,
+            probe=probe,
+            actor=resolve_identity(services).actor,
+        )
+    except GateRefused as refusal:
+        raise HTTPException(status_code=409, detail=refusal.detail()) from refusal
 
 
 def _submit(
@@ -177,6 +205,18 @@ def erase_drive(
             f"{body.path}, whose serial is {serial!r}. Nothing was erased.",
             "Re-read the device serial from the capability report and type it "
             "exactly.",
+        )
+
+    # The workflow gate. The typed serial above is a confirmation token, not an
+    # approval; a real erase also needs the recorded approval and verified
+    # backup, re-derived from a fresh read of the device.
+    if not body.dry_run:
+        _gate_real_erase(
+            services,
+            authorization_id=body.authorization_id,
+            path=body.path,
+            level=body.level,
+            probe=probe,
         )
 
     # Minted here rather than by the registry, for the same reason the carve
@@ -723,7 +763,7 @@ def resume_erase(
         "tool_version": services.tool_version,
     }
     try:
-        services.helper.call("probe_capabilities", {"path": state["path"]})
+        probe = services.helper.call("probe_capabilities", {"path": state["path"]})
     except RpcError as exc:
         raise sanctum_error_response(
             exc.kind or "DeviceVanished", exc.message, exc.remediation
@@ -734,6 +774,23 @@ def resume_erase(
             f"The privileged helper could not be reached: {exc}",
             "Start the helper daemon and set SANCTUM_HELPER_SOCKET.",
         ) from exc
+
+    if not body.dry_run:
+        if body.typed_serial != str(probe.get("device", {}).get("serial", "")):
+            raise sanctum_error_response(
+                "ConfirmationMismatch",
+                f"The typed serial does not match {state['path']}. Nothing was "
+                "erased.",
+                "Re-read the device serial from the capability report and type "
+                "it exactly.",
+            )
+        _gate_real_erase(
+            services,
+            authorization_id=body.authorization_id,
+            path=state["path"],
+            level=params["level"],
+            probe=probe,
+        )
 
     # The *same* job id, deliberately. A resume continues one erasure, and
     # giving it a new id would split one device's account of itself across two

@@ -302,3 +302,48 @@ def ui_dist() -> Path:
 
 def _default_services_for(tmp_path: Path) -> AppServices:
     return default_services(state_dir=tmp_path / "state")
+
+
+def make_backup(
+    services: AppServices, size: int = 64 * MIB, name: str = "backup.img"
+) -> Path:
+    """A sparse stand-in backup image inside the evidence directory."""
+    image = services.evidence_dir / name
+    with image.open("wb") as handle:
+        handle.truncate(size)
+    return image
+
+
+def open_workflow(
+    client: TestClient,
+    services: AppServices,
+    *,
+    path: str = "/dev/sdz",
+    level: str = "CLEAR",
+    size: int = 64 * MIB,
+) -> str:
+    """Open a workflow record over the API and return its authorization id."""
+    make_backup(services, size)
+    answer = client.post(
+        "/workflow/erase-drive",
+        json={"path": path, "level": level, "backup_image": "backup.img"},
+    )
+    assert answer.status_code == 200, answer.text
+    return str(answer.json()["authorization_id"])
+
+
+def approve_workflow(
+    client: TestClient, auth_id: str, serial: str = "SYN-PURGE-1"
+) -> None:
+    answer = client.post(
+        f"/workflow/erase-drive/{auth_id}/approve",
+        json={"typed_serial": serial, "acknowledge_data_destruction": True},
+    )
+    assert answer.status_code == 200, answer.text
+
+
+def authorize(client: TestClient, services: AppServices) -> str:
+    """The full, legitimate path: open, then approve. Returns the id."""
+    auth_id = open_workflow(client, services)
+    approve_workflow(client, auth_id)
+    return auth_id

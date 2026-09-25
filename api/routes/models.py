@@ -93,8 +93,28 @@ class EraseDriveRequest(BaseModel):
     #: Gate two. The operator types the device serial; the helper compares it
     #: against the serial it reads itself, not against anything the UI sent.
     typed_serial: str = ""
+    #: Gate three, required when ``dry_run`` is false: the id of an approved
+    #: workflow record from ``/workflow/erase-drive``. See api.authorization.
+    authorization_id: str = ""
     case_id: str = ""
     operator: str = "sanctum"
+
+
+class OpenEraseWorkflowRequest(BaseModel):
+    """Body for ``POST /workflow/erase-drive``."""
+
+    path: str
+    level: Literal["CLEAR", "PURGE"] = "CLEAR"
+    #: A backup image under the evidence directory, verified read-only.
+    backup_image: str
+
+
+class ApproveEraseRequest(BaseModel):
+    """Body for ``POST /workflow/erase-drive/{id}/approve``."""
+
+    typed_serial: str = ""
+    #: Must be sent true, deliberately. The typed serial alone is not approval.
+    acknowledge_data_destruction: bool = False
 
 
 class EraseFilesRequest(BaseModel):
@@ -178,6 +198,8 @@ class ResumeEraseRequest(BaseModel):
 
     dry_run: bool = True
     typed_serial: str = ""
+    #: Required when ``dry_run`` is false. See api.authorization.
+    authorization_id: str = ""
     operator: str = "sanctum"
 
 
@@ -201,3 +223,5 @@ class JobAccepted(BaseModel):
     dry_run: bool
     #: Where to attach for live progress.
     stream_url: str
+    #: Set on every dry run so a simulation cannot be read as a wipe.
+    notice: str = ""

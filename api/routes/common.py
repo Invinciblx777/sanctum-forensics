@@ -35,6 +35,7 @@ __all__ = [
 #: mistyped something they can fix in the body.
 STATUS_FOR_ERROR: dict[str, int] = {
     "ConfirmationMismatch": 409,
+    "WorkflowGateRefused": 409,
     "MountedRefused": 409,
     "SystemDiskRefused": 409,
     "DeviceFrozen": 409,

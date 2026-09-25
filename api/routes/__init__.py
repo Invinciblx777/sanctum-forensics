@@ -14,7 +14,7 @@ __all__ = ["all_routers"]
 
 def all_routers() -> list[APIRouter]:
     """Return every router to mount on the application."""
-    from api.routes import artifacts, audit, cases, devices, jobs, platform
+    from api.routes import artifacts, audit, cases, devices, jobs, platform, workflow
 
     return [
         platform.router,
@@ -23,4 +23,5 @@ def all_routers() -> list[APIRouter]:
         cases.router,
         artifacts.router,
         audit.router,
+        workflow.router,
     ]
