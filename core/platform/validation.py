@@ -23,7 +23,13 @@ import json
 from pathlib import Path
 from typing import Any
 
-__all__ = ["RECORD_PATH", "load_record", "suite_state", "suite_passed"]
+__all__ = [
+    "RECORD_PATH",
+    "load_record",
+    "suite_state",
+    "suite_passed",
+    "hardware_passed",
+]
 
 RECORD_PATH = Path(__file__).with_name("validation_record.json")
 
@@ -53,6 +59,21 @@ def suite_passed(
     platform: str, suite: str, record: dict[str, Any] | None = None
 ) -> bool:
     return suite_state(platform, suite, record).get("state") == "PASS"
+
+
+def hardware_passed(
+    platform: str, feature: str, record: dict[str, Any] | None = None
+) -> bool:
+    """Whether ``hardware`` records a PASS for ``feature`` on real media.
+
+    Same shape as ``suites``: ``{"hardware": {platform: {feature: {"state":
+    ...}}}}``. A missing entry is NOT RUN, so a feature whose code is present
+    and whose suites pass still reads as unexercised on hardware until a run
+    on designated test media is recorded.
+    """
+    data = load_record() if record is None else record
+    entry = (data.get("hardware") or {}).get(platform, {}).get(feature)
+    return isinstance(entry, dict) and entry.get("state") == "PASS"
 
 
 def describe(platform: str, suite: str, record: dict[str, Any] | None = None) -> str:

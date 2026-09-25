@@ -390,3 +390,49 @@ def test_inside_a_container_whole_drive_is_refused_not_guessed(
 
     monkeypatch.setenv(linux.CONTAINER_OVERRIDE_ENV, "1")
     assert adapter.whole_drive_unavailable_reason() == ""
+
+
+def _linux_drive_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hardware: dict[str, Any]
+) -> dict[Operation, Any]:
+    """The Linux whole-drive rows with the tools found and the helper present."""
+    from core.platform import linux
+
+    path = tmp_path / "validation_record.json"
+    path.write_text(
+        json.dumps({"suites": {}, "hardware": hardware}), encoding="utf-8"
+    )
+    monkeypatch.setattr("core.platform.validation.RECORD_PATH", path)
+    monkeypatch.setattr(linux.shutil, "which", lambda name: f"/usr/sbin/{name}")
+    adapter = linux.LinuxAdapter()
+    monkeypatch.setattr(adapter, "whole_drive_unavailable_reason", lambda: "")
+    return {r.operation: r for r in adapter._platform_rows(ROOT)}
+
+
+def test_firmware_purge_is_unverified_until_hardware_records_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tools installed and a helper running is not evidence a purge works.
+
+    docs/limitations.md says firmware Purge has never run on hardware; the
+    Platform screen must not read "Supported" beside that sentence.
+    """
+    rows = _linux_drive_rows(tmp_path, monkeypatch, {})
+    purge = rows[Operation.WHOLE_DRIVE_PURGE]
+    assert purge.status is CapabilityStatus.UNVERIFIED
+    assert "never run on hardware" in purge.reason
+    assert "hardware NOT RUN" in purge.source
+    clear = rows[Operation.WHOLE_DRIVE_CLEAR]
+    assert clear.status is CapabilityStatus.SUPPORTED_WITH_LIMITATIONS
+    assert any("HPA/DCO unlock has not been run" in x for x in clear.limitations)
+
+    passing = {"state": "PASS"}
+    rows = _linux_drive_rows(
+        tmp_path,
+        monkeypatch,
+        {"linux": {"whole_drive_purge": passing, "hidden_area_unlock": passing}},
+    )
+    purge = rows[Operation.WHOLE_DRIVE_PURGE]
+    assert purge.status is CapabilityStatus.SUPPORTED_WITH_LIMITATIONS
+    assert "hardware PASS" in purge.source
+    assert rows[Operation.WHOLE_DRIVE_CLEAR].limitations == [FLASH_LIMITATION]

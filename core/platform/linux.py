@@ -38,6 +38,7 @@ from core.platform.model import (
     SafetyCheck,
     SanitizeOption,
 )
+from core.platform.validation import hardware_passed
 
 if TYPE_CHECKING:  # pragma: no cover
     from core.device._sysio import SystemProbe
@@ -586,6 +587,13 @@ class LinuxAdapter(BaseAdapter):
                 requires_privilege=True,
             )
         else:
+            clear_limits = [FLASH_LIMITATION]
+            if not hardware_passed("linux", "hidden_area_unlock"):
+                clear_limits.append(
+                    "HPA/DCO unlock has not been run on a physical drive: no "
+                    "hardware result is recorded for it, and the branch where "
+                    "sectors really are hidden is tested against a faked probe."
+                )
             clear = row(
                 Operation.WHOLE_DRIVE_CLEAR,
                 CapabilityStatus.SUPPORTED_WITH_LIMITATIONS,
@@ -594,7 +602,7 @@ class LinuxAdapter(BaseAdapter):
                 source,
                 verification="Full read-back up to 64 GiB, seeded "
                 "sampling above it with a stated detection probability.",
-                limitations=[FLASH_LIMITATION],
+                limitations=clear_limits,
                 requires_privilege=True,
             )
         rows.append(clear)
@@ -638,14 +646,30 @@ class LinuxAdapter(BaseAdapter):
                 requires_privilege=True,
             )
         else:
+            # The tools and the dispatch exist, but a status is a claim about
+            # evidence: until a firmware sanitize has been recorded on real
+            # media, this row is UNVERIFIED rather than supported.
+            exercised = hardware_passed("linux", "whole_drive_purge")
             purge = row(
                 Operation.WHOLE_DRIVE_PURGE,
-                CapabilityStatus.SUPPORTED_WITH_LIMITATIONS,
+                CapabilityStatus.SUPPORTED_WITH_LIMITATIONS
+                if exercised
+                else CapabilityStatus.UNVERIFIED,
                 "Decided per device: the drive must report ATA SANITIZE, "
                 "SECURITY ERASE, NVMe sanitize/format or Opal crypto erase. USB "
                 "bridges usually block the pass-through, and the device screen "
-                "says so for each device.",
-                "found " + ", ".join(tools) + "; per-device capability probe",
+                "says so for each device."
+                + (
+                    ""
+                    if exercised
+                    else " No firmware sanitize has been recorded on a physical "
+                    "drive, so the path is UNVERIFIED: the commands are "
+                    "fixture-tested, never run on hardware."
+                ),
+                "found "
+                + ", ".join(tools)
+                + "; per-device capability probe; validation record: "
+                + ("hardware PASS" if exercised else "hardware NOT RUN"),
                 verification="Drive-reported completion (hardware-attested).",
                 requires_privilege=True,
             )
