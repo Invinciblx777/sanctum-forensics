@@ -412,6 +412,10 @@ def _erase_directory(
     """
     if options.dry_run:
         return
+    if any(target.iterdir()):
+        # Checked before the rename chain: renaming a directory that then
+        # cannot be removed would leave its contents under a name nobody chose.
+        raise OSError(errno.ENOTEMPTY, os.strerror(errno.ENOTEMPTY), str(target))
     _rename_and_unlink(target, options, record, backend())
 
 
@@ -431,6 +435,14 @@ def expand_targets(
     for entry in paths:
         target = Path(entry)
         if not target.is_dir() or _is_link_or_reparse(target) or not recursive:
+            out.append(target)
+            continue
+        try:
+            _refuse_protected(target)
+        except SystemDiskRefused:
+            # Emitted as itself, so erase_one records the refusal. Expanding it
+            # would erase every child first, and the refusal of the directory
+            # itself would come last.
             out.append(target)
             continue
         out.extend(_walk_depth_first(target))

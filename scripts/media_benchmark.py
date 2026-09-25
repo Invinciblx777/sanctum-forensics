@@ -724,6 +724,21 @@ def backup_location(backup: Path, device: str, node: dict[str, Any]) -> dict[str
             "on_host_storage": None,
             "reason": "the filesystem holding the backup could not be identified",
         }
+    if not source.startswith("/dev/"):
+        # tmpfs, overlay and network mounts have no backing disk. Calling them
+        # "a different disk" would accept a backup held in RAM, which does not
+        # survive the reboot a failed write may force.
+        return {
+            "backup_source": source,
+            "backup_disk": "",
+            "target_disk": target,
+            "on_host_storage": None,
+            "reason": (
+                f"the backup is on {source}, which has no backing disk here; "
+                "it is not proven to be on a separate physical disk or to "
+                "survive a reboot"
+            ),
+        }
     return {
         "backup_source": source,
         "backup_disk": disk,
