@@ -63,9 +63,10 @@ export const REAL_ERASE_PATH: readonly WorkflowStateName[] = [
 ]
 
 export const BACKUP_NOTE =
-  'A real erase needs a verified backup image and a recorded human approval; ' +
-  'the server enforces both (POST /workflow/erase-drive, then /approve). A ' +
-  'simulation needs neither and writes nothing.'
+  'A real erase needs a backup image the server has hashed and sized, and a ' +
+  'recorded approval; the server enforces both (POST /workflow/erase-drive, ' +
+  'then /approve). Neither proves the image is a copy of this device or who ' +
+  'approved. A simulation needs neither and writes nothing.'
 
 /** What the server's workflow endpoint reported, verbatim. */
 export interface ServerWorkflow {
@@ -341,5 +342,44 @@ export function refusalFrom(failure: FailedRequest, noWritePath = false): Server
     whyBlocked: why,
     workflowState: failure.workflowState,
     physicalDeviceModified: failure.physicalDeviceModified ?? (noWritePath ? false : null),
+  }
+}
+
+/** How the signed report of a finished job is named on this screen. */
+export interface SignedRecordWording {
+  title: string
+  action: string
+  issued: string
+  tone: 'success' | 'warning'
+  note: string
+}
+
+/**
+ * Only a completed job gets a certificate.
+ *
+ * A failed, refused or cancelled job still gets a signed record - the audit
+ * trail needs one - but calling that a certificate would put the word next to
+ * a sanitization that did not happen.
+ */
+export function signedRecordWording(state: string, dryRun: boolean): SignedRecordWording {
+  if (state === 'complete') {
+    return {
+      title: 'Certificate',
+      action: 'Get certificate',
+      issued: 'Certificate issued',
+      tone: 'success',
+      note:
+        'The certificate records what ran, how it was verified, and what it could not claim' +
+        (dryRun ? ' - for a dry run, that nothing was written.' : '.'),
+    }
+  }
+  return {
+    title: 'Signed record',
+    action: 'Get signed record',
+    issued: 'Signed record issued - not a sanitization certificate',
+    tone: 'warning',
+    note:
+      `This job did not complete (${state || 'no terminal state'}). The signed record ` +
+      'documents what happened and what it could not claim; it is not a sanitization certificate.',
   }
 }

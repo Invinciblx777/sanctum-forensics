@@ -2,7 +2,13 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import type { DeviceAssessment, JobStatus, SafetyCheck } from '../src/lib/api.ts'
-import { REAL_ERASE_PATH, SANITIZE_PATH, refusalFrom, sanitizeWorkflow } from '../src/lib/workflowState.ts'
+import {
+  REAL_ERASE_PATH,
+  SANITIZE_PATH,
+  refusalFrom,
+  sanitizeWorkflow,
+  signedRecordWording,
+} from '../src/lib/workflowState.ts'
 import type { SanitizeFacts } from '../src/lib/workflowState.ts'
 
 function check(key: string, label: string, passed: boolean | null, detail: string): SafetyCheck {
@@ -257,4 +263,16 @@ test('a helper refusal at the write seam is BLOCKED, not a failed erase', () => 
   assert.match(flow.nextAction, /new workflow/)
   const other = { ...status, error_kind: 'OverwriteIncomplete' } as unknown as JobStatus
   assert.equal(sanitizeWorkflow(facts({ status: other })).state, 'FAILED')
+})
+
+test('only a completed job is offered a certificate', () => {
+  assert.equal(signedRecordWording('complete', false).title, 'Certificate')
+  assert.match(signedRecordWording('complete', true).note, /nothing was written/)
+  for (const state of ['failed', 'cancelled', '']) {
+    const wording = signedRecordWording(state, false)
+    assert.equal(wording.title, 'Signed record', state)
+    assert.doesNotMatch(wording.action, /certificate/i)
+    assert.match(wording.issued, /not a sanitization certificate/)
+    assert.equal(wording.tone, 'warning')
+  }
 })

@@ -41,6 +41,7 @@ from typing import Any, Literal
 
 import structlog
 from core.models import Progress
+from helper.rpc import RpcError
 
 __all__ = ["JobRegistry", "JobRecord", "JobState", "MAX_BUFFERED_PROGRESS"]
 
@@ -246,7 +247,14 @@ class JobRegistry:
             # the only place a caller can learn the job failed.
             record.state = "failed"
             record.error = str(exc)
-            record.error_kind = type(exc).__name__
+            # A helper error crosses the boundary as RpcError; its ``kind`` is
+            # the core exception it was raised as, which is what a caller
+            # branches on (a write-seam refusal is not a failed erase).
+            record.error_kind = (
+                exc.kind
+                if isinstance(exc, RpcError) and exc.kind
+                else type(exc).__name__
+            )
             record.remediation = str(getattr(exc, "remediation", "") or "")
             logger.warning(
                 "job_failed",

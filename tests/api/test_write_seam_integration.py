@@ -14,6 +14,7 @@ the window the API cannot see. The helper must refuse it.
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -162,9 +163,13 @@ def test_a_device_changed_after_the_api_gate_is_refused_by_the_helper(
     assert accepted.status_code == 200, "the API gate passed; that is the premise"
     status = _finish(seam_client, accepted.json()["job_id"])
     assert status["state"] == "failed"
+    # The kind the helper raised, not the transport's: the UI shows this as a
+    # refusal (BLOCKED), not as a failed erase of unknown outcome.
+    assert status["error_kind"] == "WorkflowGateRefused"
     assert "model changed" in (status["error"] or "")
     assert "Nothing was erased" in (status["error"] or "")
     assert world.engine_entries == [], "the helper never entered the engine"
+    assert not list(seam_services.reports_dir.rglob("*.json")), "no certificate"
     # The API had already spent it: fail closed, the operator opens a new one.
     assert AuthorizationStore(seam_services.state_dir / "authorizations").is_spent(
         auth_id
@@ -195,6 +200,7 @@ def test_a_backup_changed_after_the_api_gate_is_refused_by_the_helper(
     )
     status = _finish(seam_client, accepted.json()["job_id"])
     assert status["state"] == "failed"
+    assert status["error_kind"] == "WorkflowGateRefused"
     assert "backup" in (status["error"] or "")
     assert world.engine_entries == []
 
@@ -207,3 +213,45 @@ def test_a_simulation_through_the_real_helper_carries_no_authorization(
     assert status["state"] == "complete", status
     assert "authorization" not in status["params"]
     assert world.engine_entries == [True]
+
+
+def test_a_record_requested_after_a_refusal_claims_nothing_was_sanitized(
+    seam_client: TestClient,
+    seam_services: AppServices,
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No certificate appears on its own, and one asked for documents a failure.
+
+    A signed record of a refused job is legitimate - the audit trail needs it -
+    but every section that could read as a sanitization claim must be empty or
+    negative, and the refusal must be named inside the signed bytes.
+    """
+    auth_id = open_workflow(seam_client, seam_services)
+    approve_workflow(seam_client, auth_id)
+    real_stream = seam_services.helper.call_stream
+
+    def swapped(method: str, params: dict[str, Any]) -> Any:
+        world.fields["serial"] = "ANOTHER-SERIAL"
+        return real_stream(method, params)
+
+    monkeypatch.setattr(seam_services.helper, "call_stream", swapped)
+    job_id = seam_client.post(
+        "/jobs/erase-drive", json={**REAL, "authorization_id": auth_id}
+    ).json()["job_id"]
+    assert _finish(seam_client, job_id)["state"] == "failed"
+    assert not list(seam_services.reports_dir.rglob("*.json"))
+
+    answer = seam_client.post(
+        f"/reports/{job_id}", json={"case_id": "CASE-REFUSED", "operator": "t"}
+    )
+    assert answer.status_code == 200, answer.text
+    document = json.loads(Path(answer.json()["json_path"]).read_text())
+    sections = document["sections"]
+    assert sections["case_identity"]["job_state"] == "failed"
+    caveat = sections["limitations"]["items"][0]
+    assert "WorkflowGateRefused" in caveat and "Nothing was erased" in caveat
+    assert sections["method"]["level_achieved"] == ""
+    assert sections["verification"]["passed"] is False
+    assert sections["residual_risk"]["purge_achieved"] is False
+    assert world.engine_entries == []

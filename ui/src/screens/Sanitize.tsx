@@ -15,7 +15,7 @@ import { currentStep, runnableStatus } from '../lib/platform'
 import { AssessmentSummary, FlowSteps, WorkflowStrip } from '../components/sanitizeFlow'
 import { EraseApproval } from '../components/eraseApproval'
 import { createEpoch } from '../lib/epoch'
-import { refusalFrom, sanitizeWorkflow } from '../lib/workflowState'
+import { refusalFrom, sanitizeWorkflow, signedRecordWording } from '../lib/workflowState'
 import type { ServerRefusal } from '../lib/workflowState'
 import { verificationWord } from '../lib/artifacts'
 import { useCase } from '../lib/caseContext'
@@ -655,8 +655,10 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
     running,
     finished,
     verified: Boolean(verificationResult) || dryRun,
-    certified: Boolean(report),
+    // A signed record of a job that did not complete is not a certificate.
+    certified: Boolean(report) && status?.state === 'complete',
   })
+  const wording = signedRecordWording(status?.state ?? '', dryRun)
   const flow = sanitizeWorkflow({
     assessment,
     offered,
@@ -704,10 +706,10 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
         )}
 
         {jobId && finished && (
-          <Panel title="Certificate">
+          <Panel title={wording.title}>
             {report ? (
               <div className="col tight">
-                <span className="state-mark is-success">Certificate issued</span>
+                <span className={`state-mark is-${wording.tone}`}>{wording.issued}</span>
                 <span className="note">
                   Signed report {report.json_name}. Open it on the Audit screen to
                   verify the signature and the chain.
@@ -735,12 +737,9 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
                   </label>
                 )}
                 <button className="btn primary" onClick={() => void certificate()}>
-                  Get certificate
+                  {wording.action}
                 </button>
-                <span className="note">
-                  The certificate records what ran, how it was verified, and what
-                  it could not claim{dryRun ? ' - for a dry run, that nothing was written' : ''}.
-                </span>
+                <span className="note">{wording.note}</span>
               </div>
             )}
           </Panel>
