@@ -196,9 +196,9 @@ export default function Home({ onOpen }: { onOpen: (target: WorkflowTarget) => v
       target: 'devices',
       icon: ShieldX,
       title: 'Drive eraser',
-      level: 'NIST SP 800-88 Clear or Purge',
+      level: 'NIST SP 800-88 Clear or Purge; Destroy recorded',
       does:
-        'Erases a whole HDD, SSD, USB drive or card with the strongest method the drive itself reports, then reads it back.',
+        'Erases a whole HDD, SSD, USB drive or card with the strongest method the drive itself reports, then reads it back. A physical destruction is recorded as its witnesses attest it.',
       status: <CapabilityMark row={capability(platform, 'whole_drive_clear')} />,
     },
     {
@@ -207,16 +207,16 @@ export default function Home({ onOpen }: { onOpen: (target: WorkflowTarget) => v
       title: 'File & folder eraser',
       level: 'Files, folders, free space, metadata',
       does:
-        'Overwrites the files you choose, strips document and photo metadata, and says what the filesystem may still hold.',
+        'Overwrites the files you choose, strips document and photo metadata, removes the thumbnails, recent entries and Trash copies the desktop kept, and says what the filesystem may still hold.',
       status: <CapabilityMark row={capability(platform, 'file_erase')} />,
     },
     {
       target: 'recovery',
       icon: ScanSearch,
       title: 'Recovery',
-      level: 'Signature, structure and fragment carving',
+      level: 'Media map, then signature, structure and fragment carving',
       does:
-        'Recovers files from formatted or damaged images without a filesystem, and scores each one with the evidence behind the score.',
+        'Maps where an image holds data, recovers files from formatted or damaged images without a filesystem, and scores each one with the evidence behind the score.',
       status: <span className="state-mark is-success">read-only</span>,
     },
   ]
