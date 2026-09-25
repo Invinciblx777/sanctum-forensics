@@ -3,6 +3,57 @@
 Population: SYNTHETIC VALIDATION, SIMULATION and PACKAGE IDENTITY. **PHYSICAL
 VALIDATION: none.** No sudo was used. Nothing was pushed.
 
+## Later the same day: features, redesign, rebuilt packages
+
+This section supersedes the package and test figures further down, which describe the
+`b163834` build. Population unchanged: SYNTHETIC, SIMULATION and PACKAGE IDENTITY;
+**PHYSICAL VALIDATION: none**. No sudo, no physical device enumerated, opened or
+written, no push.
+
+| Commit | Content |
+|---|---|
+| `f82af2e` | UI design system v2: Atkinson Hyperlegible Next and Mono bundled, seal colour for what is cryptographically attested, chain-of-custody overview, chain explorer |
+| `e582b1c` | certificate PDF: verdict band, NIST fields, signature block with QR; the drive report names device, levels and read-back |
+| `e76b2cb` | trace sweep after a file erase: thumbnails, recent-files lists, Trash, Recycle Bin, Recent shortcuts |
+| `62e67e4` | Sanitize tracker stops on the step where a flow stopped |
+| `86aedb0` | media map before carving; Record of Destruction |
+| `e21f88d` | `.deb` declares `Depends: libc6 (>= 2.30), zlib1g` |
+| `b014c54` | documentation and browser evidence |
+| `43d0fa6` | overview names the new features |
+| `e81f491` | packaging: reportlab's barcode modules collected (below). **Packages built here** |
+
+| Check | Result |
+|---|---|
+| Full pytest at `e21f88d` | **2039 passed, 33 skipped, 0 failed**; host-device guard 0 refusals. The same 33 skips as above |
+| Added after that run | `tests/test_packaging_spec.py`, 2 passed |
+| Ruff; mypy `--strict` (Linux, two win32, darwin) | clean |
+| UI unit tests; `tsc -b`; build | 97 of 97; clean; built |
+| Browser, Sanitize, sandboxed fixture server | **59 of 59**, re-run on the redesigned UI (`browser-2026-09-25/`) |
+| Browser, new features, sandboxed, synthetic home and image | **19 of 19** (`features-2026-09-25/`) |
+| Trace sweep safety properties | four removed on purpose (link walk, in-place overwrite, stale-list check, exact-only removal); each made its test fail |
+| Packages at `e81f491`: identity | **PASS** both: 92 of 92 modules bytecode-identical, UI 8 of 8, same executable, `.deb` 202 files `root:root`, no maintainer scripts |
+| Packages at `e81f491`: isolated smoke | **22 PASS, 2 NOT RUN** each (the two need a real device) |
+
+**What the rebuild found.** The first rebuild, at `43d0fa6`, failed the isolated smoke:
+every report request in the packaged app was a 500, `ModuleNotFoundError:
+reportlab.graphics.barcode.code128`. reportlab loads its barcode symbologies through
+`exec()`, PyInstaller cannot see that, and the new certificate draws its QR code
+through the package. The source tree and the whole test suite pass either way; only
+the frozen build fails. The renderer before the certificate rewrite caught the
+ImportError, so the `b163834` packages below shipped PDFs with **no QR code**, silently.
+The signed JSON, which is the authoritative artifact, was unaffected. Fixed and guarded
+in `e81f491`.
+
+| Artifact at `e81f491` | SHA-256 |
+|---|---|
+| `Sanctum-0.0.0-x86_64.AppImage` | `bbbadf170b0668ffd3fef5cea8a08d2324e8387835fc524f692e2d5ef6d0950e` |
+| `sanctum_0.0.0_amd64.deb` | `6386c4612da665541e56edb20929234080cad70ddf2e0107c681ea7c398409b6` |
+
+Claims boundaries, unchanged and extended: the trace sweep is validated on synthetic
+homes built from the file formats' specifications, not on a live desktop session; the
+Record of Destruction records an attestation and observes nothing; the media map
+classes bytes and identifies no content.
+
 ## Correction to the first version of this record
 
 The first version (commit `7f308ba`) said no physical device was "opened, read, hashed,

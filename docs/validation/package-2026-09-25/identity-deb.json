@@ -1,12 +1,12 @@
 {
-  "commit": "b1638340bf4e27834c8a096a6302b7883c5b3978",
+  "commit": "e81f491c76795d60d5f4e70d44d912a1a16d816b",
   "python": "3.11.16",
   "build_info": {
     "architecture": "x86_64",
     "branch": "HEAD",
-    "build_date": "2026-09-25T06:49:56Z",
+    "build_date": "2026-09-25T12:22:45Z",
     "builder": "local build",
-    "commit": "b1638340bf4e27834c8a096a6302b7883c5b3978",
+    "commit": "e81f491c76795d60d5f4e70d44d912a1a16d816b",
     "node": "not recorded",
     "platform": "linux",
     "python": "3.11.13",
@@ -16,8 +16,8 @@
   "build_info_matches": true,
   "modules": {
     "archive": "PYZ.pyz",
-    "modules_at_commit": 88,
-    "identical": 88,
+    "modules_at_commit": 92,
+    "identical": 92,
     "differing": [],
     "missing": [],
     "extra": [],
@@ -27,10 +27,10 @@
       "core.authorization": true
     }
   },
-  "executable_sha256": "fbc6e5bf9c9e6df5f8d11386ba3ebf645b3e402ac2becb0b2e3b6e8eea244ea8",
+  "executable_sha256": "48298c5a87c8926847d26d66d4b36a2ca7dcb3fee4fba19868c2469300d8da30",
   "ui": {
-    "files": 4,
-    "identical": 4,
+    "files": 8,
+    "identical": 8,
     "differing": [],
     "missing": [],
     "extra": []
@@ -40,12 +40,12 @@
       "Package": "sanctum",
       "Version": "0.0.0",
       "Architecture": "amd64",
-      "Depends": "",
+      "Depends": "libc6 (>= 2.30), zlib1g",
       "Maintainer": "Sanctum Forensics maintainers <noreply@localhost>",
-      "Installed-Size": "156901"
+      "Installed-Size": "157148"
     },
     "maintainer_scripts": [],
-    "payload_files": 198,
+    "payload_files": 202,
     "owners": [
       "root:root"
     ],
