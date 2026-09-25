@@ -196,7 +196,7 @@ async function driveSanitize(): Promise<void> {
 }
 
 async function driveFiles(): Promise<void> {
-  click('.nav-item', 'File eraser')
+  click('.nav-item', 'File & folder eraser')
   await settle()
   for (const path of [
     '/home/analyst/case-2149/interview-notes.docx',

@@ -305,7 +305,7 @@ export function sanitizeWorkflow(facts: SanitizeFacts): SanitizeWorkflow {
     return result(
       'PREFLIGHT',
       true,
-      'Preflight passed. A dry run writes nothing and needs no approval. A real erase needs HUMAN APPROVAL: the typed device serial.',
+      'Preflight passed. A dry run writes nothing and needs no approval. A real erase needs a backup image, an approval with the typed serial, and a one-use authorization from the server.',
     )
   }
   return result(

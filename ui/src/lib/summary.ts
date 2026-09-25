@@ -123,7 +123,7 @@ export const NOT_PHYSICALLY_VALIDATED: readonly string[] = [
 
 const SAFETY_LINES: readonly string[] = [
   'Dry run is the default. Nothing is written unless it is turned off.',
-  'A real erase needs the device serial typed; the helper re-reads it from the device and refuses a mismatch.',
+  'A real erase needs a backup image, an approval with the typed serial, and a one-use authorization the server issues; the helper re-checks device, plan and backup before it writes.',
   'The system disk and any device with a mounted filesystem are refused, never unmounted for you.',
   'No automatic sudo, no automatic unmount, and no substitute device when the named one is missing.',
 ]

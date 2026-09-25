@@ -631,7 +631,7 @@ export default function Recovery() {
         <p>Read-only. Nothing in the carving path opens the evidence for writing.</p>
         <div className="grow" />
         <span className={openCase ? 'state-mark is-success' : 'state-mark is-warning'}>
-          {openCase ? `CASE ${openCase.case_id}` : 'NO CASE OPEN'}
+          {openCase ? `Filed under ${openCase.case_id}` : 'No case open'}
         </span>
       </div>
 

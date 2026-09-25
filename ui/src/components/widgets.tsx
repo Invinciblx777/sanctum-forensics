@@ -40,7 +40,7 @@ export function Panel({
  * the same three colours and the same left-edge rail so an operator learns the
  * vocabulary once.
  */
-export type Tone = 'destructive' | 'warning' | 'success' | 'unknown'
+export type Tone = 'destructive' | 'warning' | 'success' | 'seal' | 'unknown'
 
 /**
  * A judgement the tool has made, and the thing it was derived from.
@@ -304,10 +304,8 @@ export function Limitations({ items }: { items: string[] }) {
   if (items.length === 0) return null
   return (
     <div className="notice warn">
-      <strong
-        style={{ fontSize: 'var(--type-sm)', letterSpacing: '0.06em' }}
-      >
-        WHAT THIS RUN COULD NOT GUARANTEE
+      <strong style={{ fontSize: 'var(--type-sm)' }}>
+        What this run could not guarantee
       </strong>
       <ul className="limitations">
         {items.map((item, index) => (
