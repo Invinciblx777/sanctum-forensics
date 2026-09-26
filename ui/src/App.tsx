@@ -1,4 +1,15 @@
 import { useEffect, useState } from 'react'
+import type { LucideIcon } from 'lucide-react'
+import {
+  Blocks,
+  Cpu,
+  FileX2,
+  FolderKanban,
+  HardDrive,
+  LayoutDashboard,
+  ScanSearch,
+  ShieldX,
+} from 'lucide-react'
 import type { DeviceRow, PlatformStatus } from './lib/api'
 import { api } from './lib/api'
 import { deviceKind, privilegeWord, statusWord } from './lib/platform'
@@ -35,16 +46,80 @@ type ScreenId =
   | 'audit'
   | 'platform'
 
-const SCREENS: { id: ScreenId; label: string; hint: string }[] = [
-  { id: 'home', label: 'Overview', hint: 'The four workflows and the open case, at a glance' },
-  { id: 'cases', label: 'Cases', hint: 'Evidence, operations, reports, audit' },
-  { id: 'devices', label: 'Devices', hint: 'Enumerate and probe' },
-  { id: 'recovery', label: 'Recovery', hint: 'Carve and undelete, read-only' },
-  { id: 'sanitize', label: 'Sanitization', hint: 'Capability-driven erasure' },
-  { id: 'files', label: 'File eraser', hint: 'Files, folders, free space' },
-  { id: 'audit', label: 'Audit', hint: 'Chain, reports, verification' },
-  { id: 'platform', label: 'Platform', hint: 'What this computer can do, and why' },
+interface NavEntry {
+  id: ScreenId
+  label: string
+  hint: string
+  icon: LucideIcon
+}
+
+/**
+ * Grouped by the three things the tool does - sanitize, recover, prove - in
+ * the order an investigation happens. A group label names the verb, not a
+ * section of the codebase.
+ */
+const NAV: { group: string; items: NavEntry[] }[] = [
+  {
+    group: '',
+    items: [
+      { id: 'home', label: 'Overview', hint: 'The chain of custody, the three modules, the open case', icon: LayoutDashboard },
+      { id: 'cases', label: 'Cases', hint: 'Evidence, operations, reports, audit', icon: FolderKanban },
+    ],
+  },
+  {
+    group: 'Sanitize',
+    items: [
+      { id: 'devices', label: 'Devices', hint: 'Enumerate and probe, read-only', icon: HardDrive },
+      { id: 'sanitize', label: 'Drive eraser', hint: 'Capability-driven Clear or Purge of a whole drive', icon: ShieldX },
+      { id: 'files', label: 'File & folder eraser', hint: 'Files, folders, free space, metadata', icon: FileX2 },
+    ],
+  },
+  {
+    group: 'Recover',
+    items: [
+      { id: 'recovery', label: 'Recovery', hint: 'Carve and undelete, read-only', icon: ScanSearch },
+    ],
+  },
+  {
+    group: 'Prove',
+    items: [
+      { id: 'audit', label: 'Audit', hint: 'Chain, signed reports, verification', icon: Blocks },
+      { id: 'platform', label: 'Platform', hint: 'What this computer can do, and why', icon: Cpu },
+    ],
+  },
 ]
+
+/** Two blocks and the link between them: one open, one sealed. */
+function BrandMark() {
+  return (
+    <svg className="brand-mark" width="34" height="34" viewBox="0 0 32 32" aria-hidden>
+      <rect x="1" y="1" width="30" height="30" rx="8" fill="var(--seal-surface)" stroke="var(--seal-rule)" />
+      <rect x="5.5" y="11.5" width="8" height="8" rx="2" fill="none" stroke="var(--seal)" strokeWidth="1.8" />
+      <rect x="18.5" y="11.5" width="8" height="8" rx="2" fill="var(--seal)" />
+      <path d="M13.5 15.5 H18.5" stroke="var(--seal)" strokeWidth="1.8" />
+    </svg>
+  )
+}
+
+/** One claim in the status bar: a muted label, and the value in its state. */
+function Pill({
+  label,
+  value,
+  tone,
+  title,
+}: {
+  label: string
+  value: string
+  tone: string
+  title?: string
+}) {
+  return (
+    <span className={`state-mark is-${tone}`} title={title ?? `${label}: ${value}`}>
+      <span className="pill-label">{label}</span>
+      {value}
+    </span>
+  )
+}
 
 /**
  * The four claims that have to be true at a glance, at the bottom of every
@@ -56,12 +131,22 @@ const SCREENS: { id: ScreenId; label: string; hint: string }[] = [
  * *not* true, and the helper line says which privilege boundary is actually in
  * force. A status strip that hard-coded "VALID" would be decoration.
  */
-function StatusStrip({ selected }: { selected: DeviceRow | null }) {
+function StatusStrip({
+  selected,
+  refreshKey,
+}: {
+  selected: DeviceRow | null
+  /** Changes on every navigation, so the chain line is re-read, not remembered. */
+  refreshKey: string
+}) {
   const [chain, setChain] = useState<{ status: string; entry_count: number } | null>(
     null,
   )
   const [platform, setPlatform] = useState<PlatformStatus | null>(null)
 
+  useEffect(() => {
+    void api.platform().then(setPlatform).catch(() => setPlatform(null))
+  }, [])
   useEffect(() => {
     void api
       .ledgerVerify()
@@ -69,8 +154,7 @@ function StatusStrip({ selected }: { selected: DeviceRow | null }) {
         setChain({ status: answer.status, entry_count: answer.entry_count }),
       )
       .catch(() => setChain(null))
-    void api.platform().then(setPlatform).catch(() => setPlatform(null))
-  }, [])
+  }, [refreshKey])
 
   const device = selected?.normalized
   const assessment = selected?.assessment
@@ -81,54 +165,54 @@ function StatusStrip({ selected }: { selected: DeviceRow | null }) {
     : null
   const verification = assessment?.recommended?.verification
 
+  const chainTone =
+    chain?.status === 'VALID'
+      ? 'seal'
+      : chain?.status === 'INCONCLUSIVE_TAIL' || chain?.status === 'INCOMPLETE_TAIL'
+        ? 'warning'
+        : chain
+          ? 'destructive'
+          : 'unknown'
+  const osName = (platform?.platform.os_name ?? 'not read').replace(/\s*\(.*\)$/, '')
+
   return (
     <div className="status-strip" aria-label="Status">
-      <span className="state-mark is-unknown" title={platform?.platform.os_build}>
-        PLATFORM: {platform?.platform.os_name ?? 'UNREAD'}
-      </span>
-      <span
-        className={
+      <Pill label="Platform" value={osName} tone="unknown" title={platform?.platform.os_build} />
+      <Pill
+        label="Privilege"
+        value={privilegeWord(platform?.privilege ?? null)}
+        tone={
           platform?.privilege.elevated || platform?.privilege.helper === 'socket'
-            ? 'state-mark is-success'
-            : 'state-mark is-warning'
+            ? 'success'
+            : 'warning'
         }
         title={platform?.privilege.basis}
-      >
-        PRIVILEGE: {privilegeWord(platform?.privilege ?? null)}
-      </span>
-      <span className="state-mark is-unknown" title={device?.path}>
-        DEVICE:{' '}
-        {device ? `${deviceKind(device)} ${bytes(device.capacity_bytes)}` : 'none selected'}
-      </span>
-      <span
-        className={`state-mark is-${sanitization?.tone ?? 'unknown'}`}
+      />
+      <Pill
+        label="Device"
+        value={device ? `${deviceKind(device)} ${bytes(device.capacity_bytes)}` : 'none'}
+        tone="unknown"
+        title={device?.path}
+      />
+      <Pill
+        label="Sanitization"
+        value={sanitization?.word ?? 'no device'}
+        tone={sanitization?.tone ?? 'unknown'}
         title={assessment?.reason}
-      >
-        SANITIZATION: {sanitization?.word ?? 'no device'}
-      </span>
-      <span
-        className={verification ? 'state-mark is-success' : 'state-mark is-unknown'}
+      />
+      <Pill
+        label="Verification"
+        value={verification ? 'available' : assessment ? 'not available' : 'no device'}
+        tone={verification ? 'success' : 'unknown'}
         title={verification}
-      >
-        VERIFICATION: {verification ? 'available' : assessment ? 'not available' : '—'}
-      </span>
-      <span
-        className={
-          chain?.status === 'VALID'
-            ? 'state-mark is-success'
-            : chain?.status === 'INCONCLUSIVE_TAIL' || chain?.status === 'INCOMPLETE_TAIL'
-              ? 'state-mark is-warning'
-              : chain
-                ? 'state-mark is-destructive'
-                : 'state-mark is-unknown'
-        }
+      />
+      <Pill
+        label="Chain"
+        value={chain?.status === 'VALID' ? `valid (${chain.entry_count})` : (chain?.status.toLowerCase() ?? 'not read')}
+        tone={chainTone}
         title={chain ? `${chain.entry_count} chain entries` : 'chain not read'}
-      >
-        AUDIT: {chain?.status === 'VALID' ? 'READY' : (chain?.status ?? 'UNREAD')}
-      </span>
-      <span className="state-mark is-success" title="core/carve never opens O_RDWR">
-        EVIDENCE: READ ONLY
-      </span>
+      />
+      <Pill label="Evidence" value="read-only" tone="success" title="core/carve never opens O_RDWR" />
     </div>
   )
 }
@@ -142,23 +226,23 @@ function Shell() {
   useEffect(() => {
     void api.health().then(setHealth).catch(() => setHealth(null))
   }, [])
+  // Each screen opens at its top. The scroll container is shared, so without
+  // this a screen opened from the bottom of another started half-way down.
+  useEffect(() => {
+    document.querySelector('.main')?.scrollTo(0, 0)
+  }, [screen])
+  const buildCommit = String(
+    (health?.build as { commit?: string } | undefined)?.commit ?? '',
+  )
 
   return (
     <div className="shell">
-      <nav className="sidebar">
+      <nav className="sidebar" aria-label="Sanctum">
         <div className="brand">
-          <svg width="17" height="19" viewBox="0 0 32 32" aria-hidden>
-            <path
-              d="M16 4 L26 8 v9 c0 6-4 9-10 11 C10 26 6 23 6 17 V8 Z"
-              fill="none"
-              stroke="var(--accent)"
-              strokeWidth="2"
-            />
-            <path d="M11 16 h10 M16 11 v10" stroke="var(--accent)" strokeWidth="2" />
-          </svg>
-          <div className="col" style={{ gap: 0 }}>
+          <BrandMark />
+          <div className="col" style={{ gap: 2 }}>
             <span className="brand-name">Sanctum</span>
-            <span className="brand-sub">forensics</span>
+            <span className="brand-sub">Sanitize, recover, prove</span>
           </div>
         </div>
 
@@ -170,28 +254,44 @@ function Shell() {
           onClick={() => setScreen('cases')}
           title={openCase ? openCase.title : 'No case is open'}
         >
-          <span className="case-badge-label">case</span>
+          <span className="case-badge-label">Case</span>
           <span className="case-badge-id">
             {openCase ? openCase.case_id : 'none open'}
           </span>
         </button>
 
         <div className="nav">
-          {SCREENS.map((item) => (
-            <button
-              key={item.id}
-              className={screen === item.id ? 'nav-item active' : 'nav-item'}
-              onClick={() => setScreen(item.id)}
-              title={item.hint}
-            >
-              {item.label}
-            </button>
+          {NAV.map((section) => (
+            <div key={section.group || 'top'} className="col" style={{ gap: 2 }}>
+              {section.group && <span className="nav-group">{section.group}</span>}
+              {section.items.map((item) => {
+                const Icon = item.icon
+                return (
+                  <button
+                    key={item.id}
+                    className={screen === item.id ? 'nav-item active' : 'nav-item'}
+                    aria-current={screen === item.id ? 'page' : undefined}
+                    onClick={() => setScreen(item.id)}
+                    title={item.hint}
+                  >
+                    <Icon className="icon" size={18} aria-hidden />
+                    {item.label}
+                  </button>
+                )
+              })}
+            </div>
           ))}
         </div>
 
         <div className="sidebar-foot">
           <span>{(health?.tool_version as string) ?? 'offline'}</span>
-          <span>127.0.0.1 only</span>
+          {buildCommit && (
+            <span className="mono" title={buildCommit}>
+              build {buildCommit.slice(0, 12)}
+            </span>
+          )}
+          <span>Listening on 127.0.0.1 only</span>
+          {selected && <span className="mono" title={selected.device.path}>Selected {selected.device.path}</span>}
           {health?.launcher === true && (
             <button
               className="btn"
@@ -209,7 +309,6 @@ function Shell() {
               Quit Sanctum
             </button>
           )}
-          {selected && <span title={selected.device.path}>▸ {selected.device.path}</span>}
         </div>
       </nav>
 
@@ -229,7 +328,7 @@ function Shell() {
         {screen === 'recovery' && <Recovery />}
         {screen === 'audit' && <Audit />}
         {screen === 'platform' && <Platform />}
-        <StatusStrip selected={selected} />
+        <StatusStrip selected={selected} refreshKey={screen} />
       </main>
     </div>
   )

@@ -58,7 +58,7 @@ def test_every_row_has_a_source_and_a_reason(
 
 
 def test_every_row_carries_a_verification_statement(
-    windows_inventory: dict[str, Any],
+    windows_inventory: dict[str, Any], no_host_discovery: None
 ) -> None:
     """Status, reason, source *and* what would establish the result.
 
@@ -71,7 +71,7 @@ def test_every_row_carries_a_verification_statement(
 
 
 def test_the_rows_hold_up_where_the_engine_does_not_load(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_host_discovery: None
 ) -> None:
     """The Linux adapter's own "no engine here" branch, as macOS sees it.
 
@@ -287,6 +287,43 @@ def test_purge_is_recommended_first_when_the_drive_can_do_it() -> None:
     assert "attested" in assessment.recommended.verification
 
 
+def test_a_per_device_purge_is_unverified_without_a_hardware_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The drive reporting SANITIZE is not evidence the purge path works.
+
+    The option stays offered - the code exists and the drive reported the
+    command - but under UNVERIFIED, never SUPPORTED, and it says why.
+    """
+    path = tmp_path / "validation_record.json"
+    path.write_text(json.dumps({"suites": {}, "hardware": {}}), encoding="utf-8")
+    monkeypatch.setattr("core.platform.validation.RECORD_PATH", path)
+    adapter = _Fixed(ROOT, _linux_options(purge_reachable=True, flash=False))
+
+    assessment = adapter.assess_device(_device(interface="sata", media_type="hdd"))
+
+    assert assessment.headline == "READY"
+    assert assessment.recommended is not None
+    assert assessment.recommended.level == "PURGE"
+    assert assessment.recommended.status is CapabilityStatus.UNVERIFIED
+    assert assessment.status is CapabilityStatus.UNVERIFIED
+    assert "UNVERIFIED" in assessment.recommended.why
+    assert "physical drive" in assessment.recommended.why
+    clear = assessment.alternatives[0]
+    assert clear.level == "CLEAR"
+    assert clear.status is CapabilityStatus.SUPPORTED
+
+    recorded_pass = {"linux": {"whole_drive_purge": {"state": "PASS"}}}
+    path.write_text(
+        json.dumps({"suites": {}, "hardware": recorded_pass}), encoding="utf-8"
+    )
+    adapter = _Fixed(ROOT, _linux_options(purge_reachable=True, flash=False))
+    recorded = adapter.assess_device(_device(interface="sata", media_type="hdd"))
+    assert recorded.recommended is not None
+    assert recorded.recommended.status is CapabilityStatus.SUPPORTED
+    assert "UNVERIFIED" not in recorded.recommended.why
+
+
 def test_an_unprivileged_host_is_not_authorized_not_ready() -> None:
     adapter = _Fixed(USER, _linux_options(purge_reachable=True, flash=False))
 
@@ -326,7 +363,8 @@ def test_a_device_with_no_identity_is_never_shown_as_identified() -> None:
     assert checks["identity"].passed is None, "unknown is not a pass"
 
 
-def test_platform_status_is_complete_for_this_host() -> None:
+def test_platform_status_is_complete_for_this_host(no_host_discovery: None) -> None:
+    """This host's platform, privilege and matrix; its disks are not read."""
     from core.platform import current_adapter
 
     status = platform_status(current_adapter())
@@ -389,3 +427,49 @@ def test_inside_a_container_whole_drive_is_refused_not_guessed(
 
     monkeypatch.setenv(linux.CONTAINER_OVERRIDE_ENV, "1")
     assert adapter.whole_drive_unavailable_reason() == ""
+
+
+def _linux_drive_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hardware: dict[str, Any]
+) -> dict[Operation, Any]:
+    """The Linux whole-drive rows with the tools found and the helper present."""
+    from core.platform import linux
+
+    path = tmp_path / "validation_record.json"
+    path.write_text(
+        json.dumps({"suites": {}, "hardware": hardware}), encoding="utf-8"
+    )
+    monkeypatch.setattr("core.platform.validation.RECORD_PATH", path)
+    monkeypatch.setattr(linux.shutil, "which", lambda name: f"/usr/sbin/{name}")
+    adapter = linux.LinuxAdapter()
+    monkeypatch.setattr(adapter, "whole_drive_unavailable_reason", lambda: "")
+    return {r.operation: r for r in adapter._platform_rows(ROOT)}
+
+
+def test_firmware_purge_is_unverified_until_hardware_records_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tools installed and a helper running is not evidence a purge works.
+
+    docs/limitations.md says firmware Purge has never run on hardware; the
+    Platform screen must not read "Supported" beside that sentence.
+    """
+    rows = _linux_drive_rows(tmp_path, monkeypatch, {})
+    purge = rows[Operation.WHOLE_DRIVE_PURGE]
+    assert purge.status is CapabilityStatus.UNVERIFIED
+    assert "never run on hardware" in purge.reason
+    assert "hardware NOT RUN" in purge.source
+    clear = rows[Operation.WHOLE_DRIVE_CLEAR]
+    assert clear.status is CapabilityStatus.SUPPORTED_WITH_LIMITATIONS
+    assert any("HPA/DCO unlock has not been run" in x for x in clear.limitations)
+
+    passing = {"state": "PASS"}
+    rows = _linux_drive_rows(
+        tmp_path,
+        monkeypatch,
+        {"linux": {"whole_drive_purge": passing, "hidden_area_unlock": passing}},
+    )
+    purge = rows[Operation.WHOLE_DRIVE_PURGE]
+    assert purge.status is CapabilityStatus.SUPPORTED_WITH_LIMITATIONS
+    assert "hardware PASS" in purge.source
+    assert rows[Operation.WHOLE_DRIVE_CLEAR].limitations == [FLASH_LIMITATION]

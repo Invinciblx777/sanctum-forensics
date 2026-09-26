@@ -1690,6 +1690,13 @@ def execute(
         unwritable_ranges=unwritable,
         limitations=limitations,
         hw_attested=hw_attested,
+        device=device,
+        logical_block_size=geometry.logical_block_size,
+        physical_block_size=geometry.physical_block_size,
+        hidden_areas=hidden,
+        hidden_covered=hidden_covered,
+        verification=None if job.dry_run else verification,
+        achieved_level=None if job.dry_run else achieved,
     )
     sink.record(
         ErasePhase.REPORT,

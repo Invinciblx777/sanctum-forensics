@@ -504,9 +504,8 @@ def _check_store_chain(
 
     from core.ledger.chain import Ledger
 
-    outcome = Ledger(
-        ledger_root, tool_version="", pubkey_fingerprint=""
-    ).verify()
+    ledger = Ledger(ledger_root, tool_version="", pubkey_fingerprint="")
+    outcome = ledger.verify()
     declared = str(
         (report.get("sections") or {}).get("audit_trail", {}).get("chain_status") or ""
     )
@@ -525,6 +524,25 @@ def _check_store_chain(
             f"verifies as {outcome.status.value}",
             status=outcome.status.value,
         )
+    # A store that verifies on its own can still be a different history from the
+    # one the signed report cites: cut short, or rebuilt. Every entry the
+    # report carries must be present in the store with the same hash.
+    held = {entry.seq: entry.entry_hash for entry in ledger.entries()}
+    for cited in _excerpt(report):
+        seq = cited.get("seq")
+        if not isinstance(seq, int) or held.get(seq) != cited.get("entry_hash"):
+            return ReportCheck(
+                CheckName.CHAIN_STORE,
+                False,
+                f"the report cites entry {seq}, but the store "
+                + (
+                    "does not hold that entry"
+                    if seq not in held
+                    else "holds a different entry at that position"
+                )
+                + "; the store is not the history this report was signed over",
+                status=outcome.status.value,
+            )
     return ReportCheck(
         CheckName.CHAIN_STORE,
         True,

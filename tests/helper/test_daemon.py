@@ -13,6 +13,8 @@ from helper.daemon import OPERATIONS, HelperDaemon, InProcessHelper
 
 from helper import rpc
 
+from .authfx import make_authorization, patch_probe
+
 
 def _uid() -> int:
     """This process's uid, or ``-1`` on Windows, which has no such number.
@@ -209,6 +211,10 @@ def test_run_erase_refuses_a_mismatched_serial_behind_the_boundary(
     monkeypatch.setattr(
         "core.device.enumerate.get_device", lambda path: _device("ACTUAL-SERIAL")
     )
+    # A valid authorization, so the confirmation gate is what refuses: the
+    # write-seam authorization check runs first and has its own tests.
+    patch_probe(monkeypatch, _device("ACTUAL-SERIAL"))
+    authorization = make_authorization(tmp_path, _device("ACTUAL-SERIAL"))
 
     daemon = HelperDaemon(operator_uid=_uid())
     with pytest.raises(ConfirmationMismatch) as caught:
@@ -218,8 +224,10 @@ def test_run_erase_refuses_a_mismatched_serial_behind_the_boundary(
                 "path": "/dev/fake",
                 "job_id": "j",
                 "dry_run": False,
+                "level": "CLEAR",
                 "typed_serial": "WHAT-THE-UI-BELIEVED",
                 "ledger_root": str(tmp_path / "ledger"),
+                **authorization,
             },
         )
 
@@ -315,9 +323,17 @@ def test_a_serial_less_device_still_refuses_a_wrong_confirmation(
     monkeypatch.setattr(
         "core.device.enumerate.get_device", lambda path: _serial_less_device()
     )
+    patch_probe(monkeypatch, _serial_less_device())
 
     daemon = HelperDaemon(operator_uid=_uid())
-    for typed in ("", "not-the-by-id-path", "/dev/fake"):
+    for number, typed in enumerate(("", "not-the-by-id-path", "/dev/fake")):
+        # One authorization per attempt: the seam consumes it, and the property
+        # under test is the confirmation gate behind it.
+        authorization = make_authorization(
+            tmp_path / f"a{number}",
+            _serial_less_device(),
+            auth_id=f"auth-00000000000000{number:02d}",
+        )
         with pytest.raises(ConfirmationMismatch):
             daemon._dispatch(
                 "run_erase",
@@ -325,8 +341,10 @@ def test_a_serial_less_device_still_refuses_a_wrong_confirmation(
                     "path": "/dev/fake",
                     "job_id": "j",
                     "dry_run": False,
+                    "level": "CLEAR",
                     "typed_serial": typed,
                     "ledger_root": str(tmp_path / "ledger"),
+                    **authorization,
                 },
             )
 

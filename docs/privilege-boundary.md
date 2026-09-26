@@ -47,6 +47,16 @@ image to a path they choose, and request an erase.
   is precisely why both live on this side of the socket rather than in the request
   handler. A caller who has compromised the API still cannot wipe a drive without
   knowing its serial.
+- *Erase without a current authorization* (added 2026-09-25, SYNTHETIC-VALIDATED).
+  A real `run_erase` or `resume_erase` must also carry an authorization the helper
+  re-checks itself, from a fresh read of the device and the backup image
+  (`helper/authorization.py`, before the engine is entered): approved record, spent by
+  the API, identity, plan and backup unchanged, and a single-use `.executed` marker
+  taken by exclusive create. **Limit:** the record is a file in the operator's state
+  directory, so a process that can write it as the operator can forge a consistent
+  set; the socket permissions, not this check, keep other users out. The backup is
+  not re-hashed, and the window between this check and the first write is narrowed,
+  not closed.
 - *Reach the system disk or a mounted filesystem.* `core/device/guard.py` refuses both,
   and the refusal is inside the erase path, not in the UI.
 - *Run an arbitrary command as root.* There is no operation that takes one.

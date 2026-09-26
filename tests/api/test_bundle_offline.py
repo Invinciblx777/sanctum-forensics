@@ -172,22 +172,36 @@ def test_the_html_loads_only_relative_assets(ui_dist: Path) -> None:
         )
 
 
-def test_no_font_file_is_fetched_because_the_css_uses_system_stacks(
+def test_every_font_is_bundled_and_served_from_the_app_itself(
     ui_dist: Path,
 ) -> None:
-    """A webfont is a network request, and this must render with no network."""
+    """The typefaces ship inside the bundle and load same-origin, never remotely.
+
+    This used to forbid fonts outright on the grounds that a webfont is a
+    network request. A *remote* one is; a font file the app serves itself over
+    loopback is not, and it is how the interface gets a face drawn to keep 0/O
+    and 1/l/I apart in the serials an operator types. The property that matters
+    is checked instead: every ``@font-face`` source is a relative URL naming a
+    file that is in the bundle, so the fonts render with no network at all.
+    """
+    fonts = {
+        item.name
+        for item in _bundle_files(ui_dist)
+        if item.suffix in {".woff", ".woff2", ".ttf", ".otf", ".eot"}
+    }
+    sources: list[str] = []
     for path in _bundle_files(ui_dist):
         if path.suffix != ".css":
             continue
         text = path.read_text(encoding="utf-8")
-        assert "@font-face" not in text, (
-            f"{path.name} declares a font face; every family must be a system stack"
+        for face in re.findall(r"@font-face\s*{([^}]*)}", text):
+            sources.extend(re.findall(r"url\(\s*[\"']?([^\"')]+)", face))
+    assert sources, "no @font-face found; the bundled faces did not make it in"
+    for source in sources:
+        assert not re.match(r"^[a-z][a-z0-9+.-]*:|^//", source, re.I), (
+            f"a font is loaded from {source}, not from the bundle"
         )
-    assert not [
-        item
-        for item in _bundle_files(ui_dist)
-        if item.suffix in {".woff", ".woff2", ".ttf", ".otf", ".eot"}
-    ], "a font file was bundled; system stacks need none"
+        assert Path(source).name in fonts, f"{source} is not a file in the bundle"
 
 
 def test_the_bundle_is_small_enough_to_review(ui_dist: Path) -> None:

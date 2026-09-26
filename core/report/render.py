@@ -44,12 +44,16 @@ __all__ = [
     "build_report",
     "build_file_erase_report",
     "build_carve_report",
+    "build_destroy_report",
     "dpdp_erasure_reference",
+    "drive_report_inputs",
     "excerpt_gaps",
     "file_erasure_standards",
+    "media_map_summary",
     "sanitization_standards",
     "render_json",
     "render_pdf",
+    "trace_section",
     "write_report",
 ]
 
@@ -189,7 +193,12 @@ _SECTION_TITLES = {
     "scope": "2. Scope",
     "results": "3. Results",
     "residual_findings": "4. Residual Findings",
+    # Destruction.
+    "media": "2. Media",
+    "destruction": "3. Destruction",
+    "attestation": "4. Attestation",
     "erase_verification": "5. Verification",
+    "traces": "6. Desktop Traces",
     # Recovery.
     "evidence": "2. Evidence",
     "acquisition_integrity": "3. Evidential Integrity",
@@ -261,6 +270,52 @@ def excerpt_gaps(entries: list[dict[str, Any]]) -> list[dict[str, int]]:
                 }
             )
     return gaps
+
+
+def drive_report_inputs(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """The device, method, hidden-area, verification and residual-risk inputs
+    of a drive report, from an erase job's result.
+
+    One function, so the API, the demo and the validation harness cannot
+    drift. The plan carries only ``level``; the level requested and the level
+    achieved are named here, because a certificate that leaves the achieved
+    level blank has left out the one line it exists to state. A dry run
+    achieved nothing and says so. A result recorded before the engine carried
+    these fields yields empty sections, which the report prints as recorded.
+    """
+    if not result:
+        return {
+            "device": {},
+            "method": {},
+            "hidden_areas": {},
+            "verification": {},
+            "residual_risk": {},
+        }
+    plan = dict(result.get("plan") or {})
+    device = dict(result.get("device") or {})
+    for key in ("logical_block_size", "physical_block_size"):
+        if result.get(key):
+            device[key] = result[key]
+    hidden = dict(result.get("hidden_areas") or {})
+    if hidden:
+        hidden["covered"] = bool(result.get("hidden_covered"))
+    achieved = result.get("achieved_level")
+    if result.get("dry_run", False):
+        achieved_text = "NONE (dry run: nothing was written)"
+    else:
+        achieved_text = str(achieved or "")
+    return {
+        "device": device,
+        "method": {
+            **plan,
+            "method": str(plan.get("method") or result.get("method") or ""),
+            "level_requested": str(plan.get("level") or result.get("level") or ""),
+            "level_achieved": achieved_text,
+        },
+        "hidden_areas": hidden,
+        "verification": dict(result.get("verification") or {}),
+        "residual_risk": dict(result.get("residual_risk") or {}),
+    }
 
 
 def build_report(
@@ -471,6 +526,83 @@ def _envelope(
     return report
 
 
+def trace_section(sweep: dict[str, Any] | None) -> dict[str, Any]:
+    """What the trace sweep searched, found and removed, for the file report.
+
+    Present whether or not the sweep ran, so a report of a job that did not
+    sweep says so rather than falling silent about thumbnails and Trash copies.
+    """
+    if not sweep:
+        return {
+            "swept": False,
+            "note": (
+                "The trace sweep was not run for this job. Thumbnails, "
+                "recent-files entries and Trash or Recycle Bin copies of these "
+                "files were neither searched for nor removed."
+            ),
+            "items": [NONE_RECORDED],
+        }
+    traces = list(sweep.get("traces") or [])
+    return {
+        "swept": True,
+        "found": len(traces),
+        "exact": sum(1 for trace in traces if trace.get("exact")),
+        "removed": sum(1 for trace in traces if trace.get("removed")),
+        "content_copies": sum(1 for trace in traces if trace.get("content_copy")),
+        "searched": _or_none_recorded(list(sweep.get("searched") or [])),
+        "not_searched": _or_none_recorded(list(sweep.get("not_searched") or [])),
+        "unreadable": _or_none_recorded(list(sweep.get("notes") or [])),
+        "note": (
+            "Only a trace tied to an erased path on evidence is removed: a "
+            "thumbnail named by the MD5 of the file's URI, a list entry or "
+            "shortcut naming its path, a Trash or Recycle Bin record naming "
+            "where the copy came from. A trace file is erased through the same "
+            "steps as a target, so the residual findings above apply to it "
+            "too; a list entry is cut out and the list overwritten in place. A "
+            "running application that holds the list in memory can write an "
+            "entry back."
+        ),
+        "items": _rows_or_none_recorded(
+            [
+                {
+                    "kind": str(trace.get("kind", "")),
+                    "target": str(trace.get("target", "")),
+                    "path": str(trace.get("location", "")),
+                    "evidence": str(trace.get("evidence", "")),
+                    "content_copy": bool(trace.get("content_copy")),
+                    "exact": bool(trace.get("exact")),
+                    "action": str(trace.get("action") or "none"),
+                    "removed": bool(trace.get("removed")),
+                    "error": str(trace.get("error") or ""),
+                }
+                for trace in traces
+            ]
+        ),
+    }
+
+
+def media_map_summary(mapped: dict[str, Any] | None) -> dict[str, Any]:
+    """The media map in a report: the totals and how they were reached.
+
+    The region list stays in the job result; the signed report carries what a
+    reader needs to check the claim - bytes per class, headers per type,
+    whether the regions were sampled and how much was read.
+    """
+    if not mapped:
+        return {"mapped": False, "note": "The image was not mapped for this run."}
+    return {
+        "mapped": True,
+        "regions": len(mapped.get("regions") or []),
+        "region_bytes": int(mapped.get("region_bytes") or 0),
+        "sampled": bool(mapped.get("sampled")),
+        "bytes_read": int(mapped.get("bytes_read") or 0),
+        "bytes_by_class": dict(mapped.get("by_kind") or {}) or {"none": 0},
+        "headers_on_sector_boundaries": dict(mapped.get("headers") or {})
+        or {"none": 0},
+        # Its limitations are in the report's own limitations section.
+    }
+
+
 def build_file_erase_report(
     *,
     case_id: str,
@@ -488,6 +620,7 @@ def build_file_erase_report(
     signature: Signature | None = None,
     job_state: str | None = None,
     platform: dict[str, Any] | None = None,
+    trace_sweep: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The M2 report: what was erased, and what the filesystem kept anyway.
 
@@ -586,6 +719,88 @@ def build_file_erase_report(
             ]
             or [NONE_RECORDED],
         },
+        "traces": trace_section(trace_sweep),
+        "limitations": {"items": _or_none_recorded(list(limitations))},
+        "audit_trail": _audit_trail(
+            ledger_excerpt=ledger_excerpt,
+            chain_verification=chain_verification,
+            merkle_root=merkle_root,
+            anchor=anchor,
+        ),
+        "signature": signature.model_dump() if signature else {},
+    }
+    return _envelope(
+        case_id=case_id,
+        generated_at=generated_at,
+        tool_version=tool_version,
+        pubkey_fingerprint=pubkey_fingerprint,
+        sections=sections,
+        signature=signature,
+    )
+
+
+def build_destroy_report(
+    *,
+    case_id: str,
+    operator: str,
+    generated_at: datetime,
+    tool_version: str,
+    record: dict[str, Any],
+    recorded_at: str,
+    limitations: list[str],
+    ledger_excerpt: list[dict[str, Any]],
+    chain_verification: ChainVerification,
+    pubkey_fingerprint: str,
+    merkle_root: str | None = None,
+    anchor: dict[str, Any] | None = None,
+    signature: Signature | None = None,
+    job_state: str | None = None,
+    platform: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The Destroy record: what people attest they did to a medium.
+
+    The attestation section says, in the signed bytes, that the tool observed
+    nothing. The destruction date is the attesters'; the recording date is
+    this machine's; they are separate fields so neither passes for the other.
+    """
+    sections: dict[str, Any] = {
+        "case_identity": _case_identity(
+            case_id=case_id,
+            operator=operator,
+            generated_at=generated_at,
+            tool_version=tool_version,
+            job_state=job_state,
+            platform=platform,
+        ),
+        "media": {
+            "serial": str(record.get("serial", "")),
+            "model": str(record.get("model") or NONE_RECORDED),
+            "capacity_bytes": record.get("capacity_bytes"),
+            "media_type": str(record.get("media_type", "")),
+        },
+        "destruction": {
+            "sanitization_outcome": "DESTROY (NIST SP 800-88 Rev. 2)",
+            "technique": str(record.get("technique", "")),
+            "technique_detail": str(record.get("technique_detail") or NONE_RECORDED),
+            "particle_size_mm": record.get("particle_size_mm"),
+            "reason": str(record.get("reason", "")),
+            "performed_at": str(record.get("performed_at", "")),
+            "location": str(record.get("location") or NONE_RECORDED),
+            "vendor_certificate": str(
+                record.get("vendor_certificate") or NONE_RECORDED
+            ),
+            "notes": str(record.get("notes") or NONE_RECORDED),
+        },
+        "attestation": {
+            "performed_by": str(record.get("performed_by", "")),
+            "witnessed_by": str(record.get("witnessed_by") or NONE_RECORDED),
+            "recorded_at": recorded_at,
+            "observed_by_tool": False,
+            "statement": (
+                "Attested by the people named above. This tool did not see, "
+                "perform or measure the destruction."
+            ),
+        },
         "limitations": {"items": _or_none_recorded(list(limitations))},
         "audit_trail": _audit_trail(
             ledger_excerpt=ledger_excerpt,
@@ -625,6 +840,7 @@ def build_carve_report(
     signature: Signature | None = None,
     job_state: str | None = None,
     platform: dict[str, Any] | None = None,
+    media_map: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The M3 report: what was recovered, how sure the tool is, and why.
 
@@ -680,6 +896,7 @@ def build_carve_report(
             "identity": evidence.get("identity", {}),
             "partitions": _rows_or_none_recorded(partitions),
             "unallocated_bytes": unallocated_bytes,
+            "media_map": media_map_summary(media_map),
         },
         "acquisition_integrity": {
             "opened_read_only": True,
@@ -818,140 +1035,23 @@ def render_json(report: dict[str, Any]) -> bytes:
 # --------------------------------------------------------------------------
 
 
-def _flatten(value: Any, indent: int = 0) -> list[tuple[int, str, str]]:
-    """Flatten a section into ``(indent, key, value)`` lines for the PDF."""
-    lines: list[tuple[int, str, str]] = []
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if isinstance(item, (dict, list)) and item:
-                lines.append((indent, str(key), ""))
-                lines.extend(_flatten(item, indent + 1))
-            else:
-                lines.append((indent, str(key), _scalar(item)))
-    elif isinstance(value, list):
-        for item in value:
-            if isinstance(item, (dict, list)):
-                lines.extend(_flatten(item, indent + 1))
-            else:
-                lines.append((indent, "-", _scalar(item)))
-    else:
-        lines.append((indent, "", _scalar(value)))
-    return lines
-
-
-def _scalar(value: Any) -> str:
-    if value is None:
-        return NONE_RECORDED
-    if isinstance(value, bool):
-        return "yes" if value else "no"
-    if isinstance(value, datetime):
-        return value.isoformat()
-    return str(value)
-
-
-def _wrap(text: str, width: int) -> list[str]:
-    words = text.split()
-    if not words:
-        return [""]
-    lines: list[str] = []
-    current = words[0]
-    for word in words[1:]:
-        if len(current) + 1 + len(word) <= width:
-            current = f"{current} {word}"
-        else:
-            lines.append(current)
-            current = word
-    lines.append(current)
-    return lines
-
-
 def render_pdf(report: dict[str, Any]) -> bytes:
-    """Render the human-readable, non-authoritative PDF."""
-    import io
+    """Render the human-readable, non-authoritative PDF.
 
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.units import mm
-    from reportlab.pdfgen import canvas as pdf_canvas
+    A certificate page first - the medium, the level asked for and achieved,
+    the verification, who ran it, and the SHA-256 of the signed JSON with a QR
+    code carrying it and the signature - then every section in the report's
+    own order. See :mod:`core.report.certificate`.
+    """
+    from core.report.certificate import render_certificate_pdf
 
-    buffer = io.BytesIO()
-    # pageCompression=0 keeps the text streams readable, which makes the PDF
-    # greppable and lets a reviewer confirm what it says without a viewer.
-    page = pdf_canvas.Canvas(buffer, pagesize=A4, pageCompression=0)
-    width, height = A4
-    left = 18 * mm
-    cursor = height - 20 * mm
-    bottom = 20 * mm
-
-    def newline(step: float = 4.6 * mm) -> None:
-        nonlocal cursor
-        cursor -= step
-        if cursor < bottom:
-            page.showPage()
-            cursor = height - 20 * mm
-
-    def draw(text: str, *, size: int = 9, mono: bool = False, indent: int = 0) -> None:
-        page.setFont("Courier" if mono else "Helvetica", size)
-        page.drawString(left + indent * 5 * mm, cursor, text[:200])
-        newline()
-
-    page.setFont("Helvetica-Bold", 15)
-    page.drawString(left, cursor, f"Sanctum Forensics Report - {report['case_id']}")
-    newline(8 * mm)
-
-    page.setFont("Helvetica-Bold", 8)
-    for line in _wrap(PDF_DISCLAIMER, 96):
-        page.setFont("Helvetica-Bold", 8)
-        page.drawString(left, cursor, line)
-        newline(3.8 * mm)
-    newline(3 * mm)
-
-    # The report's own key order, not SECTION_ORDER. A drive erasure, a file
-    # erasure and a recovery are different documents with different sections,
-    # and every builder emits its sections in the order it wants them read.
-    for name, section in report["sections"].items():
-        page.setFont("Helvetica-Bold", 11)
-        page.drawString(left, cursor, _SECTION_TITLES.get(name, name.title()))
-        newline(5.5 * mm)
-        if not section:
-            draw(NONE_RECORDED, indent=1)
-            continue
-        for indent, key, value in _flatten(section, indent=1):
-            mono = key in _MONOSPACE_KEYS or (
-                isinstance(value, str) and len(value) == 64 and value.isalnum()
-            )
-            label = f"{key}: " if key and key != "-" else ("- " if key else "")
-            width = 92 if mono else 104
-            for offset, chunk in enumerate(_wrap(f"{label}{value}", width)):
-                draw(chunk, mono=mono, indent=indent + (1 if offset else 0))
-        newline(2 * mm)
-
-    _draw_signature_qr(page, report, left, cursor)
-    page.showPage()
-    page.save()
-    return buffer.getvalue()
-
-
-def _draw_signature_qr(
-    page: Any, report: dict[str, Any], left: float, cursor: float
-) -> None:
-    """Draw a QR code carrying the detached signature, when one is present."""
-    signature = report.get("signature") or {}
-    payload = signature.get("sig_b64")
-    if not payload:
-        return
-    try:
-        from reportlab.graphics import renderPDF
-        from reportlab.graphics.barcode import qr
-        from reportlab.graphics.shapes import Drawing
-    except ImportError:  # pragma: no cover - reportlab always ships these
-        logger.warning("qr_unavailable")
-        return
-    code = qr.QrCodeWidget(payload)
-    bounds = code.getBounds()
-    drawing = Drawing(90, 90, transform=[90.0 / (bounds[2] - bounds[0]), 0, 0,
-                                         90.0 / (bounds[3] - bounds[1]), 0, 0])
-    drawing.add(code)
-    renderPDF.draw(drawing, page, left, max(cursor - 95, 20))
+    return render_certificate_pdf(
+        report,
+        canonical=render_json(report),
+        disclaimer=PDF_DISCLAIMER,
+        section_titles=_SECTION_TITLES,
+        monospace_keys=_MONOSPACE_KEYS,
+    )
 
 
 def write_report(report: dict[str, Any], out_dir: Path | str) -> tuple[Path, Path]:

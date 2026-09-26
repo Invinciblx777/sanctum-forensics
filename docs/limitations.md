@@ -303,6 +303,12 @@ report in `tests/erase/test_hidden_area_phases.py`, which fakes the *probe* and
 leaves the unlock decision, the geometry widening, the ledger entries and the
 restore running unaltered.
 
+**HPA/DCO unlock is HARDWARE-UNVERIFIED.** No drive with a hidden area has been
+through it. On the one physical stick the project has run (2026-09-05), the probe
+was skipped behind the USB bridge, which is the bridge-discard behaviour working,
+not an unlock. The Platform screen's Clear row carries this as a limitation until
+the validation record's hardware section records a PASS.
+
 ## NVMe scope
 
 `sanitize` acts at **controller** scope: it destroys every namespace on the
@@ -741,7 +747,11 @@ that change what an operator can do:
   same hardware (from a live USB for an internal disk).
 - **Firmware Purge has never run on hardware**, on any platform. It is
   selected from probed capability and dispatched on Linux; that path is
-  UNVERIFIED.
+  UNVERIFIED. The Platform row, each device's Purge option and the Devices badge
+  (PURGE · UNVERIFIED, never a green PURGE AVAILABLE) say so until the validation
+  record's hardware section records a PASS. The option is still offered, under
+  that word: the code exists and the drive reported the command, and it is never
+  presented as a hardware-validated result.
 - **APFS, Btrfs, ReFS and F2FS are copy-on-write.** A file erase on them
   removes the file and reports residuals; it cannot destroy the old blocks and
   is never reported as verified.
@@ -881,6 +891,29 @@ reports for the UI and proves nothing; the hash chain is the record, and the
 case screen's integrity verdict is always the chain's. Editing a case document
 changes the grouping, not the evidence.
 
+## A real erase's gates: what they do not prove
+
+A real whole-drive erase needs a backup image the server hashes and sizes when
+the workflow opens, an approval with the typed serial, and a one-use
+authorization, and the privileged helper re-checks device, plan and backup
+before the engine starts. Tested with synthetic helpers only (SYNTHETIC
+VALIDATION). What that does not establish:
+
+- **Backup provenance is not proven.** The image is checked by SHA-256 at open
+  and by size, mtime, ctime and inode at execution. Nothing proves it is a copy
+  of this device, it is not re-hashed at execution, and it has never been
+  restored: backup restoration is unvalidated.
+- **The helper's check and the first write are not proven race-free.** The
+  helper re-reads the device and the backup immediately before entering the
+  engine; between that check and the first write only the engine's own guards
+  (system disk, mount, serial re-read) stand.
+- **The API does not authenticate a human.** Approval is a deliberate second
+  call with the typed serial, not proof of who made it (see below).
+- **A simulation opens the device read-only.** A dry run opens the device node
+  `O_RDONLY` for the `BLKGETSIZE64` size ioctl and reads metadata. It never opens
+  a device for writing and never reaches the write path; "a simulation never
+  opens /dev" would be false.
+
 ## The API has no authentication
 
 It binds `127.0.0.1` only. Any local account that can reach that port can drive
@@ -918,3 +951,37 @@ are among the suite's skips and name their reason.
 `SanitizationLevel.DESTROY` is never achievable in software and is never
 returned by method selection. It means physical destruction: shred, disintegrate,
 incinerate, melt.
+
+The application records a destruction but cannot perform or observe one. A
+**Record of Destruction** (`POST /jobs/record-destroy`, the Devices screen) chains
+and signs what the people named in it attest. Its signature proves the record has
+not changed since it was signed, not that the destruction happened; the names are
+typed in and not authenticated; and whether the technique and fragment size reach
+Destroy for that media is the facility's determination, not the tool's.
+
+## Trace sweep
+
+The sweep after a file erase searches the desktop's shared thumbnail cache,
+recent-files lists (GTK and KDE), the home Trash, the Trash on the file's volume,
+the Windows Recycle Bin and Recent shortcuts, and the macOS Trash. It does not
+search application caches and history (office suites, viewers, browsers), search
+and activity indexes (Tracker, the KDE activity database, Windows Search,
+Spotlight), jump lists, `thumbcache_*.db`, the QuickLook cache, snapshots, backups
+or sync clients; every report lists these as not searched. A thumbnail made under a
+URI other than the one the file was erased by (through a link, another mount point
+or a network share) is found only when its `Thumb::URI` names a file inside an
+erased folder. On macOS the Trash records where an item came from only in its
+`.DS_Store`, which is not parsed, so a same-name item is reported and never removed.
+
+**Not validated on a live desktop.** The sweep has run against synthetic home
+directories in the test suite and in a sandboxed browser run
+(`validation/features-2026-09-25/`), never against a real user's desktop session
+with its own thumbnailer, recent-files writers and Trash.
+
+## Media map
+
+The map classes bytes by statistics over 4 KiB blocks. It does not identify
+content. Above 64 MiB it reads evenly spaced samples within a 64 MiB budget, so a
+region is classed by its samples and can hold what they missed. Header counts are
+of headers on 512-byte sector boundaries, not validated files, and two-byte
+signatures (`MZ`, `BM`) are not counted at all.

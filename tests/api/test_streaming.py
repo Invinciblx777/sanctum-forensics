@@ -17,6 +17,7 @@ from api.jobs import JobRegistry
 from api.sse import format_event
 from core.models import Progress
 from fastapi.testclient import TestClient
+from helper.rpc import RpcError
 
 
 def parse_events(payload: str) -> list[tuple[str, dict[str, Any]]]:
@@ -136,6 +137,30 @@ def test_a_failing_job_is_recorded_rather_than_lost() -> None:
     assert record.state == "failed"
     assert record.error == "the drive went away"
     assert record.error_kind == "RuntimeError"
+
+
+def test_a_helper_error_keeps_the_kind_it_was_raised_as() -> None:
+    """Not "RpcError": the transport wrapper says nothing a caller can act on.
+
+    A write-seam refusal and a failed erase both arrive as RpcError, and the
+    Sanitize screen tells them apart by this field.
+    """
+    registry = JobRegistry()
+    kinds = {}
+    for kind in ("WorkflowGateRefused", ""):
+
+        def factory(kind: str = kind) -> Any:
+            def generator() -> Any:
+                yield _progress("j", 1, 2)
+                raise RpcError("refused", remediation="open a new one", kind=kind)
+
+            return generator()
+
+        record = registry.wait(registry.submit("test", {}, factory), timeout=5)
+        assert record.state == "failed"
+        assert record.remediation == "open a new one"
+        kinds[kind] = record.error_kind
+    assert kinds == {"WorkflowGateRefused": "WorkflowGateRefused", "": "RpcError"}
 
 
 def test_the_progress_buffer_is_bounded_and_says_when_it_truncated() -> None:

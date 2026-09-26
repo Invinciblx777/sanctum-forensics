@@ -1,9 +1,19 @@
 import { useEffect, useState } from 'react'
 import { api, artifactUrl, RequestFailed } from '../lib/api'
-import type { CaseDetail, CaseSummary } from '../lib/api'
+import type { CaseDetail, CaseSummary, OperationRecord } from '../lib/api'
 import { useCase } from '../lib/caseContext'
-import { timestamp } from '../lib/format'
 import {
+  caseFacts,
+  caseRequestFailed,
+  isSimulation,
+  operationStatus,
+  operationType,
+  reportsByOperation,
+} from '../lib/cases'
+import { timestamp } from '../lib/format'
+import { operationLabel } from '../lib/ledger'
+import {
+  Chip,
   Empty,
   ErrorNotice,
   Evidence,
@@ -11,7 +21,6 @@ import {
   Notice,
   Panel,
   Railed,
-  Stat,
   Verdict,
 } from '../components/widgets'
 import type { Tone } from '../components/widgets'
@@ -37,13 +46,6 @@ function chainTone(status: string): Tone {
   return 'destructive'
 }
 
-function statusTone(status: string): Tone {
-  if (status === 'complete') return 'success'
-  if (status === 'running' || status === 'pending') return 'warning'
-  if (status === 'cancelled') return 'warning'
-  return 'destructive'
-}
-
 type TabId =
   | 'overview'
   | 'evidence'
@@ -51,13 +53,16 @@ type TabId =
   | 'reports'
   | 'audit'
 
-const TABS: { id: TabId; label: string }[] = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'evidence', label: 'Evidence' },
-  { id: 'operations', label: 'Operations' },
-  { id: 'reports', label: 'Reports' },
-  { id: 'audit', label: 'Audit' },
-]
+/** Each tab and the count it carries, so a judge sees what is in it unopened. */
+function tabsFor(detail: CaseDetail): { id: TabId; label: string; count?: number }[] {
+  return [
+    { id: 'overview', label: 'Overview' },
+    { id: 'evidence', label: 'Evidence', count: detail.evidence.length },
+    { id: 'operations', label: 'Operations', count: detail.operations.length },
+    { id: 'reports', label: 'Reports', count: detail.reports.length },
+    { id: 'audit', label: 'Audit', count: detail.audit.events.length },
+  ]
+}
 
 function NewCase({ onCreated }: { onCreated: (id: string) => void }) {
   const [caseId, setCaseId] = useState('')
@@ -118,13 +123,6 @@ function NewCase({ onCreated }: { onCreated: (id: string) => void }) {
               onChange={(event) => setTitle(event.target.value)}
             />
           </label>
-          <button
-            className="btn primary"
-            disabled={!caseId}
-            onClick={() => void create()}
-          >
-            Open case
-          </button>
         </div>
         <label>
           Description
@@ -135,6 +133,15 @@ function NewCase({ onCreated }: { onCreated: (id: string) => void }) {
             onChange={(event) => setDescription(event.target.value)}
           />
         </label>
+        <div className="row">
+          <button
+            className="btn primary"
+            disabled={!caseId}
+            onClick={() => void create()}
+          >
+            Open case
+          </button>
+        </div>
         <p className="note">
           A case id becomes a filename, so it is checked against a whitelist
           rather than escaped: 1&ndash;64 characters from A&ndash;Z, a&ndash;z,
@@ -257,6 +264,457 @@ function sourceName(source: string): string {
   return cut >= 0 ? cleaned.slice(cut + 1) : cleaned
 }
 
+/** A job state in the registry's word (or BLOCKED / VERIFY FAILED), coloured by the shared tones. */
+function OperationState({ operation }: { operation: OperationRecord }) {
+  const { word, tone } = operationStatus(operation)
+  return <span className={`state-mark is-${tone}`}>{word}</span>
+}
+
+function CaseList({
+  cases,
+  loading,
+  selected,
+  onSelect,
+}: {
+  cases: CaseSummary[]
+  loading: boolean
+  selected: string | undefined
+  onSelect: (id: string) => void
+}) {
+  return (
+    <Panel
+      title={`All cases (${cases.length})`}
+      subtitle="Select one to open it on every screen."
+      tight
+    >
+      {loading ? (
+        <Empty>Reading the case list&hellip;</Empty>
+      ) : cases.length === 0 ? (
+        <Empty>
+          No cases yet. Open one with <strong>Open a case</strong>; every
+          operation this tool performs can then be filed against it, and the
+          report inherits the case id without anyone retyping it.
+        </Empty>
+      ) : (
+        <div className="scroll-y" style={{ maxHeight: '40vh' }}>
+          <table className="itable">
+            <colgroup>
+              <col style={{ width: 'var(--gutter)' }} />
+              <col style={{ width: 150 }} />
+              <col />
+              <col style={{ width: 82 }} />
+              <col style={{ width: 94 }} />
+              <col style={{ width: 74 }} />
+            </colgroup>
+            <thead>
+              <tr>
+                <th className="rail" />
+                <th>Case</th>
+                <th>Title</th>
+                <th>Evidence</th>
+                <th>Operations</th>
+                <th>Reports</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cases.map((item) => {
+                const active = selected === item.case_id
+                return (
+                  <tr
+                    key={item.case_id}
+                    className={
+                      active
+                        ? 'irow is-compact is-openable is-selected'
+                        : 'irow is-compact is-openable'
+                    }
+                    aria-selected={active}
+                    onClick={() => onSelect(item.case_id)}
+                  >
+                    <td className="rail" aria-hidden>
+                      <i />
+                    </td>
+                    <td className="mono">{item.case_id}</td>
+                    <td title={item.description}>{item.title || '—'}</td>
+                    <td className="mono">{item.evidence_count}</td>
+                    <td className="mono">{item.operation_count}</td>
+                    <td className="mono">{item.report_count}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  )
+}
+
+function Overview({
+  detail,
+  onOpen,
+}: {
+  detail: CaseDetail
+  onOpen: (tab: TabId) => void
+}) {
+  const facts = caseFacts(detail)
+  const tone = chainTone(detail.audit.chain_status)
+  const figures: { tab: TabId; label: string; value: number; foot: string }[] = [
+    { tab: 'evidence', label: 'Evidence', value: detail.evidence.length, foot: facts.evidence },
+    { tab: 'operations', label: 'Operations', value: detail.operations.length, foot: facts.operations },
+    { tab: 'reports', label: 'Reports', value: detail.reports.length, foot: facts.reports },
+    { tab: 'audit', label: 'Audit entries', value: detail.audit.events.length, foot: facts.audit },
+  ]
+  return (
+    <div className="col loose">
+      {/* The integrity verdict is the chain's, always. The counts below come
+          from the case document, which is an index. */}
+      <Railed tone={tone}>
+        <Verdict
+          level={`INTEGRITY: ${detail.audit.chain_status}`}
+          basis={`whole chain, ${detail.audit.entry_count} entries; ${detail.audit.events.length} name this case`}
+          tone={tone}
+        />
+        <span className="note">{detail.audit.chain_explanation}</span>
+      </Railed>
+
+      <div className="figures">
+        {figures.map((figure) => (
+          <button
+            key={figure.tab}
+            type="button"
+            className="figure is-link"
+            onClick={() => onOpen(figure.tab)}
+          >
+            <span className="figure-label">{figure.label}</span>
+            <span className="figure-value">{figure.value.toLocaleString('en-US')}</span>
+            <span className="figure-foot" title={figure.foot}>
+              {figure.foot}
+            </span>
+          </button>
+        ))}
+      </div>
+
+      <Evidence
+        rows={[
+          { label: 'Case status', value: detail.case.status },
+          { label: 'Opened by', value: detail.case.created_by, kind: 'mono' },
+          { label: 'Opened at', value: timestamp(detail.case.created_at), kind: 'mono' },
+          { label: 'Last updated', value: timestamp(detail.case.updated_at), kind: 'mono' },
+          {
+            label: 'Recovered artifacts',
+            value: detail.case.recovered_artifact_count.toLocaleString('en-US'),
+          },
+          { label: 'Description', value: detail.case.description || '—' },
+        ]}
+      />
+
+      <Notice tone="info">
+        The counts above are read from this case&apos;s index document. The
+        integrity verdict is read from the hash-chained ledger. Deleting the
+        index loses the grouping and loses no evidence; if the two ever
+        disagree, the ledger is right.
+      </Notice>
+    </div>
+  )
+}
+
+function EvidenceTab({ detail }: { detail: CaseDetail }) {
+  if (detail.evidence.length === 0) {
+    return (
+      <Empty>
+        No exhibit is registered against this case yet. Register one below, or
+        run an acquisition with this case selected.
+      </Empty>
+    )
+  }
+  return (
+    <div className="col">
+      <div className="scroll-x">
+        <table className="itable" style={{ minWidth: 640 }}>
+          <colgroup>
+            <col style={{ width: 120 }} />
+            <col />
+            <col style={{ width: 120 }} />
+            <col style={{ width: 170 }} />
+            <col style={{ width: 110 }} />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Exhibit</th>
+              <th>Source</th>
+              <th>Type</th>
+              <th>Source hash</th>
+              <th>State</th>
+            </tr>
+          </thead>
+          <tbody>
+            {detail.evidence.map((item) => (
+              <tr key={item.evidence_id} className="irow is-compact">
+                <td className="mono">{item.evidence_id}</td>
+                {/* The exhibit's own name, not where this host keeps it. The
+                    full path identifies the examiner's machine rather than the
+                    evidence, and this screen is what gets projected; it is
+                    under Technical details below, and in the signed report
+                    either way. */}
+                <td title={item.source}>{sourceName(item.source) || '—'}</td>
+                <td className="mono">{item.media_type}</td>
+                <td>
+                  {item.source_hash ? (
+                    <Hash value={item.source_hash} />
+                  ) : (
+                    <span className="note-faint">not recorded</span>
+                  )}
+                </td>
+                <td className="mono">{item.state}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="note-faint">
+        Registering an exhibit records that it exists. It does not open, read
+        or hash it; a hash shown here is the one acquisition recorded.
+      </p>
+      <details className="tech">
+        <summary>Technical details: full source paths</summary>
+        <div className="tech-body">
+          <Evidence
+            stacked
+            rows={detail.evidence.map((item) => ({
+              label: item.evidence_id,
+              value: item.source || 'not recorded',
+              kind: 'path',
+            }))}
+          />
+        </div>
+      </details>
+    </div>
+  )
+}
+
+function OperationsTab({ detail }: { detail: CaseDetail }) {
+  if (detail.operations.length === 0) {
+    return (
+      <Empty>
+        No operation has been run under this case. Start a recovery or a
+        sanitization with this case open and it appears here.
+      </Empty>
+    )
+  }
+  const reports = reportsByOperation(detail.reports)
+  return (
+    <div className="col">
+      <div className="scroll-x">
+        <table className="itable" style={{ minWidth: 640 }}>
+          <colgroup>
+            <col style={{ width: 'var(--gutter)' }} />
+            <col style={{ width: 280 }} />
+            <col style={{ width: 112 }} />
+            <col />
+            <col style={{ width: 104 }} />
+          </colgroup>
+          <thead>
+            <tr>
+              <th className="rail" />
+              <th>Operation</th>
+              <th>Job state</th>
+              <th>Operator</th>
+              <th>Report</th>
+            </tr>
+          </thead>
+          <tbody>
+            {detail.operations.map((item) => {
+              const report = reports.get(item.operation_id)
+              return (
+                <tr key={item.operation_id} className="irow">
+                  <td
+                    className={`rail is-${operationStatus(item).tone}`}
+                    aria-hidden
+                  >
+                    <i />
+                  </td>
+                  {/* What it was, in words, over the id the Audit screen asks
+                      for: the judge reads the first line, the operator copies
+                      the second. */}
+                  <td
+                    title={`started ${timestamp(item.started_at)}, finished ${timestamp(item.completed_at)}, ${item.recovered_artifacts} artifact(s) recovered`}
+                  >
+                    <span className="cell-stack">
+                      <span className="row" style={{ gap: 'var(--space-2)' }}>
+                        {operationType(item.type)}
+                        {isSimulation(item) && <Chip>SIMULATION</Chip>}
+                      </span>
+                      <span className="mono note-faint">{item.operation_id}</span>
+                    </span>
+                  </td>
+                  <td>
+                    <OperationState operation={item} />
+                  </td>
+                  <td className="mono" title={item.operator}>
+                    {item.operator}
+                  </td>
+                  <td>
+                    {report ? (
+                      <span
+                        className={`state-mark ${report.signed ? 'is-seal' : 'is-unknown'}`}
+                      >
+                        {report.signed ? 'SIGNED' : 'UNSIGNED'}
+                      </span>
+                    ) : (
+                      <span className="note-faint">none</span>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="note-faint">
+        The job state is the job registry&apos;s word for how the run ended,
+        with two exceptions: BLOCKED is a safety refusal before any write (the
+        registry says failed), and VERIFY FAILED is a drive erase that ran but
+        whose read-back failed (the registry says complete). The full
+        verification is on the report. Generate one from the Audit screen with
+        the operation id.
+      </p>
+    </div>
+  )
+}
+
+function ReportsTab({ detail }: { detail: CaseDetail }) {
+  if (detail.reports.length === 0) {
+    return (
+      <Empty>
+        No report has been generated for this case. Generate one from the Audit
+        screen using an operation id from the Operations tab.
+      </Empty>
+    )
+  }
+  return (
+    <div className="col">
+      {detail.reports.map((item) => (
+        // Seal means cryptographically attested: only a signed report has it.
+        <Railed key={item.report_id} tone={item.signed ? 'seal' : 'unknown'}>
+          <div className="row wrap spread">
+            <span className="mono">{item.operation_id}</span>
+            <span className={`state-mark ${item.signed ? 'is-seal' : 'is-unknown'}`}>
+              {item.signed ? 'SIGNED' : 'UNSIGNED'}
+            </span>
+          </div>
+          <Evidence
+            rows={[
+              { label: 'Generated', value: timestamp(item.generated_at), kind: 'mono' },
+              { label: 'SHA-256 (JSON)', value: item.report_hash, kind: 'hash' },
+              ...(item.pubkey_fingerprint
+                ? [
+                    {
+                      label: 'Key fingerprint',
+                      value: item.pubkey_fingerprint,
+                      kind: 'hash' as const,
+                    },
+                  ]
+                : []),
+            ]}
+          />
+          <div className="row wrap" style={{ gap: 'var(--space-2)' }}>
+            <a
+              className="btn"
+              href={artifactUrl('reports', item.pdf_name)}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Open PDF
+            </a>
+            <a
+              className="btn"
+              href={artifactUrl('reports', item.pdf_name, {
+                download: true,
+              })}
+            >
+              Download PDF
+            </a>
+            <a
+              className="btn"
+              href={artifactUrl('reports', item.json_name)}
+              target="_blank"
+              rel="noreferrer"
+            >
+              View JSON
+            </a>
+          </div>
+          <span className="note-faint">
+            The JSON is authoritative and the PDF is not: the signature covers
+            the canonical JSON bytes. Verify it on the Audit screen.
+          </span>
+        </Railed>
+      ))}
+    </div>
+  )
+}
+
+function AuditTab({ detail }: { detail: CaseDetail }) {
+  if (detail.audit.events.length === 0) {
+    return <Empty>The chain carries no entries for this case yet.</Empty>
+  }
+  return (
+    <div className="col">
+      <p className="note">
+        The hash-chained ledger entries that name this case, newest first. Each
+        entry holds the SHA-256 of the one before it; the Audit screen verifies
+        the whole chain and demonstrates tampering on a copy.
+      </p>
+      <div className="scroll-y scroll-x" style={{ maxHeight: '52vh' }}>
+        <table className="itable" style={{ minWidth: 760 }}>
+          <colgroup>
+            <col style={{ width: 'var(--gutter)' }} />
+            <col style={{ width: 56 }} />
+            <col style={{ width: 196 }} />
+            <col style={{ width: 180 }} />
+            <col />
+            <col style={{ width: 152 }} />
+          </colgroup>
+          <thead>
+            <tr>
+              <th className="rail" />
+              <th>Seq</th>
+              <th>Timestamp</th>
+              <th>Actor</th>
+              <th>Event</th>
+              <th>Entry hash</th>
+            </tr>
+          </thead>
+          <tbody>
+            {detail.audit.events.map((item) => {
+              const broken =
+                detail.audit.first_broken_seq !== null &&
+                item.seq >= detail.audit.first_broken_seq
+              return (
+                <tr
+                  key={item.current_hash}
+                  className={broken ? 'irow is-compact is-bad' : 'irow is-compact'}
+                >
+                  <td className={broken ? 'rail is-destructive' : 'rail'} aria-hidden>
+                    <i />
+                  </td>
+                  <td className="mono">{item.seq}</td>
+                  <td className="mono">{timestamp(item.timestamp)}</td>
+                  <td className="mono" title={item.actor}>
+                    {item.actor}
+                  </td>
+                  <td title={item.event}>{operationLabel(item.event)}</td>
+                  <td>
+                    <Hash value={item.current_hash} />
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
 
 export default function Cases() {
   const { cases, openCase, select, refresh, loading } = useCase()
@@ -276,7 +734,7 @@ export default function Cases() {
       const failure = exc as RequestFailed
       setDetail(null)
       setError({
-        message: failure.message,
+        message: caseRequestFailed(failure.message),
         kind: failure.kind,
         remediation: failure.remediation,
       })
@@ -287,6 +745,11 @@ export default function Cases() {
     if (openCase) void load(openCase.case_id)
     else setDetail(null)
   }, [openCase?.case_id])
+
+  // The open case comes first: it is what a first-time reader is looking
+  // for. The list and the form to open another follow it.
+  const shown = openCase && detail?.case.case_id === openCase.case_id ? detail : null
+  const integrity = shown ? chainTone(shown.audit.chain_status) : 'unknown'
 
   return (
     <>
@@ -311,410 +774,52 @@ export default function Cases() {
       <div className="screen-body">
         <ErrorNotice error={error} />
 
-        <div className="split">
-          <Panel title={`Cases (${cases.length})`} tight>
-            {loading ? (
-              <Empty>Reading the case list&hellip;</Empty>
-            ) : cases.length === 0 ? (
-              <Empty>
-                No cases yet. Open one below; every operation this tool performs
-                can then be filed against it, and the report inherits the case
-                id without anyone retyping it.
-              </Empty>
-            ) : (
-              <div className="scroll-y" style={{ maxHeight: '46vh' }}>
-                <table className="itable">
-                  <colgroup>
-                    <col style={{ width: 'var(--gutter)' }} />
-                    <col style={{ width: 160 }} />
-                    <col />
-                    <col style={{ width: 70 }} />
-                    <col style={{ width: 70 }} />
-                    <col style={{ width: 70 }} />
-                  </colgroup>
-                  <thead>
-                    <tr>
-                      <th className="rail" />
-                      <th>Case</th>
-                      <th>Title</th>
-                      <th>Exh.</th>
-                      <th>Ops</th>
-                      <th>Rpts</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {cases.map((item: CaseSummary) => {
-                      const active = openCase?.case_id === item.case_id
-                      return (
-                        <tr
-                          key={item.case_id}
-                          className={
-                            active
-                              ? 'irow is-compact is-openable is-selected'
-                              : 'irow is-compact is-openable'
-                          }
-                          onClick={() => select(item.case_id)}
-                        >
-                          <td className="rail" aria-hidden>
-                            <i />
-                          </td>
-                          <td className="mono">{item.case_id}</td>
-                          <td title={item.description}>{item.title || '—'}</td>
-                          <td className="mono">{item.evidence_count}</td>
-                          <td className="mono">{item.operation_count}</td>
-                          <td className="mono">{item.report_count}</td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </Panel>
-
-          <NewCase
-            onCreated={(id) => {
-              void refresh().then(() => select(id))
-            }}
-          />
-        </div>
-
-        {openCase && detail && (
+        {shown && (
           <>
             <Panel
-              title={detail.case.case_id}
-              subtitle={detail.case.title || undefined}
+              title={shown.case.case_id}
+              subtitle={shown.case.title || undefined}
               actions={
-                <div className="row" style={{ gap: 'var(--space-1)' }}>
-                  {TABS.map((item) => (
+                <span className="row" style={{ gap: 'var(--space-3)' }}>
+                  <Chip>case {shown.case.status}</Chip>
+                  <span className={`state-mark is-${integrity}`}>
+                    Chain {shown.audit.chain_status}
+                  </span>
+                </span>
+              }
+            >
+              <div className="col loose">
+                <div className="row wrap" role="tablist" aria-label="Case sections">
+                  {tabsFor(shown).map((item) => (
                     <button
                       key={item.id}
+                      role="tab"
+                      aria-selected={tab === item.id}
                       className={tab === item.id ? 'btn primary' : 'btn'}
                       onClick={() => setTab(item.id)}
                     >
                       {item.label}
+                      {item.count !== undefined && (
+                        <span className="tab-count">{item.count}</span>
+                      )}
                     </button>
                   ))}
                 </div>
-              }
-            >
-              {tab === 'overview' && (
-                <div className="col loose">
-                  {/* The integrity verdict is the chain's, always. The counts
-                      below come from the case document, which is an index. */}
-                  <Railed tone={chainTone(detail.audit.chain_status)}>
-                    <Verdict
-                      level={`INTEGRITY: ${detail.audit.chain_status}`}
-                      basis={`${detail.audit.entry_count} chain entries`}
-                      tone={chainTone(detail.audit.chain_status)}
-                    />
-                    <span className="note">
-                      {detail.audit.chain_explanation}
-                    </span>
-                  </Railed>
 
-                  <div className="row wrap" style={{ gap: 'var(--space-6)' }}>
-                    <Stat label="Evidence" value={detail.evidence.length} />
-                    <Stat label="Operations" value={detail.operations.length} />
-                    <Stat
-                      label="Recovered artifacts"
-                      value={detail.case.recovered_artifact_count.toLocaleString(
-                        'en-US',
-                      )}
-                    />
-                    <Stat label="Reports" value={detail.reports.length} />
-                    <Stat
-                      label="Audit events"
-                      value={detail.audit.events.length}
-                    />
-                  </div>
-
-                  <Evidence
-                    stacked
-                    rows={[
-                      { label: 'Opened by', value: detail.case.created_by },
-                      {
-                        label: 'Opened at',
-                        value: timestamp(detail.case.created_at),
-                      },
-                      { label: 'Status', value: detail.case.status },
-                      {
-                        label: 'Description',
-                        value: detail.case.description || '—',
-                      },
-                    ]}
-                  />
-
-                  <Notice tone="info">
-                    The counts above are read from this case&apos;s index
-                    document. The integrity verdict is read from the
-                    hash-chained ledger. Deleting the index loses the grouping
-                    and loses no evidence; if the two ever disagree, the ledger
-                    is right.
-                  </Notice>
+                <div role="tabpanel">
+                  {tab === 'overview' && <Overview detail={shown} onOpen={setTab} />}
+                  {tab === 'evidence' && <EvidenceTab detail={shown} />}
+                  {tab === 'operations' && <OperationsTab detail={shown} />}
+                  {tab === 'reports' && <ReportsTab detail={shown} />}
+                  {tab === 'audit' && <AuditTab detail={shown} />}
                 </div>
-              )}
-
-              {tab === 'evidence' && (
-                <div className="col">
-                  {detail.evidence.length === 0 ? (
-                    <Empty>
-                      No exhibit is registered against this case yet. Register
-                      one below, or run an acquisition with this case selected.
-                    </Empty>
-                  ) : (
-                    <>
-                      <table className="itable">
-                        <thead>
-                          <tr>
-                            <th>Exhibit</th>
-                            <th>Source</th>
-                            <th>Type</th>
-                            <th>Source hash</th>
-                            <th>State</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {detail.evidence.map((item) => (
-                            <tr key={item.evidence_id} className="irow is-compact">
-                              <td className="mono">{item.evidence_id}</td>
-                              {/* The exhibit's own name, not where this host
-                                  keeps it. The full path identifies the
-                                  examiner's machine rather than the evidence,
-                                  and this screen is what gets projected; it is
-                                  under Technical details below, and in the
-                                  signed report either way. */}
-                              <td title={item.source}>
-                                {sourceName(item.source) || '—'}
-                              </td>
-                              <td className="mono">{item.media_type}</td>
-                              <td>
-                                {item.source_hash ? (
-                                  <Hash value={item.source_hash} />
-                                ) : (
-                                  <span style={{ color: 'var(--text-muted)' }}>
-                                    not recorded
-                                  </span>
-                                )}
-                              </td>
-                              <td className="mono">{item.state}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                      <details className="tech">
-                        <summary>Technical details: full source paths</summary>
-                        <div className="tech-body">
-                          <Evidence
-                            stacked
-                            rows={detail.evidence.map((item) => ({
-                              label: item.evidence_id,
-                              value: item.source || 'not recorded',
-                              kind: 'path',
-                            }))}
-                          />
-                        </div>
-                      </details>
-                    </>
-                  )}
-                </div>
-              )}
-
-              {tab === 'operations' && (
-                <div className="col">
-                  {detail.operations.length === 0 ? (
-                    <Empty>
-                      No operation has been run under this case. Start a
-                      recovery or a sanitization with this case open and it
-                      appears here.
-                    </Empty>
-                  ) : (
-                    <table className="itable">
-                      <colgroup>
-                        <col style={{ width: 'var(--gutter)' }} />
-                        <col style={{ width: 220 }} />
-                        <col style={{ width: 120 }} />
-                        <col style={{ width: 110 }} />
-                        <col />
-                        <col style={{ width: 90 }} />
-                      </colgroup>
-                      <thead>
-                        <tr>
-                          <th className="rail" />
-                          <th>Operation</th>
-                          <th>Type</th>
-                          <th>Status</th>
-                          <th>Operator</th>
-                          <th>Artifacts</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {detail.operations.map((item) => (
-                          <tr
-                            key={item.operation_id}
-                            className="irow is-compact"
-                          >
-                            <td
-                              className={`rail is-${statusTone(item.status)}`}
-                              aria-hidden
-                            >
-                              <i />
-                            </td>
-                            <td className="mono">{item.operation_id}</td>
-                            <td className="mono">{item.type}</td>
-                            <td className="mono">{item.status}</td>
-                            <td className="mono">{item.operator}</td>
-                            <td className="mono">
-                              {item.recovered_artifacts.toLocaleString('en-US')}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-              )}
-
-              {tab === 'reports' && (
-                <div className="col">
-                  {detail.reports.length === 0 ? (
-                    <Empty>
-                      No report has been generated for this case. Generate one
-                      from the Audit screen using an operation id above.
-                    </Empty>
-                  ) : (
-                    detail.reports.map((item) => (
-                      <Railed key={item.report_id} tone="success">
-                        <Evidence
-                          stacked
-                          rows={[
-                            { label: 'Operation', value: item.operation_id },
-                            {
-                              label: 'Generated',
-                              value: timestamp(item.generated_at),
-                            },
-                            {
-                              label: 'SHA-256 (JSON)',
-                              value: item.report_hash,
-                              kind: 'hash',
-                            },
-                            {
-                              label: 'Signed',
-                              value: item.signed ? 'yes' : 'no',
-                            },
-                          ]}
-                        />
-                        <div className="row" style={{ gap: 'var(--space-2)' }}>
-                          <a
-                            className="btn"
-                            href={artifactUrl('reports', item.pdf_name)}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            Open PDF
-                          </a>
-                          <a
-                            className="btn"
-                            href={artifactUrl('reports', item.pdf_name, {
-                              download: true,
-                            })}
-                          >
-                            Download PDF
-                          </a>
-                          <a
-                            className="btn"
-                            href={artifactUrl('reports', item.json_name)}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            View JSON
-                          </a>
-                        </div>
-                        <span className="note-faint">
-                          The JSON is authoritative and the PDF is not: the
-                          signature covers the canonical JSON bytes.
-                        </span>
-                      </Railed>
-                    ))
-                  )}
-                </div>
-              )}
-
-              {tab === 'audit' && (
-                <div className="col">
-                  {detail.audit.events.length === 0 ? (
-                    <Empty>
-                      The chain carries no entries for this case yet.
-                    </Empty>
-                  ) : (
-                    <div className="scroll-y" style={{ maxHeight: '52vh' }}>
-                      <table className="itable">
-                        <colgroup>
-                          <col style={{ width: 'var(--gutter)' }} />
-                          <col style={{ width: 56 }} />
-                          <col style={{ width: 176 }} />
-                          <col style={{ width: 190 }} />
-                          <col />
-                          <col style={{ width: 152 }} />
-                        </colgroup>
-                        <thead>
-                          <tr>
-                            <th className="rail" />
-                            <th>Seq</th>
-                            <th>Timestamp</th>
-                            <th>Actor</th>
-                            <th>Event</th>
-                            <th>Entry hash</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {detail.audit.events.map((item) => {
-                            const broken =
-                              detail.audit.first_broken_seq !== null &&
-                              item.seq >= detail.audit.first_broken_seq
-                            return (
-                              <tr
-                                key={item.current_hash}
-                                className={
-                                  broken
-                                    ? 'irow is-compact is-bad'
-                                    : 'irow is-compact'
-                                }
-                              >
-                                <td
-                                  className={
-                                    broken ? 'rail is-destructive' : 'rail'
-                                  }
-                                  aria-hidden
-                                >
-                                  <i />
-                                </td>
-                                <td className="mono">{item.seq}</td>
-                                <td className="mono">
-                                  {timestamp(item.timestamp)}
-                                </td>
-                                <td className="mono" title={item.actor}>
-                                  {item.actor}
-                                </td>
-                                <td className="mono">{item.event}</td>
-                                <td>
-                                  <Hash value={item.current_hash} />
-                                </td>
-                              </tr>
-                            )
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-              )}
+              </div>
             </Panel>
 
             {tab === 'evidence' && (
               <RegisterEvidence
-                caseId={openCase.case_id}
-                onRegistered={() => void load(openCase.case_id)}
+                caseId={shown.case.case_id}
+                onRegistered={() => void load(shown.case.case_id)}
               />
             )}
           </>
@@ -723,12 +828,26 @@ export default function Cases() {
         {!openCase && cases.length > 0 && (
           <Panel title="No case open">
             <Empty>
-              Select a case above. Every screen then files what it does against
+              Select a case below. Every screen then files what it does against
               it, and a report generated later inherits the case id rather than
               having it retyped.
             </Empty>
           </Panel>
         )}
+
+        <div className="cases-split">
+          <CaseList
+            cases={cases}
+            loading={loading}
+            selected={openCase?.case_id}
+            onSelect={select}
+          />
+          <NewCase
+            onCreated={(id) => {
+              void refresh().then(() => select(id))
+            }}
+          />
+        </div>
       </div>
     </>
   )

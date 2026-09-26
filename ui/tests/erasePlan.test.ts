@@ -84,8 +84,20 @@ test('F5: with no determination sent, flash is unknown, never inferred', () => {
 })
 
 test('F6: the request body carries a level and never a method', () => {
-  const body = eraseBody('/dev/sdq', 'CLEAR', false, 'STICK-1')
-  assert.deepEqual(Object.keys(body).sort(), ['dry_run', 'level', 'path', 'typed_serial'])
+  const body = eraseBody('/dev/sdq', 'CLEAR', false, 'STICK-1', 'auth-0123456789abcdef')
+  assert.deepEqual(Object.keys(body).sort(), [
+    'authorization_id',
+    'dry_run',
+    'level',
+    'path',
+    'typed_serial',
+  ])
+  assert.equal(body.authorization_id, 'auth-0123456789abcdef')
+  // A simulation carries no serial and no authorization to spend.
+  assert.deepEqual(
+    Object.keys(eraseBody('/dev/sdq', 'CLEAR', true, 'STICK-1', 'auth-x')).sort(),
+    ['dry_run', 'level', 'path', 'typed_serial'],
+  )
   assert.equal(eraseBody('/dev/sdq', 'CLEAR', true, 'STICK-1').typed_serial, '')
 })
 

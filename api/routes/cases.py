@@ -170,6 +170,8 @@ def case_detail(
             continue
         result = status.get("result") or {}
         written = result.get("written") if isinstance(result, dict) else None
+        verification = result.get("verification") if isinstance(result, dict) else None
+        passed = verification.get("passed") if isinstance(verification, dict) else None
         update_operation(
             services.cases_dir,
             case_id=case_id,
@@ -178,6 +180,8 @@ def case_detail(
             result_ref=f"{JOB_OUTCOME}:{identifier}",
             recovered_artifacts=len(written) if isinstance(written, list) else 0,
             completed_at=str(status.get("finished_at") or ""),
+            error_kind=str(status.get("error_kind") or ""),
+            verification_passed=passed if isinstance(passed, bool) else None,
         )
     case = load_case(services.cases_dir, case_id)
 

@@ -47,6 +47,10 @@ def _control(version: str, size_kib: int) -> str:
         "Architecture: amd64\n"
         "Maintainer: Sanctum Forensics maintainers <noreply@localhost>\n"
         f"Installed-Size: {size_kib}\n"
+        # The frozen executable links libc (symbols up to GLIBC_2.30, from the
+        # glibc 2.31 build image) and libz from the system; every other library
+        # is bundled. Measured by docs/validation/package-2026-09-25/identity.py.
+        "Depends: libc6 (>= 2.30), zlib1g\n"
         "Recommends: hdparm, nvme-cli\n"
         "Description: Secure data sanitization and forensic recovery\n"
         " NIST SP 800-88 Clear/Purge with capability-driven method selection,\n"

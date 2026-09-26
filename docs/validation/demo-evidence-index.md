@@ -1,6 +1,6 @@
 # Demo evidence index
 
-**Date:** 2026-09-24, updated after the release-quality wave. This is the
+**Date:** 2026-09-24, updated after the release-quality wave; *What must not be said* extended 2026-09-26 with the release-hold remediation. This is the
 source of truth for the presentation. Every claim a presenter makes maps to
 real software output: a screen, a command, a test that pins it, and the
 recorded artifact behind it. A claim with no row here does not get said.
@@ -37,7 +37,7 @@ timings were not rehearsed aloud; the windows are the plan.
 | 1:00–1:45 | Simulation | `SIMULATION / NO PHYSICAL DEVICE MODIFIED`; the whole journey DISCOVER → PREFLIGHT (mounted medium BLOCKED) → PLAN → SIMULATED SANITIZATION → SIMULATED VERIFICATION → FORENSIC REPORT → CERTIFICATE (tamper rejected) | `.venv/bin/python scripts/demo_simulation.py` (0.4 s); Sanitize screen with dry run on | `tests/scripts/test_demo_simulation.py`, `ui/tests/workflowState.test.ts` | `browser-2026-09-24/07`, `09` (fixture) | SIMULATION | SIMULATION ONLY |
 | 1:45–2:30 | Recovery | Split PNG and JPEG rebuilt from two runs and held below HIGH; the duplicate collapsed; the decoy never HIGH; every digest against ground truth; the `why` line of components | `.venv/bin/python scripts/demo_fragmented.py` (0.5 s); Recovery screen, HIGH filter, Score breakdown | `tests/scripts/test_demo_fragmented.py`, `tests/carve/signature/test_png_fragmentation.py` | `browser-2026-09-24/02`, `03`; `docs/validation/png-reassembly.md` | SYNTHETIC | YES |
 | 2:30–3:15 | Forensic integrity | Graded verdict, chain `VALID`, report SHA-256 and key fingerprint, *Simulate tampering* (BEFORE VALID / AFTER BROKEN), the signed JSON and PDF | Audit: Generate signed report, Verify, Simulate tampering | `tests/report/test_report_verdict.py`, `tests/api/test_tamper_demo.py`, `tests/report/test_sign.py` | `browser-2026-09-24/04`, `04b` | SYNTHETIC | YES |
-| 3:15–4:00 | Sanitization | Capability probe; the method the engine selects and why; the workflow strip; the human approval gate (dry run off, serial dialog, button disabled until the serial matches). **Do not press Erase** | Sanitize | `tests/erase/test_erase_preview.py`, `ui/tests/workflowState.test.ts`, `tests/ui/test_workflow_vocabulary.py` | `browser-2026-09-24/08`, `10` (fixture) | live host, no write | YES |
+| 3:15–4:00 | Sanitization | Capability probe; the method the engine selects and why; the workflow strip; the human approval gate (dry run off, backup image, acknowledgement and typed serial, server-issued one-use authorization; each button disabled until its inputs exist - `browser-2026-09-25/`; earlier: serial dialog, button disabled until the serial matches). **Do not press Erase** | Sanitize | `tests/erase/test_erase_preview.py`, `ui/tests/workflowState.test.ts`, `tests/ui/test_workflow_vocabulary.py` | `browser-2026-09-24/08`, `10` (fixture) | live host, no write | YES |
 | 3:15–4:00 | Backup requirement | A destructive benchmark write needs a verified backup on another disk, bound to the device serial, the extent and the image hash, and the write re-verifies it itself | `docs/demo/qa.md` §25; `core/workflow.py` (BACKUP_REQUIRED) | `tests/scripts/test_media_benchmark_boundary.py`, `tests/test_workflow.py` | `scripts/media_benchmark.py:verify_backup`, `write_image` | none | DOCUMENTATION ONLY |
 | 4:00–4:30 | Benchmark | Population SYNTHETIC; methodology; the result; the limits | `docs/performance/benchmark.md` §Results and §Limits | `tests/testkit/` | `benchmark.csv`, `calibration-pooled.md` | SYNTHETIC | DOCUMENTATION ONLY |
 | — | Physical benchmark | Recovery under the registered methodology on the physical stick | none | `tests/scripts/test_media_benchmark*.py` | `methodology-open-decision.md` | PHYSICAL | PHYSICAL VALIDATION REQUIRED |
@@ -131,3 +131,14 @@ not need that capture, and none should be made for it during the freeze.
   vocabulary and mapping to it.
 - That the Devices and Sanitize screens were browser-checked against real
   devices. They were checked against fixtures.
+- That anything was physically validated for the current release. The physical
+  runs are from 2026-09-05 and 2026-09-23, with earlier builds.
+- That HPA/DCO unlock has run on a drive, or that the trace sweep was validated
+  on a live desktop.
+- That a Record of Destruction proves a destruction. It is attested, not
+  observed.
+- That the backup is proven to be a copy of the device, that the helper's
+  check-to-first-write window is race-free, or that the API authenticates who
+  approved.
+- That the packages passed every smoke check. The isolated smoke is 22 PASS and
+  2 NOT RUN: the two need a real device.

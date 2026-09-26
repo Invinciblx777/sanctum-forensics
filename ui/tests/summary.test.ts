@@ -120,3 +120,39 @@ test('no judge summary line states a percentage', () => {
   const lines = Object.values(summary).flat()
   assert.ok(!lines.some((line) => /\d+(\.\d+)?%/.test(line)))
 })
+
+test('a write-seam refusal is BLOCKED on the overview, never a failed or partial erase', () => {
+  const refused = { ...op('erase-drive', 'failed', { dry_run: false }), error_kind: 'WorkflowGateRefused' }
+  const s = executiveSummary(detail([refused]), platform)
+  assert.ok(s.erased.some((line) => /BLOCKED by a safety refusal before any write; nothing was erased/.test(line)))
+  for (const line of s.erased) {
+    assert.doesNotMatch(line, /partial|partly|FAILED|failed/, line)
+  }
+  const judge = judgeSummary(detail([refused]), null, 'VALID')
+  assert.ok(!judge.erasure.some((line) => /partial|partly|failed/i.test(line)))
+})
+
+test('an erase that started and failed, and one stopped on request, are said apart', () => {
+  const failed = { ...op('erase-drive', 'failed', { dry_run: false }), error_kind: 'OverwriteIncomplete' }
+  const stopped = op('erase-drive', 'cancelled', { dry_run: false })
+  const s = executiveSummary(detail([failed, stopped]), platform)
+  assert.ok(s.erased.some((line) => /^1 erase FAILED/.test(line)))
+  assert.ok(s.erased.some((line) => /stopped on request \(CANCELLED\)/.test(line)))
+  assert.ok(!s.erased.some((line) => /BLOCKED/.test(line)))
+})
+
+test('a completed run whose read-back FAILED is not counted as completed', () => {
+  const run = { ...op('erase-drive', 'complete', { dry_run: false }), verification_passed: false }
+  const s = executiveSummary(detail([run]), platform)
+  assert.ok(!s.erased.some((line) => line.includes('drive sanitization completed')))
+  assert.ok(s.erased.some((line) => /read-back verification FAILED/.test(line)))
+})
+
+test('an unreadable case is REQUEST FAILED, not an empty case and not a refusal', () => {
+  const s = executiveSummary(null, platform, '500 Internal Server Error')
+  assert.match(s.erased[0], /^REQUEST FAILED/)
+  assert.doesNotMatch(s.erased[0], /BLOCKED|No case is open/)
+  assert.match(executiveSummary(null, platform).erased[0], /No case is open/)
+  const judge = judgeSummary(null, null, 'VALID', '500 Internal Server Error')
+  assert.ok(judge.erasure.some((line) => /^REQUEST FAILED/.test(line)))
+})

@@ -99,7 +99,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from core.models import CarveCandidate, Progress
+from core.models import CarveCandidate, MediaMap, Progress
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance only
     from core.carve.evidence import EvidenceHandle
@@ -115,7 +115,7 @@ __all__ = [
 logger = structlog.get_logger(__name__)
 
 #: Stage names, in execution order. The UI renders these as a stepper.
-CARVE_PHASES = ("open", "undelete", "signatures", "validate", "score", "write")
+CARVE_PHASES = ("open", "map", "undelete", "signatures", "validate", "score", "write")
 
 #: Bytes read from each end of the image to identify it in the ledger.
 IDENTITY_SAMPLE_BYTES = 1024 * 1024
@@ -258,6 +258,24 @@ def _progress(
     )
 
 
+def _map_stage(
+    handle: EvidenceHandle, *, job_id: str
+) -> Generator[Progress, None, MediaMap]:
+    """The media map, its progress scaled into the first 5% of the run."""
+    from core.carve.mediamap import map_media
+
+    stage = map_media(handle, job_id=job_id)
+    try:
+        while True:
+            step = next(stage)
+            yield step.model_copy(
+                update={"phase": "map", "pct_bp": step.pct_bp * 500 // 10_000}
+            )
+    except StopIteration as stop:
+        result: MediaMap = stop.value
+        return result
+
+
 def _cluster_lookup(
     volumes: list[tuple[int, int, int]],
 ) -> Callable[[int], int | None]:
@@ -321,6 +339,7 @@ def carve_generator(
     pii_triage: bool = True,
     work_dir: Path | None = None,
     case_id: str = "",
+    media_map: bool = True,
 ) -> Generator[Progress, None, dict[str, Any]]:
     """Run the recovery pipeline over ``image``, yielding progress per stage.
 
@@ -340,6 +359,11 @@ def carve_generator(
         case_id: Recorded in this run's chain entries so the case screen can
             find them. Empty means the run is not filed against a case, which
             is legal and is what a quick look at an image is.
+        media_map: Class every region of the image by its byte statistics
+            before anything else runs (:mod:`core.carve.mediamap`): where the
+            zeros, fills, text and high-entropy data are, and where the file
+            headers sit. Bounded by its own read budget, so a large image is
+            sampled rather than read twice in full.
     """
     from core.carve.classify import _read_candidate as read_span
     from core.carve.classify import (
@@ -380,6 +404,7 @@ def carve_generator(
     written: list[str] = []
     phase_reached = "open"
     bytes_scanned = 0
+    mapped: MediaMap | None = None
 
     try:
         with open_evidence(image) as handle:
@@ -415,6 +440,28 @@ def carve_generator(
                     job_id, "open", 0, f"opened {image.name} ({handle.size} bytes)",
                     total=handle.size,
                 )
+
+                if media_map:
+                    mapped = yield from _map_stage(handle, job_id=job_id)
+                    limitations.extend(mapped.limitations)
+                    if ledger is not None:
+                        ledger.append(
+                            actor=operator,
+                            operation="carve.mediamap",
+                            params={
+                                "job_id": job_id,
+                                "case_id": case_id,
+                                "evidence_identity": evidence["identity"],
+                                "regions": len(mapped.regions),
+                                "region_bytes": mapped.region_bytes,
+                                "sampled": mapped.sampled,
+                                "bytes_read": mapped.bytes_read,
+                                "by_kind": mapped.by_kind,
+                                "headers": mapped.headers,
+                            },
+                            result={},
+                        )
+                    phase_reached = "map"
 
                 if undelete:
                     from core.carve.fsaware import read_recovered, undelete_report
@@ -672,6 +719,7 @@ def carve_generator(
             "unallocated_bytes": unallocated_bytes,
             "written": written,
             "limitations": limitations,
+            "media_map": mapped.model_dump(mode="json") if mapped else None,
         }
     finally:
         # Covers the success path, any exception, and GeneratorExit - which is

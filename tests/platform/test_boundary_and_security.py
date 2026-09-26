@@ -49,7 +49,9 @@ def test_helper_mode_is_stamped_by_the_daemon_never_taken_from_the_request(
     )
 
 
-def test_platform_status_is_served_through_the_allowlist() -> None:
+def test_platform_status_is_served_through_the_allowlist(
+    no_host_discovery: None,
+) -> None:
     answer = InProcessHelper().call("platform_status", {"helper_mode": "socket"})
 
     assert answer["privilege"]["helper"] == "in-process", (
@@ -205,7 +207,7 @@ def test_with_a_token_only_the_launched_window_gets_in(tmp_path: Path) -> None:
         assert client.post("/jobs/erase-files", json={"paths": []}).status_code != 401
 
 
-def test_the_platform_route_answers(tmp_path: Path) -> None:
+def test_the_platform_route_answers(tmp_path: Path, no_host_discovery: None) -> None:
     with TestClient(_app(tmp_path), base_url=LOOPBACK_BASE_URL) as client:
         answer = client.get("/platform").json()
     assert answer["platform"]["family"] in {"linux", "windows", "macos", "other"}

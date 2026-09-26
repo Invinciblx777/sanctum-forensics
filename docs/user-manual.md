@@ -55,7 +55,8 @@ keyboard-level recovery. **Purge** uses a mechanism — a firmware sanitize, a
 cryptographic erase — that makes recovery infeasible with laboratory technique.
 **Destroy** is physical: disintegrate, incinerate, pulverize, shred, melt. This
 tool **never returns Destroy**, because no software can perform it; where Destroy
-is what your policy requires, the tool's job ends at telling you so.
+is what your policy requires, the tool tells you so, and can afterwards record the
+people's attestation that it was done (§4, *Destroy*). It observes nothing.
 
 Which of Clear or Purge you get is decided by what the device reported, never by
 what you selected — see §4. On media where the tool can only Clear, the report
@@ -286,8 +287,9 @@ Use the **Devices** screen to pick a target, then **Sanitize**.
 ### The method is selected from probed capability, never from preference
 
 You choose a *level* — CLEAR or PURGE. The tool chooses the *mechanism*. The
-request the browser sends carries `path`, `level`, `dry_run` and `typed_serial`,
-and has no field for a method at all; `core/erase/drive.py:select_method` reads a
+request the browser sends carries `path`, `level`, `dry_run` and `typed_serial`
+(plus, for a real erase only, the `authorization_id` the server issued), and has
+no field for a method at all; `core/erase/drive.py:select_method` reads a
 decision table over what the capability probe returned.
 
 There is no method chooser on the Sanitize screen. An earlier build had one: an
@@ -344,7 +346,7 @@ red, *"This build cannot issue this method"*, and the PURGE radio is disabled. A
 Clear with a single-pass overwrite remains available and **achieves Clear, not
 Purge; the report will say so.**
 
-### The two gates
+### The gates
 
 Destructive erasure is opt-in twice, and both gates are re-checked inside the root
 helper, not in the browser:
@@ -357,7 +359,27 @@ helper, not in the browser:
    by typing its full `/dev/disk/by-id/...` path instead — still a value you read
    off the capability report, never one you can guess.
 
-Before either gate matters, the tool refuses outright to touch a device that holds
+A real erase also needs a **workflow authorization** the server issues and spends
+once (added 2026-09-25):
+
+3. **A backup image.** *Open workflow and verify backup* names an image inside the
+   evidence directory, at least as large as the device. The server hashes and
+   sizes it read-only and records its size, mtime, ctime and inode. This does not
+   prove the image is a copy of this device.
+4. **An approval.** Tick the acknowledgement and type the serial, then *Approve
+   erasure*. The approval is recorded against the OS account the helper reports;
+   the API does not authenticate a person.
+5. **The authorization, once.** Type the serial again and *Erase*. The request
+   carries the authorization id the server returned; a second use, a changed
+   device, plan or backup, or a missing id is `REFUSED` with a **WHY BLOCKED**
+   list, and nothing is written. The helper checks the same things again, from
+   its own read of the device and the image, before the engine starts.
+
+A refusal is shown as `BLOCKED`. A server failure is shown as *Request failed*,
+never as a refusal. A job that did not complete gets a *signed record*, not a
+certificate.
+
+Before any gate matters, the tool refuses outright to touch a device that holds
 the running system (root, `/boot` or active swap) or that has any mounted
 filesystem. Unmount first; there is no override.
 
@@ -392,6 +414,40 @@ the medium back: exhaustively at or below 64 GiB, and above that the first and l
 detection-probability formula and the seed rather than a bare percentage — so a
 third party can redraw the same sample.
 
+### Destroy: recording a physical destruction
+
+NIST SP 800-88 Rev. 2 has a third outcome, **Destroy**, for media that cannot be
+cleared or purged or must never be reused. A shredder, a disintegrator or a furnace
+performs it; no software can, and none can watch it happen. So the application
+does not offer Destroy as a method. It records what the people who did it attest.
+
+On the **Devices** screen, open *Record a physical destruction*. Pick a detected
+device to fill in its serial, model and capacity, or type them. Enter the technique
+(shred, disintegrate, pulverize, incinerate, melt, or other with a description), the
+largest fragment in millimetres if it was measured, when and where it was done, who
+did it, who witnessed it, a vendor certificate number if a vendor did it, and why the
+medium was destroyed rather than cleared or purged. *Record the destruction* writes
+one `destroy.recorded` ledger entry; *Get the signed record* signs it.
+
+The record is titled **Record of Destruction** and its headline is *Destruction
+attested, not observed*. The date it was destroyed is the attesters' statement; the
+date it was recorded is this machine's clock, and the two are separate fields. A
+date after this machine's clock is refused. The limitations say that the tool did
+not see the destruction, that the names were typed in and not authenticated, and
+that whether the technique reaches Destroy for that media is the facility's call.
+A record with no witness or no fragment size says so.
+
+The same through the API:
+
+```bash
+curl -s -X POST http://127.0.0.1:8787/jobs/record-destroy \
+  -H 'Content-Type: application/json' \
+  -d '{"serial":"WD-WX41A12345","media_type":"HDD","technique":"SHRED",
+       "particle_size_mm":20,"reason":"Heads failed; Purge cannot be issued.",
+       "performed_by":"A. Rao","witnessed_by":"S. Iyer",
+       "performed_at":"2026-09-24T15:30:00+05:30","case_id":"CASE-001"}'
+```
+
 ---
 
 ## 5. Erase files and folders (M2)
@@ -409,7 +465,11 @@ Eleven steps run per file in a fixed order: inspect, cleanse metadata, overwrite
 alternate data streams, truncate, rename to a **same-length** random name (a shorter
 name leaves the tail of the original in the directory entry), unlink, residual scan,
 verify. A per-file `OSError` sets `ok=false` on that record and the batch continues;
-one bad file does not abort a run.
+one bad file does not abort a run. The record's `attempted` field says whether the
+erase steps had begun: the File eraser shows a path that failed partway as
+**failed partway** with an INCOMPLETE residual (its state is unknown), a path
+refused or stopped before any step ran as NOT RUN, and a record without the field
+(an older server) as UNKNOWN - never "not attempted" for a path it started on.
 
 Two options change what is destroyed:
 
@@ -439,6 +499,42 @@ reallocation, EFS encryption, sparse unwritten regions, likely backup copies. A 
 erase lists each as a residual finding with a severity; a free-space wipe lists the
 ones it does not reach under `not_reached`. The tool tells you what the filesystem
 kept; it does not claim to have removed it.
+
+### Traces the desktop kept of the file
+
+Overwriting a file does not reach what the desktop made of it. After the erase,
+the *Remove what the desktop kept* option (on by default; `sweep_traces` in the
+API) searches for:
+
+| Trace | Where | Tied to the file by |
+|---|---|---|
+| Thumbnail, failed-thumbnail marker | `~/.cache/thumbnails`, `~/.thumbnails` | its name is the MD5 of the file's URI; its `Thumb::URI` is checked |
+| Recent-files entry | `~/.local/share/recently-used.xbel` | the entry's `href` |
+| KDE recent document | `~/.local/share/RecentDocuments/*.desktop` | its `URL=` |
+| Trash copy and its record | the home Trash, and `.Trash-<uid>` on the file's own volume | the `.trashinfo` `Path=` |
+| Recycle Bin copy and its record (Windows) | `<volume>\$Recycle.Bin\<SID>` | the `$I` record's original path |
+| Recent shortcut (Windows) | `%APPDATA%\Microsoft\Windows\Recent` | the shortcut's LinkInfo target |
+| Possible copy (macOS) | `~/.Trash` | a same name only: **reported, never removed** |
+
+A dry run lists every trace and removes nothing. A real run removes only the
+traces tied to an erased path on evidence. A trace file is erased through the same
+steps as a target, so the same residual findings apply to it. An entry in a shared
+list is cut out and the list is overwritten in place, padded to its old length, so
+the bytes that named the file are overwritten rather than freed. Nothing follows a
+link: a thumbnail that is a link is refused, and a Trash folder reached through a
+link is not searched. A list that changed while it was being read is left alone.
+A running application that holds the recent list in memory can write an entry
+back, so close file managers and viewers first.
+
+For a folder, a thumbnail whose `Thumb::URI` names any file inside it is also
+found, including files deleted from it long ago. A Trash folder that once held
+the file loses only the copy of that file; the folder's other contents stay.
+
+The file report adds a **6. Desktop Traces** section: every trace with its
+evidence and what became of it, every place searched, and the places on this
+platform that keep traces and were not searched (application caches, search
+indexes, jump lists, snapshots, sync clients). Each trace also gets an
+`erase.file.trace` ledger entry, and the sweep closes with `erase.file.traces`.
 
 **A per-file erase is usually unverifiable, and is reported as unverifiable rather
 than as a pass.** Verification needs a physical extent map, which needs FIEMAP; on a
@@ -596,6 +692,19 @@ reading. Omit `out_dir` entirely and nothing is written: you get the candidate l
 only. Written filenames encode what produced them:
 `000000001337_09000_carved-000000001337.jpg` is offset 1337, confidence 9000 basis
 points.
+
+`media_map` (on by default) runs first and draws the **media map** on the Recovery
+screen: the image as one strip, each region coloured by the class most of its
+4 KiB blocks fell into, with ticks where known file headers sit on sector
+boundaries. The classes are *zeroed* (all 0x00), *fill pattern* (one byte
+repeated: 0xFF from erased flash, 0xA5 from the free-space wipe), *text*,
+*structured binary* and *high entropy* (compressed, encrypted or random; the bytes
+alone do not say which). Hover a region for its offsets, class share, entropy and
+headers. An image up to 64 MiB is read in full; a larger one is sampled evenly
+within a 64 MiB budget, and the result says so. The map is ledgered as
+`carve.mediamap` and summarised in the report's evidence section. An image of a
+wiped medium maps as zero or fill throughout, which makes the map a quick
+corroboration of a wipe; it is not a verification.
 
 `undelete` walks filesystem metadata for deleted entries; `carve_signatures` runs
 the signature and structure carvers over the image. The undelete pass also returns
@@ -1085,8 +1194,10 @@ state, then re-probe capabilities.
 **`{level} is not achievable on this device. {reason}`** — HTTP 422, `UnsupportedCapability`
 The probe found no mechanism for that level. The reason names what was observed —
 often the USB-bridge sentence from §4.
-*Do:* Choose one of the reachable levels, which the remediation lists. To reach the
-level you asked for on this media, physical destruction is the remaining option.
+*Do:* Choose one of the reachable levels, which the remediation lists. If your
+policy requires a level this media cannot reach, the remaining outcome is Destroy
+(physical destruction, recorded with *Record a physical destruction*). Destroy is a
+different outcome from Clear and Purge, not a way of reaching either.
 
 **`{method} cannot be requested directly; firmware methods are selected from probed capability only.`** — HTTP 422, `UnsupportedCapability`
 *Do:* Ask for a sanitization level and let capability probing choose the mechanism.
@@ -1094,8 +1205,9 @@ level you asked for on this media, physical destruction is the remaining option.
 **`{device} is an Opal drive; a PSID revert needs the PSID printed on the physical drive label.`** — HTTP 422, `UnsupportedCapability`
 This build has no way to accept a PSID (§4).
 *Do:* Use ATA or NVMe SANITIZE if the drive reports one; otherwise a single-pass
-overwrite achieves Clear, not Purge. Physical destruction is the remaining option
-for Purge on this drive.
+overwrite achieves Clear, not Purge. If policy requires more than Clear on this
+drive, the remaining outcome is Destroy, which is physical destruction and not a
+Purge; the tool records it as an attestation and performs nothing.
 
 **`hdparm could not read {device}: permission denied.`** / **`nvme id-ctrl could not read {device}: permission denied.`** — HTTP 422, `UnsupportedCapability`
 Capability probing needs raw device access and did not have it. **This is not a
@@ -1303,11 +1415,25 @@ brackets.
 **Cases** (`tests/api/test_cases.py`). Open one on the **Cases** screen before
 doing evidence work. The sidebar shows the open case on every screen, and every
 recovery, acquisition and drive erase started while it is open is filed against
-it; a report generated later inherits its id. The case screen's tabs show the
-exhibits, the operations and their status, the reports (with Open/Download
-links), and the chain entries belonging to the case. **The integrity verdict on
-that screen is the ledger's**; the case file itself is an index and proves
-nothing. `POST /cases`, `GET /cases`, `GET /cases/{id}`,
+it; a report generated later inherits its id. The open case is the first thing
+on the screen: its id and title, the case status and the chain verdict, then
+tabs that carry their counts. *Overview* shows the integrity verdict and one
+figure each for evidence, operations, reports and audit entries (click a figure
+to open its tab). *Operations* names each job in words over the id the Audit
+screen asks for, with its job state in the registry's own word (COMPLETE,
+FAILED, CANCELLED, RUNNING) except in two cases: **BLOCKED** is a safety refusal
+at the helper's write seam, before any write (the registry says failed; the
+screen reads the job's structured `error_kind`, never its message), and **VERIFY
+FAILED** is a drive erase that ran but whose read-back failed (the registry says
+complete). It adds a **SIMULATION** label on a dry run, and whether a signed
+report exists. A case that cannot be read shows **REQUEST FAILED**, never an
+empty case and never BLOCKED. The Overview's *Secure erasure* column says the
+same four things apart: blocked (nothing was erased), failed (the target may be
+partly overwritten), stopped on request (CANCELLED), and a read-back that
+FAILED. *Reports* has Open/Download links and marks each SIGNED
+or UNSIGNED; *Audit* lists the chain entries that name the case. **The
+integrity verdict on that screen is the ledger's**; the case file itself is an
+index and proves nothing. `POST /cases`, `GET /cases`, `GET /cases/{id}`,
 `POST /cases/{id}/evidence`.
 
 **Operator identity** (`tests/api/test_operator_identity.py`). The actor in the
@@ -1372,7 +1498,13 @@ status - *Supported*, *Supported with limits*, *Needs privilege*, *Runs, not
 verifiable*, *Unverified*, *Inconclusive*, *Unsupported* - and, underneath,
 the probe or code that decided it. *Unverified* means the code exists but its
 tests have not been recorded as passing on this operating system for this
-build; treat it as not yet proven.
+build, or, for hardware Purge, that no firmware sanitize has been recorded on a
+physical drive; treat it as not yet proven. The screen also names this build's
+commit, says how many storage devices it detects now (detecting is not
+supporting), explains every status word under *How to read a status*, and lists
+the safety restrictions and what is *Not yet proven on hardware*. A status says
+what this build can do here; it is not a record that anything was run on the
+storage attached now.
 
 **The status strip** at the bottom of every screen shows the platform, your
 privilege, the selected device, whether it can be sanitized, whether the
@@ -1381,9 +1513,19 @@ result can be verified, and the state of the audit chain.
 **Sanitizing a device** follows eight steps, shown across the top of the
 screen: choose the target, the app analyses it, you see the recommended
 method, review the warning, confirm by typing the serial, it sanitizes, it
-verifies, you get the certificate. The first panel answers three questions in
-plain words - which device, what will happen, can it be verified - and lists
-the safety checks. The engine's evidence is under *Technical details*.
+verifies, you get the certificate. A flow that stops stays on the step where
+it stopped, marked *stopped*: a refusal never reaches Verify, and a run whose
+read-back FAILED stops on Verify and never reaches Certificate - its signed
+record is not a certificate. Only a read-back that passed moves past Verify. The
+first panel answers three questions in plain words - which device, what will
+happen, can it be verified - and lists the safety checks. The engine's evidence
+is under *Technical details*.
+
+On the Devices screen a drive that reports a firmware sanitize reads **PURGE ·
+UNVERIFIED** (or **SED · OPAL · UNVERIFIED**), not a green PURGE AVAILABLE: no
+firmware sanitize has been recorded on a physical drive. The Purge option on
+the Sanitize screen reads *Unverified* for the same reason. It is still offered;
+it is never presented as a hardware-validated result.
 
 **"Sanitization not available"** is a result, not an error. It names the
 reason (for example: this is the system disk; a volume is in use; this

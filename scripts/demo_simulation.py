@@ -162,7 +162,7 @@ def run(work: Path) -> dict[str, Any]:
     from core.erase import drive
     from core.erase.drive import ChainLedgerSink, Geometry, execute, select_method
     from core.ledger.chain import Ledger
-    from core.report.render import build_report, write_report
+    from core.report.render import build_report, drive_report_inputs, write_report
     from core.report.sign import (
         fingerprint,
         load_or_create_key,
@@ -356,15 +356,10 @@ def run(work: Path) -> dict[str, Any]:
         "operator": "simulation",
         "generated_at": datetime.now(UTC),
         "tool_version": "sanctum-forensics/simulation",
-        "device": {
-            **target.model_dump(mode="json"),
-            "logical_block_size": SECTOR,
-            "physical_block_size": SECTOR,
-        },
-        "method": result.plan.model_dump(mode="json"),
-        "hidden_areas": {},
+        # The same composition the API uses, so the demo certificate names the
+        # level requested and achieved exactly as a real one does.
+        **drive_report_inputs(result.model_dump(mode="json")),
         "verification": verification,
-        "residual_risk": result.residual_risk.model_dump(mode="json"),
         "limitations": [
             f"{BANNER}: the medium is a host file created by this run.",
             *(f"Substituted for a file: {item}" for item in SUBSTITUTIONS),

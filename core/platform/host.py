@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import subprocess
 import sys
 from importlib import metadata
 from pathlib import Path
@@ -25,6 +26,7 @@ __all__ = [
     "APP_NAME",
     "app_version",
     "build_info",
+    "live_source_identity",
     "family",
     "platform_info",
     "privilege_state",
@@ -91,20 +93,64 @@ def linux_pretty_name(os_release: str | None) -> str:
     return "Linux"
 
 
-def build_info(path: Path | None = None) -> dict[str, str]:
-    """What ``packaging/build_info.py`` recorded when this build was made.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
-    Empty from a source checkout: there is no build to identify, and an
-    invented commit would be worse than none.
+
+def _git(root: Path, *argv: str) -> str:
+    try:
+        completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ("git", *argv), cwd=root, capture_output=True, text=True,
+            check=False, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return completed.stdout.strip() if completed.returncode == 0 else ""
+
+
+def live_source_identity(root: Path | None = None) -> dict[str, str]:
+    """The commit this source tree is at *now*, or empty outside a checkout."""
+    where = root or _REPO_ROOT
+    if not (where / ".git").exists():
+        return {}
+    head = _git(where, "rev-parse", "HEAD")
+    if not head:
+        return {}
+    dirty = bool(_git(where, "status", "--porcelain", "--untracked-files=no"))
+    return {
+        "commit": head + ("+dirty" if dirty else ""),
+        "branch": _git(where, "rev-parse", "--abbrev-ref", "HEAD"),
+    }
+
+
+def build_info(path: Path | None = None, root: Path | None = None) -> dict[str, str]:
+    """The one authoritative build identity, for ``/health`` and every screen.
+
+    A packaged build reads the record ``packaging/build_info.py`` wrote into it.
+    A source checkout reads the git tree it is running from. The record is a
+    generated, untracked file, so in a checkout it can outlive the commit it
+    describes; it is then **ignored, and said to be ignored**, rather than
+    shown as this code's identity. Empty when neither source can say.
     """
     target = path or Path(__file__).with_name("build_info.json")
     try:
         loaded = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {}
-    return (
+        loaded = None
+    recorded = (
         {str(k): str(v) for k, v in loaded.items()} if isinstance(loaded, dict) else {}
     )
+    if getattr(sys, "frozen", False):
+        return recorded
+    live = live_source_identity(root)
+    if not live:
+        return recorded
+    recorded_commit = recorded.get("commit", "").removesuffix("+dirty")
+    if recorded_commit and live["commit"].removesuffix("+dirty") == recorded_commit:
+        return {**recorded, "commit": live["commit"]}
+    identity = {**live, "source": "git checkout (live)"}
+    if recorded_commit:
+        identity["ignored_stale_build_record"] = recorded["commit"]
+    return identity
 
 
 def platform_info() -> PlatformInfo:

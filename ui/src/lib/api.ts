@@ -22,18 +22,32 @@ export interface ApiError {
   // Written by whoever implemented the operation and passed through verbatim.
   // Never reworded by the API or by this client.
   remediation: string
+  // Present on a workflow-gate refusal (api/authorization.py:GateRefused).
+  verdict?: string
+  workflow_state?: string
+  'WHY BLOCKED'?: string[]
+  physical_device_modified?: boolean
 }
 
 export class RequestFailed extends Error {
   readonly status: number
   readonly kind: string
   readonly remediation: string
+  readonly verdict: string
+  readonly workflowState: string
+  readonly whyBlocked: string[]
+  /** Only an explicit `false` from the server means nothing was written. */
+  readonly physicalDeviceModified: boolean | null
 
   constructor(status: number, detail: ApiError) {
     super(detail.error)
     this.status = status
     this.kind = detail.kind
     this.remediation = detail.remediation
+    this.verdict = detail.verdict ?? ''
+    this.workflowState = detail.workflow_state ?? ''
+    this.whyBlocked = detail['WHY BLOCKED'] ?? []
+    this.physicalDeviceModified = detail.physical_device_modified ?? null
   }
 }
 
@@ -84,6 +98,25 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  /** Opens the authorization record: fresh probe, backup image hashed read-only. */
+  openEraseWorkflow: (body: OpenEraseWorkflowBody) =>
+    request<EraseWorkflowView>('/workflow/erase-drive', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  eraseWorkflow: (authorizationId: string) =>
+    request<EraseWorkflowView>(
+      `/workflow/erase-drive/${encodeURIComponent(authorizationId)}`,
+    ),
+
+  /** Records a person's approval. The only call that can create one. */
+  approveErase: (authorizationId: string, body: ApproveEraseBody) =>
+    request<EraseWorkflowView>(
+      `/workflow/erase-drive/${encodeURIComponent(authorizationId)}/approve`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
   eraseFiles: (body: EraseFilesBody) =>
     request<JobAccepted>('/jobs/erase-files', {
       method: 'POST',
@@ -104,6 +137,12 @@ export const api = {
 
   carve: (body: CarveBody) =>
     request<JobAccepted>('/jobs/carve', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  recordDestroy: (body: DestroyRecordBody) =>
+    request<JobAccepted>('/jobs/record-destroy', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
@@ -229,6 +268,7 @@ export interface StreamHandlers {
  */
 export function streamJob(jobId: string, handlers: StreamHandlers): () => void {
   const source = new EventSource(`/jobs/${jobId}/stream`)
+  let closed = false
 
   source.addEventListener('progress', (event) => {
     handlers.onProgress(JSON.parse((event as MessageEvent).data) as Progress)
@@ -240,6 +280,27 @@ export function streamJob(jobId: string, handlers: StreamHandlers): () => void {
     // browser never retries a finished job - EventSource would otherwise
     // reconnect on its own and re-replay the whole run forever.
     source.close()
+    // That event leaves as soon as the job ends, which can be before its
+    // outcome reaches the chain (`settled: false`). A screen that waits for
+    // `settled` would then never hear again, so read the job until it has.
+    if (state.settled === false && TERMINAL_STATES.has(state.state)) {
+      void (async () => {
+        for (let attempt = 0; attempt < SETTLE_POLLS && !closed; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, SETTLE_POLL_MS))
+          if (closed) return
+          try {
+            const next = await api.job(jobId)
+            if (next.settled !== false) {
+              handlers.onState(next)
+              return
+            }
+          } catch {
+            // A failed read is retried at the next poll; the screen keeps
+            // the unsettled state it has, which it never shows as final.
+          }
+        }
+      })()
+    }
   })
   source.addEventListener('error', () => {
     // EventSource reconnects by itself, so this is a notification and not a
@@ -248,8 +309,16 @@ export function streamJob(jobId: string, handlers: StreamHandlers): () => void {
     handlers.onError?.('stream interrupted; the browser will retry')
   })
 
-  return () => source.close()
+  return () => {
+    closed = true
+    source.close()
+  }
 }
+
+const TERMINAL_STATES: ReadonlySet<string> = new Set(['complete', 'failed', 'cancelled'])
+/** Up to 30 s for a finished job's outcome to reach the chain. */
+const SETTLE_POLL_MS = 250
+const SETTLE_POLLS = 120
 
 // ---------------------------------------------------------------------------
 // Shapes
@@ -476,6 +545,8 @@ export interface JobAccepted {
   state: string
   dry_run: boolean
   stream_url: string
+  /** SIMULATION / NO PHYSICAL DEVICE MODIFIED on a dry run, else empty. */
+  notice?: string
 }
 
 export interface JobStatus {
@@ -663,6 +734,12 @@ export interface FileEraseRecord {
   limitations: string[]
   error: string | null
   error_kind: string | null
+  /**
+   * True once the erase steps began, false when refused or stopped before any
+   * ran. Absent from an older server: whether a failed path was touched is
+   * then unknown.
+   */
+  attempted?: boolean
   verification: { passed: boolean | null; strategy: string; reason: string } | null
 }
 
@@ -671,8 +748,46 @@ export interface EraseDriveBody {
   level: string
   dry_run: boolean
   typed_serial: string
+  /** Real erase only: the id the server returned from /workflow/erase-drive. */
+  authorization_id?: string
   case_id?: string
   operator?: string
+}
+
+export interface OpenEraseWorkflowBody {
+  path: string
+  level: string
+  backup_image: string
+}
+
+export interface ApproveEraseBody {
+  typed_serial: string
+  acknowledge_data_destruction: boolean
+}
+
+/** api/routes/workflow.py:_view. core/workflow.py:WorkflowStatus.as_dict inside. */
+export interface EraseWorkflowView {
+  authorization_id: string
+  path: string
+  level: string
+  workflow: {
+    state: string
+    why_blocked: string[]
+    next_action: string
+    allowed_next: string[]
+  }
+  approved: boolean
+  approved_by: string
+  backup: { path: string; sha256: string; size_bytes: number }
+  backup_limitation: string
+  plan: {
+    level: string
+    achievable_levels: string[]
+    estimated_seconds: number | null
+    limitations: string[]
+    blocking: string[]
+  }
+  spent: boolean
 }
 
 /** What a sanitization verification concluded. Four outcomes, never three. */
@@ -696,6 +811,64 @@ export interface EraseFilesBody {
   cleanse_metadata: boolean
   break_hardlinks: boolean
   recursive: boolean
+  /** Find and remove the thumbnails, recent entries and Trash copies of these files. */
+  sweep_traces: boolean
+}
+
+/** One trace the desktop kept of an erased file. See core/erase/traces.py. */
+export interface TraceRecord {
+  kind: string
+  /** The erased path this trace belongs to. */
+  target: string
+  /** Where the trace is: a file, or the list that holds an entry. */
+  location: string
+  /** Why it matches, in words. */
+  evidence: string
+  /** A copy of the content, not only a mention of the path. */
+  content_copy: boolean
+  /** Tied to the erased path on evidence. Only exact traces are removed. */
+  exact: boolean
+  action: string
+  removed: boolean
+  bytes_overwritten: number
+  error: string
+}
+
+export interface TraceSweep {
+  searched: string[]
+  not_searched: string[]
+  traces: TraceRecord[]
+  /** Places that were present but could not be read, and why. */
+  notes: string[]
+}
+
+export type DestroyMediaType = 'HDD' | 'SSD' | 'USB' | 'SD_CARD' | 'OPTICAL' | 'TAPE' | 'OTHER'
+export type DestroyTechnique =
+  | 'SHRED'
+  | 'DISINTEGRATE'
+  | 'PULVERIZE'
+  | 'INCINERATE'
+  | 'MELT'
+  | 'OTHER'
+
+/** A physical destruction as the people who did it attest. See core/destroy.py. */
+export interface DestroyRecordBody {
+  serial: string
+  model: string
+  capacity_bytes: number | null
+  media_type: DestroyMediaType
+  technique: DestroyTechnique
+  technique_detail: string
+  particle_size_mm: number | null
+  reason: string
+  performed_by: string
+  witnessed_by: string
+  /** ISO 8601 with an offset: when the medium was destroyed, as attested. */
+  performed_at: string
+  location: string
+  vendor_certificate: string
+  notes: string
+  case_id?: string
 }
 
 export interface WipeFreeSpaceBody {
@@ -744,9 +917,37 @@ export interface CarveBody {
   undelete: boolean
   carve_signatures: boolean
   pii_triage: boolean
+  /** Map the image by byte statistics before carving. */
+  media_map?: boolean
   out_dir: string | null
   case_id?: string
   operator?: string
+}
+
+/** One region of an image, classed by its bytes. See core/carve/mediamap.py. */
+export interface MediaRegion {
+  offset: number
+  length: number
+  kind: string
+  share_bp: number
+  /** Mean entropy in millibits per byte, 0 to 8000. */
+  entropy_mb: number
+  fill_byte: number | null
+  headers: Record<string, number>
+  bytes_read: number
+  substituted: boolean
+}
+
+export interface MediaMap {
+  size_bytes: number
+  region_bytes: number
+  block_bytes: number
+  sampled: boolean
+  bytes_read: number
+  regions: MediaRegion[]
+  by_kind: Record<string, number>
+  headers: Record<string, number>
+  limitations: string[]
 }
 
 // ---------------------------------------------------------------------------
@@ -794,6 +995,14 @@ export interface OperationRecord {
   result_ref: string
   recovered_artifacts: number
   params: Record<string, unknown>
+  /**
+   * The job's structured failure kind, once it ended. `WorkflowGateRefused` is
+   * a safety refusal before any write. Absent from a record written before
+   * the server kept it.
+   */
+  error_kind?: string
+  /** The drive erase's read-back verdict, when it reported one. */
+  verification_passed?: boolean
 }
 
 export interface CaseReportRecord {

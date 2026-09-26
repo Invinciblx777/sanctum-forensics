@@ -637,3 +637,29 @@ def test_an_unparsable_genesis_blob_reports_blob_unparsable(
     assert check.applicable is False
     assert check.status == "BLOB_UNPARSABLE"
     assert "not valid JSON" in check.detail
+
+
+def test_a_store_that_lost_entries_the_report_cites_fails(
+    case: dict[str, Any],
+) -> None:
+    """A shorter or rewritten store must not vouch for a longer signed excerpt.
+
+    The store's own chain still verifies after its tail is cut, so the check has
+    to compare what the report cites against what the store holds.
+    """
+    from core.ledger.store import LedgerStore
+
+    path = LedgerStore(case["ledger_root"]).path
+    lines = path.read_bytes().splitlines(keepends=True)
+    cited = len(
+        json.loads(Path(case["path"]).read_text())["sections"]["audit_trail"]["entries"]
+    )
+    assert cited >= 2
+    path.write_bytes(b"".join(lines[: cited - 1]))
+
+    check = store_check(
+        verify_report_file(case["path"], ledger_root=case["ledger_root"])
+    )
+
+    assert check.passed is False
+    assert "cites" in check.detail

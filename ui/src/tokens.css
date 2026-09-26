@@ -1,101 +1,122 @@
-/* Design tokens. Defined once, consumed everywhere.
+/* Design tokens, v2 (2026-09-25). Defined once, consumed everywhere.
  *
- * This is an instrument, and the constraints below are measurements rather
- * than taste:
+ * This is an instrument read off a projector in a lit room, from ten feet, by
+ * someone who did not build it. The constraints below are measurements rather
+ * than taste, and the contrast ratio of each pair is recorded beside it so a
+ * change that breaks one is visible in the diff.
  *
- * 1. It is read off a projector in a lit room, from ten feet, by someone who
- *    did not build it. Every foreground/background pair here clears WCAG AA
- *    (4.5:1) and most clear AAA (7:1). The ratios are recorded beside each
- *    value so a change that breaks one is visible in the diff.
+ * 1. Graphite, not black. A projector crushes the bottom of its range, so #000
+ *    and the first surface above it arrive as the same colour. The base is
+ *    lifted to #0E1215.
  *
- * 2. Near-black, not black. A projector crushes the bottom of its range, so
- *    #000 and the first surface above it arrive as the same colour. The base
- *    is lifted to #0e1216 and carries a slight cool cast, which separates from
- *    the warm cast of most projector lamps.
+ * 2. Colour is meaning, never decoration. Four state hues and one more:
+ *    - destructive (red): data is about to be lost, or an operation was refused
+ *    - warning (amber): a limitation, an inconclusive result
+ *    - success (green): verified, complete
+ *    - seal (violet): cryptographically attested - a chain entry, a signature,
+ *      a hash that was checked. It marks what the maths vouches for, and
+ *      nothing else borrows it: not links, not navigation, not focus.
+ *    Navigation and primary actions are neutral bright.
  *
- * 3. Saturated colour means one thing: state. `--state-destructive` is the
- *    only strong hue in the interface and it appears only where data is about
- *    to be lost. Nothing decorative is allowed to borrow it - not links, not
- *    focus rings, not the selected row. This is why there is no "brand accent"
- *    token: an instrument that highlights its own navigation in the same
- *    colour it uses for "this destroys a drive" has spent the signal.
+ * 3. Colour never carries meaning alone. Every state has a word beside it, so
+ *    the interface loses nothing in greyscale.
  *
- * 4. Colour never carries meaning alone. Every state token has a matching
- *    glyph and a word; see `.state-mark` below and the confidence column in
- *    Recovery. Read in greyscale, the interface loses nothing.
+ * 4. One family, two widths. Atkinson Hyperlegible Next for reading and
+ *    Atkinson Hyperlegible Mono for everything an operator compares or types
+ *    character by character - serials, hashes, paths, offsets. The family was
+ *    drawn so that 0/O, 1/l/I and similar pairs cannot be confused, which is
+ *    exactly the failure that makes a person type the wrong serial. Both are
+ *    bundled with the app (src/main.tsx); nothing is fetched.
  */
 
 :root {
-  /* ---- surfaces: three levels, no more ------------------------------- */
-  /* Separation comes from borders, never from shadow. A drop shadow on a
-     projector is a grey smear; a 1px rule survives the optics. */
-  --surface-base: #0e1216; /* the page */
-  --surface-raised: #151b21; /* panels, table headers, the row under the cursor */
-  --surface-sunken: #0a0d10; /* inputs and log output: things you type or read into */
+  /* ---- surfaces ------------------------------------------------------- */
+  --surface-base: #0e1215; /* the page */
+  --surface-raised: #151b20; /* panels and cards */
+  --surface-overlay: #1b232a; /* hover, table heads, the modal head */
+  --surface-sunken: #0a0d10; /* inputs, logs, code: things typed or read into */
 
-  /* ---- rules --------------------------------------------------------- */
-  --rule: #26313b; /* separation between rows and panels: decorative, 1.42:1 */
-  --rule-strong: #566876; /* borders of interactive controls: 3.26:1, clears the
-                             3:1 WCAG minimum for non-text UI */
+  /* ---- rules ---------------------------------------------------------- */
+  --rule: #243039; /* separation: decorative, 1.29:1 on raised */
+  --rule-strong: #5e707d; /* control borders: 3.38:1 on raised, clears 3:1 */
 
-  /* ---- text: three levels -------------------------------------------- */
-  --text-primary: #e6edf3; /* 15.91:1 on base, 14.68:1 on raised - AAA */
-  --text-secondary: #a9b7c4; /*  9.18:1 on base,  8.47:1 on raised - AAA */
-  --text-muted: #7d8c99; /*  5.45:1 on base,  5.02:1 on raised - AA  */
+  /* ---- text ----------------------------------------------------------- */
+  --text-primary: #e8edf0; /* 15.95:1 base, 14.72:1 raised - AAA */
+  --text-secondary: #aab6bf; /*  9.10:1 base,  8.39:1 raised - AAA */
+  --text-muted: #808e99; /*  5.60:1 base,  5.16:1 raised - AA  */
 
-  /* ---- state: one destructive, one warning, one success -------------- */
-  /* Each pairs with a surface tint dark enough that the foreground still
-     clears AA against it, so a badge is as readable as body text. */
-  --state-destructive: #ff6a58; /* 6.68:1 on base, 6.33:1 on its own surface */
+  /* ---- state ---------------------------------------------------------- */
+  --state-destructive: #ff6a58; /* 6.68:1 base; 6.33:1 on its surface */
   --state-destructive-surface: #2a100c;
-  --state-warning: #f0b23f; /* 9.98:1 on base, 9.06:1 on its own surface */
+  --state-warning: #f2b544; /* 10.28:1 base; 9.32:1 on its surface */
   --state-warning-surface: #251a09;
-  --state-success: #5fc596; /* 8.88:1 on base, 8.01:1 on its own surface */
+  --state-success: #4cc993; /* 9.04:1 base; 8.15:1 on its surface */
   --state-success-surface: #0d2018;
+  --seal: #a594ff; /* 7.42:1 base; 6.62:1 on its surface */
+  --seal-surface: #1e1a33;
+  --seal-rule: #4b4380;
 
-  /* ---- type: three sizes, and that is the whole scale ---------------- */
-  /* Sized for 1280x720. At that resolution a CSS pixel is roughly twice the
-     angular size it has on the machine this was written on, which is why
-     these look large in a desktop browser and correct on the projector. */
-  --type-sm: 12px; /* column heads, the basis line under a badge, footnotes */
-  --type-md: 14px; /* everything an operator reads as prose or table data */
-  --type-lg: 18px; /* screen titles, and the capability level - the two things
-                      that must carry to the back of the room */
+  /* ---- data hues ------------------------------------------------------- */
+  /* The media map's five byte classes. Categories, not states: none of these
+     is a state hue or near one, and the legend always names the class, so
+     the strip reads in greyscale by its labels. */
+  --map-zero: #2c3842;
+  --map-fill: #5a6975;
+  --map-text: #7fb6e6;
+  --map-structured: #cdb27c;
+  --map-entropy: #e08fd0;
+
+  /* ---- type ----------------------------------------------------------- */
+  /* Sized for 1366x768 on a projector, where a CSS pixel is roughly twice the
+     angular size it has on a laptop. */
+  --type-xs: 12px; /* column heads, footnotes */
+  --type-sm: 13px; /* secondary prose, the basis under a verdict */
+  --type-md: 14px; /* everything read as prose or table data */
+  --type-lg: 18px; /* screen titles, verdict words */
+  --type-xl: 24px; /* figures on the overview */
+  --type-2xl: 30px; /* the one headline figure per screen */
 
   --weight-normal: 400;
-  --weight-medium: 550;
-  --weight-bold: 680;
+  --weight-medium: 560;
+  --weight-bold: 700;
 
-  /* Ligatures off, tabular figures on: an operator compares hashes and byte
-     counts character by character, and `fi` fused into one glyph or a
-     proportional `1` makes that harder at exactly the wrong moment. */
-  --font-mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas,
-    "DejaVu Sans Mono", "Liberation Mono", monospace;
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
+  --font-sans: "Atkinson Hyperlegible Next Variable", ui-sans-serif, system-ui,
+    -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Atkinson Hyperlegible Mono Variable", ui-monospace,
+    "SFMono-Regular", "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
 
-  /* ---- space: a 4px grid, named by use ------------------------------- */
+  /* ---- space: a 4px grid ---------------------------------------------- */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
+  --space-5: 20px;
   --space-6: 24px;
+  --space-8: 32px;
+
+  /* ---- shape ---------------------------------------------------------- */
+  /* Rounded by hierarchy, not one radius for everything. The destructive
+     button keeps --radius-none: it must not look like any other control. */
+  --radius-none: 1px;
+  --radius-sm: 5px; /* controls, chips */
+  --radius-md: 8px; /* panels */
+  --radius-lg: 12px; /* dialogs, the overview's chain */
+
+  /* Separation is a rule. The only shadow lifts a dialog off the page. */
+  --shadow-dialog: 0 18px 48px rgba(0, 0, 0, 0.55);
 
   /* ---- structure ------------------------------------------------------ */
-  /* The state rail. Every table row carries a gutter of this width; a row with
-     something to say fills it, a row with nothing leaves it empty. State is
-     read down the left edge in one vertical scan rather than hunted for
-     across eight columns. */
+  /* The state rail: a fixed gutter down the left edge of every row and railed
+     block, filled only when there is something to say, so state is read in
+     one vertical scan. */
   --rail: 3px;
   --gutter: 14px;
+  --sidebar: 232px;
 
   color-scheme: dark;
 }
 
-/* Motion answers an action; it never announces a state change.
- * An SSE progress tick must not animate, or a table of 500 rows spends the
- * whole run redrawing. The only transitions here are on :hover and :focus,
- * which are answers to something the operator just did. */
+/* Motion answers an action; it never announces a state change. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

@@ -31,9 +31,61 @@ export function statusWord(status: CapabilityStatus): { word: string; tone: Tone
   }
 }
 
+/**
+ * What each status word means, in the order a reader meets them. Paraphrases
+ * the definitions in core/platform/model.py; the server decides the status,
+ * and this only explains the word.
+ */
+export const STATUS_MEANINGS: readonly { status: CapabilityStatus; meaning: string }[] = [
+  {
+    status: 'SUPPORTED',
+    meaning: 'A real backend runs on this computer and has a way to check its result.',
+  },
+  {
+    status: 'SUPPORTED_WITH_LIMITATIONS',
+    meaning: 'It runs, but part of the claim cannot be made here. Why? names the limits.',
+  },
+  {
+    status: 'NOT_AUTHORIZED',
+    meaning: 'A backend exists, but this process lacks the privilege it needs.',
+  },
+  {
+    status: 'NOT_VERIFIABLE',
+    meaning: 'It can run, but nothing on this computer can check the result.',
+  },
+  {
+    status: 'UNVERIFIED',
+    meaning:
+      'The code exists, but no passing test run on this platform, or no run on physical hardware, is recorded for it. Not a claim that it works.',
+  },
+  {
+    status: 'INCONCLUSIVE',
+    meaning: 'A probe ran and could not settle the question.',
+  },
+  {
+    status: 'UNSUPPORTED',
+    meaning: 'Not available on this platform in this build, or refused outright.',
+  },
+]
+
 /** Whether an option can actually be started on this host. */
 export function runnableStatus(status: CapabilityStatus | undefined): boolean {
   return status === 'SUPPORTED' || status === 'SUPPORTED_WITH_LIMITATIONS'
+}
+
+/**
+ * Whether a drive option is offered, mirroring `core/platform/base.py`.
+ *
+ * A runnable status, or UNVERIFIED with a method the engine would run: the
+ * drive reported the command and the code exists, but no hardware result is
+ * recorded. It is offered under the word Unverified, never as supported.
+ */
+export function offeredOption(
+  option: { status: CapabilityStatus; method?: string | null } | null | undefined,
+): boolean {
+  if (!option) return false
+  if (runnableStatus(option.status)) return true
+  return option.status === 'UNVERIFIED' && Boolean(option.method)
 }
 
 export function privilegeWord(privilege: PrivilegeState | null): string {
@@ -101,18 +153,52 @@ export interface FlowState {
   confirming: boolean
   running: boolean
   finished: boolean
+  /** Read back and passed, or a dry run, which has nothing to read back. */
   verified: boolean
   certified: boolean
+  /** The server refused the erase at its gate: no job was created. */
+  refused?: boolean
+  /** The job ended without completing: refused by the helper, failed or cancelled. */
+  failed?: boolean
+  /** The job completed but its read-back verification FAILED. */
+  verifyFailed?: boolean
 }
 
-/** Index of the step the operator is on (0-based). */
+/**
+ * What a job's read-back says about the Verify step.
+ *
+ * A verification object existing is not a pass: only `passed === true`
+ * verifies. `passed === false` on a real run is a failed read-back, and a
+ * dry run has nothing to read back.
+ */
+export function readBack(
+  verification: { passed: boolean | null } | null | undefined,
+  dryRun: boolean,
+): { verified: boolean; verifyFailed: boolean } {
+  if (dryRun) return { verified: true, verifyFailed: false }
+  return {
+    verified: verification?.passed === true,
+    verifyFailed: verification?.passed === false,
+  }
+}
+
+/**
+ * Index of the step the operator is on (0-based).
+ *
+ * A flow that stopped stays on the step where it stopped. A refused or failed
+ * job never advances the tracker to Verify: nothing was completed there, and a
+ * tracker that moved on would say the erase ran. A failed read-back stops on
+ * Verify and never reaches Certificate, whatever else is set.
+ */
 export function currentStep(state: FlowState): number {
   if (!state.hasDevice) return 0
   if (!state.hasAssessment) return 1
+  if (state.verifyFailed) return 6
   if (state.certified) return 7
+  if (state.failed) return 5
   if (state.finished) return state.verified ? 7 : 6
   if (state.running) return 5
-  if (state.confirming) return 4
+  if (state.refused || state.confirming) return 4
   if (state.reviewing) return 3
   return 2
 }

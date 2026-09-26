@@ -1003,3 +1003,18 @@ def test_unconfirmed_serial_sources_plan_as_blocked(bench: Any) -> None:
     plan = prewrite_plan(kit.path, kit.work, expect_serial=SERIAL)
     assert plan["workflow"]["state"] == "BLOCKED"
     assert kit.untouched()
+
+
+def test_a_backup_on_ram_backed_storage_is_not_sufficient(
+    bench: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """tmpfs has no backing disk, so it is neither a separate disk nor durable."""
+    kit = bench()
+    monkeypatch.setattr("scripts.media_benchmark._backing_source", lambda path: "tmpfs")
+    monkeypatch.setattr("scripts.media_benchmark._disk_of", lambda source: "")
+    kit.build(8192)
+    kit.plant(backup_bytes=8192, extent_end=8192)
+    report = verify_backup(kit.path, kit.work, expect_serial=SERIAL)
+    assert report["location"]["on_host_storage"] is None
+    assert report["sufficient_for_restoring_the_modified_region"] is False
+    assert "no backing disk" in " ".join(report["blocking"])

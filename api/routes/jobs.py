@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
+from api.authorization import SIMULATION_MARK, GateRefused, authorize_execution
 from api.deps import AppServices
 from api.identity import resolve as resolve_identity
 from api.identity import sanitise_label
@@ -33,6 +34,7 @@ from api.routes.common import (
 from api.routes.models import (
     AcquireRequest,
     CarveRequest,
+    DestroyRecordRequest,
     EraseDriveRequest,
     EraseFilesRequest,
     JobAccepted,
@@ -68,7 +70,54 @@ def _accepted(job_id: str, kind: str, dry_run: bool) -> JobAccepted:
         state="running",
         dry_run=dry_run,
         stream_url=f"/jobs/{job_id}/stream",
+        notice=SIMULATION_MARK if dry_run and kind.startswith("erase-drive") else "",
     )
+
+
+def _refuse_confirmation(message: str, remediation: str) -> HTTPException:
+    """A confirmation refusal in the same shape as a workflow-gate refusal.
+
+    Raised before anything is submitted, so nothing was erased. The extra
+    fields let a client render "BLOCKED / WHY BLOCKED" from the server's own
+    words instead of a generic failure. ``kind`` stays ConfirmationMismatch.
+    """
+    refusal = sanctum_error_response("ConfirmationMismatch", message, remediation)
+    detail = {**cast("dict[str, Any]", refusal.detail)}
+    detail.update(
+        {
+            "verdict": "REFUSED",
+            "workflow_state": "HUMAN_APPROVAL_REQUIRED",
+            "WHY BLOCKED": [message],
+            "physical_device_modified": False,
+        }
+    )
+    return HTTPException(status_code=refusal.status_code, detail=detail)
+
+
+def _gate_real_erase(
+    services: AppServices,
+    *,
+    authorization_id: str,
+    path: str,
+    level: str,
+    probe: dict[str, Any],
+) -> dict[str, Any]:
+    """Refuse a real drive erase unless the workflow gates are satisfied.
+
+    One call, shared by the erase and the resume, so neither can skip it.
+    Runs after the helper probe and before anything is submitted.
+    """
+    try:
+        return authorize_execution(
+            services,
+            auth_id=authorization_id,
+            path=path,
+            level=level,
+            probe=probe,
+            actor=resolve_identity(services).actor,
+        )
+    except GateRefused as refusal:
+        raise HTTPException(status_code=409, detail=refusal.detail()) from refusal
 
 
 def _submit(
@@ -137,8 +186,7 @@ def erase_drive(
     from helper.rpc import RpcError
 
     if not body.dry_run and not body.typed_serial:
-        raise sanctum_error_response(
-            "ConfirmationMismatch",
+        raise _refuse_confirmation(
             f"Refusing to erase {body.path}: dry_run is off but no serial was "
             "typed. Destructive erasure is opt-in twice.",
             "Re-read the device serial from the capability report and type it "
@@ -171,13 +219,28 @@ def erase_drive(
 
     serial = str(probe.get("device", {}).get("serial", ""))
     if not body.dry_run and body.typed_serial != serial:
-        raise sanctum_error_response(
-            "ConfirmationMismatch",
+        raise _refuse_confirmation(
             f"The typed serial {body.typed_serial!r} does not match "
             f"{body.path}, whose serial is {serial!r}. Nothing was erased.",
             "Re-read the device serial from the capability report and type it "
             "exactly.",
         )
+
+    # The workflow gate. The typed serial above is a confirmation token, not an
+    # approval; a real erase also needs the recorded approval and verified
+    # backup, re-derived from a fresh read of the device.
+    if not body.dry_run:
+        binding = _gate_real_erase(
+            services,
+            authorization_id=body.authorization_id,
+            path=body.path,
+            level=body.level,
+            probe=probe,
+        )
+        # The helper re-checks this against the host at the write seam. Never
+        # sent on a dry run: a simulation has nothing to authorize.
+        params["authorization"] = binding
+        params["authorization_dir"] = str(services.state_dir / "authorizations")
 
     # Minted here rather than by the registry, for the same reason the carve
     # route mints its own: the ledger entries this run writes are keyed by the
@@ -277,12 +340,14 @@ def erase_files(
         cleanse_metadata=body.cleanse_metadata,
         break_hardlinks=body.break_hardlinks,
         recursive=body.recursive,
+        sweep_traces=body.sweep_traces,
     )
     params = {
         "paths": body.paths,
         "dry_run": body.dry_run,
         "confirm": body.confirm,
         "break_hardlinks": body.break_hardlinks,
+        "sweep_traces": body.sweep_traces,
     }
     # The id is minted here rather than by the registry, so the same string
     # reaches erase_paths and therefore the ledger. Letting the registry
@@ -312,6 +377,64 @@ def erase_files(
         job_id=job_id, label=body.operator, case_id=body.case_id,
     )
     return _accepted(job_id, "erase-files", body.dry_run)
+
+
+# --------------------------------------------------------------------------
+# Record a physical destruction
+# --------------------------------------------------------------------------
+
+
+@router.post("/jobs/record-destroy", response_model=JobAccepted)
+def record_destroy(
+    body: DestroyRecordRequest,
+    services: AppServices = Depends(get_services),
+) -> JobAccepted:
+    """Chain and file a physical destruction, as the people who did it attest.
+
+    Destroy is the NIST SP 800-88 Rev. 2 outcome no software performs. Nothing
+    here opens a device: the job writes one ``destroy.recorded`` entry, and its
+    report says in the signed bytes that the tool observed nothing.
+    """
+    from core.destroy import record_destruction, refuse_a_future_date
+    from core.errors import SanctumError
+    from core.ledger.chain import Ledger
+    from core.models import DestructionRecord
+
+    record = DestructionRecord.model_validate(
+        body.model_dump(exclude={"case_id", "operator"})
+    )
+    try:
+        refuse_a_future_date(record)
+    except SanctumError as exc:
+        raise sanctum_error_response(
+            "DestructionDateInFuture", exc.message, exc.remediation
+        ) from exc
+
+    job_id = f"destroy-{uuid.uuid4().hex[:12]}"
+    ledger = Ledger(
+        services.ledger_root,
+        tool_version=services.tool_version,
+        pubkey_fingerprint=_signing_fingerprint(services),
+    )
+    actor = resolve_identity(services).labelled_actor(body.operator)
+    params = {
+        "serial": record.serial,
+        "technique": record.technique.value,
+        "media_type": record.media_type,
+        "dry_run": False,
+        "observed_by_tool": False,
+    }
+
+    def factory() -> Any:
+        return record_destruction(
+            record, ledger=ledger, job_id=job_id, actor=actor, case_id=body.case_id
+        )
+
+    _submit(
+        services, "destroy-record", params, factory,
+        job_id=job_id, label=body.operator, case_id=body.case_id,
+    )
+    return _accepted(job_id, "destroy-record", dry_run=False)
 
 
 @router.post("/jobs/wipe-free-space", response_model=JobAccepted)
@@ -515,6 +638,7 @@ def carve_image(
         "undelete": body.undelete,
         "carve_signatures": body.carve_signatures,
         "pii_triage": body.pii_triage,
+        "media_map": body.media_map,
         "out_dir": str(out_dir) if out_dir else None,
     }
 
@@ -540,6 +664,7 @@ def carve_image(
             operator=resolve_identity(services).labelled_actor(body.operator),
             case_id=body.case_id,
             work_dir=services.work_dir,
+            media_map=body.media_map,
         )
 
     _submit(
@@ -723,7 +848,7 @@ def resume_erase(
         "tool_version": services.tool_version,
     }
     try:
-        services.helper.call("probe_capabilities", {"path": state["path"]})
+        probe = services.helper.call("probe_capabilities", {"path": state["path"]})
     except RpcError as exc:
         raise sanctum_error_response(
             exc.kind or "DeviceVanished", exc.message, exc.remediation
@@ -734,6 +859,24 @@ def resume_erase(
             f"The privileged helper could not be reached: {exc}",
             "Start the helper daemon and set SANCTUM_HELPER_SOCKET.",
         ) from exc
+
+    if not body.dry_run:
+        if body.typed_serial != str(probe.get("device", {}).get("serial", "")):
+            raise sanctum_error_response(
+                "ConfirmationMismatch",
+                f"The typed serial does not match {state['path']}. Nothing was "
+                "erased.",
+                "Re-read the device serial from the capability report and type "
+                "it exactly.",
+            )
+        params["authorization"] = _gate_real_erase(
+            services,
+            authorization_id=body.authorization_id,
+            path=state["path"],
+            level=params["level"],
+            probe=probe,
+        )
+        params["authorization_dir"] = str(services.state_dir / "authorizations")
 
     # The *same* job id, deliberately. A resume continues one erasure, and
     # giving it a new id would split one device's account of itself across two

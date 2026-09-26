@@ -10,7 +10,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 __all__ = [
     "SanitizationLevel",
@@ -35,6 +35,10 @@ __all__ = [
     "MacTimestamps",
     "CarveFragment",
     "CarveCandidate",
+    "MediaRegion",
+    "MediaMap",
+    "DestroyTechnique",
+    "DestructionRecord",
     "SubstitutedRange",
     "BadSectorRange",
     "EvidenceSource",
@@ -57,6 +61,8 @@ __all__ = [
     "FileEraseOptions",
     "FileEraseRecord",
     "FileEraseResult",
+    "TraceRecord",
+    "TraceSweepResult",
     "FileVerificationResult",
     "VolumeInfo",
     "FreeSpaceWipeOptions",
@@ -400,6 +406,21 @@ class EraseResult(BaseModel):
     #: True only when the drive's own sanitize status reported clean completion.
     #: Never sufficient on its own; verification always samples as well.
     hw_attested: bool = False
+    #: The target as the engine read it at preflight, so a report names the
+    #: device this run wrote to, not the one a caller remembered. The block
+    #: sizes are the kernel's, as the engine used them.
+    device: Device | None = None
+    logical_block_size: int = 0
+    physical_block_size: int = 0
+    #: HPA/DCO as measured at preflight (None when not probed), and whether this
+    #: run's erase covered the hidden region.
+    hidden_areas: HiddenAreaReport | None = None
+    hidden_covered: bool = False
+    #: The read-back verdict. None for a dry run: nothing was written, so
+    #: nothing was verified, and a result object would invite a "passed".
+    verification: VerificationResult | None = None
+    #: The level this run may claim (drive._achieved_level). None for a dry run.
+    achieved_level: SanitizationLevel | None = None
 
 
 #: Outcome of a real decode attempt. ``decoder_unavailable`` is not a verdict
@@ -621,6 +642,98 @@ class BadSectorRange(BaseModel):
     @property
     def sector_count(self) -> int:
         return self.last_lba - self.first_lba + 1
+
+
+class DestroyTechnique(StrEnum):
+    """How media was physically destroyed, as the people who did it recorded."""
+
+    SHRED = "SHRED"
+    DISINTEGRATE = "DISINTEGRATE"
+    PULVERIZE = "PULVERIZE"
+    INCINERATE = "INCINERATE"
+    MELT = "MELT"
+    OTHER = "OTHER"
+
+
+class DestructionRecord(BaseModel):
+    """A physical destruction, attested by the people who performed it.
+
+    NIST SP 800-88 Rev. 2 names Destroy as the outcome for media that cannot
+    be cleared or purged, or must never be reused. No software performs it,
+    and none can observe it: this is what the operator and the witness state,
+    signed so it cannot change afterwards. See :mod:`core.destroy`.
+    """
+
+    serial: str = Field(min_length=1, max_length=128)
+    model: str = Field(default="", max_length=128)
+    capacity_bytes: int | None = Field(default=None, ge=0)
+    media_type: Literal["HDD", "SSD", "USB", "SD_CARD", "OPTICAL", "TAPE", "OTHER"]
+    technique: DestroyTechnique
+    #: Required when the technique is OTHER.
+    technique_detail: str = Field(default="", max_length=300)
+    #: Largest remaining fragment, as measured or specified by the facility.
+    particle_size_mm: int | None = Field(default=None, gt=0, le=1000)
+    #: Why the medium was destroyed rather than cleared or purged.
+    reason: str = Field(min_length=1, max_length=500)
+    performed_by: str = Field(min_length=1, max_length=120)
+    witnessed_by: str = Field(default="", max_length=120)
+    performed_at: datetime
+    location: str = Field(default="", max_length=200)
+    #: A destruction vendor's certificate number, when a vendor did it.
+    vendor_certificate: str = Field(default="", max_length=120)
+    notes: str = Field(default="", max_length=1000)
+
+    @model_validator(mode="after")
+    def _other_is_described(self) -> DestructionRecord:
+        described = self.technique_detail.strip()
+        if self.technique is DestroyTechnique.OTHER and not described:
+            raise ValueError("technique OTHER needs technique_detail saying what")
+        for name in ("serial", "reason", "performed_by"):
+            if not str(getattr(self, name)).strip():
+                raise ValueError(f"{name} must not be blank")
+        return self
+
+
+class MediaRegion(BaseModel):
+    """One region of an evidence image, classed by the statistics of its bytes.
+
+    See :mod:`core.carve.mediamap`. Every number is an integer, so a map can
+    enter a signed report and the ledger unchanged.
+    """
+
+    offset: int
+    length: int
+    #: The class most of the blocks read here fell into: ZERO, FILL, TEXT,
+    #: STRUCTURED or HIGH_ENTROPY.
+    kind: str
+    #: That class's share of the blocks read, in basis points.
+    share_bp: int
+    #: Mean Shannon entropy of the blocks read, in millibits per byte (0-8000).
+    entropy_mb: int
+    #: For a FILL region, the byte it is filled with.
+    fill_byte: int | None = None
+    #: File headers on sector boundaries in the bytes read, by extension.
+    headers: dict[str, int] = {}
+    #: Bytes of this region actually read.
+    bytes_read: int
+    #: Some byte read here was substituted for an unreadable one.
+    substituted: bool = False
+
+
+class MediaMap(BaseModel):
+    """What an image holds, region by region, and how the answer was reached."""
+
+    size_bytes: int
+    region_bytes: int
+    block_bytes: int
+    #: True when the regions were sampled rather than read in full.
+    sampled: bool
+    bytes_read: int
+    regions: list[MediaRegion] = []
+    #: Bytes of the image in each class, shared out by block count per region.
+    by_kind: dict[str, int] = {}
+    headers: dict[str, int] = {}
+    limitations: list[str] = []
 
 
 class EvidenceSource(BaseModel):
@@ -898,6 +1011,12 @@ class FileEraseOptions(BaseModel):
     #: Below this many paths the pool is not started; spawn costs more than it
     #: saves. Exposed so tests can force either path.
     pool_threshold: int = 32
+    #: After the erase, find what the desktop kept of these files - thumbnails,
+    #: recent-files entries, Trash and Recycle Bin copies - and, on a real run,
+    #: remove the ones tied to an erased path on evidence. See
+    #: core.erase.traces. Off here, so a library caller opts in; the API turns
+    #: it on, and its dry run lists every trace before anything is removed.
+    sweep_traces: bool = False
 
 
 class FileVerificationResult(BaseModel):
@@ -945,6 +1064,11 @@ class FileEraseRecord(BaseModel):
     #: Populated instead of raising. A batch never aborts for one bad file.
     error: str | None = None
     error_kind: str | None = None
+    #: True once every refusal check passed and the erase steps began. A
+    #: failed record with this False was refused before anything ran; with it
+    #: True the erase started and stopped partway, and the path is in an
+    #: unknown state.
+    attempted: bool = False
 
     @property
     def highest_severity(self) -> Severity | None:
@@ -954,6 +1078,46 @@ class FileEraseRecord(BaseModel):
             if self.findings
             else None
         )
+
+
+class TraceRecord(BaseModel):
+    """One trace the desktop kept of an erased file, and what became of it.
+
+    See :mod:`core.erase.traces`. ``exact`` is True only when the trace was
+    tied to the erased path on evidence - a thumbnail named by the MD5 of the
+    file's URI, a Trash record naming its path - and only exact traces are ever
+    removed.
+    """
+
+    kind: str
+    #: The erased path this trace belongs to.
+    target: str
+    #: Where the trace is: a file, or the list that holds an entry.
+    location: str
+    #: Why it matches, in words.
+    evidence: str
+    #: A copy of the content (a thumbnail, a Trash copy), not only a mention.
+    content_copy: bool
+    exact: bool
+    #: "erased" (put through the same steps as a target), "entry removed" (cut
+    #: out of a shared list, which was overwritten in place), or empty when
+    #: nothing was done: a dry run, an inexact match, or a failure.
+    action: str = ""
+    removed: bool = False
+    bytes_overwritten: int = 0
+    error: str = ""
+
+
+class TraceSweepResult(BaseModel):
+    """What the trace sweep searched, what it did not, and what it found."""
+
+    #: Every place that was searched, including those that were not present.
+    searched: list[str] = []
+    #: Places on this platform that keep traces and were not searched.
+    not_searched: list[str] = []
+    traces: list[TraceRecord] = []
+    #: Places that were present but could not be read, and why.
+    notes: list[str] = []
 
 
 class FileEraseResult(BaseModel):
@@ -966,6 +1130,8 @@ class FileEraseResult(BaseModel):
     #: In the order the caller supplied the paths, regardless of completion order.
     records: list[FileEraseRecord] = []
     limitations: list[str] = []
+    #: What the trace sweep found after the erase; None when it was not run.
+    trace_sweep: TraceSweepResult | None = None
 
     @property
     def succeeded(self) -> int:

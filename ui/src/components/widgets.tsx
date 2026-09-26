@@ -40,7 +40,7 @@ export function Panel({
  * the same three colours and the same left-edge rail so an operator learns the
  * vocabulary once.
  */
-export type Tone = 'destructive' | 'warning' | 'success' | 'unknown'
+export type Tone = 'destructive' | 'warning' | 'success' | 'seal' | 'unknown'
 
 /**
  * A judgement the tool has made, and the thing it was derived from.
@@ -300,15 +300,18 @@ export function ProgressView({
   )
 }
 
-export function Limitations({ items }: { items: string[] }) {
+export function Limitations({
+  items,
+  title = 'What this run could not guarantee',
+}: {
+  items: readonly string[]
+  /** The heading; the default is for a run's result, not a standing limit. */
+  title?: string
+}) {
   if (items.length === 0) return null
   return (
     <div className="notice warn">
-      <strong
-        style={{ fontSize: 'var(--type-sm)', letterSpacing: '0.06em' }}
-      >
-        WHAT THIS RUN COULD NOT GUARANTEE
-      </strong>
+      <strong style={{ fontSize: 'var(--type-sm)' }}>{title}</strong>
       <ul className="limitations">
         {items.map((item, index) => (
           <li key={index}>{item}</li>

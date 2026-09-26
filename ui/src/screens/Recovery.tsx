@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { api, artifactUrl, RequestFailed, streamJob } from '../lib/api'
 import type {
+  MediaMap,
   ArtifactRef,
   CarveCandidate,
   JobStatus,
@@ -30,6 +31,7 @@ import {
   Verdict,
 } from '../components/widgets'
 import type { Tone } from '../components/widgets'
+import { MediaMapPanel } from '../components/mediaMap'
 
 /**
  * Confidence bucket to tone.
@@ -551,6 +553,7 @@ export default function Recovery() {
   }, [status?.job_id, status?.state])
 
   const candidates = (status?.result?.candidates ?? []) as CarveCandidate[]
+  const mediaMap = (status?.result?.media_map ?? null) as MediaMap | null
 
   const filtered = useMemo(() => {
     const kept = candidates.filter((item) => {
@@ -631,7 +634,7 @@ export default function Recovery() {
         <p>Read-only. Nothing in the carving path opens the evidence for writing.</p>
         <div className="grow" />
         <span className={openCase ? 'state-mark is-success' : 'state-mark is-warning'}>
-          {openCase ? `CASE ${openCase.case_id}` : 'NO CASE OPEN'}
+          {openCase ? `Filed under ${openCase.case_id}` : 'No case open'}
         </span>
       </div>
 
@@ -718,6 +721,8 @@ export default function Recovery() {
             </p>
           </Panel>
         )}
+
+        {mediaMap && <MediaMapPanel map={mediaMap} />}
 
         {candidates.length > 0 && (
           <div className="split">

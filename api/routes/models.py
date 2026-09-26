@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from core.models import DestructionRecord
 from pydantic import BaseModel, Field
 
 __all__ = [
@@ -93,8 +94,28 @@ class EraseDriveRequest(BaseModel):
     #: Gate two. The operator types the device serial; the helper compares it
     #: against the serial it reads itself, not against anything the UI sent.
     typed_serial: str = ""
+    #: Gate three, required when ``dry_run`` is false: the id of an approved
+    #: workflow record from ``/workflow/erase-drive``. See api.authorization.
+    authorization_id: str = ""
     case_id: str = ""
     operator: str = "sanctum"
+
+
+class OpenEraseWorkflowRequest(BaseModel):
+    """Body for ``POST /workflow/erase-drive``."""
+
+    path: str
+    level: Literal["CLEAR", "PURGE"] = "CLEAR"
+    #: A backup image under the evidence directory, verified read-only.
+    backup_image: str
+
+
+class ApproveEraseRequest(BaseModel):
+    """Body for ``POST /workflow/erase-drive/{id}/approve``."""
+
+    typed_serial: str = ""
+    #: Must be sent true, deliberately. The typed serial alone is not approval.
+    acknowledge_data_destruction: bool = False
 
 
 class EraseFilesRequest(BaseModel):
@@ -112,6 +133,23 @@ class EraseFilesRequest(BaseModel):
     #: reported either way.
     break_hardlinks: bool = False
     recursive: bool = True
+    #: After the erase, find the thumbnails, recent-files entries and Trash or
+    #: Recycle Bin copies the desktop kept of these files, and remove the ones
+    #: tied to an erased path on evidence. On by default because the problem
+    #: this answers is the operator's; a dry run lists every trace first, and
+    #: nothing is removed without both gates.
+    sweep_traces: bool = True
+    case_id: str = ""
+    operator: str = "sanctum"
+
+
+class DestroyRecordRequest(DestructionRecord):
+    """Body for ``POST /jobs/record-destroy``: the attestation, and where to file it.
+
+    Nothing is erased or opened. The record is chained and signed as what the
+    named people attest; see :mod:`core.destroy`.
+    """
+
     case_id: str = ""
     operator: str = "sanctum"
 
@@ -162,6 +200,11 @@ class CarveRequest(BaseModel):
     #: document, database or unclassified object. Kinds and counts only: no
     #: matched value is stored, logged or returned. See :mod:`core.carve.pii`.
     pii_triage: bool = True
+    #: Map the image first: each region classed as zero, fill, text, structured
+    #: or high-entropy from its byte statistics, with the file headers found on
+    #: sector boundaries. Read-only, and sampled within a fixed budget on a
+    #: large image. See :mod:`core.carve.mediamap`.
+    media_map: bool = True
     #: Where recovered objects are written. None means nothing is written and
     #: only the candidate list is returned.
     out_dir: str | None = None
@@ -178,6 +221,8 @@ class ResumeEraseRequest(BaseModel):
 
     dry_run: bool = True
     typed_serial: str = ""
+    #: Required when ``dry_run`` is false. See api.authorization.
+    authorization_id: str = ""
     operator: str = "sanctum"
 
 
@@ -201,3 +246,5 @@ class JobAccepted(BaseModel):
     dry_run: bool
     #: Where to attach for live progress.
     stream_url: str
+    #: Set on every dry run so a simulation cannot be read as a wipe.
+    notice: str = ""

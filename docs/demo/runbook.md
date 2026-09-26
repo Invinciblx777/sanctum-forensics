@@ -242,8 +242,10 @@ only with the laptop screen.
 ```
 
 Hovering the badge shows its evidence string. The badge is `capabilityBadge()`
-in `ui/src/screens/Devices.tsx`; the evidence is not decoration, it is the text
-the panel will ask you about.
+in `ui/src/lib/capability.ts`; the evidence is not decoration, it is the text
+the panel will ask you about. A drive that reports a firmware sanitize reads
+**PURGE · UNVERIFIED**, not a green PURGE AVAILABLE: no firmware sanitize has been
+recorded on a physical drive, so the badge stays in the unknown tone until one is.
 
 **Say — 40 seconds, rehearsed word for word:**
 
@@ -277,6 +279,14 @@ the panel will ask you about.
 This is the beat that changed. Read [Wipe arithmetic](#wipe-arithmetic) before
 you rehearse it.
 
+**Changed on 2026-09-25, not yet rehearsed on hardware.** A real erase now
+needs a backup image of the whole stick, at least as large as the stick, inside
+the API's evidence directory (`<state dir>/evidence/`). Take it before the
+session, as a read-only acquisition of the stick onto the laptop's disk. Without
+it the Sanitize screen stops at *Open workflow and verify backup* and nothing can
+be erased - that is the gate working, and it cannot be fixed on stage. The server
+hashes and sizes the image; that does not prove it is a copy of the stick.
+
 **Do:**
 
 1. Devices screen → click the stick you are wiping → Sanitize.
@@ -289,9 +299,12 @@ you rehearse it.
    greyed with its evidence string.
 3. Uncheck **Dry run**.
 4. Click **Erase this device**.
-5. Type the serial into the confirm dialog. Have it on a sticky note — do not
-   read it off the screen behind you, that looks worse than it is.
-6. Click through.
+5. Type the backup image's name and click **Open workflow and verify backup**.
+   The plan and the image's SHA-256 appear.
+6. Tick the acknowledgement and type the serial. Have it on a sticky note — do
+   not read it off the screen behind you, that looks worse than it is.
+7. Click **Approve erasure**. The server issues a one-use authorization id.
+8. Type the serial again and click **Erase**.
 
 **Expected, in this order, on the clock:**
 
@@ -374,7 +387,8 @@ mode unchanged. See `docs/privilege-boundary.md`, "Who owns the chain".
 | Failure | What you see | Fallback |
 |---|---|---|
 | Refused: mounted filesystem | `REFUSED` naming the mount point | Best possible failure. Say "that is the guard working", `umount` it, retry. Costs 15 s. |
-| Refused: serial mismatch | confirm dialog rejects | You typed it wrong. Sticky note. 10 s. |
+| Refused: serial mismatch | **Approve** stays disabled, or `BLOCKED` with the server's WHY BLOCKED | You typed it wrong. Sticky note. 10 s. |
+| Stops at *Open workflow* | `BLOCKED`: the backup image is missing or smaller than the stick | The gate working. Cannot be fixed on stage; cut to the fallback capture. |
 | No elision finding | calibration ratio below 2.0 | **This is a real outcome, not a bug.** Say: "this controller programs zeros honestly, so no substitution is needed — the check is the point, not the finding." Then show the recorded finding from the validation run instead: `docs/validation/results-20260905T033655Z/a4-erase.json`. |
 | Device vanished mid-wipe | `DeviceVanished` | Say it: "cheap sticks re-enumerate under sustained write, and that is a named error with a remediation, not a crash." Move on. |
 | Whole beat unusable | anything else | Pre-recorded 50-second screen capture: `docs/demo/fallback/wipe-start.mp4`. Play it and narrate the same words. **Check it exists before the session** — nothing generates it. |
@@ -726,6 +740,36 @@ sixteen minutes.
 > write.
 
 Then take questions. `docs/demo/qa.md` has twenty of them with answers.
+
+### If a question opens the door: 30-second beats (added 2026-09-25)
+
+Each runs on synthetic material, labelled as such, and needs nothing staged but
+`docs/validation/features-2026-09-25/drivers/seed.py` run into a state directory
+beforehand. None touches a device. Recorded screenshots are in that directory if
+there is no time to run them.
+
+* **"Erasing the file leaves its thumbnail."** File & folder eraser, the seeded
+  `case-2149` folder, *Simulate*: seven traces, each with its evidence. Say:
+  *"A dry run removes nothing. A real run removes only what it can tie to the
+  file on evidence, and the report lists every place it did not search."*
+* **"What is intelligent about the carving?"** Recovery, the seeded image: the
+  media map draws before the carve. Say: *"Zeros, fill, text, high entropy, and
+  where the JPEG headers sit. Statistics, not identification, and the map says
+  so."*
+* **"Where is Destroy?"** Devices, *Record a physical destruction*. Say: *"No
+  software shreds a drive or can watch one shredded. This records what the
+  people who did it attest, signed, and the record says we observed nothing."*
+* **"What can it actually do on this machine?"** Platform. Point at hardware
+  Purge reading *Unverified* and at *Not yet proven on hardware*. Say: *"Every
+  status comes from a probe or a recorded test run, with its source one click
+  away. Firmware Purge is dispatched from the drive's own capability, and it
+  says Unverified because no drive has run it in a recorded test."*
+* **"Show me everything for one investigation."** Cases, the open case: the
+  chain verdict at the top, then evidence, operations, reports and audit
+  entries, each a tab with its count. Say: *"The counts come from the case
+  index; the integrity verdict comes from the hash chain. If they ever
+  disagree, the chain is right."* A dry run carries its SIMULATION label here
+  too.
 
 ---
 

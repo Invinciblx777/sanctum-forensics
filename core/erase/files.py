@@ -38,6 +38,7 @@ from pathlib import Path
 import structlog
 
 from core.erase import residual as residual_mod
+from core.erase import traces as traces_mod
 from core.erase._platform import PlatformBackend, backend
 from core.erase.inspect import inspect_path
 from core.erase.metadata import cleanse_only
@@ -51,6 +52,7 @@ from core.models import (
     FileEraseResult,
     FileInspection,
     Progress,
+    TraceSweepResult,
 )
 
 __all__ = [
@@ -219,6 +221,7 @@ def erase_one(  # noqa: C901 - eleven ordered steps, read top to bottom
         return record
 
     host = backend()
+    record.attempted = True
     try:
         if inspection.is_immutable is True and not options.dry_run:
             cleared, why = host.clear_immutable(target)
@@ -412,6 +415,10 @@ def _erase_directory(
     """
     if options.dry_run:
         return
+    if any(target.iterdir()):
+        # Checked before the rename chain: renaming a directory that then
+        # cannot be removed would leave its contents under a name nobody chose.
+        raise OSError(errno.ENOTEMPTY, os.strerror(errno.ENOTEMPTY), str(target))
     _rename_and_unlink(target, options, record, backend())
 
 
@@ -431,6 +438,14 @@ def expand_targets(
     for entry in paths:
         target = Path(entry)
         if not target.is_dir() or _is_link_or_reparse(target) or not recursive:
+            out.append(target)
+            continue
+        try:
+            _refuse_protected(target)
+        except SystemDiskRefused:
+            # Emitted as itself, so erase_one records the refusal. Expanding it
+            # would erase every child first, and the refusal of the directory
+            # itself would come last.
             out.append(target)
             continue
         out.extend(_walk_depth_first(target))
@@ -740,6 +755,14 @@ def _erase_batch(
             )
     state.phase_entries_recorded = True
 
+    # After the phase entries, so the chain says what happened to every target
+    # before it says anything about their traces.
+    trace_sweep: TraceSweepResult | None = None
+    if settings.sweep_traces:
+        trace_sweep = yield from traces_mod.sweep(
+            ordered, settings, job_id=job_id, ledger=ledger
+        )
+
     finished_at = datetime.now(UTC)
     limitations: list[str] = []
     if settings.dry_run:
@@ -766,6 +789,7 @@ def _erase_batch(
         dry_run=settings.dry_run,
         records=ordered,
         limitations=limitations,
+        trace_sweep=trace_sweep,
     )
     logger.info(
         "file_erase_complete",

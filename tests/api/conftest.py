@@ -180,10 +180,37 @@ class RecordingHelper:
                     ),
                     kind="ConfirmationMismatch",
                 )
+            level = str(params.get("level") or "CLEAR")
             return {
                 "result": {
                     "job_id": params.get("job_id", "erase"),
                     "dry_run": dry_run,
+                    # The shape core.erase.drive.execute returns: the plan, the
+                    # level asked for and the level achieved, and a read-back
+                    # verdict - none of the last two for a dry run.
+                    "method": "SINGLE_PASS_OVERWRITE",
+                    "level": level,
+                    "plan": {
+                        "method": "SINGLE_PASS_OVERWRITE",
+                        "level": level,
+                        "justification": "fixture",
+                        "est_seconds": 1,
+                    },
+                    "achieved_level": None if dry_run else level,
+                    "verification": None
+                    if dry_run
+                    else {
+                        "passed": True,
+                        "strategy": "full_read",
+                        "bytes_checked": int(row["device"]["size_bytes"]),
+                        "sample_count": 0,
+                        "confidence_bp": 10_000,
+                        "failed_offsets": [],
+                        "probability_note": "fixture",
+                        "hw_attested": False,
+                    },
+                    "logical_block_size": 512,
+                    "physical_block_size": 512,
                     "device": row["device"],
                     "residual_risk": {
                         "level": "medium",
@@ -302,3 +329,48 @@ def ui_dist() -> Path:
 
 def _default_services_for(tmp_path: Path) -> AppServices:
     return default_services(state_dir=tmp_path / "state")
+
+
+def make_backup(
+    services: AppServices, size: int = 64 * MIB, name: str = "backup.img"
+) -> Path:
+    """A sparse stand-in backup image inside the evidence directory."""
+    image = services.evidence_dir / name
+    with image.open("wb") as handle:
+        handle.truncate(size)
+    return image
+
+
+def open_workflow(
+    client: TestClient,
+    services: AppServices,
+    *,
+    path: str = "/dev/sdz",
+    level: str = "CLEAR",
+    size: int = 64 * MIB,
+) -> str:
+    """Open a workflow record over the API and return its authorization id."""
+    make_backup(services, size)
+    answer = client.post(
+        "/workflow/erase-drive",
+        json={"path": path, "level": level, "backup_image": "backup.img"},
+    )
+    assert answer.status_code == 200, answer.text
+    return str(answer.json()["authorization_id"])
+
+
+def approve_workflow(
+    client: TestClient, auth_id: str, serial: str = "SYN-PURGE-1"
+) -> None:
+    answer = client.post(
+        f"/workflow/erase-drive/{auth_id}/approve",
+        json={"typed_serial": serial, "acknowledge_data_destruction": True},
+    )
+    assert answer.status_code == 200, answer.text
+
+
+def authorize(client: TestClient, services: AppServices) -> str:
+    """The full, legitimate path: open, then approve. Returns the id."""
+    auth_id = open_workflow(client, services)
+    approve_workflow(client, auth_id)
+    return auth_id

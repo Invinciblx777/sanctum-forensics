@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 
 from tests._loopback import LOOPBACK_BASE_URL
 
-from .conftest import RecordingHelper
+from .conftest import RecordingHelper, authorize
 
 CONFIRMATION_REMEDIATION = (
     "Re-read the device serial from the capability report and type it exactly."
@@ -175,17 +175,26 @@ def test_a_missing_serial_with_dry_run_off_is_refused_before_the_helper(
     assert helper.calls == [], "nothing should reach the helper at all"
 
 
-def test_a_matching_serial_is_accepted(client: TestClient) -> None:
+def test_a_matching_serial_is_accepted(
+    client: TestClient, services: AppServices
+) -> None:
     answer = client.post(
         "/jobs/erase-drive",
-        json={"path": "/dev/sdz", "dry_run": False, "typed_serial": "SYN-PURGE-1"},
+        json={
+            "path": "/dev/sdz",
+            "dry_run": False,
+            "typed_serial": "SYN-PURGE-1",
+            "authorization_id": authorize(client, services),
+        },
     )
 
     assert answer.status_code == 200
     assert answer.json()["dry_run"] is False
 
 
-def test_the_typed_serial_is_never_echoed_back(client: TestClient) -> None:
+def test_the_typed_serial_is_never_echoed_back(
+    client: TestClient, services: AppServices
+) -> None:
     """It is a confirmation token, not a fact worth repeating.
 
     Echoing it into a UI that may be screen-shared, or into a browser cache,
@@ -193,7 +202,12 @@ def test_the_typed_serial_is_never_echoed_back(client: TestClient) -> None:
     """
     accepted = client.post(
         "/jobs/erase-drive",
-        json={"path": "/dev/sdz", "dry_run": False, "typed_serial": "SYN-PURGE-1"},
+        json={
+            "path": "/dev/sdz",
+            "dry_run": False,
+            "typed_serial": "SYN-PURGE-1",
+            "authorization_id": authorize(client, services),
+        },
     ).json()
 
     status = client.get(f"/jobs/{accepted['job_id']}").json()

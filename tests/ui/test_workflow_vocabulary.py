@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from core.workflow import WorkflowState
+from core.workflow import TRANSITIONS, WorkflowState
 
 SOURCE = Path(__file__).resolve().parents[2] / "ui" / "src" / "lib" / "workflowState.ts"
 
@@ -23,3 +23,33 @@ def test_the_ui_state_names_are_exactly_the_state_machine_names() -> None:
     assert union, "WorkflowStateName union not found"
     names = set(re.findall(r"'([A-Z_]+)'", union.group(1)))
     assert names == {state.value for state in WorkflowState}
+
+
+def _path(name: str) -> list[str]:
+    text = SOURCE.read_text(encoding="utf-8")
+    block = re.search(rf"export const {name}\b.*?= \[(.*?)\]", text, re.S)
+    assert block, f"{name} not found"
+    return re.findall(r"'([A-Z_]+)'", block.group(1))
+
+
+def test_every_drawn_path_uses_only_state_machine_names() -> None:
+    known = {state.value for state in WorkflowState}
+    for name in ("SANITIZE_PATH", "REAL_ERASE_PATH"):
+        assert set(_path(name)) <= known, name
+
+
+def test_the_real_erase_path_is_a_walk_of_the_state_machine_edges() -> None:
+    """The strip a real erase draws follows TRANSITIONS, edge for edge."""
+    path = [WorkflowState(name) for name in _path("REAL_ERASE_PATH")]
+    for here, there in zip(path, path[1:], strict=False):
+        assert there in TRANSITIONS[here], f"{here} -> {there} is not an edge"
+    assert path[-1] is WorkflowState.COMPLETE
+
+
+def test_the_screen_recognises_exactly_the_states_the_server_can_send() -> None:
+    text = SOURCE.read_text(encoding="utf-8")
+    block = re.search(r"const STATE_NAMES.*?\(\[(.*?)\]\)", text, re.S)
+    assert block, "STATE_NAMES not found"
+    assert set(re.findall(r"'([A-Z_]+)'", block.group(1))) == {
+        state.value for state in WorkflowState
+    }

@@ -293,6 +293,50 @@ def test_a_missing_file_fails_the_record_rather_than_raising(
     assert record.unlinked is False
 
 
+def test_a_failure_partway_is_recorded_as_attempted(
+    real_fs_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An erase that overwrote and then failed must not read as never tried.
+
+    The rename-and-unlink step fails after the overwrite has written: the
+    record is a failure, and ``attempted`` says the erase had started.
+    """
+    import errno
+
+    from core.erase import files
+
+    target = real_fs_dir / "partway.bin"
+    target.write_bytes(b"P" * 8192)
+
+    def fail(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EIO, "injected failure after the overwrite")
+
+    monkeypatch.setattr(files, "_rename_and_unlink", fail)
+    record = erase_one(target, real_erase())
+
+    assert record.ok is False
+    assert record.error_kind == "EIO"
+    assert record.attempted is True
+    assert record.bytes_overwritten == 8192
+    assert record.unlinked is False
+
+
+def test_a_refused_path_is_recorded_as_not_attempted(real_fs_dir: Path) -> None:
+    target = real_fs_dir / "real.bin"
+    target.write_bytes(b"R" * 64)
+    link = real_fs_dir / "refused-link.bin"
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlink creation needs privileges this user lacks: {exc}")
+
+    record = erase_one(link, real_erase())
+
+    assert record.ok is False
+    assert record.error_kind == "REPARSE_POINT_REFUSED"
+    assert record.attempted is False
+
+
 def test_metadata_is_cleansed_before_the_overwrite(real_fs_dir: Path) -> None:
     """Order matters: cleansed bytes are what get destroyed.
 

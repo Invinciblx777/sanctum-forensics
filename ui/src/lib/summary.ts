@@ -10,6 +10,7 @@
  */
 import type { CaseDetail, PlatformStatus } from './api'
 import { statusWord } from './platform.ts'
+import { isSafetyRefusal } from './refusal.ts'
 
 export interface ExecutiveSummary {
   found: string[]
@@ -32,6 +33,7 @@ function plural(count: number, noun: string): string {
 export function executiveSummary(
   detail: CaseDetail | null,
   platform: PlatformStatus | null,
+  requestFailed = '',
 ): ExecutiveSummary {
   const found: string[] = []
   const erased: string[] = []
@@ -39,7 +41,10 @@ export function executiveSummary(
   const unverified: string[] = []
 
   if (!detail) {
-    const none = 'No case is open. Open one on the Cases screen.'
+    // A case that could not be read is not a case with nothing in it.
+    const none = requestFailed
+      ? `REQUEST FAILED - the open case could not be read (${requestFailed}). Nothing is inferred about it.`
+      : 'No case is open. Open one on the Cases screen.'
     return { found: [none], erased: [none], verified: [none], unverified: platform?.limitations.slice(0, 3) ?? [] }
   }
 
@@ -59,12 +64,39 @@ export function executiveSummary(
   const real = eraseOps.filter((op) => op.params?.dry_run === false)
   const simulated = eraseOps.filter((op) => op.params?.dry_run !== false)
   for (const [kind, label] of Object.entries(ERASE_KINDS)) {
-    const done = real.filter((op) => op.type === kind && op.status === 'complete').length
+    const done = real.filter(
+      (op) => op.type === kind && op.status === 'complete' && op.verification_passed !== false,
+    ).length
     if (done) erased.push(`${plural(done, label)} completed`)
   }
-  const failedErase = real.filter((op) => op.status === 'failed' || op.status === 'cancelled')
+  // Four outcomes that must not share a line. A safety refusal wrote nothing;
+  // a failed or stopped erase may have written part of the target; a run that
+  // ended with a failed read-back is not verified sanitized.
+  const verifyFailed = real.filter(
+    (op) => op.status === 'complete' && op.verification_passed === false,
+  )
+  if (verifyFailed.length) {
+    erased.push(
+      `${plural(verifyFailed.length, 'erase')} ran but read-back verification FAILED; the target is not verified sanitized`,
+    )
+  }
+  const refused = real.filter((op) => op.status === 'failed' && isSafetyRefusal(op.error_kind))
+  if (refused.length) {
+    erased.push(
+      `${plural(refused.length, 'erase')} BLOCKED by a safety refusal before any write; nothing was erased`,
+    )
+  }
+  const failedErase = real.filter((op) => op.status === 'failed' && !isSafetyRefusal(op.error_kind))
   if (failedErase.length) {
-    erased.push(`${plural(failedErase.length, 'erase')} failed or cancelled; the target is partially sanitized`)
+    erased.push(
+      `${plural(failedErase.length, 'erase')} FAILED; the target may be partly overwritten and is not sanitized`,
+    )
+  }
+  const stopped = real.filter((op) => op.status === 'cancelled')
+  if (stopped.length) {
+    erased.push(
+      `${plural(stopped.length, 'erase')} stopped on request (CANCELLED) before finishing; the target may be partly overwritten and is not sanitized`,
+    )
   }
   if (simulated.length) {
     erased.push(
@@ -114,6 +146,7 @@ export interface JudgeSummary {
 
 /** Not validated on a physical device, from docs/validation/feature-matrix.md. */
 export const NOT_PHYSICALLY_VALIDATED: readonly string[] = [
+  'This release: no physical validation. Every physical run on record (2026-09-05, 2026-09-23) used an earlier build.',
   'Registered physical carve benchmark: not run. Benchmark figures are SYNTHETIC (three physical recovery passes are recorded separately).',
   'Firmware Purge (ATA/NVMe sanitize, crypto erase): fixture-tested, never run on a drive.',
   'HPA/DCO unlock: not run on hardware.',
@@ -121,9 +154,9 @@ export const NOT_PHYSICALLY_VALIDATED: readonly string[] = [
   'Whole-drive sanitization: Linux only.',
 ]
 
-const SAFETY_LINES: readonly string[] = [
+export const SAFETY_LINES: readonly string[] = [
   'Dry run is the default. Nothing is written unless it is turned off.',
-  'A real erase needs the device serial typed; the helper re-reads it from the device and refuses a mismatch.',
+  'A real erase needs a backup image, an approval with the typed serial, and a one-use authorization the server issues; the helper re-checks device, plan and backup before it writes.',
   'The system disk and any device with a mounted filesystem are refused, never unmounted for you.',
   'No automatic sudo, no automatic unmount, and no substitute device when the named one is missing.',
 ]
@@ -138,15 +171,17 @@ export function judgeSummary(
   detail: CaseDetail | null,
   platform: PlatformStatus | null,
   chainStatus: string,
+  requestFailed = '',
 ): JudgeSummary {
-  const base = executiveSummary(detail, platform)
+  const base = executiveSummary(detail, platform, requestFailed)
+  const caseLines = detail || requestFailed
   return {
     erasure: [
       capabilityLine(platform, 'whole_drive_clear', 'Whole-drive Clear'),
       capabilityLine(platform, 'whole_drive_purge', 'Whole-drive Purge'),
       'The method is selected from the drive\'s probed capability, never from operator preference.',
-      'Physically run: overwrite Clear on one 7.76 GB USB flash stick, one clean recorded run after two defective ones.',
-      ...(detail ? base.erased : []),
+      'Physically run on 2026-09-05, on an earlier build and not repeated for this release: overwrite Clear on one 7.76 GB USB flash stick, one clean recorded run after two defective ones.',
+      ...(caseLines ? base.erased : []),
     ],
     recovery: [
       ...base.found,
@@ -154,7 +189,7 @@ export function judgeSummary(
       'Fragmented reassembly: baseline JPEG and PNG, exactly two runs.',
     ],
     verification: [
-      ...(detail ? base.verified : []),
+      ...(caseLines ? base.verified : []),
       'Erase: read-back of the medium, full read up to 64 GiB, seeded sample above.',
       'Report: five independent checks and a graded verdict.',
     ],

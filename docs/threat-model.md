@@ -98,7 +98,10 @@ A seized disk is filled by an adversary. Every parser and decoder reads it.
 - Destructive gates — dry-run default and typed serial — are re-checked inside
   the helper against the serial it re-reads, so a stale or hostile client
   cannot authorise a wipe (`helper/daemon.py:_stream_run_erase`). Resume keeps
-  both gates (`tests/api/test_resume.py`).
+  both gates (`tests/api/test_resume.py`). A real erase also has its authorization
+  re-checked by the helper against fresh reads at the write seam
+  (`helper/authorization.py`, `tests/helper/test_write_seam_authorization.py`,
+  `tests/api/test_write_seam_integration.py`; synthetic devices only).
 - Devices with a mounted filesystem or holding the root filesystem are refused
   (`core/device/guard.py`).
 

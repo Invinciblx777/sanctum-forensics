@@ -35,6 +35,7 @@ __all__ = [
 #: mistyped something they can fix in the body.
 STATUS_FOR_ERROR: dict[str, int] = {
     "ConfirmationMismatch": 409,
+    "WorkflowGateRefused": 409,
     "MountedRefused": 409,
     "SystemDiskRefused": 409,
     "DeviceFrozen": 409,
@@ -76,6 +77,9 @@ STATUS_FOR_ERROR: dict[str, int] = {
     # sanitize, or an overwrite that never reached a checkpoint. 409: the
     # request is well formed and the state of the world refuses it.
     "ResumeNotAvailable": 409,
+    # A destruction dated after this machine's clock. 422: the body is well
+    # formed, and its content cannot be true.
+    "DestructionDateInFuture": 422,
 }
 
 

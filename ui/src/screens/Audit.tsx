@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api, RequestFailed } from '../lib/api'
 import type {
+  LedgerEntry,
   LedgerVerification,
   ReportCheck,
   ReportResult,
@@ -10,6 +11,8 @@ import type {
 import { useCase } from '../lib/caseContext'
 import { timestamp } from '../lib/format'
 import { verdictMeaning } from '../lib/verdict'
+import { operationLabel } from '../lib/ledger'
+import { ChainStrip } from '../components/chain'
 import {
   Empty,
   ErrorNotice,
@@ -58,7 +61,8 @@ function checkVerdict(check: ReportCheck): { word: string; tone: Tone } {
  * examiner to distrust a chain that is intact up to its final entry.
  */
 function chainTone(status: string): Tone {
-  if (status === 'VALID') return 'success'
+  // Valid is a cryptographic property, so it takes the seal colour.
+  if (status === 'VALID') return 'seal'
   if (status === 'EMPTY') return 'unknown'
   if (status === 'INCOMPLETE_TAIL') return 'warning'
   return 'destructive'
@@ -106,15 +110,33 @@ function summarise(verification: ReportVerification): {
  * copy, hands the copy to `Ledger.verify` - the same call that guards the live
  * chain - and deletes the copy. Both verdicts below came back from that call.
  */
-function TamperPanel({ demo }: { demo: TamperDemo }) {
+function TamperPanel({ demo, entries }: { demo: TamperDemo; entries: LedgerEntry[] }) {
+  // The copy is the live chain with one field of one entry changed, so the
+  // live entries drawn with the copy's verdict show exactly where the
+  // verifier stopped trusting it.
+  const oldestFirst = [...entries].reverse()
   return (
     <div className="col loose" data-testid="tamper-demo">
-      <div className="split">
-        <Railed tone="success">
+      {oldestFirst.length > 1 && (
+        <div className="col tight">
+          <span className="note">
+            The copy after entry <strong>#{demo.tampered_seq}</strong> was changed:
+            the verifier stops at the first entry whose hash no longer matches, and
+            vouches for nothing after it.
+          </span>
+          <ChainStrip
+            entries={oldestFirst}
+            firstBrokenSeq={demo.after.first_broken_seq}
+            label="The tampered copy of the chain, oldest first"
+          />
+        </div>
+      )}
+      <div className="split" style={{ gridTemplateColumns: '1fr 1fr' }}>
+        <Railed tone="seal">
           <Verdict
             level={`BEFORE: ${demo.before.status}`}
             basis={`${demo.before.entry_count} entries`}
-            tone="success"
+            tone="seal"
           />
           <span className="note">{demo.before.explanation}</span>
         </Railed>
@@ -134,7 +156,6 @@ function TamperPanel({ demo }: { demo: TamperDemo }) {
       </div>
 
       <Evidence
-        stacked
         rows={[
           { label: 'Record altered', value: `#${demo.tampered_seq}`, kind: 'mono' },
           { label: 'Field', value: demo.field, kind: 'mono' },
@@ -166,6 +187,94 @@ function TamperPanel({ demo }: { demo: TamperDemo }) {
         {demo.note}
       </Notice>
     </div>
+  )
+}
+
+/** How many of the newest entries the explorer draws as blocks. */
+const EXPLORER_BLOCKS = 14
+
+function ChainExplorer({
+  chain,
+  broken,
+}: {
+  chain: LedgerVerification
+  broken: number | null
+}) {
+  const newest = chain.entries.slice(0, EXPLORER_BLOCKS)
+  const oldestFirst = [...newest].reverse()
+  const [selectedSeq, setSelectedSeq] = useState<number | null>(null)
+  const selected =
+    chain.entries.find((entry) => entry.seq === selectedSeq) ?? chain.entries[0] ?? null
+  const previous = selected
+    ? chain.entries.find((entry) => entry.seq === selected.seq - 1) ?? null
+    : null
+  const links = selected
+    ? selected.seq === 0
+      ? { word: 'GENESIS', tone: 'seal' as Tone, basis: 'the first entry links to nothing' }
+      : previous
+        ? previous.entry_hash === selected.prev_entry_hash
+          ? { word: 'LINKED', tone: 'seal' as Tone, basis: `prev hash = hash of #${previous.seq}` }
+          : { word: 'BROKEN LINK', tone: 'destructive' as Tone, basis: `prev hash is not the hash of #${previous.seq}` }
+        : { word: 'NOT SHOWN', tone: 'unknown' as Tone, basis: `#${selected.seq - 1} is not in this view` }
+    : null
+
+  return (
+    <section className="custody" data-testid="chain-explorer" aria-labelledby="chain-title">
+      <div className="custody-head">
+        <div>
+          <h2 className="custody-title" id="chain-title">
+            Chain
+          </h2>
+          <p className="custody-sub">{chain.explanation}</p>
+          {broken !== null && (
+            <p className="custody-sub">
+              The first break is at entry <strong>{broken}</strong>. Everything
+              before it is still internally consistent; everything after it is not.
+            </p>
+          )}
+        </div>
+        <div className="custody-verdict">
+          <Verdict
+            level={chain.status}
+            basis={`${chain.entry_count} ${chain.entry_count === 1 ? 'entry' : 'entries'}`}
+            tone={chainTone(chain.status)}
+          />
+        </div>
+      </div>
+      {oldestFirst.length > 0 && (
+        <ChainStrip
+          entries={oldestFirst}
+          firstBrokenSeq={broken}
+          selectedSeq={selected?.seq ?? null}
+          onSelect={(entry) => setSelectedSeq(entry.seq)}
+          label={`The newest ${oldestFirst.length} entries of the chain, oldest first. Select one to inspect it.`}
+        />
+      )}
+      {selected && links && (
+        <div className="split" style={{ gridTemplateColumns: '1fr 300px' }}>
+          <Evidence
+            rows={[
+              { label: 'Entry', value: `#${selected.seq}`, kind: 'mono' },
+              { label: 'Operation', value: `${operationLabel(selected.operation)} (${selected.operation})` },
+              { label: 'Recorded', value: timestamp(selected.ts_utc), kind: 'mono' },
+              { label: 'Actor', value: selected.actor, kind: 'mono' },
+              { label: 'Entry hash', value: selected.entry_hash, kind: 'hash' },
+              { label: 'Previous hash', value: selected.prev_entry_hash, kind: 'hash' },
+              { label: 'Parameters hash', value: selected.params_hash, kind: 'hash' },
+              { label: 'Result hash', value: selected.result_hash, kind: 'hash' },
+            ]}
+          />
+          <Railed tone={links.tone}>
+            <Verdict level={links.word} basis={links.basis} tone={links.tone} />
+            <span className="note">
+              The entry hash is SHA-256 over this entry's fields, including the
+              previous hash. Rewriting any earlier entry changes its hash, so
+              this link would stop matching.
+            </span>
+          </Railed>
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -282,32 +391,11 @@ export default function Audit() {
 
         {/* The chain's status is the one claim on this screen that has to
             carry to the back of the room, so it is a verdict and not a line
-            inside a notice. */}
+            inside a notice. The blocks under it are the chain itself: each
+            one links to the one before it only when its recorded previous
+            hash is that block's hash, computed here from the entries. */}
         {chain && (
-          <Panel title="Chain">
-            <div className="col">
-              <Railed tone={chainTone(chain.status)}>
-                <Verdict
-                  level={chain.status}
-                  basis={`${chain.entry_count} ${chain.entry_count === 1 ? 'entry' : 'entries'}`}
-                  tone={chainTone(chain.status)}
-                />
-              </Railed>
-              <p className="note">{chain.explanation}</p>
-              {broken !== null && (
-                <p className="note">
-                  The first break is at entry <strong>{broken}</strong>.
-                  Everything before it is still internally consistent;
-                  everything after it is not.
-                </p>
-              )}
-              {/* The store's host path is deliberately not rendered. It is in
-                  the API response for the console and the runbook, but this
-                  screen is projected in demos, and the layout of the host's
-                  filesystem is not something a viewer needs to verify the
-                  chain. */}
-            </div>
-          </Panel>
+          <ChainExplorer chain={chain} broken={broken} />
         )}
 
         {/* The ledger is six columns of hashes and timestamps and it does not
@@ -323,12 +411,12 @@ export default function Audit() {
           {!chain || chain.entries.length === 0 ? (
             <Empty>No ledger entries yet.</Empty>
           ) : (
-            <div className="scroll-y" style={{ maxHeight: '38vh' }}>
-              <table className="itable">
+            <div className="scroll-y scroll-x" style={{ maxHeight: '38vh' }}>
+              <table className="itable" style={{ minWidth: 900 }}>
                 <colgroup>
                   <col style={{ width: 'var(--gutter)' }} />
                   <col style={{ width: 56 }} />
-                  <col style={{ width: 176 }} />
+                  <col style={{ width: 196 }} />
                   <col style={{ width: 122 }} />
                   <col />
                   <col style={{ width: 152 }} />
@@ -407,7 +495,7 @@ export default function Audit() {
           }
         >
           {demo ? (
-            <TamperPanel demo={demo} />
+            <TamperPanel demo={demo} entries={chain?.entries ?? []} />
           ) : (
             <Empty>
               Press <strong>Simulate tampering</strong>. The server copies this
