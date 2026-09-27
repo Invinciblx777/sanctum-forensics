@@ -21,11 +21,18 @@ def _fake_completed(argv: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def test_windows_subprocess_calls_ask_for_a_hidden_console() -> None:
-    with patch.object(sys, "platform", "win32"), patch("subprocess.run") as mock_run:
+    # CREATE_NO_WINDOW only exists on the real subprocess module on real
+    # Windows; create=True lets this test inject it on every CI host so the
+    # assertion below is meaningful there too, not just on a Windows runner.
+    with (
+        patch.object(sys, "platform", "win32"),
+        patch.object(subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True),
+        patch("subprocess.run") as mock_run,
+    ):
         mock_run.return_value = _fake_completed(["powershell.exe"])
         SubprocessRunner(timeout_s=5.0).run(["powershell.exe", "-NoProfile"])
 
-    assert mock_run.call_args.kwargs["creationflags"] != 0
+    assert mock_run.call_args.kwargs["creationflags"] == 0x08000000
 
 
 def test_non_windows_subprocess_calls_pass_a_no_op_creationflags() -> None:
