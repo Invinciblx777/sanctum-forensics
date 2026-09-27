@@ -61,16 +61,20 @@ worked in that earlier run too.
 
 ## Hardware
 
-Nothing here changed in this work. See
-[`hardware-platform-matrix.md`](hardware-platform-matrix.md).
+Updated 2026-09-27: three Windows rows below are now physically validated,
+from a separate run at `2d00526`, after this file's original recorded work.
+See [`hardware-platform-matrix.md`](hardware-platform-matrix.md) and
+[`windows-hardware-2026-09-27/`](windows-hardware-2026-09-27/README.md) for
+the full breakdown.
 
 | Check | Linux | Windows | macOS |
 |---|---|---|---|
 | Whole-drive Clear on real media | VALIDATED earlier (`hardware.md`); not re-run | UNSUPPORTED | UNSUPPORTED |
 | Firmware Purge on real media | NOT RUN | UNSUPPORTED | UNSUPPORTED |
-| Discovery against a physical disk set | VALIDATED on the development host | NOT RUN | NOT RUN |
-| File erase on physical NTFS / APFS media | n/a | NOT RUN | NOT RUN |
-| Install by a human on a physical machine | VALIDATED | NOT RUN | NOT RUN |
+| Discovery against a physical disk set | VALIDATED on the development host | **VALIDATED** (2026-09-27) | NOT RUN |
+| File erase on physical NTFS / APFS media | n/a | **VALIDATED** (2026-09-27) | NOT RUN |
+| Install by a human on a physical machine | VALIDATED | **VALIDATED** (2026-09-27) | NOT RUN |
+| Raw physical-device acquisition | n/a (not this file's scope) | **NOT IMPLEMENTED** | NOT RUN |
 
 ## To close the remaining rows
 

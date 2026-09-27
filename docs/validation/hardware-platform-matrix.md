@@ -14,9 +14,12 @@ Four states, and they are not interchangeable:
 | **NOT YET VALIDATED** | The software path exists; nobody has run it on hardware of that kind. |
 | **UNSUPPORTED** | Not implemented on that platform. Refused by the app with a reason. |
 
-Every VALIDATED row below is a run from 2026-09-05 or 2026-09-23 with the build of
-that date. **No physical validation was run for the current release** (packages at
-`76dde42`, 2026-09-26). The app shows firmware Purge as *Unverified*, and lists
+Most VALIDATED rows below are a run from 2026-09-05 or 2026-09-23 with the build of
+that date, on Linux. **No physical validation was run for the `76dde42`
+release** (2026-09-26). A later, separate run on 2026-09-27 at `2d00526`
+physically validated three Windows rows below for the first time — see
+[`windows-hardware-2026-09-27/`](windows-hardware-2026-09-27/README.md) — and
+is marked accordingly. The app shows firmware Purge as *Unverified*, and lists
 HPA/DCO unlock as not run on hardware, until a hardware result is recorded.
 
 ## Whole-drive sanitization
@@ -36,7 +39,7 @@ HPA/DCO unlock as not run on hardware, until a hardware result is recorded.
 |---|---|---|
 | Linux, host disks + USB stick | **VALIDATED** | `scripts/platform_smoke.py` on the development host and in CI |
 | Windows, runner's own disks | **CI-VALIDATED** | `platform-smoke-Windows.json`, `platform-ci` |
-| Windows, physical machine with removable media | NOT YET VALIDATED | needs a Windows 11 machine and a disposable stick |
+| Windows, physical machine with removable media | **VALIDATED** (2026-09-27) | installed package on a physical Windows 11 machine found 3 real devices including a USB stick, and correctly assessed the mounted one NOT AVAILABLE; [`windows-hardware-2026-09-27/`](windows-hardware-2026-09-27/README.md) |
 | macOS, runner's own APFS disks | **CI-VALIDATED** | `platform-smoke-macOS.json`, `platform-ci` |
 | macOS, physical Mac with removable media | NOT YET VALIDATED | needs a Mac and a disposable stick |
 
@@ -47,6 +50,7 @@ HPA/DCO unlock as not run on hardware, until a hardware result is recorded.
 | Linux, ext4/xfs/tmpfs | **VALIDATED** | suite plus packaged smoke on the development host |
 | Windows, NTFS on the runner | **CI-VALIDATED** | `validation-Windows.json` |
 | Windows, real junction / reparse point | **CI-VALIDATED** | `tests/platform/test_windows_filesystem.py` creates a real junction on the runner |
+| Windows, real machine, NTFS via the installed package | **VALIDATED** (2026-09-27) | erase → read-back verify → certificate issue → certificate verify, real, in a scratch directory on the machine's own system disk; [`windows-hardware-2026-09-27/`](windows-hardware-2026-09-27/README.md) |
 | macOS, APFS on the runner | **CI-VALIDATED** | `validation-macOS.json` |
 | Any platform, SSD residual behaviour after erase | NOT YET VALIDATED | needs physical media and out-of-band reading |
 
@@ -55,10 +59,18 @@ HPA/DCO unlock as not run on hardware, until a hardware result is recorded.
 | Target | State | Evidence |
 |---|---|---|
 | Linux AppImage / `.deb` on the build host | **VALIDATED** | packaged smoke; `.deb` installed and removed in Debian 12, AppImage run in Debian 12 and Ubuntu 22.04 |
-| Windows `SanctumSetup.exe`, silent install → run → uninstall | **CI-VALIDATED** | `package-smoke-Windows.json` |
+| Windows `SanctumSetup.exe`, silent install → run → uninstall | **CI-VALIDATED**; also **VALIDATED** silent-install on a physical machine, 2026-09-27 (uninstall not exercised there) | `package-smoke-Windows.json`; [`windows-hardware-2026-09-27/`](windows-hardware-2026-09-27/README.md) |
 | macOS `Sanctum.dmg` mounted and run | **CI-VALIDATED** | `package-smoke-macOS.json` |
-| Windows/macOS install on a physical machine by a human | NOT YET VALIDATED | |
+| Windows install on a physical machine by a human | **VALIDATED** (2026-09-27) | [`windows-hardware-2026-09-27/`](windows-hardware-2026-09-27/README.md) |
+| macOS install on a physical machine by a human | NOT YET VALIDATED | |
 | Code signing / notarization | NOT PERFORMED | no certificates; `docs/packaging.md` |
+
+## Acquisition (Windows)
+
+| Target | State | Evidence |
+|---|---|---|
+| Windows, raw physical-device acquisition (`\\.\PhysicalDriveN`, a raw volume) | **NOT IMPLEMENTED** — not merely untested | `Path.exists()` and `open()` cannot address the Win32 device namespace; no code in `core/carve/acquire.py` / `core/carve/evidence.py` special-cases a Windows device path. Confirmed directly, 2026-09-27: [`windows-hardware-2026-09-27/`](windows-hardware-2026-09-27/README.md) §4 |
+| Windows, M3 carving over a synthetic image | **SYNTHETIC, run on physical Windows hardware** (2026-09-27) | `scripts/demo_fragmented.py`, 6/6 ground-truth scenarios correct; [`windows-hardware-2026-09-27/`](windows-hardware-2026-09-27/README.md) §3 |
 
 ## What would close the remaining rows
 

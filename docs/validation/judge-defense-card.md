@@ -3,11 +3,30 @@
 **Date:** first written 2026-09-24 at `8e1777d`; reconciled 2026-09-26 with the
 release-hold remediation · **Code and packages at:** `76dde42` (see
 [`release-report-2026-09-25.md`](release-report-2026-09-25.md)) · **Physical
-validation in this release: none** — every PHYSICALLY VALIDATED row below is a run
+validation as of that release: none** — every PHYSICALLY VALIDATED row below is a run
 on 2026-09-05 or 2026-09-23 with an earlier build · Companion to
 [`demo-evidence-index.md`](demo-evidence-index.md) and
 [`feature-matrix.md`](feature-matrix.md), which stay the source of truth. If
 this card and either of them disagree, they win and this card is wrong.
+
+## Update, 2026-09-27: a separate physical Windows run
+
+This section supersedes every "none" or "nothing" said about physical
+validation below; it does not change any row's evidence or wording, which
+stays as it was written for the `76dde42` release. At commit `2d00526`, a
+separate, later run installed the packaged app on a physical Windows 11
+machine and drove it against a real USB stick: device discovery, the
+mounted-device refusal, and a file/folder erase → verify → certificate all
+ran on real hardware, 23 of 23 packaged checks. M3 carving was also
+exercised on that physical machine, but only against a synthetic
+ground-truth image — never against the stick. Windows whole-drive
+sanitization remains UNSUPPORTED by design, and raw physical-device
+acquisition on Windows is not implemented. Full detail:
+[`windows-hardware-2026-09-27/`](windows-hardware-2026-09-27/README.md). If
+asked "is that real hardware?" for anything Windows, this is now the answer
+for discovery, the mounted refusal, and file/folder erase; everything else
+below about "no physical run this release" still describes the `76dde42`
+build accurately and macOS still has no physical run.
 
 Rules for the presenter:
 
