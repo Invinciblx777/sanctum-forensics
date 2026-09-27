@@ -22,7 +22,7 @@ record of both that a third party can check on their own machine.
 > | Release | branch `docs/readme-redesign`, packages built at `76dde42` (2026-09-26, after the release-hold remediation); see [`release-report-2026-09-25.md`](docs/validation/release-report-2026-09-25.md) |
 > | Test suite | 2046 passed · 34 skipped · 0 failed (Linux host, 2026-09-26, at `76dde42`), host-device guard 0 refusals; Windows and macOS suites run in `platform-ci` |
 > | Primary platform | Linux. Whole-drive sanitization runs only there |
-> | Physical validation in this release | **Windows: real**, 2026-09-27 — packaged installer built and installed on a physical Windows 11 machine; device discovery and the mounted-device refusal ran against a real USB stick (`SANCTUMREC`); file/folder erase → verify → certificate ran on real NTFS. See [`windows-hardware-2026-09-27/`](docs/validation/windows-hardware-2026-09-27/README.md). **Linux/macOS: none new this release** |
+> | Physical validation in this release | **Windows: real**, 2026-09-27 — packaged installer built and installed on a physical Windows 11 machine; device discovery and the mounted-device refusal ran against a real USB stick (`SANCTUMREC`); file/folder erase → verify → certificate ran on real NTFS. See [`windows-hardware-2026-09-27-fixes/`](docs/validation/windows-hardware-2026-09-27-fixes/README.md). **Linux/macOS: none new this release** |
 > | Physically run earlier | One USB flash stick (Toshiba TransMemory, 7.76 GB), with earlier builds: overwrite Clear with full read-back and three recovery passes (2026-09-05), mounted-device refusal (2026-09-23) |
 > | Hardware-unverified | Firmware Purge (ATA SANITIZE, SECURITY ERASE, NVMe sanitize/format, crypto erase; shown as *Unverified*), HPA/DCO unlock, backup restoration, the registered physical recovery benchmark, a live-desktop trace sweep, Windows whole-drive sanitization, Windows raw physical-device acquisition (unimplemented, not only untested), any macOS physical device |
 
@@ -304,7 +304,7 @@ crashes after one fix ([`fuzz.md`](docs/validation/fuzz.md)).
 installed and driven on a physical Windows 11 machine — device discovery and
 the mounted-device refusal against a real USB stick (`SANCTUMREC`), and file/
 folder erase → verify → certificate on real NTFS, 23 of 23 packaged checks
-([`windows-hardware-2026-09-27/`](docs/validation/windows-hardware-2026-09-27/README.md)).
+([`windows-hardware-2026-09-27-fixes/`](docs/validation/windows-hardware-2026-09-27-fixes/README.md)).
 Windows whole-drive/Purge and raw acquisition were not exercised — the first
 is UNSUPPORTED by design, the second is unimplemented. Linux: earlier builds
 ran on one USB flash stick, recorded in [`hardware.md`](docs/validation/hardware.md):
@@ -329,7 +329,7 @@ macOS on physical media.
 | Overwrite Clear with read-back, USB flash | three recorded runs on one stick, the third clean (2026-09-05) | **PHYSICAL VALIDATION** (one device, one model, an earlier build) |
 | Mounted-device refusal | refusal on the stick, no I/O recorded (2026-09-23) | **PHYSICAL VALIDATION** (an earlier build) |
 | Recovery after delete and quick format | three passes on the same stick (2026-09-05) | **PHYSICAL VALIDATION** (an earlier build; not the registered benchmark) |
-| Windows packaged install, device discovery and mounted-device refusal, file/folder erase → verify → certificate | 23 of 23 packaged checks on a physical Windows 11 machine, 2026-09-27 | **PHYSICAL VALIDATION** (this release; [`windows-hardware-2026-09-27/`](docs/validation/windows-hardware-2026-09-27/README.md)) |
+| Windows packaged install, device discovery and mounted-device refusal, file/folder erase → verify → certificate | 23 of 23 packaged checks on a physical Windows 11 machine, 2026-09-27 | **PHYSICAL VALIDATION** (this release; [`windows-hardware-2026-09-27-fixes/`](docs/validation/windows-hardware-2026-09-27-fixes/README.md)) |
 | Secure file and folder erase | suites plus packaged app on each OS runner | **CI VALIDATION** (Linux host also validated) |
 | Cross-platform adapters, discovery, system-disk refusal | `platform-ci` against each runner's own disks | **CI VALIDATION** |
 | Fragmented JPEG recovery | 10 of 10 on the benchmark volumes | **SYNTHETIC VALIDATION** |
@@ -482,7 +482,7 @@ Packages: AppImage and `.deb`, `SanctumSetup.exe`, `Sanctum.dmg`. All are
 unsigned and not notarized. CI runners have virtual disks, so CI-validated is
 not hardware-validated; the Windows package was additionally installed and
 driven on a physical machine, 2026-09-27
-([`windows-hardware-2026-09-27/`](docs/validation/windows-hardware-2026-09-27/README.md)).
+([`windows-hardware-2026-09-27-fixes/`](docs/validation/windows-hardware-2026-09-27-fixes/README.md)).
 Details: [`platform-support.md`](docs/platform-support.md),
 [`hardware-platform-matrix.md`](docs/validation/hardware-platform-matrix.md).
 

@@ -59,7 +59,7 @@ removable device. Separately, on 2026-09-27 a human installed this build's
 package on a physical Windows 11 machine and ran it against a real USB stick:
 device discovery, the mounted-device refusal, and file/folder erase → verify
 → certificate all ran on real hardware
-([`validation/windows-hardware-2026-09-27/`](validation/windows-hardware-2026-09-27/README.md)).
+([`validation/windows-hardware-2026-09-27-fixes/`](validation/windows-hardware-2026-09-27-fixes/README.md)).
 Whole-drive/Purge remain **UNSUPPORTED** on Windows by design, raw
 physical-device acquisition is not implemented on Windows, and macOS still
 has no physical run. See

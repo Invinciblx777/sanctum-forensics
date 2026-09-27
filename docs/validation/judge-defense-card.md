@@ -9,23 +9,33 @@ on 2026-09-05 or 2026-09-23 with an earlier build · Companion to
 [`feature-matrix.md`](feature-matrix.md), which stay the source of truth. If
 this card and either of them disagree, they win and this card is wrong.
 
-## Update, 2026-09-27: a separate physical Windows run
+## Update, 2026-09-27: a separate physical Windows run, and two defects it found
 
 This section supersedes every "none" or "nothing" said about physical
 validation below; it does not change any row's evidence or wording, which
-stays as it was written for the `76dde42` release. At commit `2d00526`, a
-separate, later run installed the packaged app on a physical Windows 11
-machine and drove it against a real USB stick: device discovery, the
-mounted-device refusal, and a file/folder erase → verify → certificate all
-ran on real hardware, 23 of 23 packaged checks. M3 carving was also
-exercised on that physical machine, but only against a synthetic
-ground-truth image — never against the stick. Windows whole-drive
+stays as it was written for the `76dde42` release. A separate, later run
+installed the packaged app on a physical Windows 11 machine and drove it
+against a real USB stick: device discovery, the mounted-device refusal, and
+a file/folder erase → verify → certificate all ran on real hardware, 23 of
+23 packaged checks. That first run, at commit `2d00526`, is preserved at
+[`windows-hardware-2026-09-27/`](windows-hardware-2026-09-27/README.md).
+
+Validating it end to end found two real defects no prior CI run or packaged
+smoke test had caught: (1) the installed app crashed on a genuine
+no-console launch — the actual double-click/Start-menu path, which
+`package_smoke.py` never exercises because it redirects stdio; and (2) once
+fixed, `/jobs/carve` through the installed exe failed outright, because the
+carve engine's signature table (`testkit/signatures.yaml`) was never bundled
+into any packaged build, on any platform — `package_smoke.py` has never
+called `/jobs/carve` either. Both fixed (`ba66fbe`, `437081e`); acquire,
+carve, media map and a Destroy attestation now run correctly through the
+installed exe, still only against a synthetic image. Windows whole-drive
 sanitization remains UNSUPPORTED by design, and raw physical-device
 acquisition on Windows is not implemented. Full detail:
-[`windows-hardware-2026-09-27/`](windows-hardware-2026-09-27/README.md). If
-asked "is that real hardware?" for anything Windows, this is now the answer
-for discovery, the mounted refusal, and file/folder erase; everything else
-below about "no physical run this release" still describes the `76dde42`
+[`windows-hardware-2026-09-27-fixes/`](windows-hardware-2026-09-27-fixes/README.md).
+If asked "is that real hardware?" for anything Windows, this is now the
+answer for discovery, the mounted refusal, and file/folder erase; everything
+else below about "no physical run this release" still describes the `76dde42`
 build accurately and macOS still has no physical run.
 
 Rules for the presenter:

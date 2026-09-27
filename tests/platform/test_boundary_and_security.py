@@ -306,12 +306,23 @@ def test_the_launcher_uses_a_private_loopback_port_and_a_session_url() -> None:
     assert wait_for_health(port, "tok", timeout_s=0.3) is False
 
 
+@pytest.mark.parametrize(
+    "stdout_missing, stderr_missing",
+    [
+        pytest.param(True, True, id="both-none"),
+        pytest.param(True, False, id="stdout-only-none"),
+        pytest.param(False, True, id="stderr-only-none"),
+    ],
+)
 def test_launcher_gives_logging_somewhere_to_write_when_there_is_no_console(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stdout_missing: bool,
+    stderr_missing: bool,
 ) -> None:
     """A frozen windowed build (``console=False`` on Windows and macOS,
     ``packaging/sanctum.spec``) has no console. Opened the only way a real
-    user opens it - a double-click, the Start menu - Python leaves
+    user opens it - a double-click, the Start menu, the Dock - Python leaves
     ``sys.stdout``/``sys.stderr`` as ``None``. structlog's builtin default
     logger factory was built once, at import time, with ``file=None``, and
     falls back to ``structlog._output.stdout`` - itself captured with
@@ -320,14 +331,26 @@ def test_launcher_gives_logging_somewhere_to_write_when_there_is_no_console(
     log call anywhere then builds a ``PrintLogger(file=None)`` and crashes
     with ``TypeError: cannot create weak reference to 'NoneType' object``
     before the server ever starts (seen for real on installed Windows
-    hardware, 2026-09-27). Configuring structlog explicitly, with a real
-    file, sidesteps the stale default instead of racing its import order.
+    hardware, 2026-09-27; independently reproduced and fixed end to end on
+    the rebuilt package the same day). Configuring structlog explicitly,
+    with a real file, sidesteps the stale default instead of racing its
+    import order.
+
+    This is a mechanism-level test: it forces ``sys.stdout``/``sys.stderr``
+    to ``None`` directly rather than launching a real windowed process, so
+    it runs the same on any host pytest runs on. It is deliberately *not* a
+    genuine macOS GUI launch - the underlying Python behaviour once a stream
+    is ``None`` is platform-independent, but no macOS hardware backs this
+    parametrization; only the three ``sys.std*`` combinations a frozen
+    Windows or macOS process can actually present are covered.
     """
     import structlog
     from api.desktop import _ensure_logging_has_somewhere_to_write
 
-    monkeypatch.setattr(sys, "stdout", None)
-    monkeypatch.setattr(sys, "stderr", None)
+    if stdout_missing:
+        monkeypatch.setattr(sys, "stdout", None)
+    if stderr_missing:
+        monkeypatch.setattr(sys, "stderr", None)
     original_config = structlog.get_config()
     try:
         _ensure_logging_has_somewhere_to_write(tmp_path)
@@ -338,10 +361,17 @@ def test_launcher_gives_logging_somewhere_to_write_when_there_is_no_console(
         log_file = tmp_path / "logs" / "launcher.log"
         assert log_file.is_file()
 
+        # structlog is now explicitly configured, not left on the stale
+        # default - true regardless of which stream(s) were missing.
+        factory = structlog.get_config()["logger_factory"]
+        assert isinstance(factory, structlog.PrintLoggerFactory)
+        assert factory._file is not None
+        assert factory._file.name == str(log_file)
+
         # The actual crash: building a PrintLogger from whatever structlog
-        # is now configured to use must not raise, even though sys.stdout
-        # and sys.stderr were None a moment ago. WARNING, not INFO: the
-        # suite's own pytest_configure() filters below WARNING.
+        # is now configured to use must not raise, even though a stream was
+        # None a moment ago. WARNING, not INFO: the suite's own
+        # pytest_configure() filters below WARNING.
         structlog.get_logger("regression-check").warning("post_fix_smoke")
         assert "post_fix_smoke" in log_file.read_text(encoding="utf-8")
     finally:

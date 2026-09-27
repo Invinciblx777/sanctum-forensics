@@ -135,7 +135,7 @@ not need that capture, and none should be made for it during the freeze.
   `76dde42` release — every beat above still runs on SIMULATION or SYNTHETIC
   data, and that has not changed. The physical runs for that release are from
   2026-09-05 and 2026-09-23, with earlier builds. Separately, a Windows
-  physical run on 2026-09-27 (`docs/validation/windows-hardware-2026-09-27/`)
+  physical run on 2026-09-27 (`docs/validation/windows-hardware-2026-09-27-fixes/`)
   validated packaged install, device discovery, the mounted-device refusal
   and file erase — none of that is part of this demo's beats, and it must not
   be presented as such.

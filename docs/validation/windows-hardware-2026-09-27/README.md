@@ -1,5 +1,13 @@
 # Windows physical-hardware validation, 2026-09-27
 
+> **Historical record, preserved unchanged.** Commit `2d00526`, validated
+> below, crashes on a genuine no-console launch (the real double-click path;
+> this record's own §2 used `package_smoke.py`, which redirects stdio and
+> so never hit it). Fixed in `ba66fbe`, and a second packaging defect (M3
+> carving broken in every packaged build) found and fixed in `437081e`. See
+> [`../windows-hardware-2026-09-27-fixes/`](../windows-hardware-2026-09-27-fixes/README.md)
+> for the post-fix validation. Nothing below this line was changed.
+
 The first time this project's Windows package has been built, installed and
 driven by a human on a physical Windows machine, and the first time device
 discovery ran against a real removable disk on Windows. Everything below was

@@ -9,7 +9,7 @@ opens it in a window; nothing is fetched from the network, ever.
 | Platform | Artifact | Built by | Built and driven |
 |---|---|---|---|
 | Linux | `Sanctum-<ver>-x86_64.AppImage`, `sanctum_<ver>_amd64.deb` | `scripts/build-linux-portable.sh` (glibc 2.31 container) or `scripts/build-linux.sh` (host) | **Yes** — locally and on `ubuntu-22.04` in CI; installed and run on Debian 12 and Ubuntu 22.04; 23 of 23 packaged checks in CI on 2026-09-22 at `ba13a9a`, an earlier build (the 24th, *whole-drive unsupported off Linux*, does not apply here). The build for this release ran the isolated smoke only: 22 PASS, 2 NOT RUN, because two checks need a real device ([`validation/package-2026-09-25/`](validation/package-2026-09-25/README.md)) |
-| Windows 10 1809+ / 11, x64 | `SanctumSetup.exe` | `scripts/build-windows.ps1` (PyInstaller + Inno Setup 6) | **Yes, in CI** — built on `windows-latest`, installed silently, the installed app driven, then uninstalled. **Also yes, physically** — built, installed and driven by a human on a Windows 11 Home machine (build 10.0.26200), 23 of 23 packaged checks, 2026-09-27 ([`validation/windows-hardware-2026-09-27/`](validation/windows-hardware-2026-09-27/README.md)). Unsigned. |
+| Windows 10 1809+ / 11, x64 | `SanctumSetup.exe` | `scripts/build-windows.ps1` (PyInstaller + Inno Setup 6) | **Yes, in CI** — built on `windows-latest`, installed silently, the installed app driven, then uninstalled. **Also yes, physically** — built, installed and driven by a human on a Windows 11 Home machine (build 10.0.26200), 23 of 23 packaged checks, 2026-09-27 ([`validation/windows-hardware-2026-09-27-fixes/`](validation/windows-hardware-2026-09-27-fixes/README.md)). Unsigned. |
 | macOS 12+ (arm64) | `Sanctum.dmg` containing `Sanctum.app` | `scripts/build-macos.sh` (PyInstaller + `hdiutil`) | **Yes, in CI** — built on `macos-14`, DMG mounted, `Sanctum.app` driven through a folder erase and a signed certificate; 24 of 24 checks. Unsigned, **not notarized**. |
 
 **Windows:** installed by a human on a physical Windows 11 machine and driven
@@ -17,7 +17,7 @@ against a real removable USB stick, 2026-09-27 — device discovery, the
 mounted-device refusal, and file/folder erase → verify → certificate all real;
 whole-drive sanitization remains unsupported there by design, and raw
 physical-device acquisition is not implemented. See
-[`validation/windows-hardware-2026-09-27/`](validation/windows-hardware-2026-09-27/README.md).
+[`validation/windows-hardware-2026-09-27-fixes/`](validation/windows-hardware-2026-09-27-fixes/README.md).
 **macOS:** not yet installed by a human on physical hardware, and has not
 touched removable media; see
 [`validation/hardware-platform-matrix.md`](validation/hardware-platform-matrix.md).

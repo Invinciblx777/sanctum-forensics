@@ -62,10 +62,13 @@ worked in that earlier run too.
 ## Hardware
 
 Updated 2026-09-27: three Windows rows below are now physically validated,
-from a separate run at `2d00526`, after this file's original recorded work.
-See [`hardware-platform-matrix.md`](hardware-platform-matrix.md) and
-[`windows-hardware-2026-09-27/`](windows-hardware-2026-09-27/README.md) for
-the full breakdown.
+from a separate run, after this file's original recorded work — first at
+`2d00526` (preserved at
+[`windows-hardware-2026-09-27/`](windows-hardware-2026-09-27/README.md)),
+then, after two packaging fixes that run itself found (`ba66fbe`,
+`437081e`), at `437081e`. See [`hardware-platform-matrix.md`](hardware-platform-matrix.md)
+and [`windows-hardware-2026-09-27-fixes/`](windows-hardware-2026-09-27-fixes/README.md)
+for the full breakdown.
 
 | Check | Linux | Windows | macOS |
 |---|---|---|---|
@@ -75,6 +78,7 @@ the full breakdown.
 | File erase on physical NTFS / APFS media | n/a | **VALIDATED** (2026-09-27) | NOT RUN |
 | Install by a human on a physical machine | VALIDATED | **VALIDATED** (2026-09-27) | NOT RUN |
 | Raw physical-device acquisition | n/a (not this file's scope) | **NOT IMPLEMENTED** | NOT RUN |
+| M3 carve, through the installed package, synthetic image | n/a (not this file's scope) | **VALIDATED** (2026-09-27, `437081e`) — 5/6 candidates, media map present | NOT RUN |
 
 ## To close the remaining rows
 
