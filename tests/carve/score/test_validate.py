@@ -110,6 +110,32 @@ def test_mp4_without_ffprobe_is_not_claimed_valid(
     assert "ffprobe" in report.detail
 
 
+def test_ffprobe_asks_for_a_hidden_console_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ffprobe is a console-subsystem tool; this packaged (console=False)
+    app has no console of its own to give it. Same defect, same fix as
+    core.device._sysio.SubprocessRunner - found in the same audit,
+    2026-09-27."""
+    import subprocess
+    import sys
+    from unittest.mock import patch
+
+    from core.carve import validate
+    from testkit.generate_corpus import make_mp4
+
+    monkeypatch.setattr(validate, "_ffprobe_path", lambda: "ffprobe")
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = subprocess.CompletedProcess(
+            [], 0, b'{"format": {}, "streams": []}', b""
+        )
+        validate_bytes(make_mp4(), "mp4")
+
+    assert mock_run.call_args.kwargs["creationflags"] == 0x08000000
+
+
 def test_validate_candidate_reads_through_the_evidence(jpeg_bytes: bytes) -> None:
     image = BytesEvidence(b"\x00" * 512 + jpeg_bytes)
     subject = candidate(jpeg_bytes, offset=512, ext="jpg")

@@ -150,6 +150,10 @@ record was wrong — its scope was simply narrower than this one.
 - Windows whole-drive Clear/Purge: UNSUPPORTED by design (unchanged).
 - A rendered-UI/browser regression pass on this build (not attempted this
   session; `ui_bundled: true` was confirmed, rendering was not).
-- CI (`platform-ci`) has not been run against `ba66fbe` or `437081e` — both
-  commits are local only, not pushed (per instruction). Nothing here
-  substitutes for that.
+- ~~CI (`platform-ci`) has not been run against `ba66fbe` or `437081e`~~ —
+  now run, on branch `fix/no-console-and-carve-packaging`, commit `1ed3dca`:
+  all 7 jobs green on Linux, Windows and macOS, including packaged carving
+  (11/11, all three platforms) and a genuine no-console launch (Windows and
+  macOS). See
+  [`../platform-ci-2026-09-27/`](../platform-ci-2026-09-27/README.md). That
+  branch was not merged to `main`.

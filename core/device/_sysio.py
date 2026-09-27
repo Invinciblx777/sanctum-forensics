@@ -19,6 +19,8 @@ from typing import Protocol
 
 import structlog
 
+from core.platform.host import windows_creationflags
+
 __all__ = [
     "CommandResult",
     "Runner",
@@ -106,6 +108,7 @@ class SubprocessRunner:
                 timeout=self.timeout_s,
                 check=False,
                 shell=False,
+                creationflags=windows_creationflags(),
             )
         except FileNotFoundError:
             logger.debug("tool_missing", argv=args)
