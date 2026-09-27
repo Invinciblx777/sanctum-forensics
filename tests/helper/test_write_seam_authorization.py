@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,14 @@ from core.models import Device
 from helper.daemon import HelperDaemon
 
 from .authfx import AUTH_ID, CAPS, make_authorization, patch_probe
+
+# The engine tripwire is on LinuxAdapter, the only adapter with a whole-drive
+# engine. On macOS and Windows the helper's probe refuses with
+# PlatformUnsupported before any authorization is read; tests/platform asserts
+# that refusal on its own.
+pytestmark = pytest.mark.skipif(
+    sys.platform != "linux", reason="the whole-drive write seam exists only on Linux"
+)
 
 
 def _uid() -> int:
