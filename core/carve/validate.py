@@ -57,6 +57,7 @@ from PIL.MpoImagePlugin import MpoImageFile
 from core.carve.evidence import BytesEvidence, EvidenceHandle
 from core.carve.fragmentation import accounts_for_scan
 from core.models import CarveCandidate, Validation
+from core.platform.host import windows_creationflags
 
 __all__ = [
     "ValidationReport",
@@ -738,6 +739,7 @@ def _ffprobe(
             capture_output=True,
             timeout=max(1.0, deadline.remaining),
             check=False,
+            creationflags=windows_creationflags(),
         )
     except subprocess.TimeoutExpired:
         return _unavailable(decoder, deadline.note())
