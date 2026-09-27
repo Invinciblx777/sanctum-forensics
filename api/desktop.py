@@ -136,9 +136,49 @@ def _open_window(url: str, stop: threading.Event) -> None:
         stop.set()
 
 
+def _ensure_logging_has_somewhere_to_write(state_dir: Path) -> None:
+    """Give ``sys.stdout``/``sys.stderr`` and structlog somewhere real to
+    write when there is no console.
+
+    A frozen windowed build (``console=False`` on Windows and macOS,
+    ``packaging/sanctum.spec``) has no console. Opened the only way a real
+    user opens it - a double-click, the Start menu, the Dock - Python leaves
+    ``sys.stdout``/``sys.stderr`` as ``None``. structlog's builtin default
+    logger factory falls back to ``structlog._output.stdout``, itself
+    captured with ``from sys import stdout`` at *that* module's own import
+    time, so reassigning ``sys.stdout`` after structlog has already been
+    imported elsewhere does not reach it. The first structured log call
+    anywhere then builds a ``PrintLogger(file=None)`` and crashes with
+    ``TypeError: cannot create weak reference to 'NoneType' object`` before
+    the server ever starts - reproduced on installed Windows hardware,
+    2026-09-27. Configuring structlog explicitly, with a real file, avoids
+    depending on when structlog happens to have been imported first.
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+
+    log_dir = state_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = open(  # noqa: SIM115 - kept open for the launcher's lifetime
+        log_dir / "launcher.log", "a", encoding="utf-8", buffering=1
+    )
+
+    if sys.stdout is None:
+        sys.stdout = log_file
+    if sys.stderr is None:
+        sys.stderr = log_file
+
+    import structlog
+
+    structlog.configure(logger_factory=structlog.PrintLoggerFactory(file=log_file))
+
+
 def main() -> int:
     """Start the API on a private port and open the window."""
     multiprocessing.freeze_support()
+    from api.deps import default_state_dir
+
+    _ensure_logging_has_somewhere_to_write(default_state_dir())
     token = secrets.token_urlsafe(32)
     port = free_loopback_port()
     os.environ["SANCTUM_SESSION_TOKEN"] = token

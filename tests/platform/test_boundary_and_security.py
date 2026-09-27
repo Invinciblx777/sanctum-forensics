@@ -306,6 +306,65 @@ def test_the_launcher_uses_a_private_loopback_port_and_a_session_url() -> None:
     assert wait_for_health(port, "tok", timeout_s=0.3) is False
 
 
+def test_launcher_gives_logging_somewhere_to_write_when_there_is_no_console(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A frozen windowed build (``console=False`` on Windows and macOS,
+    ``packaging/sanctum.spec``) has no console. Opened the only way a real
+    user opens it - a double-click, the Start menu - Python leaves
+    ``sys.stdout``/``sys.stderr`` as ``None``. structlog's builtin default
+    logger factory was built once, at import time, with ``file=None``, and
+    falls back to ``structlog._output.stdout`` - itself captured with
+    ``from sys import stdout`` at *that* module's own import time - so
+    reassigning ``sys.stdout`` later never reaches it. The first structured
+    log call anywhere then builds a ``PrintLogger(file=None)`` and crashes
+    with ``TypeError: cannot create weak reference to 'NoneType' object``
+    before the server ever starts (seen for real on installed Windows
+    hardware, 2026-09-27). Configuring structlog explicitly, with a real
+    file, sidesteps the stale default instead of racing its import order.
+    """
+    import structlog
+    from api.desktop import _ensure_logging_has_somewhere_to_write
+
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stderr", None)
+    original_config = structlog.get_config()
+    try:
+        _ensure_logging_has_somewhere_to_write(tmp_path)
+
+        assert sys.stdout is not None
+        assert sys.stderr is not None
+
+        log_file = tmp_path / "logs" / "launcher.log"
+        assert log_file.is_file()
+
+        # The actual crash: building a PrintLogger from whatever structlog
+        # is now configured to use must not raise, even though sys.stdout
+        # and sys.stderr were None a moment ago. WARNING, not INFO: the
+        # suite's own pytest_configure() filters below WARNING.
+        structlog.get_logger("regression-check").warning("post_fix_smoke")
+        assert "post_fix_smoke" in log_file.read_text(encoding="utf-8")
+    finally:
+        structlog.configure(**original_config)
+
+
+def test_ensure_logging_is_a_no_op_with_a_real_console(
+    tmp_path: Path,
+) -> None:
+    """The dev path (``python -m api.main``) and the Linux package
+    (``console=True``) always have real streams; nothing here should touch
+    them or write a log file that was never asked for."""
+    from api.desktop import _ensure_logging_has_somewhere_to_write
+
+    real_stdout, real_stderr = sys.stdout, sys.stderr
+
+    _ensure_logging_has_somewhere_to_write(tmp_path)
+
+    assert sys.stdout is real_stdout
+    assert sys.stderr is real_stderr
+    assert not (tmp_path / "logs").exists()
+
+
 def test_quit_is_refused_unless_the_launcher_started_the_app(tmp_path: Path) -> None:
     with TestClient(_app(tmp_path), base_url=LOOPBACK_BASE_URL) as client:
         assert client.post("/app/quit").status_code == 422
