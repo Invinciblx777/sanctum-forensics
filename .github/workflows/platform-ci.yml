@@ -107,6 +107,15 @@ jobs:
         with: { python-version: "3.11" }
       - uses: actions/setup-node@v4
         with: { node-version: "22" }
+      # The outer Python here has nothing installed beyond the interpreter -
+      # that is the point (package_smoke.py is deliberately pure stdlib, so
+      # it proves the *packaged app* needs no dev environment). Pillow is for
+      # this job's own test harness: scripts/package_carve_smoke.py needs
+      # scripts/demo_fragmented.py:build() to construct its synthetic image,
+      # and that needs Pillow to write a PNG/JPEG. Nothing else - build()'s
+      # only import beyond stdlib is PIL.
+      - name: Pillow, for this job's carving-fixture builder only
+        run: python -m pip install --quiet --constraint constraints.txt Pillow
       - name: Inno Setup
         if: runner.os == 'Windows'
         run: if (-not (Get-Command iscc.exe -ErrorAction SilentlyContinue)) { choco install innosetup -y --no-progress }

@@ -33,7 +33,6 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:  # pragma: no cover - import bootstrap
     sys.path.insert(0, str(ROOT))
 
-from api.carve_job import carve_generator  # noqa: E402
 from PIL import Image  # noqa: E402
 
 CLUSTER = 4096
@@ -123,6 +122,12 @@ def build(rng: random.Random) -> tuple[bytes, list[dict[str, Any]]]:
 
 
 def run(work: Path) -> dict[str, Any]:
+    # Local: build() needs only PIL, and importing api.carve_job pulls in the
+    # whole application dependency stack (structlog, fastapi, pydantic, ...).
+    # scripts/package_carve_smoke.py imports this module for build() alone,
+    # in an environment that deliberately has none of that installed.
+    from api.carve_job import carve_generator
+
     image_bytes, truth = build(random.Random(SEED))
     image = work / "demo-fragmented.img"
     image.write_bytes(image_bytes)
