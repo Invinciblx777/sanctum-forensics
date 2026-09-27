@@ -32,7 +32,35 @@ __all__ = [
     "privilege_state",
     "windows_product_name",
     "linux_pretty_name",
+    "windows_creationflags",
 ]
+
+
+def windows_creationflags() -> int:
+    """``creationflags=`` for ``subprocess.run()`` that stops a console
+    flashing on Windows; ``0`` (a no-op) everywhere else.
+
+    A packaged, windowed (``console=False``) app has no console of its own.
+    ``CreateProcess`` then opens a brand new one for any console-subsystem
+    child - ``powershell.exe``, ``git``, ``vssadmin``, ``fsutil``,
+    ``ffprobe``, anything - because the child needs one and the parent has
+    none to give it. That window is visible for the child's whole lifetime
+    even though its output is piped and captured; nothing about
+    ``capture_output=True`` suppresses it. Every ``subprocess.run`` call this
+    project makes that might run on Windows needs this - pass it as
+    ``creationflags=windows_creationflags()`` (not ``**kwargs``: mypy cannot
+    resolve ``subprocess.run``'s overloads against a splatted dict, and
+    ``creationflags`` is in every overload's signature regardless of
+    platform, so a plain ``int`` keyword is both correct and simpler).
+
+    ``CREATE_NO_WINDOW`` does not exist off Windows, so it is looked up only
+    inside the ``win32`` branch, with a fallback so a test that simulates
+    ``win32`` on another host cannot crash on the lookup itself.
+    """
+    if sys.platform == "win32":
+        return int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    return 0
+
 
 logger = structlog.get_logger(__name__)
 
@@ -100,7 +128,7 @@ def _git(root: Path, *argv: str) -> str:
     try:
         completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
             ("git", *argv), cwd=root, capture_output=True, text=True,
-            check=False, timeout=15,
+            check=False, timeout=15, creationflags=windows_creationflags(),
         )
     except (OSError, subprocess.SubprocessError):
         return ""

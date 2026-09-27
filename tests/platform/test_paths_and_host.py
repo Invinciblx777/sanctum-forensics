@@ -170,3 +170,28 @@ def test_an_empty_state_dir_variable_is_not_the_current_directory() -> None:
     assert chosen != Path(".")
     assert chosen.is_absolute()
     assert default_state_dir({"SANCTUM_STATE_DIR": "/srv/s"}, "linux") == Path("/srv/s")
+
+
+def test_windows_creationflags_asks_for_a_hidden_console_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The console flash a windowed (console=False) packaged app produces for
+    any subprocess.run of a console-subsystem child (powershell, git,
+    vssadmin, fsutil, ffprobe, ...) - seen for real when clicking a nav item
+    that triggers Windows device inventory, 2026-09-27. Every call site that
+    might run on Windows must pass this."""
+    import sys
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert host.windows_creationflags() != 0
+
+
+def test_windows_creationflags_is_a_no_op_off_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert host.windows_creationflags() == 0
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert host.windows_creationflags() == 0

@@ -30,6 +30,7 @@ from pathlib import Path
 
 from core.erase._platform.base import Flags, PortableBackend
 from core.models import Extent
+from core.platform.host import windows_creationflags
 
 __all__ = ["WindowsBackend"]
 
@@ -398,6 +399,7 @@ class WindowsBackend(PortableBackend):
                 text=True,
                 timeout=30,
                 check=False,
+                creationflags=windows_creationflags(),
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return None, [
@@ -427,6 +429,7 @@ class WindowsBackend(PortableBackend):
                 text=True,
                 timeout=15,
                 check=False,
+                creationflags=windows_creationflags(),
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return None, [
