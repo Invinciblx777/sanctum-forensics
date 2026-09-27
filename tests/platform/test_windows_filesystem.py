@@ -184,15 +184,28 @@ def test_the_windows_backend_is_the_one_that_was_selected() -> None:
     assert backend().name == "windows"
 
 
-def test_discovery_finds_the_runner_disks_and_protects_the_system_disk() -> None:
+def test_discovery_inside_the_suite_is_stopped_before_powershell_starts() -> None:
+    """The real adapter, with its real runner, never reaches this machine's disks.
+
+    Until 2026-09-27 this test ran PowerShell's ``Get-Disk`` against the
+    runner's disks and checked that the system disk was protected. The suite
+    does not reach host devices (``tests/_host_device_guard.py``), so that check
+    is made by ``scripts/platform_smoke.py``, which CI runs on this runner
+    before the suite and uploads as evidence. What is checked here: discovery
+    fails as it would with PowerShell blocked, and the guard refused the
+    encoded ``Get-Disk`` script before PowerShell ran.
+    """
+    from core.errors import PlatformUnsupported
     from core.platform import current_adapter
 
-    adapter = current_adapter()
-    devices = adapter.enumerate_devices()
+    from tests._host_device_guard import expect_refusal, launch_barrier
 
-    assert devices, "Get-Disk returned nothing on a machine that boots from disk"
-    system = [device for device in devices if device.system_device]
-    assert system, "no disk was recognised as the system disk"
-    for device in system:
-        assert device.system_reasons
-        assert adapter.assess_device(device).headline == "NOT AVAILABLE"
+    adapter = current_adapter()
+    with (
+        expect_refusal() as refusals,
+        launch_barrier(),
+        pytest.raises(PlatformUnsupported, match="Get-Disk"),
+    ):
+        adapter.enumerate_devices()
+
+    assert all("get-disk" in refusal for refusal in refusals), refusals
