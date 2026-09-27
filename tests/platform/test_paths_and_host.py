@@ -195,3 +195,21 @@ def test_windows_creationflags_is_a_no_op_off_windows(
     assert host.windows_creationflags() == 0
     monkeypatch.setattr(sys, "platform", "darwin")
     assert host.windows_creationflags() == 0
+
+
+def test_git_asks_for_a_hidden_console_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """git (dev-checkout builds only) is a console-subsystem tool too; same
+    defect, same fix as core.device._sysio.SubprocessRunner, found in the
+    same audit, 2026-09-27."""
+    import subprocess
+    import sys
+    from unittest.mock import patch
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = subprocess.CompletedProcess([], 0, "abc123\n", "")
+        host._git(tmp_path, "rev-parse", "HEAD")
+
+    assert mock_run.call_args.kwargs["creationflags"] != 0
