@@ -131,8 +131,14 @@ not need that capture, and none should be made for it during the freeze.
   vocabulary and mapping to it.
 - That the Devices and Sanitize screens were browser-checked against real
   devices. They were checked against fixtures.
-- That anything was physically validated for the current release. The physical
-  runs are from 2026-09-05 and 2026-09-23, with earlier builds.
+- That anything in *this demo script* was physically validated for the
+  `76dde42` release — every beat above still runs on SIMULATION or SYNTHETIC
+  data, and that has not changed. The physical runs for that release are from
+  2026-09-05 and 2026-09-23, with earlier builds. Separately, a Windows
+  physical run on 2026-09-27 (`docs/validation/windows-hardware-2026-09-27-fixes/`)
+  validated packaged install, device discovery, the mounted-device refusal
+  and file erase — none of that is part of this demo's beats, and it must not
+  be presented as such.
 - That HPA/DCO unlock has run on a drive, or that the trace sweep was validated
   on a live desktop.
 - That a Record of Destruction proves a destruction. It is attested, not

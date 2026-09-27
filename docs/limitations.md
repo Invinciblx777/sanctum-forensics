@@ -725,10 +725,14 @@ must not redirect a recursive erase. Those results are recorded in
 `core/platform/validation_record.json`, and the app's capability screen lifts
 file erase on Windows out of *Unverified* only because that record exists.
 
-What has still never happened: a human installing the package on a physical
-Windows machine, and any erase on physical media. A CI runner has a virtual
-disk and no removable device. Every method still degrades to an honest unknown
-plus a recorded limitation when a call fails.
+Updated 2026-09-27: a human has now installed the package on a physical
+Windows 11 machine and driven it against a real USB stick — device discovery,
+the mounted-device refusal, and a file/folder erase → verify → certificate on
+that machine's own NTFS, all real (`docs/validation/windows-hardware-2026-09-27-fixes/`).
+What has still never happened on Windows: raw physical-device acquisition (not
+implemented — plain `open()` cannot address the Win32 device namespace) and
+whole-drive sanitization (unsupported by design). Every method still degrades
+to an honest unknown plus a recorded limitation when a call fails.
 
 One defect that testing found and fixed: the extent map recorded one cluster
 per run, so a post-erase read-back of a contiguous 256 KiB file verified
@@ -758,9 +762,26 @@ that change what an operator can do:
 - **macOS internal storage** is purged by macOS's own *Erase All Content and
   Settings* (Apple silicon, T2), which destroys the storage keys. The app
   names that path and does not perform or verify it.
-- **Windows and macOS discovery are UNVERIFIED.** The parsers are tested from
-  captured `Get-Disk` and `diskutil` output on Linux; they have not been run
-  against a real Windows or macOS disk set.
+- **macOS discovery is UNVERIFIED.** The parser is tested from captured
+  `diskutil` output on Linux; it has not been run against a real macOS disk
+  set. **Windows discovery was run against a real disk set** on 2026-09-27,
+  through the installed package on a physical Windows 11 machine: it found 3
+  real devices, and correctly assessed the mounted one NOT AVAILABLE
+  (`docs/validation/windows-hardware-2026-09-27-fixes/`).
+- **Windows raw physical-device acquisition is not implemented**, not only
+  untested. `POST /jobs/acquire` opens its source with a plain `open(...,
+  "rb")`; nothing in `core/carve/acquire.py` or `core/carve/evidence.py`
+  special-cases a `\\.\PhysicalDriveN` or raw-volume path, and Python's
+  buffered `open()` cannot address the Win32 device namespace. Confirmed
+  directly, 2026-09-27 (`docs/validation/windows-hardware-2026-09-27-fixes/`). M3
+  carving itself has run correctly on real Windows hardware, including
+  through the installed package's own API (`/jobs/acquire` + `/jobs/carve`),
+  but only against a synthetic image — never against an image acquired from a
+  physical device, which this same limitation is why. A separate, now-fixed
+  defect meant the *installed* package could not carve at all until
+  2026-09-27: `core/carve/signature.py`'s signature table
+  (`testkit/signatures.yaml`) was never bundled into any packaged build, on
+  any platform - `docs/validation/windows-hardware-2026-09-27-fixes/` §5.
 - **Windows file verification needs elevation** (raw volume read); the app
   never elevates, so unelevated erases are reported *not verified*.
 - **diskutil reports no serial numbers.** macOS devices are identified by BSD
@@ -935,12 +956,17 @@ above, which is the authoritative statement, and the `file_folder_erase` /
 Windows 11 row of `core/platform/validation_record.json`. Alternate data
 streams, resident MFT data and a real directory junction are covered there. The
 USN journal and Windows file locking are still implemented from documentation
-and exercised by no test, and **no erase has run on physical Windows media**: a
-CI runner has a virtual disk and no removable device.
+and exercised by no test. **An erase has now run on physical Windows media**:
+2026-09-27, a file/folder erase → verify → certificate through the installed
+package on a real Windows 11 machine's own NTFS
+(`docs/validation/windows-hardware-2026-09-27-fixes/`); no erase has run against a
+physical Windows *removable* device, since the raw-acquisition path Windows
+would need for that is not implemented.
 
 This paragraph previously said the backend had never executed on a Windows
 host. That stopped being true when `platform-ci` began running the suites on a
-Windows runner, and the sentence outlived the fact.
+Windows runner, and the sentence outlived the fact. It then said no erase had
+run on physical Windows media at all; that stopped being true on 2026-09-27.
 
 **E01 limits.** Acquisition to E01 is uncompressed (see above). E01 reading
 depends on the `libewf-python` build; the tests that need an E01-writing build

@@ -54,9 +54,17 @@ the `platform-smoke-*.json` and `package-smoke-*.json` artifacts of that run.
 | Privileged helper | **VALIDATED** - root daemon, 0600 Unix socket, `SO_PEERCRED`, static allowlist, path confinement | not needed, and none ships: no implemented Windows operation requires elevation | not needed, as Windows |
 | Desktop package | **VALIDATED** - AppImage and `.deb`; installed and run on Debian 12 and Ubuntu 22.04 with 23 of 23 packaged checks in CI (`platform-ci` run 35706589476, commit `ba13a9a`, 2026-09-22, an earlier build). This release's build: isolated smoke 22 PASS, 2 NOT RUN (the two need a real device), [`validation/package-2026-09-25/`](validation/package-2026-09-25/README.md) | **VALIDATED in CI** - `SanctumSetup.exe` built, installed silently, driven and uninstalled on the runner. Unsigned. | **VALIDATED in CI** - `Sanctum.dmg` built and mounted, `Sanctum.app` driven through erase and certificate, 24 of 24 checks. Unsigned, not notarized. |
 
-**Nothing above was performed on physical media on Windows or macOS.** CI
-runners have virtual disks and no removable device; see
-[`validation/hardware-platform-matrix.md`](validation/hardware-platform-matrix.md).
+**The Windows and macOS rows above are CI evidence** — virtual disks, no
+removable device. Separately, on 2026-09-27 a human installed this build's
+package on a physical Windows 11 machine and ran it against a real USB stick:
+device discovery, the mounted-device refusal, and file/folder erase → verify
+→ certificate all ran on real hardware
+([`validation/windows-hardware-2026-09-27-fixes/`](validation/windows-hardware-2026-09-27-fixes/README.md)).
+Whole-drive/Purge remain **UNSUPPORTED** on Windows by design, raw
+physical-device acquisition is not implemented on Windows, and macOS still
+has no physical run. See
+[`validation/hardware-platform-matrix.md`](validation/hardware-platform-matrix.md)
+for the row-by-row breakdown.
 
 ## Filesystems
 

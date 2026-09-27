@@ -4,8 +4,15 @@
 upgrade waves, and again after the release-quality wave that browser-checked
 the UI (`docs/validation/browser-2026-09-24/`); M1 rows reconciled 2026-09-26 with
 the release-hold remediation (`docs/validation/remediation-2026-09-25/`). **No
-physical validation was run for the current release**; the PHYSICAL rows below are
-from runs on 2026-09-05 and 2026-09-23 with earlier builds. This matrix and [`demo-evidence-index.md`](demo-evidence-index.md)
+physical validation was run for the `76dde42` release**; the PHYSICAL rows below are
+from runs on 2026-09-05 and 2026-09-23 with earlier builds. **Update, 2026-09-27,
+`437081e`:** a separate later run physically validated Windows packaged
+install, device discovery, the mounted-device refusal, file erase, and (after
+two packaging fixes found by this validation itself — a windowed-launch
+crash and a missing carve-engine data file) acquire, carve, media map and a
+Destroy attestation, all through the installed exe — see row J and
+[`windows-hardware-2026-09-27-fixes/`](windows-hardware-2026-09-27-fixes/README.md);
+it does not change any other row here. This matrix and [`demo-evidence-index.md`](demo-evidence-index.md)
 are the source of truth for the presentation. A row states what the code does,
 where it is, what tests it, and what it does not do. It does not describe plans
 as features.
@@ -156,8 +163,8 @@ See `docs/platform-support.md` for the full matrix.
 | SIH requirement | Capability | Status | Evidence | Limitation |
 |---|---|---|---|---|
 | Whole-drive sanitization on Windows and macOS | refused with a reason and a remedy (`core/platform/windows.py`, `core/platform/macos.py`) | UNSUPPORTED | `tests/platform/`; browser `10-sanitize-blocked-fixture.png` | Linux only |
-| File erase on Linux, Windows, macOS | `core/erase/files.py` through each platform adapter | IMPLEMENTED + TESTED + DEMONSTRABLE (CI) | CI on all three (`docs/platform-support.md`) | Copy-on-write filesystems report NOT VERIFIABLE |
-| Packages | Linux AppImage and portable, Windows and macOS builds | PARTIAL | CI build jobs (`scripts/build-*.sh`, `scripts/build-windows.ps1`) | Unsigned and not notarized |
+| File erase on Linux, Windows, macOS | `core/erase/files.py` through each platform adapter | IMPLEMENTED + TESTED + DEMONSTRABLE (CI; Windows also PHYSICAL, 2026-09-27) | CI on all three (`docs/platform-support.md`); Windows physical: [`windows-hardware-2026-09-27-fixes/`](windows-hardware-2026-09-27-fixes/README.md) | Copy-on-write filesystems report NOT VERIFIABLE |
+| Packages | Linux AppImage and portable, Windows and macOS builds | PARTIAL (Windows install also PHYSICAL, 2026-09-27) | CI build jobs (`scripts/build-*.sh`, `scripts/build-windows.ps1`); Windows physical install: [`windows-hardware-2026-09-27-fixes/`](windows-hardware-2026-09-27-fixes/README.md) | Unsigned and not notarized; Windows raw acquisition not implemented |
 
 ## K/L/M. UI, demo, judge questions
 

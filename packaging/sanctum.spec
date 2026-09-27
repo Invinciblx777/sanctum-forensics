@@ -50,6 +50,18 @@ if RECORD.is_file():
 BUILD_INFO = ROOT / "core" / "platform" / "build_info.json"
 if BUILD_INFO.is_file():
     datas.append((str(BUILD_INFO), "core/platform"))
+# core.carve.signature.SIGNATURE_DB_PATH is computed from __file__ and lands
+# on this path in both source and frozen layouts - Path(__file__).parents[2]
+# from core/carve/signature.py is the repo root in source, sys._MEIPASS in
+# the frozen app. "testkit" is excluded above (it is test-corpus-generation
+# code), but the carve engine's own signature table happens to live in it;
+# without this, every /jobs/carve request in every packaged build raises
+# EvidenceIntegrityError("signature table not found") - confirmed directly
+# against an installed Windows exe, 2026-09-27. package_smoke.py does not
+# call /jobs/carve, so no prior packaged-checks run caught it.
+SIGNATURES = ROOT / "testkit" / "signatures.yaml"
+if SIGNATURES.is_file():
+    datas.append((str(SIGNATURES), "testkit"))
 datas += collect_data_files("reportlab")
 datas += copy_metadata("sanctum-forensics")
 

@@ -22,9 +22,9 @@ record of both that a third party can check on their own machine.
 > | Release | branch `docs/readme-redesign`, packages built at `76dde42` (2026-09-26, after the release-hold remediation); see [`release-report-2026-09-25.md`](docs/validation/release-report-2026-09-25.md) |
 > | Test suite | 2046 passed · 34 skipped · 0 failed (Linux host, 2026-09-26, at `76dde42`), host-device guard 0 refusals; Windows and macOS suites run in `platform-ci` |
 > | Primary platform | Linux. Whole-drive sanitization runs only there |
-> | Physical validation in this release | **None.** Nothing was run on physical hardware for this release |
+> | Physical validation in this release | **Windows: real**, 2026-09-27 — packaged installer built and installed on a physical Windows 11 machine; device discovery and the mounted-device refusal ran against a real USB stick (`SANCTUMREC`); file/folder erase → verify → certificate ran on real NTFS. See [`windows-hardware-2026-09-27-fixes/`](docs/validation/windows-hardware-2026-09-27-fixes/README.md). **Linux/macOS: none new this release** |
 > | Physically run earlier | One USB flash stick (Toshiba TransMemory, 7.76 GB), with earlier builds: overwrite Clear with full read-back and three recovery passes (2026-09-05), mounted-device refusal (2026-09-23) |
-> | Hardware-unverified | Firmware Purge (ATA SANITIZE, SECURITY ERASE, NVMe sanitize/format, crypto erase; shown as *Unverified*), HPA/DCO unlock, backup restoration, the registered physical recovery benchmark, a live-desktop trace sweep, any Windows or macOS physical device |
+> | Hardware-unverified | Firmware Purge (ATA SANITIZE, SECURITY ERASE, NVMe sanitize/format, crypto erase; shown as *Unverified*), HPA/DCO unlock, backup restoration, the registered physical recovery benchmark, a live-desktop trace sweep, Windows whole-drive sanitization, Windows raw physical-device acquisition (unimplemented, not only untested), any macOS physical device |
 
 ---
 
@@ -300,19 +300,27 @@ false positives to PhotoRec's 0 ([`benchmark.md`](docs/performance/benchmark.md)
 ([`large-image.md`](docs/validation/large-image.md)). Fuzz: 66,000 cases, 0
 crashes after one fix ([`fuzz.md`](docs/validation/fuzz.md)).
 
-**Physical.** None for this release. Earlier builds ran on one USB flash stick,
-recorded in [`hardware.md`](docs/validation/hardware.md): three overwrite Clear
-runs (the first two found nine defects; the third, 2026-09-05, is clean), a power-cycle
-re-verification, detection of a controller that acknowledges zero writes 3.25
-to 3.6 times faster than it programs them, three recovery passes (FAT32 delete
-456/456, exFAT delete 460/460, FAT32 quick format 10 of the 10 carvable), and
-the mounted-device refusal (2026-09-23).
+**Physical.** Windows, 2026-09-27, this release: packaged installer built,
+installed and driven on a physical Windows 11 machine — device discovery and
+the mounted-device refusal against a real USB stick (`SANCTUMREC`), and file/
+folder erase → verify → certificate on real NTFS, 23 of 23 packaged checks
+([`windows-hardware-2026-09-27-fixes/`](docs/validation/windows-hardware-2026-09-27-fixes/README.md)).
+Windows whole-drive/Purge and raw acquisition were not exercised — the first
+is UNSUPPORTED by design, the second is unimplemented. Linux: earlier builds
+ran on one USB flash stick, recorded in [`hardware.md`](docs/validation/hardware.md):
+three overwrite Clear runs (the first two found nine defects; the third,
+2026-09-05, is clean), a power-cycle re-verification, detection of a
+controller that acknowledges zero writes 3.25 to 3.6 times faster than it
+programs them, three recovery passes (FAT32 delete 456/456, exFAT delete
+460/460, FAT32 quick format 10 of the 10 carvable), and the mounted-device
+refusal (2026-09-23). macOS: none.
 
 **Hardware-unverified.** Firmware Purge on any drive, HPA/DCO unlock, backup
 restoration, a trace sweep on a live desktop, a power cut or device removal during a write, the registered
 physical recovery benchmark (blocked at its first gate:
 [`physical-benchmark-checklist.md`](docs/validation/physical-benchmark-checklist.md)),
-and Windows or macOS on physical media.
+Windows whole-drive sanitization and raw physical-device acquisition, and
+macOS on physical media.
 
 ## What we have actually proven
 
@@ -321,6 +329,7 @@ and Windows or macOS on physical media.
 | Overwrite Clear with read-back, USB flash | three recorded runs on one stick, the third clean (2026-09-05) | **PHYSICAL VALIDATION** (one device, one model, an earlier build) |
 | Mounted-device refusal | refusal on the stick, no I/O recorded (2026-09-23) | **PHYSICAL VALIDATION** (an earlier build) |
 | Recovery after delete and quick format | three passes on the same stick (2026-09-05) | **PHYSICAL VALIDATION** (an earlier build; not the registered benchmark) |
+| Windows packaged install, device discovery and mounted-device refusal, file/folder erase → verify → certificate | 23 of 23 packaged checks on a physical Windows 11 machine, 2026-09-27 | **PHYSICAL VALIDATION** (this release; [`windows-hardware-2026-09-27-fixes/`](docs/validation/windows-hardware-2026-09-27-fixes/README.md)) |
 | Secure file and folder erase | suites plus packaged app on each OS runner | **CI VALIDATION** (Linux host also validated) |
 | Cross-platform adapters, discovery, system-disk refusal | `platform-ci` against each runner's own disks | **CI VALIDATION** |
 | Fragmented JPEG recovery | 10 of 10 on the benchmark volumes | **SYNTHETIC VALIDATION** |
@@ -334,6 +343,7 @@ and Windows or macOS on physical media.
 | Trace sweep | synthetic home directories, tests and a sandboxed browser run | **SYNTHETIC VALIDATION**; live desktop not validated |
 | Record of Destruction | signed attestation by the people named in it | **SYNTHETIC VALIDATION**; destruction attested, not observed |
 | Physical recovery benchmark | harness built, preflight run; no result | **HARDWARE-UNVERIFIED** |
+| Windows raw physical-device acquisition | `open()` cannot address `\\.\PhysicalDriveN` or a volume path; no code wires up `CreateFile` | **NOT IMPLEMENTED**, not only unvalidated |
 
 Row by row with code paths and tests: [`feature-matrix.md`](docs/validation/feature-matrix.md).
 
@@ -390,13 +400,17 @@ ground truth, not seized media.
 **How do you prove the report was not changed?** Ed25519 over canonical JSON,
 checked with the ledger chain by `verify-report`. One changed field fails.
 
-**What is physically validated?** Nothing in this release. Earlier builds ran
-overwrite Clear, three recovery passes (2026-09-05) and the mounted refusal
-(2026-09-23) on one USB stick.
+**What is physically validated?** On Windows, this release (2026-09-27):
+packaged install, device discovery, the mounted-device refusal, and
+file/folder erase → verify → certificate, on a real machine and a real USB
+stick. On Linux, earlier builds ran overwrite Clear, three recovery passes
+(2026-09-05) and the mounted refusal (2026-09-23) on one USB stick. macOS:
+none.
 
 **What is still hardware-unverified?** Firmware Purge, HPA/DCO unlock, backup
 restoration, the registered physical benchmark, a live-desktop trace sweep, a
-power cut mid-write, and Windows or macOS physical devices.
+power cut mid-write, Windows whole-drive sanitization and raw acquisition, and
+any macOS physical device.
 
 **What happens if the device disappears?** Before the job: `DeviceVanished`,
 nothing written, no other device tried. During a write: the job ends `failed`
@@ -407,8 +421,12 @@ All 37 questions, with evidence and a status for each:
 
 ## What Sanctum does not claim
 
-- No physical validation was run for this release. The physical runs on
-  record are from 2026-09-05 and 2026-09-23, with earlier builds.
+- Physical validation this release is Windows-only: packaged install, device
+  discovery, the mounted-device refusal, and file/folder erase on real NTFS
+  (2026-09-27). Windows whole-drive sanitization and raw physical-device
+  acquisition were not exercised — the first refuses by design, the second is
+  unimplemented. The Linux physical runs on record are from 2026-09-05 and
+  2026-09-23, with earlier builds. macOS has no physical run.
 - Firmware Purge has not run on any physical drive. It is selected and
   dispatched from probed capability, tested with fixtures, and shown as
   *Unverified* (PURGE · UNVERIFIED on the Devices screen) until a hardware result
@@ -457,12 +475,15 @@ upgrading it into a guarantee.** The full list is
 | Platform | Recovery | File erase | Whole-drive Clear | Firmware Purge | Status |
 |---|---|---|---|---|---|
 | Linux | full pipeline; synthetic + one physical stick (earlier build) | VALIDATED | VALIDATED; physically run on one USB flash stick, 2026-09-05, earlier build | HARDWARE-UNVERIFIED (shown *Unverified*) | primary platform |
-| Windows | not run as a suite | CI-VALIDATED (NTFS) | UNSUPPORTED, refused | UNSUPPORTED | CI only, no physical device |
+| Windows | not run as a suite; synthetic ground-truth demo run on physical Windows hardware, 2026-09-27 | CI-VALIDATED (NTFS); also PHYSICAL on real NTFS, 2026-09-27 | UNSUPPORTED, refused | UNSUPPORTED | packaged install + discovery + file erase PHYSICAL, 2026-09-27; raw acquisition not implemented |
 | macOS | not run as a suite | CI-VALIDATED; APFS reported NOT VERIFIABLE | UNSUPPORTED, refused | UNSUPPORTED | CI only, no physical device |
 
 Packages: AppImage and `.deb`, `SanctumSetup.exe`, `Sanctum.dmg`. All are
 unsigned and not notarized. CI runners have virtual disks, so CI-validated is
-not hardware-validated. Details: [`platform-support.md`](docs/platform-support.md),
+not hardware-validated; the Windows package was additionally installed and
+driven on a physical machine, 2026-09-27
+([`windows-hardware-2026-09-27-fixes/`](docs/validation/windows-hardware-2026-09-27-fixes/README.md)).
+Details: [`platform-support.md`](docs/platform-support.md),
 [`hardware-platform-matrix.md`](docs/validation/hardware-platform-matrix.md).
 
 ## Quick start
