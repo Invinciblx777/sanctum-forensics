@@ -15,6 +15,7 @@ the window the API cannot see. The helper must refuse it.
 from __future__ import annotations
 
 import json
+import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -32,6 +33,13 @@ from helper.daemon import InProcessHelper
 from tests._loopback import LOOPBACK_BASE_URL
 
 from .conftest import MIB, approve_workflow, open_workflow
+
+# The helper acts through the host's adapter, and only the Linux adapter has a
+# whole-drive engine: macOS and Windows refuse the probe with PlatformUnsupported
+# before the seam is reached, which tests/platform asserts on its own.
+pytestmark = pytest.mark.skipif(
+    sys.platform != "linux", reason="the whole-drive write seam exists only on Linux"
+)
 
 REAL = {"path": "/dev/sdz", "dry_run": False, "typed_serial": "SYN-PURGE-1"}
 

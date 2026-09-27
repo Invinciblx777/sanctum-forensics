@@ -42,6 +42,13 @@ in it - including one the code under test caught and handled.
 Scope, stated plainly: this process. A child process is outside the hook. The
 suite's children are bash snippets of the harness gate library (which never
 call its device probes) and Python scripts on synthetic inputs.
+
+Scope by host: the rules name Linux device paths, Linux tools and POSIX shells.
+The hook is installed everywhere, but on macOS it does not recognise
+``/dev/diskN``. On Windows it recognises neither ``PhysicalDriveN`` device
+paths nor PowerShell's ``Get-Disk``, and ``os.path.abspath`` turns ``/dev/sda``
+into a drive-relative path it cannot match. Off Linux the suite relies on fake
+runners and probes, not on this hook, and the terminal summary says so.
 """
 
 from __future__ import annotations

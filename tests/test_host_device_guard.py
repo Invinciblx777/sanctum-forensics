@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -25,6 +26,13 @@ from tests._host_device_guard import (
     command_reason,
     media_reason,
     path_reason,
+)
+
+# The guard's rules are POSIX paths and tools. On Windows, abspath turns
+# "/dev/sdzz9" into a drive-relative path and shell=True runs cmd.exe, so the
+# rules this file checks do not apply there (see the guard's docstring).
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="the guard's rules are POSIX paths and tools"
 )
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import logging
 import os
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import gettempdir
@@ -229,6 +230,11 @@ def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
         f"host-device guard: {len(_host_device_guard.BLOCKED)} refusal(s); sysfs "
         f"attributes readable only for {disks} (the disk holding the suite's files)"
     )
+    if not sys.platform.startswith("linux"):
+        terminalreporter.write_line(
+            "host-device guard: its rules name Linux device paths and tools; on "
+            f"{sys.platform} they match no native device path"
+        )
     if _host_device_guard.BLOCKED:
         terminalreporter.section("host block-device access refused", red=True)
         for line in _host_device_guard.BLOCKED:

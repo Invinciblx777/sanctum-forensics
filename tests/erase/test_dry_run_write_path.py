@@ -9,7 +9,6 @@ test if it is called, and ``os.open`` is recorded so the flags are asserted.
 
 from __future__ import annotations
 
-import fcntl
 import os
 import struct
 import sys
@@ -57,6 +56,8 @@ def test_a_dry_run_opens_the_device_read_only_and_never_writes(
         if str(path) == "/dev/loop-fake":
             return real_open("/dev/null", os.O_RDONLY)
         return real_open(path, flags, *args, **kwargs)
+
+    import fcntl  # POSIX only: a module-level import breaks collection on NT
 
     with (
         mock.patch.object(drive.os, "open", recording_open),

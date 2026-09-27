@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 from typing import Any
 
 import pytest
@@ -138,7 +139,12 @@ def test_approval_is_written_once_and_never_after_use(
     assert len(approvals) == 1
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file modes")
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="NT file modes cannot make a file unreadable"
+)
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores file modes"
+)
 def test_an_unreadable_backup_is_an_internal_error_not_a_safety_refusal(
     tolerant: TestClient, services: AppServices, helper: RecordingHelper
 ) -> None:

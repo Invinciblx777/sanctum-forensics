@@ -13,6 +13,7 @@ import dataclasses
 import hashlib
 import os
 import struct
+import sys
 import xml.etree.ElementTree as ET
 import zlib
 from pathlib import Path
@@ -196,7 +197,14 @@ def home(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def where(home: Path, monkeypatch: pytest.MonkeyPatch) -> traces.TraceLocations:
-    """Linux locations under the synthetic home, with no volume Trash walk."""
+    """Linux locations under the synthetic home, with no volume Trash walk.
+
+    The freedesktop places record ``file://`` URIs of POSIX paths. On Windows
+    the host selects the Recycle Bin and shortcut places instead, so a Linux
+    sweep over NT paths is a pairing no run can reach.
+    """
+    if sys.platform == "win32":
+        pytest.skip("freedesktop places name POSIX paths; this host is Windows")
     locations = traces.locations_for("linux", {}, home)
     monkeypatch.setattr(traces, "default_locations", lambda: locations)
     return locations
@@ -604,6 +612,7 @@ def test_a_windows_recent_shortcut_is_matched_by_its_link_target(
     assert trace.location.endswith("Salary.docx.lnk")
 
 
+@posix_only
 def test_the_macos_trash_is_reported_and_never_removed(
     tmp_path: Path, photo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

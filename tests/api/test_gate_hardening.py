@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import os
+import sys
 import threading
 from typing import Any
 
@@ -33,6 +34,11 @@ def _writes(helper: RecordingHelper) -> list[Any]:
     ]
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="NT st_ctime is the creation time; the backup gate guards whole-drive "
+    "erase, which only Linux offers",
+)
 def test_an_in_place_edit_with_the_mtime_restored_is_refused(
     client: TestClient, services: AppServices, helper: RecordingHelper
 ) -> None:

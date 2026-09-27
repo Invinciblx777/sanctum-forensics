@@ -7,6 +7,7 @@ fixture in tests/conftest.py already keeps every other test off the real one.
 from __future__ import annotations
 
 import hashlib
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,8 @@ from tests.erase.files.test_trace_sweep import png
 
 @pytest.fixture
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    if sys.platform == "win32":
+        pytest.skip("freedesktop places name POSIX paths; this host is Windows")
     made = tmp_path / "home"
     made.mkdir()
     locations = traces.locations_for("linux", {}, made)
