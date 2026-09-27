@@ -180,10 +180,15 @@ def test_windows_creationflags_asks_for_a_hidden_console_on_windows(
     vssadmin, fsutil, ffprobe, ...) - seen for real when clicking a nav item
     that triggers Windows device inventory, 2026-09-27. Every call site that
     might run on Windows must pass this."""
+    import subprocess
     import sys
 
+    # CREATE_NO_WINDOW only exists on the real subprocess module on real
+    # Windows; raising=False lets this test inject it on every CI host so
+    # the assertion below is meaningful there too, not just on Windows.
     monkeypatch.setattr(sys, "platform", "win32")
-    assert host.windows_creationflags() != 0
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    assert host.windows_creationflags() == 0x08000000
 
 
 def test_windows_creationflags_is_a_no_op_off_windows(
@@ -208,8 +213,9 @@ def test_git_asks_for_a_hidden_console_on_windows(
     from unittest.mock import patch
 
     monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
     with patch("subprocess.run") as mock_run:
         mock_run.return_value = subprocess.CompletedProcess([], 0, "abc123\n", "")
         host._git(tmp_path, "rev-parse", "HEAD")
 
-    assert mock_run.call_args.kwargs["creationflags"] != 0
+    assert mock_run.call_args.kwargs["creationflags"] == 0x08000000

@@ -126,13 +126,14 @@ def test_ffprobe_asks_for_a_hidden_console_on_windows(
 
     monkeypatch.setattr(validate, "_ffprobe_path", lambda: "ffprobe")
     monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
     with patch("subprocess.run") as mock_run:
         mock_run.return_value = subprocess.CompletedProcess(
             [], 0, b'{"format": {}, "streams": []}', b""
         )
         validate_bytes(make_mp4(), "mp4")
 
-    assert mock_run.call_args.kwargs["creationflags"] != 0
+    assert mock_run.call_args.kwargs["creationflags"] == 0x08000000
 
 
 def test_validate_candidate_reads_through_the_evidence(jpeg_bytes: bytes) -> None:
