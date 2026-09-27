@@ -46,6 +46,7 @@ from typing import Any
 
 import pytest
 from core.device._sysio import CommandResult
+from core.errors import PlatformUnsupported
 from core.platform.macos import DISKUTIL, MacOSAdapter
 from core.platform.windows import WindowsAdapter, encoded_script
 
@@ -830,6 +831,38 @@ def test_what_the_guard_allows_reaches_the_barrier_and_goes_no_further(
             attempt()
         assert guard.BLOCKED == before
     assert not target.exists(), "the barrier stopped the open before it happened"
+
+
+def test_the_barrier_lets_a_launch_wrap_its_own_pipes(tmp_path: Path) -> None:
+    """``capture_output=True`` wraps the pipe descriptors with ``io.open(fd)``
+    before ``subprocess.Popen`` is raised. Wrapping a descriptor that is
+    already open reaches nothing new, so the barrier waits for the launch.
+    Found on the macOS runner: the barrier stopped the pipe, not the launch."""
+    before = list(guard.BLOCKED)
+    with pytest.raises(BarrierReached, match="subprocess.Popen"), launch_barrier():
+        subprocess.run([sys.executable, "-c", "pass"], capture_output=True)
+    assert guard.BLOCKED == before
+
+
+@live_on(LINUX, MACOS)
+@pytest.mark.parametrize(
+    "host, adapter, tool",
+    [(MACOS, MacOSAdapter, "diskutil"), (WINDOWS, WindowsAdapter, "get-disk")],
+)
+def test_live_the_real_adapter_and_runner_are_stopped_before_discovery(
+    host: str, adapter: Any, tool: str
+) -> None:
+    """The product's own adapter and ``SubprocessRunner`` (``capture_output``
+    pipes and all), launch refused under that host's rules. On a Windows host
+    tests/platform/test_windows_filesystem.py runs the same check natively."""
+    with (
+        expect_refusal() as refusals,
+        launch_barrier(),
+        rules(host),
+        pytest.raises(PlatformUnsupported),
+    ):
+        adapter().enumerate_devices()
+    assert refusals and all(tool in refusal.casefold() for refusal in refusals)
 
 
 def test_the_barrier_is_inert_until_armed(tmp_path: Path) -> None:

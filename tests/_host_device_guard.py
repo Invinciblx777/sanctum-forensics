@@ -1441,11 +1441,32 @@ def _hook(event: str, args: tuple[Any, ...]) -> None:
         )
 
 
+def _reads_no_device(event: str, args: tuple[Any, ...]) -> bool:
+    """An ``open`` of a descriptor already open, or of an existing regular file.
+
+    Neither can reach a device, and the barrier has to let both through:
+    ``subprocess`` wraps its pipes with ``io.open(fd)`` before it raises
+    ``subprocess.Popen``, and a module imported lazily reads its ``.pyc``.
+    Found on the macOS CI runner, where the barrier stopped the pipe instead
+    of the launch. A Windows device-namespace path is never stat-ed: a stat
+    opens a handle to the device.
+    """
+    if event != "open":
+        return False
+    if isinstance(args[0], int):
+        return True
+    text = _text(args[0])
+    if text is None or text.replace("/", "\\").startswith("\\\\"):
+        return False
+    return os.path.isfile(text)
+
+
 def _barrier_hook(event: str, args: tuple[Any, ...]) -> None:
     if (
         event in GUARDED_EVENTS
         and getattr(_state, "armed", False)
         and not getattr(_state, "judging", 0)
+        and not _reads_no_device(event, args)
     ):
         raise BarrierReached(
             f"{event} passed the host-device guard and was stopped by the "
@@ -1459,8 +1480,9 @@ def launch_barrier() -> Iterator[None]:
 
     The self-test's safety net. Its hook is added straight after the guard's,
     so it sees only what the guard allowed, and it raises :class:`BarrierReached`
-    before that open or launch happens. What the guard reads while judging (the
-    mount table) is not stopped. Inside the block a broken
+    before that open or launch happens. Not stopped: what the guard reads while
+    judging (the mount table), and an ``open`` of an already-open descriptor or
+    an existing regular file, which cannot reach a device. Inside the block a broken
     guard fails the test; it cannot run a disk command or open a device.
     """
     if not _installed:
