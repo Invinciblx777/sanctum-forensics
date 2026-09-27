@@ -252,6 +252,12 @@ an environment limit, and the test is unchanged
 ([release record](docs/validation/release-report-2026-09-25.md)). The suite
 refuses any access to a host block device beyond the disk holding its own files, and
 fails the run if one is attempted (`tests/_host_device_guard.py`); these runs had none.
+Since 2026-09-27 the guard has its own rule set for each of Linux, macOS
+(`/dev/diskN`, `/dev/rdiskN`, `diskutil`, ...) and Windows (`\\.\PhysicalDriveN`, raw
+volumes, `diskpart`, PowerShell's `Get-Disk`, ...), and each run's summary names the
+one it applied (`Host-device guard: Linux rules active`). Its self-test checks all
+three rule sets on every host through intercepted launches and replayed audit events;
+no physical device was used to test it. The guard's docstring lists its limits.
 The Windows and macOS suites run on their own runners in `platform-ci`.
 
 **Static analysis.** Ruff clean. Four `mypy --strict` passes clean: Linux,

@@ -143,22 +143,30 @@ def test_protected_macos_locations_are_refused(path: str) -> None:
         erase_one(Path(path), FileEraseOptions())
 
 
-def test_discovery_protects_the_disk_the_system_boots_from() -> None:
+def test_discovery_inside_the_suite_is_stopped_before_diskutil_starts() -> None:
+    """The real adapter, with its real runner, never reaches this Mac's disks.
+
+    Until 2026-09-27 this test ran ``diskutil`` against the runner's disks and
+    checked that the boot disk was protected. The suite does not reach host
+    devices (``tests/_host_device_guard.py``), so that check is made by
+    ``scripts/platform_smoke.py``, which CI runs on this runner before the
+    suite and uploads as evidence. What is checked here: discovery fails as it
+    would with ``diskutil`` missing, and the guard refused it before it ran.
+    """
+    from core.errors import PlatformUnsupported
     from core.platform import current_adapter
 
-    adapter = current_adapter()
-    devices = adapter.enumerate_devices()
+    from tests._host_device_guard import expect_refusal, launch_barrier
 
-    assert devices, "diskutil returned no physical disks"
-    system = [device for device in devices if device.system_device]
-    assert system, "the disk backing the boot APFS container was not protected"
-    for device in system:
-        assert device.system_reasons
-        assessment = adapter.assess_device(device)
-        assert assessment.headline == "NOT AVAILABLE"
-    assert any("APFS" in device.filesystems for device in devices), (
-        "no APFS volume was seen on a Mac"
-    )
+    adapter = current_adapter()
+    with (
+        expect_refusal() as refusals,
+        launch_barrier(),
+        pytest.raises(PlatformUnsupported, match="diskutil"),
+    ):
+        adapter.enumerate_devices()
+
+    assert all("diskutil" in refusal for refusal in refusals), refusals
 
 
 def test_whole_drive_is_refused_on_macos() -> None:

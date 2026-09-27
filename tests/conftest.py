@@ -5,7 +5,6 @@ from __future__ import annotations
 import errno
 import logging
 import os
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import gettempdir
@@ -224,17 +223,15 @@ def pytest_configure() -> None:
 
 
 def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
-    """Name the one disk the suite may inspect, and every refusal."""
-    disks = ", ".join(sorted(_host_device_guard.ALLOWED_DISKS)) or "none"
-    terminalreporter.write_line(
-        f"host-device guard: {len(_host_device_guard.BLOCKED)} refusal(s); sysfs "
-        f"attributes readable only for {disks} (the disk holding the suite's files)"
-    )
-    if not sys.platform.startswith("linux"):
-        terminalreporter.write_line(
-            "host-device guard: its rules name Linux device paths and tools; on "
-            f"{sys.platform} they match no native device path"
-        )
+    """Name the guard's rule set, what the suite may inspect, and every refusal.
+
+    The first line says which host's rules the hook applied ("Linux rules
+    active", "macOS rules active", "Windows rules active", or "no rules
+    active"), never that the guard "passed": a rule set matches only its own
+    host's devices.
+    """
+    for line in _host_device_guard.summary_lines():
+        terminalreporter.write_line(line)
     if _host_device_guard.BLOCKED:
         terminalreporter.section("host block-device access refused", red=True)
         for line in _host_device_guard.BLOCKED:
