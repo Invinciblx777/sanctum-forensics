@@ -209,3 +209,30 @@ def test_discovery_inside_the_suite_is_stopped_before_powershell_starts() -> Non
         adapter.enumerate_devices()
 
     assert all("get-disk" in refusal for refusal in refusals), refusals
+
+
+def test_vss_shadows_and_trim_likely_ask_for_a_hidden_console(
+    tmp_path: Path,
+) -> None:
+    """vssadmin and fsutil are console-subsystem tools; this packaged
+    (console=False) app has no console of its own to give them. Same defect,
+    same fix as core.device._sysio.SubprocessRunner - found in the same
+    audit, 2026-09-27."""
+    import subprocess
+    from unittest.mock import patch
+
+    from core.erase._platform.win import WindowsBackend
+
+    target = tmp_path / "file.txt"
+    target.write_text("x")
+    backend = WindowsBackend()
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = subprocess.CompletedProcess([], 0, "", "")
+        backend.vss_shadows(target)
+    assert mock_run.call_args.kwargs["creationflags"] != 0
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = subprocess.CompletedProcess([], 0, "0\n", "")
+        backend.trim_likely(target)
+    assert mock_run.call_args.kwargs["creationflags"] != 0
