@@ -251,7 +251,17 @@ def feature_rows(
         tests: list[str] = []
         evidence = ""
         if feature == "whole_drive_sanitization" and family != "linux":
-            result, evidence = "UNSUPPORTED", "core/platform/<family>.py refusal"
+            # Windows and macOS clear through core.erase.blockclear; what CI
+            # can run is the platform_backends suite against adapter doubles.
+            backends = suites.get("platform_backends")
+            if isinstance(backends, dict):
+                result = str(backends.get("state", "NOT RUN"))
+                tests = list(backends.get("paths") or [])
+                evidence = "pytest (adapter doubles; no device)"
+            limitation = (
+                "Adapter doubles only on this platform: never executed against a "
+                "physical device in CI. Not physical validation."
+            )
         elif feature == "device_discovery":
             if smoke:
                 result = str(smoke.get("result", "NOT RUN"))
