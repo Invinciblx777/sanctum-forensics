@@ -1398,6 +1398,9 @@ def legacy_row(device: NormalizedDevice, reason: str) -> dict[str, Any]:
         "erase_preview": None,
         "capability_error": reason,
         "hidden_areas": None,
-        "hidden_area_error": "Hidden-area (HPA/DCO) probing is Linux-only.",
+        "hidden_area_error": (
+            "Hidden-area (HPA/DCO) state is in the assessment's resolved "
+            "capabilities for this platform."
+        ),
         "normalized": device.model_dump(mode="json"),
     }

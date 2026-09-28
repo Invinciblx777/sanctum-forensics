@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from api.deps import AppServices
@@ -452,3 +453,33 @@ def test_acquire_of_a_windows_disk_binds_to_the_serial_the_os_reports_now(
         )
         assert answer.status_code == 422, answer.text
         assert word in answer.json()["detail"]["error"]
+
+
+def test_prepare_device_is_a_separate_dry_run_first_step(
+    client: TestClient, helper: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unmount / offline is its own call, dry run by default, errors kept."""
+    from helper.rpc import RpcError
+
+    seen: list[dict[str, Any]] = []
+
+    def call(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        assert method == "prepare_device"
+        seen.append(params)
+        if params["path"] == "disk0":
+            raise RpcError(
+                "Refusing to unmount disk0: it is internal Mac storage.",
+                remediation="",
+                kind="SystemDiskRefused",
+            )
+        return {"device": params["path"], "performed": False, "dry_run": True}
+
+    monkeypatch.setattr(helper, "call", call)
+    answer = client.post("/devices/prepare", json={"path": "disk4"})
+    assert answer.status_code == 200
+    assert answer.json()["performed"] is False
+    assert seen[0]["dry_run"] is True
+    assert seen[0]["typed_serial"] == ""
+    refused = client.post("/devices/prepare", json={"path": "disk0"})
+    assert refused.status_code >= 400
+    assert refused.json()["detail"]["kind"] == "SystemDiskRefused"

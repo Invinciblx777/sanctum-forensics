@@ -511,7 +511,9 @@ class MacOSAdapter(BaseAdapter):
     ) -> tuple[list[SanitizeOption], str]:
         from core.platform.windows import options_from_resolution
 
-        return options_from_resolution(self.device_resolution(device))
+        return options_from_resolution(
+            self.device_resolution(device), nvme_bus=device.interface == "nvme"
+        )
 
     def _platform_rows(self, privilege: PrivilegeState) -> list[OperationCapability]:
         return self._block_engine_rows(privilege)
@@ -598,9 +600,7 @@ class MacOSAdapter(BaseAdapter):
             ),
             resume_from=checkpoint,
         )
-        return clear(
-            request, lambda: self._open_bound(device, write=True), ledger=sink
-        )
+        return clear(request, lambda: self._open_bound(device, write=True), ledger=sink)
 
     def execute_drive_sanitization(
         self, params: dict[str, Any]
@@ -625,10 +625,11 @@ class MacOSAdapter(BaseAdapter):
                 f"Refusing to unmount {device.path}: it is internal Mac storage "
                 "or holds the running system."
             )
-        if not dry_run and normalized_serial(
-            str(params.get("typed_serial") or "")
-        ) != normalized_serial(device.serial) or (
-            not dry_run and not normalized_serial(device.serial)
+        if (
+            not dry_run
+            and normalized_serial(str(params.get("typed_serial") or ""))
+            != normalized_serial(device.serial)
+            or (not dry_run and not normalized_serial(device.serial))
         ):
             raise ConfirmationMismatch(
                 f"The typed serial does not match {device.path}. Nothing changed."

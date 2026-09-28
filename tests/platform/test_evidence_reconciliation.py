@@ -19,7 +19,10 @@ from core.platform.validation import hardware_passed, load_record
 
 ROOT = Path(__file__).resolve().parents[2]
 RECONCILIATION = (
-    ROOT / "docs" / "validation" / "evidence-reconciliation-2026-09-28"
+    ROOT
+    / "docs"
+    / "validation"
+    / "evidence-reconciliation-2026-09-28"
     / "reconciliation.json"
 )
 STATES = {
@@ -81,7 +84,9 @@ def test_the_ui_names_each_unvalidated_capability_with_its_state() -> None:
     block = summary[summary.index("export const NOT_PHYSICALLY_VALIDATED") :]
     block = block[block.index("= [") : block.index("\n]")]
     unvalidated = "IMPLEMENTED / NOT PHYSICALLY VALIDATED"
-    lines = [line.strip() for line in block.splitlines() if line.strip().startswith("'")]
+    lines = [
+        line.strip() for line in block.splitlines() if line.strip().startswith("'")
+    ]
 
     def the_line(prefix: str) -> str:
         found = [line for line in lines if line.startswith(f"'{prefix}")]

@@ -52,6 +52,7 @@ def test_the_operation_allowlist_is_closed() -> None:
         # Writes a recorded backup image onto a device. Gated at the write seam
         # by helper.authorization.revalidate_restore; dry-run by default.
         "run_restore",
+        "prepare_device",
     }
 
     daemon = HelperDaemon(operator_uid=_uid())

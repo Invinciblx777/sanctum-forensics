@@ -533,7 +533,7 @@ class WindowsAdapter(BaseAdapter):
         self, device: NormalizedDevice
     ) -> tuple[list[SanitizeOption], str]:
         resolution = self.device_resolution(device)
-        return options_from_resolution(resolution)
+        return options_from_resolution(resolution, nvme_bus=device.interface == "nvme")
 
     def _platform_rows(self, privilege: PrivilegeState) -> list[OperationCapability]:
         return self._block_engine_rows(privilege)
@@ -1002,7 +1002,9 @@ _OPTION_METHOD: dict[Capability, str] = {
 }
 
 
-def options_from_resolution(resolution: Any) -> tuple[list[SanitizeOption], str]:
+def options_from_resolution(
+    resolution: Any, *, nvme_bus: bool = False
+) -> tuple[list[SanitizeOption], str]:
     """Sanitize options straight from the resolver: Purge first, then Clear."""
     from core.platform.capability import legacy_status
     from core.platform.model import STATE_LABELS
@@ -1021,15 +1023,19 @@ def options_from_resolution(resolution: Any) -> tuple[list[SanitizeOption], str]
             purge = row
             break
     if purge is None:
+        # The reason shown is the one for the command set this device would
+        # speak: NVMe for an NVMe device, ATA for everything else.
+        order = (
+            (Capability.NVME_SANITIZE, Capability.CRYPTO_ERASE, Capability.ATA_SANITIZE)
+            if nvme_bus
+            else (
+                Capability.ATA_SANITIZE,
+                Capability.CRYPTO_ERASE,
+                Capability.NVME_SANITIZE,
+            )
+        )
         best = min(
-            (
-                resolution.get(item)
-                for item in (
-                    Capability.NVME_SANITIZE,
-                    Capability.ATA_SANITIZE,
-                    Capability.CRYPTO_ERASE,
-                )
-            ),
+            (resolution.get(item) for item in order),
             key=lambda row: row.state is CapabilityState.UNSUPPORTED_BY_PLATFORM,
         )
         options.append(

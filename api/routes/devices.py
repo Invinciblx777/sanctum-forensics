@@ -16,9 +16,11 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field
 
 from api.deps import AppServices
-from api.routes.common import get_services
+from api.identity import resolve as resolve_identity
+from api.routes.common import get_services, sanctum_error_response
 
 __all__ = ["router"]
 
@@ -63,3 +65,44 @@ def list_devices(
         }
 
     return {"devices": answer.get("devices", []), "limitations": services.limitations}
+
+
+class PrepareDeviceRequest(BaseModel):
+    """Body for ``POST /devices/prepare``."""
+
+    path: str = Field(max_length=256)
+    #: Gate one: a dry run reports what would be unmounted or taken offline.
+    dry_run: bool = True
+    #: Gate two: the device serial, typed by hand.
+    typed_serial: str = Field(default="", max_length=128)
+
+
+@router.post("/devices/prepare")
+def prepare_device(
+    body: PrepareDeviceRequest,
+    services: AppServices = Depends(get_services),
+) -> dict[str, Any]:
+    """Unmount (macOS) or take offline (Windows) a disk, as an explicit step.
+
+    Separate from every erase on purpose: an erase refuses a mounted device and
+    never unmounts one itself. System and internal disks are refused by the
+    adapter. Dry run by default; a real run needs the typed serial.
+    """
+    from helper.rpc import RpcError
+
+    try:
+        return services.helper.call(
+            "prepare_device",
+            {
+                "path": body.path,
+                "dry_run": body.dry_run,
+                "typed_serial": body.typed_serial,
+                "ledger_root": str(services.ledger_root),
+                "tool_version": services.tool_version,
+                "actor": resolve_identity(services).actor,
+            },
+        )
+    except RpcError as exc:
+        raise sanctum_error_response(
+            exc.kind or "PlatformUnsupported", exc.message, exc.remediation
+        ) from exc

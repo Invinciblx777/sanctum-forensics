@@ -346,6 +346,32 @@ def _op_detect_hidden_areas(params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _op_prepare_device(params: dict[str, Any]) -> dict[str, Any]:
+    """Take a disk offline (Windows) or unmount it (macOS), as its own step.
+
+    Dry run unless ``dry_run`` is explicitly false; a real run needs the typed
+    serial of the device this process re-reads. Never part of an erase, and it
+    writes nothing to the medium. The action and its outcome are ledgered.
+    """
+    from core.ledger.chain import Ledger
+
+    answer = _adapter(params).prepare_device(params)
+    ledger_root = params.get("ledger_root")
+    if ledger_root:
+        Ledger(
+            Path(str(ledger_root)),
+            tool_version=str(params.get("tool_version", "sanctum-forensics/0.0.0")),
+            pubkey_fingerprint=str(params.get("pubkey_fingerprint", "")),
+            owner_uid=_owner_uid(params),
+        ).append(
+            actor=str(params.get("actor") or "sanctum"),
+            operation="device.prepare",
+            params={key: answer[key] for key in ("device", "serial", "action")},
+            result={"performed": answer.get("performed"), "dry_run": answer["dry_run"]},
+        )
+    return answer
+
+
 def _owner_uid(params: dict[str, Any]) -> int | None:
     """The operator uid :meth:`HelperDaemon.apply_policy` stamped on a request.
 
@@ -611,6 +637,7 @@ OPERATIONS: dict[str, Handler] = {
     "resume_erase": _op_resume_erase,
     "acquire_image": _op_acquire_image,
     "run_restore": _op_run_restore,
+    "prepare_device": _op_prepare_device,
 }
 
 #: The subset of :data:`OPERATIONS` served incrementally. A name here must also
