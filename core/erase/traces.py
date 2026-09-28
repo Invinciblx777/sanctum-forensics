@@ -368,9 +368,10 @@ def locations_for(
     if platform == "macos":
         tmpdir = env.get("TMPDIR", "")
         quicklook: tuple[Path, ...] = ()
-        if tmpdir and posixpath.isabs(tmpdir):
+        if tmpdir and os.path.isabs(tmpdir):
             # $TMPDIR is /var/folders/xx/yyyy/T/; the cache is in its sibling C.
-            per_user = Path(posixpath.dirname(posixpath.normpath(tmpdir)))
+            # A path on this host, so this host's path rules (posixpath on a Mac).
+            per_user = Path(os.path.dirname(os.path.normpath(tmpdir)))
             quicklook = (per_user / "C" / "com.apple.QuickLook.thumbnailcache",)
         return TraceLocations(
             family=platform,
