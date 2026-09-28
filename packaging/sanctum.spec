@@ -62,6 +62,16 @@ if BUILD_INFO.is_file():
 SIGNATURES = ROOT / "testkit" / "signatures.yaml"
 if SIGNATURES.is_file():
     datas.append((str(SIGNATURES), "testkit"))
+# The registered synthetic baseline the physical benchmark's 5/10 recall rule
+# compares against. core.benchmark.pipeline.DEFAULT_BASELINE_CSV is computed
+# from __file__ exactly like SIGNATURE_DB_PATH above, so it lands here in both
+# layouts. Without it a packaged build still scores, but reports the rule as
+# NOT_EVALUATED ("no registered baseline") rather than guessing one.
+# core.benchmark itself needs no entry: collect_submodules("core") above
+# walks it like every other core subpackage.
+BASELINE_CSV = ROOT / "docs" / "performance" / "benchmark.csv"
+if BASELINE_CSV.is_file():
+    datas.append((str(BASELINE_CSV), "docs/performance"))
 datas += collect_data_files("reportlab")
 datas += copy_metadata("sanctum-forensics")
 
