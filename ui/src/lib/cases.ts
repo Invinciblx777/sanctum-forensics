@@ -67,12 +67,15 @@ export function caseRequestFailed(message: string): string {
  * True only when the job was submitted as a dry run.
  *
  * Read from the parameters the job was filed with. A missing flag is not a
- * simulation: a carve has no dry run, and a real erase must never be drawn as
+ * dry run: a carve has no dry run, and a real erase must never be drawn as
  * a rehearsal.
  */
-export function isSimulation(operation: OperationRecord): boolean {
+export function isDryRun(operation: OperationRecord): boolean {
   return operation.params?.dry_run === true
 }
+
+/** @deprecated Use {@link isDryRun}. */
+export const isSimulation = isDryRun
 
 /** The report generated for each operation, keyed by operation id. */
 export function reportsByOperation(
@@ -106,7 +109,7 @@ export function caseFacts(detail: CaseDetail): CaseFacts {
     const word = operationStatus(op).word.toLowerCase()
     counts.set(word, (counts.get(word) ?? 0) + 1)
   }
-  const simulated = detail.operations.filter(isSimulation).length
+  const simulated = detail.operations.filter(isDryRun).length
   const states = [...counts.entries()].map(([word, n]) => `${n} ${word}`)
   // Said as part of the total, never beside it: "2 complete · 1 simulation"
   // reads as three operations.
@@ -114,8 +117,8 @@ export function caseFacts(detail: CaseDetail): CaseFacts {
   const simulations = !simulated
     ? ''
     : simulated === total
-      ? ' — all simulated'
-      : ` — ${simulated} of ${total} simulated`
+      ? ' — all dry runs'
+      : ` — ${simulated} of ${total} dry runs`
 
   const hashed = detail.evidence.filter((item) => item.source_hash).length
   const signed = detail.reports.filter((item) => item.signed).length

@@ -100,7 +100,7 @@ export function executiveSummary(
   }
   if (simulated.length) {
     erased.push(
-      `${plural(simulated.length, 'dry run')}: SIMULATION, nothing was written`,
+      `${plural(simulated.length, 'dry run')}: nothing was written`,
     )
   }
   if (!erased.length) erased.push('Nothing has been erased in this case.')

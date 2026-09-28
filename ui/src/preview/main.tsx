@@ -275,7 +275,7 @@ async function driveFiles(): Promise<void> {
     click('button.btn', 'Add')
     await settle()
   }
-  click('.page button.primary', 'Simulate')
+  click('.page button.primary', 'Dry run')
   await settle()
   await settle()
   click('tr.is-openable', 'DSC_0491.NEF')

@@ -630,7 +630,7 @@ export interface JobAccepted {
   state: string
   dry_run: boolean
   stream_url: string
-  /** SIMULATION / NO PHYSICAL DEVICE MODIFIED on a dry run, else empty. */
+  /** DRY RUN / NO PHYSICAL DEVICE MODIFIED on a dry run, else empty. */
   notice?: string
 }
 

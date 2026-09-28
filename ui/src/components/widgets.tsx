@@ -350,13 +350,24 @@ export function ErrorNotice({
 }
 
 /**
- * Shown on every screen that displays a simulated job. The words are fixed so a
+ * Shown on every screen that displays a dry-run job. The words are fixed so a
  * screenshot of a dry run can never be mistaken for a destructive run.
  */
-export function SimulationBanner() {
+export function DryRunBanner() {
   return (
-    <div className="simulation-banner" role="status">
-      SIMULATION / NO PHYSICAL DEVICE MODIFIED
+    <div className="dry-run-banner" role="status">
+      DRY RUN / NO PHYSICAL DEVICE MODIFIED
     </div>
+  )
+}
+
+/** @deprecated Use {@link DryRunBanner}. */
+export const SimulationBanner = DryRunBanner
+
+export function OperationModeBadge({ dryRun }: { dryRun: boolean }) {
+  return (
+    <span className={dryRun ? 'chip operation-mode is-dry-run' : 'chip operation-mode is-real'}>
+      {dryRun ? 'DRY RUN' : 'REAL DEVICE'}
+    </span>
   )
 }

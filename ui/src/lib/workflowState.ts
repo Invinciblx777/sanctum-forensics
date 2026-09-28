@@ -156,7 +156,7 @@ function result(
 ): SanitizeWorkflow {
   return {
     state,
-    headline: simulation ? `${label(state)} (SIMULATION)` : label(state),
+    headline: simulation ? `${label(state)} (DRY RUN)` : label(state),
     whyBlocked,
     nextAction,
     simulation,

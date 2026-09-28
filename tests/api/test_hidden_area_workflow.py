@@ -320,7 +320,7 @@ def test_execute_simulates_by_default_and_changes_nothing(
     assert answer.json()["notice"]
     status = _finish(client, services, answer.json()["job_id"])
     assert status["state"] == "complete", status
-    assert status["result"]["outcome"] == "SIMULATED"
+    assert status["result"]["outcome"] == "DRY_RUN"
     assert status["result"]["device_modified"] == "no"
     assert drive.sets == []
     assert drive.accessible == ACCESSIBLE_SECTORS

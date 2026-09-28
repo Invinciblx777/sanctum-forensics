@@ -155,11 +155,11 @@ test('the overview lines count what the case holds and say so when empty', () =>
       reports: [report({}), report({ operation_id: 'e', signed: false })],
     }),
   )
-  assert.equal(full.operations, '2 complete · 1 failed — 1 of 3 simulated')
+  assert.equal(full.operations, '2 complete · 1 failed — 1 of 3 dry runs')
   assert.equal(full.reports, '1 signed · 1 unsigned')
 
   const rehearsal = caseFacts(
     detail({ operations: [op({ params: { dry_run: true } })] }),
   )
-  assert.equal(rehearsal.operations, '1 complete — all simulated')
+  assert.equal(rehearsal.operations, '1 complete — all dry runs')
 })

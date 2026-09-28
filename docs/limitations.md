@@ -1044,9 +1044,9 @@ VALIDATION). What that does not establish:
   (system disk, mount, serial re-read) stand.
 - **The API does not authenticate a human.** Approval is a deliberate second
   call with the typed serial, not proof of who made it (see below).
-- **A simulation opens the device read-only.** A dry run opens the device node
+- **A dry run opens the device read-only.** A dry run opens the device node
   `O_RDONLY` for the `BLKGETSIZE64` size ioctl and reads metadata. It never opens
-  a device for writing and never reaches the write path; "a simulation never
+  a device for writing and never reaches the write path; "a dry run never
   opens /dev" would be false.
 
 ## The API has no authentication

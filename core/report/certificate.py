@@ -110,8 +110,9 @@ def _verdict(kind: str, sections: dict[str, Any]) -> tuple[str, str, str]:
             "destructive",
         )
     limitations = (sections.get("limitations") or {}).get("items") or []
-    simulated = any(
-        str(item).startswith("SIMULATION / NO PHYSICAL DEVICE MODIFIED")
+    dry_run = any(
+        str(item).startswith("DRY RUN / NO PHYSICAL DEVICE MODIFIED")
+        or str(item).startswith("SIMULATION / NO PHYSICAL DEVICE MODIFIED")
         for item in limitations
     )
     if kind == "drive":
@@ -119,9 +120,9 @@ def _verdict(kind: str, sections: dict[str, Any]) -> tuple[str, str, str]:
         check = sections.get("verification") or {}
         achieved = str(method.get("level_achieved") or "")
         requested = _text(method.get("level_requested"))
-        if simulated:
+        if dry_run:
             return (
-                "Simulation: no device was sanitized",
+                "Dry run: no device was sanitized",
                 f"{_text(method.get('method'))} ran against a host file standing in "
                 f"for a device, and read it back by {_text(check.get('strategy'))}. "
                 "It shows the procedure, not a sanitized medium.",
@@ -129,7 +130,7 @@ def _verdict(kind: str, sections: dict[str, Any]) -> tuple[str, str, str]:
             )
         if achieved.startswith("NONE (dry run"):
             return (
-                "Simulation: nothing was written",
+                "Dry run: nothing was written",
                 f"A dry run of {_text(method.get('method'))} for {requested}. "
                 "No level was achieved and nothing was verified.",
                 "neutral",
@@ -175,7 +176,7 @@ def _verdict(kind: str, sections: dict[str, Any]) -> tuple[str, str, str]:
             f"{int(checks.get('files_not_verifiable') or 0)} not verifiable here."
         )
         if scope.get("dry_run"):
-            return ("Simulation: nothing was written", basis, "neutral")
+            return ("Dry run: nothing was written", basis, "neutral")
         if failed:
             return (
                 f"{erased} of {paths} erased, {failed} failed",

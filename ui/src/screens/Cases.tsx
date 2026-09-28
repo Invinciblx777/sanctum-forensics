@@ -543,7 +543,7 @@ function OperationsTab({ detail }: { detail: CaseDetail }) {
                     <span className="cell-stack">
                       <span className="row" style={{ gap: 'var(--space-2)' }}>
                         {operationType(item.type)}
-                        {isSimulation(item) && <Chip>SIMULATION</Chip>}
+                        {isSimulation(item) && <Chip>DRY RUN</Chip>}
                       </span>
                       <span className="mono note-faint">{item.operation_id}</span>
                     </span>

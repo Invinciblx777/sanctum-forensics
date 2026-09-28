@@ -40,12 +40,13 @@ import {
   Panel,
   ProgressView,
   Railed,
-  SimulationBanner,
+  DryRunBanner,
+  OperationModeBadge,
   Stat,
   Verdict,
 } from '../components/widgets'
 import type { Tone } from '../components/widgets'
-import { isSimulation } from '../lib/simulation'
+import { isDryRun } from '../lib/simulation'
 
 /**
  * The tone of a NIST level.
@@ -692,6 +693,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
         <h1>Secure sanitization</h1>
         <p className="path">{device.path}</p>
         <Chip tone="muted">{device.model}</Chip>
+        <OperationModeBadge dryRun={jobId ? flow.simulation : dryRun} />
         <span className="serial" style={{ color: 'var(--text-muted)' }}>
           {device.serial}
         </span>
@@ -699,7 +701,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
 
       <div className="screen-body">
         <FlowSteps current={step} stopped={stopped} />
-        {(jobId ? flow.simulation : dryRun) && <SimulationBanner />}
+        {(jobId ? flow.simulation : dryRun) && <DryRunBanner />}
         <WorkflowStrip flow={flow} />
         <ErrorNotice error={error} />
 
@@ -1099,7 +1101,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
               </Panel>
             )}
 
-            {jobId && isSimulation(status) && <SimulationBanner />}
+            {jobId && isDryRun(status) && <DryRunBanner />}
             {jobId && (
               <Panel title="Progress">
                 <ProgressView progress={progress} destructive={!dryRun} />

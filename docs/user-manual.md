@@ -1603,7 +1603,7 @@ FAILED, CANCELLED, RUNNING) except in two cases: **BLOCKED** is a safety refusal
 at the helper's write seam, before any write (the registry says failed; the
 screen reads the job's structured `error_kind`, never its message), and **VERIFY
 FAILED** is a drive erase that ran but whose read-back failed (the registry says
-complete). It adds a **SIMULATION** label on a dry run, and whether a signed
+complete). It adds a **DRY RUN** label on a dry run, and whether a signed
 report exists. A case that cannot be read shows **REQUEST FAILED**, never an
 empty case and never BLOCKED. The Overview's *Secure erasure* column says the
 same four things apart: blocked (nothing was erased), failed (the target may be

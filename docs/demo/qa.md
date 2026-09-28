@@ -1131,11 +1131,11 @@ bindings load, not that a disk was cleared.
 
 ---
 
-## 27 · What is simulation, and what is real hardware?
+## 27 · What is a dry run, and what is real hardware?
 
 > **Say it out loud:** Every erase is a dry run until someone turns that off and
 > types the device serial. A dry run writes nothing, and every screen showing
-> one says *SIMULATION / NO PHYSICAL DEVICE MODIFIED*. Our measurements carry a
+> one says *DRY RUN / NO PHYSICAL DEVICE MODIFIED*. Our measurements carry a
 > population label: synthetic images, the one physical USB stick, or CI virtual
 > disks. We never mix them. The physical recovery benchmark has not been run
 > yet, so no physical benchmark result exists.

@@ -18,7 +18,7 @@ import time
 from typing import Any
 
 import pytest
-from api.authorization import SIMULATION_MARK
+from api.authorization import DRY_RUN_MARK
 from api.deps import AppServices
 from fastapi.testclient import TestClient
 
@@ -242,8 +242,8 @@ def test_simulation_needs_no_approval_and_is_marked(
     assert answer.status_code == 200
     body = answer.json()
     assert body["dry_run"] is True
-    assert body["notice"] == SIMULATION_MARK
-    assert SIMULATION_MARK == "SIMULATION / NO PHYSICAL DEVICE MODIFIED"
+    assert body["notice"] == DRY_RUN_MARK
+    assert DRY_RUN_MARK == "DRY RUN / NO PHYSICAL DEVICE MODIFIED"
 
 
 def test_approve_helper_is_used_by_the_positive_path(

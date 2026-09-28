@@ -111,11 +111,11 @@ test('a real erase waits for HUMAN APPROVAL and shows no execution', () => {
   assert.match(open.nextAction, /backup/)
 })
 
-test('a dry run before it starts is PREFLIGHT and labelled SIMULATION', () => {
+test('a dry run before it starts is PREFLIGHT and labelled DRY RUN', () => {
   const flow = sanitizeWorkflow(facts({ dryRun: true }))
   assert.equal(flow.state, 'PREFLIGHT')
   assert.equal(flow.simulation, true)
-  assert.match(flow.headline, /SIMULATION/)
+  assert.match(flow.headline, /DRY RUN/)
 })
 
 test('NOT AUTHORIZED blocks a real erase but not a dry run', () => {
@@ -135,14 +135,14 @@ test('EXECUTING is only derived from a running job', () => {
   assert.equal(real.state, 'EXECUTING')
   assert.equal(real.simulation, false)
   const dry = sanitizeWorkflow(facts({ running: true, dryRun: true }))
-  assert.equal(dry.headline, 'EXECUTING (SIMULATION)')
+  assert.equal(dry.headline, 'EXECUTING (DRY RUN)')
 })
 
 test('the VERIFY phase is VERIFYING', () => {
   assert.equal(sanitizeWorkflow(facts({ running: true, phase: 'VERIFY' })).state, 'VERIFYING')
 })
 
-test('a completed dry run is COMPLETE (SIMULATION), read from the job not the toggle', () => {
+test('a completed dry run is COMPLETE (DRY RUN), read from the job not the toggle', () => {
   const flow = sanitizeWorkflow(facts({ dryRun: false, status: job('complete', true) }))
   assert.equal(flow.state, 'COMPLETE')
   assert.equal(flow.simulation, true)
@@ -213,7 +213,7 @@ test('a refusal never says the device is untouched unless the server said so', (
   )
 })
 
-test('a dry run ignores any server record and never leaves SIMULATION', () => {
+test('a dry run ignores any server record and never leaves DRY RUN', () => {
   const flow = sanitizeWorkflow(facts({ dryRun: true, server: server('PLAN_READY') }))
   assert.equal(flow.state, 'PREFLIGHT')
   assert.equal(flow.simulation, true)
@@ -243,10 +243,10 @@ test('COMPLETE on a real job only claims what verification supports', () => {
   }
 })
 
-test('a simulation is never shown as a physical completion', () => {
+test('a dry run is never shown as a physical completion', () => {
   const flow = sanitizeWorkflow(facts({ status: job('complete', true) }))
   assert.equal(flow.simulation, true)
-  assert.equal(flow.headline, 'COMPLETE (SIMULATION)')
+  assert.equal(flow.headline, 'COMPLETE (DRY RUN)')
   assert.match(flow.nextAction, /Nothing was written/)
 })
 

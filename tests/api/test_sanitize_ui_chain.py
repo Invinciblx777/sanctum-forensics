@@ -16,7 +16,7 @@ import time
 from typing import Any
 
 import pytest
-from api.authorization import SIMULATION_MARK, AuthorizationStore
+from api.authorization import DRY_RUN_MARK, AuthorizationStore
 from api.deps import AppServices
 from fastapi.testclient import TestClient
 
@@ -216,8 +216,8 @@ def test_10_a_dry_run_simulates_and_is_marked_without_any_authorization(
     assert answer.json()["dry_run"] is True
     assert (
         answer.json()["notice"]
-        == SIMULATION_MARK
-        == ("SIMULATION / NO PHYSICAL DEVICE MODIFIED")
+        == DRY_RUN_MARK
+        == ("DRY RUN / NO PHYSICAL DEVICE MODIFIED")
     )
     assert not (services.state_dir / "authorizations").exists() or not list(
         (services.state_dir / "authorizations").glob("*")
@@ -244,7 +244,7 @@ def test_simulation_cannot_reach_the_physical_write_path(
         )
         assert answer.status_code == 200, answer.text
         assert answer.json()["dry_run"] is True
-        assert answer.json()["notice"] == SIMULATION_MARK
+        assert answer.json()["notice"] == DRY_RUN_MARK
 
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline and not [

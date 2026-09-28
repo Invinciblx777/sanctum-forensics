@@ -73,7 +73,7 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance only
 __all__ = [
     "AuthorizationStore",
     "GateRefused",
-    "SIMULATION_MARK",
+    "DRY_RUN_MARK",
     "authorize_execution",
     "execution_binding",
     "facts_for",
@@ -81,8 +81,8 @@ __all__ = [
 
 logger = structlog.get_logger(__name__)
 
-#: Printed on every dry-run answer so a simulation cannot be mistaken for a wipe.
-SIMULATION_MARK = "SIMULATION / NO PHYSICAL DEVICE MODIFIED"
+#: Printed on every dry-run answer so a dry run cannot be mistaken for a wipe.
+DRY_RUN_MARK = "DRY RUN / NO PHYSICAL DEVICE MODIFIED"
 
 _ID = AUTH_ID
 _CHUNK = 4 * 1024 * 1024

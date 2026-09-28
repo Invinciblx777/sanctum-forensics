@@ -106,7 +106,7 @@ committed [capability matrix](docs/validation/capability-completion-2026-09-28/c
 is generated from the resolver, and a test fails if it goes stale.
 
 **Explicit uncertainty.** Every result carries its population: physical,
-synthetic, simulation, CI, documented or hardware-unverified. They are never
+synthetic, dry run, CI, documented or hardware-unverified. They are never
 merged.
 
 ## The safety model
@@ -419,7 +419,7 @@ never issued.
 | Fragmented PNG recovery | 120/120 layouts, 0/800 wrong joins accepted | **SYNTHETIC VALIDATION** |
 | Recovery benchmark and calibration | 40 images, 8 pooled seeds | **SYNTHETIC VALIDATION** |
 | Tamper-evident report and ledger | `tests/report/`, `tests/ledger/`, live tamper demo | **SYNTHETIC VALIDATION**; verifier also run on the physical-run report |
-| Discovery-to-certificate journey | `scripts/demo_simulation.py` on host files, real engine | **SIMULATION** |
+| Discovery-to-certificate journey | `scripts/demo_simulation.py` on host files, real engine | **DRY RUN** |
 | NIST SP 800-88 Rev. 2, IEEE 2883, ISO/IEC 27040 | section-by-section mapping | **DOCUMENTED** (mapped, not certified) |
 | Firmware device sanitize (ATA SANITIZE, ATA SECURITY ERASE UNIT, NVMe Sanitize, NVMe Format, crypto erase; a TCG Opal drive is recognised but not reverted, no PSID input) | selected and dispatched in fixture and adapter-double tests only (all on Linux; ATA SANITIZE, NVMe Sanitize and crypto erase also on Windows); offered only when the controller reports it | **IMPLEMENTED / UNVALIDATED**, DEVICE-DEPENDENT |
 | Guarded HPA change (DCO read only) | state machine, plan, typed serial and read-back tested against faked probes on Linux and Windows; never run on a drive | **IMPLEMENTED / UNVALIDATED**, DEVICE-DEPENDENT; PLATFORM-LIMITED on macOS |
@@ -445,7 +445,7 @@ Every step maps to a screen, a command, a test and a recorded artifact in the
 |---|---|---|---|
 | 1 | Overview: four workflows and the six-part executive summary, including what is not physically validated | Overview screen | live host |
 | 2 | Device identity and refusal: serial, capability badge, `BLOCKED · WHY BLOCKED`; a missing device path refused, exit 2 | Devices; `scripts/media_benchmark.py plan` | live host |
-| 3 | Simulation from discovery to certificate, labelled `SIMULATION / NO PHYSICAL DEVICE MODIFIED` | `scripts/demo_simulation.py` | SIMULATION |
+| 3 | Dry run from discovery to certificate, labelled `DRY RUN / NO PHYSICAL DEVICE MODIFIED` | `scripts/demo_simulation.py` | DRY RUN |
 | 4 | Fragmented recovery: split PNG and JPEG rebuilt, checked against ground truth | `scripts/demo_fragmented.py`; Recovery | SYNTHETIC |
 | 5 | Evidence explanation: the six components and the reassembly hold | Recovery score breakdown | SYNTHETIC |
 | 6 | Signed report generated for the job | Audit | SYNTHETIC |
@@ -537,7 +537,7 @@ All 37 questions, with evidence and a status for each:
   the window from that check to the first write is not proven race-free.
 - The API does not authenticate a human. Approval is a deliberate second call
   with the typed serial, not proof of who approved.
-- A simulation opens the device read-only (`O_RDONLY`, for its size and
+- A dry run opens the device read-only (`O_RDONLY`, for its size and
   metadata). It never opens it for writing.
 - An overwrite does not reach remapped or over-provisioned flash blocks.
 - Fragmented-file reconstruction is not general: baseline JPEG and PNG,
@@ -636,7 +636,7 @@ request without it, or addressed to a non-loopback host name.
 Run the two terminal demos without any device:
 
 ```bash
-python scripts/demo_simulation.py     # SIMULATION: discovery to certificate
+python scripts/demo_simulation.py     # DRY RUN: discovery to certificate
 python scripts/demo_fragmented.py     # SYNTHETIC: split PNG and JPEG rebuilt
 ```
 

@@ -104,7 +104,7 @@ def test_dry_run_is_the_default_and_writes_nothing(
     assert result.bytes_written == 0
     assert target.writes == [] and target.flushes == 0
     assert target_path.read_bytes() == FILL * TARGET_SIZE
-    assert "SIMULATION" in progress[0].message
+    assert "DRY RUN" in progress[0].message
     assert operations(ledger)[-1] == "restore.dry_run"
 
 

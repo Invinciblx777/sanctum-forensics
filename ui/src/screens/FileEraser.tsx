@@ -18,11 +18,12 @@ import {
   Panel,
   ProgressView,
   Railed,
-  SimulationBanner,
+  DryRunBanner,
+  OperationModeBadge,
   Verdict,
 } from '../components/widgets'
 import type { Tone } from '../components/widgets'
-import { isSimulation } from '../lib/simulation'
+import { isDryRun } from '../lib/simulation'
 import { fileOutcome } from '../lib/fileOutcome'
 
 function worstSeverity(findings: ResidualFinding[]): string | null {
@@ -113,6 +114,7 @@ export default function FileEraser() {
     <>
       <div className="screen-head">
         <h1>File eraser</h1>
+        <OperationModeBadge dryRun={dryRun} />
         <p>
           Best-effort destruction, plus an enumeration of everything it could not
           guarantee.
@@ -382,7 +384,7 @@ export default function FileEraser() {
 
             {traces && <TracePanel sweep={traces} dryRun={simulated} />}
 
-            {jobId && isSimulation(status) && <SimulationBanner />}
+            {jobId && isDryRun(status) && <DryRunBanner />}
             {jobId && records.length === 0 && (
               <Panel title="Progress">
                 <ProgressView progress={progress} destructive={!dryRun} />
@@ -456,7 +458,7 @@ export default function FileEraser() {
                 onClick={() => void start()}
               >
                 {dryRun
-                  ? `Simulate ${paths.length} path(s)`
+                  ? `Dry run ${paths.length} path(s)`
                   : `Erase ${paths.length} path(s)`}
               </button>
 
@@ -672,10 +674,10 @@ function FreeSpacePanel() {
           disabled={!mountPoint.trim() || (!dryRun && !typed.trim())}
           onClick={() => void start()}
         >
-          {dryRun ? 'Simulate free-space wipe' : 'Wipe free space'}
+          {dryRun ? 'Dry run free-space wipe' : 'Wipe free space'}
         </button>
 
-        {isSimulation(status) && <SimulationBanner />}
+        {isDryRun(status) && <DryRunBanner />}
         {progress && !result && (
           <ProgressView progress={progress} destructive={!dryRun} />
         )}

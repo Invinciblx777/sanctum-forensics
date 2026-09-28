@@ -23,7 +23,7 @@ from typing import Any, cast
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from api.authorization import SIMULATION_MARK, GateRefused, authorize_execution
+from api.authorization import DRY_RUN_MARK, GateRefused, authorize_execution
 from api.deps import AppServices
 from api.identity import resolve as resolve_identity
 from api.identity import sanitise_label
@@ -71,7 +71,7 @@ def _accepted(job_id: str, kind: str, dry_run: bool) -> JobAccepted:
         state="running",
         dry_run=dry_run,
         stream_url=f"/jobs/{job_id}/stream",
-        notice=SIMULATION_MARK if dry_run and kind.startswith("erase-drive") else "",
+        notice=DRY_RUN_MARK if dry_run and kind.startswith("erase-drive") else "",
     )
 
 

@@ -656,7 +656,7 @@ def test_a_dry_run_changes_nothing(
     assert ata.set_max_calls == []
     assert ata.accessible_max_lba == ACCESSIBLE
     assert CMD_SET_MAX not in {command for command, _ in ata.commands}
-    assert result.outcome == "SIMULATED" and result.dry_run
+    assert result.outcome == "DRY_RUN" and result.dry_run
     assert result.device_modified == "no"
     assert "DRY RUN" in progress[-1]["message"]
     assert _ops(ledger) == ["hpa.plan", "hpa.dry_run"]

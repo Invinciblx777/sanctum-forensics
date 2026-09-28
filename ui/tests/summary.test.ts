@@ -46,9 +46,9 @@ function detail(operations: OperationRecord[], chain = 'VALID', signed = [true])
 
 const platform = { limitations: ['Overwrite cannot reach remapped flash.'] } as PlatformStatus
 
-test('a dry run is a simulation, never an erasure', () => {
+test('a dry run is never counted as an erasure', () => {
   const s = executiveSummary(detail([op('erase-drive', 'complete', { dry_run: true })]), platform)
-  assert.ok(s.erased.some((line) => line.includes('SIMULATION')))
+  assert.ok(s.erased.some((line) => line.includes('dry run')))
   assert.ok(!s.erased.some((line) => line.includes('drive sanitization completed')))
   assert.ok(s.unverified.some((line) => line.includes('Dry runs prove the plan')))
 })
@@ -58,9 +58,9 @@ test('a real completed erase is counted', () => {
   assert.ok(s.erased.includes('1 drive sanitization completed'))
 })
 
-test('a missing dry_run flag is treated as a simulation', () => {
+test('a missing dry_run flag is treated as a dry run', () => {
   const s = executiveSummary(detail([op('erase-files', 'complete', {})]), platform)
-  assert.ok(s.erased.some((line) => line.includes('SIMULATION')))
+  assert.ok(s.erased.some((line) => line.includes('dry run')))
 })
 
 test('recovered artifacts are summed over completed carves only', () => {
@@ -138,7 +138,7 @@ test('each unvalidated or unavailable capability is named with its state', () =>
 test('the judge summary never counts a dry run as an erasure', () => {
   const summary = judgeSummary(detail([op('erase-drive', 'complete', { dry_run: true })]), null, 'VALID')
   assert.ok(!summary.erasure.some((line) => /drive sanitization completed/.test(line)))
-  assert.ok(summary.erasure.some((line) => line.includes('SIMULATION')))
+  assert.ok(summary.erasure.some((line) => line.includes('dry run')))
 })
 
 test('no judge summary line states a percentage', () => {

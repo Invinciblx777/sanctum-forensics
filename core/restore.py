@@ -736,7 +736,7 @@ def execute_restore(
             0,
             plan.write_length,
             0,
-            f"SIMULATION: would write bytes {plan.write_offset}-"
+            f"DRY RUN: would write bytes {plan.write_offset}-"
             f"{plan.write_end - 1} of {plan.target.path}; nothing was written",
         )
         return _result(
@@ -1035,7 +1035,7 @@ def _result(
 ) -> RestoreResult:
     limitations = list(plan.limitations)
     if dry_run:
-        limitations.insert(0, "SIMULATION: nothing was written to the target.")
+        limitations.insert(0, "DRY RUN: nothing was written to the target.")
     elif verification is None:
         limitations.insert(0, "UNVERIFIED: the written range was not read back.")
     return RestoreResult(

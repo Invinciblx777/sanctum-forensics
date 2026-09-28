@@ -60,7 +60,7 @@ from core.models import Device
 from fastapi import APIRouter, Depends, HTTPException
 
 from api.authorization import (
-    SIMULATION_MARK,
+    DRY_RUN_MARK,
     AuthorizationStore,
     GateRefused,
     _now,
@@ -684,5 +684,5 @@ def execute_hidden_area(
     return JobAccepted(
         job_id=job_id, kind="hpa-change", state="running", dry_run=body.dry_run,
         stream_url=f"/jobs/{job_id}/stream",
-        notice=SIMULATION_MARK if body.dry_run else "",
+        notice=DRY_RUN_MARK if body.dry_run else "",
     )

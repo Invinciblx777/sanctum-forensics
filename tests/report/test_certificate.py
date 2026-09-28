@@ -48,7 +48,7 @@ def test_the_page_carries_the_sha256_of_the_signed_file() -> None:
                 },
                 "verification": {},
             },
-            b"Simulation: nothing was written",
+            b"Dry run: nothing was written",
         ),
         (
             {
@@ -70,8 +70,8 @@ def test_the_page_carries_the_sha256_of_the_signed_file() -> None:
             b"Not a certificate: the job failed",
         ),
         (
-            {"limitations": ["SIMULATION / NO PHYSICAL DEVICE MODIFIED: host file."]},
-            b"Simulation: no device was sanitized",
+            {"limitations": ["DRY RUN / NO PHYSICAL DEVICE MODIFIED: host file."]},
+            b"Dry run: no device was sanitized",
         ),
     ],
     ids=["dry-run", "failed-read-back", "no-read-back", "job-failed", "host-file"],

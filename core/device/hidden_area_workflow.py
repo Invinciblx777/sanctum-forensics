@@ -555,7 +555,7 @@ class HpaResult(BaseModel):
     job_id: str
     plan_digest: str
     dry_run: bool
-    outcome: Literal["SIMULATED", "COMPLETE", "FAILED"]
+    outcome: Literal["DRY_RUN", "COMPLETE", "FAILED"]
     operation: str
     volatile: bool
     original_native_max_lba: int
@@ -1273,7 +1273,7 @@ def execute(
             job_id=job_id,
             plan_digest=plan.plan_digest,
             dry_run=True,
-            outcome="SIMULATED",
+            outcome="DRY_RUN",
             operation=plan.operation,
             volatile=plan.volatile,
             original_native_max_lba=plan.original_native_max_lba,
