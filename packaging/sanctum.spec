@@ -62,6 +62,16 @@ if BUILD_INFO.is_file():
 SIGNATURES = ROOT / "testkit" / "signatures.yaml"
 if SIGNATURES.is_file():
     datas.append((str(SIGNATURES), "testkit"))
+# The registered synthetic baseline the physical benchmark's 5/10 recall rule
+# compares against. core.benchmark.pipeline.DEFAULT_BASELINE_CSV is computed
+# from __file__ exactly like SIGNATURE_DB_PATH above, so it lands here in both
+# layouts. Without it a packaged build still scores, but reports the rule as
+# NOT_EVALUATED ("no registered baseline") rather than guessing one.
+# core.benchmark itself needs no entry: collect_submodules("core") above
+# walks it like every other core subpackage.
+BASELINE_CSV = ROOT / "docs" / "performance" / "benchmark.csv"
+if BASELINE_CSV.is_file():
+    datas.append((str(BASELINE_CSV), "docs/performance"))
 datas += collect_data_files("reportlab")
 datas += copy_metadata("sanctum-forensics")
 
@@ -100,7 +110,11 @@ exe = EXE(  # noqa: F821
     # usable from a terminal; Windows and macOS are windowed apps.
     console=sys.platform.startswith("linux"),
     icon=icon,
-    # Never embed a UAC manifest asking for elevation: nothing needs it.
+    # Never embed a UAC manifest asking for elevation. File erase, discovery
+    # and acquisition of image files need none; whole-drive work, raw
+    # acquisition and device sanitize need an elevated process, and the
+    # operator starts one deliberately (Run as administrator) - the resolver
+    # reports REQUIRES PRIVILEGE until they do.
     uac_admin=False,
 )
 coll = COLLECT(exe, a.binaries, a.datas, name="Sanctum")  # noqa: F821

@@ -1,5 +1,19 @@
 # Cross-platform release report
 
+> **Current state, 2026-09-28 (`bf4c59b`).** Sections 1 to 6, 8, 9 and 15 are
+> the record of `platform-ci` run 35706589476 at `ba13a9a` and are kept as
+> run. Sections 7, 10, 11, 13 and 14 have been brought up to date: since that
+> run, Windows and macOS gained whole-drive clear and raw acquisition, Windows
+> gained device sanitize (ATA SANITIZE, NVMe Sanitize), Linux and Windows
+> gained a guarded HPA/DCO workflow, and all three gained authorized backup
+> restore. **None of those has run on a physical device.** The authoritative
+> per-platform matrix is generated from the code:
+> [`capability-completion-2026-09-28/capability-matrix.md`](capability-completion-2026-09-28/capability-matrix.md);
+> what changed is in
+> [`capability-completion-2026-09-28/README.md`](capability-completion-2026-09-28/README.md).
+> Suite at `bf4c59b` on the Linux host: 3110 passed, 48 skipped, 0 failed; UI
+> 148 passed.
+
 What was validated, where, and what is still unvalidated. Every number below
 comes from a recorded run: a job in `platform-ci`, an evidence file in
 `core/platform/validation_record.json`, or a suite on the development host.
@@ -20,7 +34,7 @@ Runner `windows-latest`: Windows 11, build 10.0.26100, AMD64, Python 3.11.9.
 | `file_erase` suite (`tests/erase/files`, `tests/platform`) | PASS — 203 passed, 71 skipped, 0 failed |
 | `api` suite (`tests/api`) | PASS — 201 passed, 9 skipped, 0 failed |
 | Adapter against the runner's own disks (`scripts/platform_smoke.py`) | PASS — 2 disks found and normalized, both refused: `PhysicalDrive0` for `IsBoot`, `IsSystem` and the `C:` system volume; `PhysicalDrive1` for an active page file on `D:` |
-| Capability rows | every row carried a source; whole-drive rows UNSUPPORTED |
+| Capability rows | every row carried a source; whole-drive rows UNSUPPORTED (that build had no Windows block engine) |
 
 The Windows-specific behaviour is pinned by `tests/platform/test_windows_filesystem.py`,
 which creates a **real** junction on the runner with `_winapi.CreateJunction`
@@ -122,9 +136,10 @@ nothing in this branch changes the overwrite engine.
 | Installed as a user would | `.deb` installed and removed in a Debian 12 container; AppImage run in Debian 12 and Ubuntu 22.04 containers with no Python present |
 | Signing | unsigned; a SHA-256 sum file is produced |
 
-Linux runs one packaged check fewer than the other two platforms: the check
-that whole-drive work is refused off Linux has nothing to assert on the
-platform where it is supported.
+Linux runs one packaged check fewer than the other two platforms: in that
+build, the check that whole-drive work is refused off Linux had nothing to
+assert on the platform where it was supported. The package smoke now asserts
+resolver states and that each platform's backends ship instead.
 
 The 24 packaged checks drive the **installed** application over loopback:
 401 without the session cookie, 303 on the session link, 400 for a foreign
@@ -134,23 +149,30 @@ certificate that verifies, and a quit that stops the process.
 
 ## 7. Updated platform matrix
 
-The full matrix is [`platform-support.md`](../platform-support.md); the test
-matrix is [`platform-matrix.md`](platform-matrix.md). In summary:
+The authoritative matrix is the generated
+[`capability-matrix.md`](capability-completion-2026-09-28/capability-matrix.md);
+[`platform-support.md`](../platform-support.md) explains it and
+[`platform-matrix.md`](platform-matrix.md) is the CI test record. Current
+state, in the resolver's labels (SUPPORTED means a recorded physical run on
+the named device class):
 
 | Capability | Linux | Windows | macOS |
 |---|---|---|---|
-| Device discovery and normalization | VALIDATED | VALIDATED (CI) | VALIDATED (CI) |
-| System/boot/mounted refusal | VALIDATED | VALIDATED (CI) | VALIDATED (CI) |
-| File and folder erase | VALIDATED | VALIDATED (CI) | VALIDATED (CI) |
-| File-erase verification | PARTIAL — physical read-back needs raw read access | PARTIAL — extents from `FSCTL_GET_RETRIEVAL_POINTERS`; unelevated it reports *not verified* | **NOT VERIFIABLE on APFS** — copy-on-write, stated with its reason |
-| Free-space wipe | PARTIAL — FAT32, exFAT, ext4 | UNSUPPORTED | UNSUPPORTED |
-| Whole-drive Clear | VALIDATED on real USB flash | UNSUPPORTED | UNSUPPORTED |
-| Firmware Purge | HARDWARE-UNVERIFIED | UNSUPPORTED | UNSUPPORTED |
-| Signed certificate, hash-chained ledger | VALIDATED | VALIDATED (CI) | VALIDATED (CI) |
-| Privileged helper | VALIDATED | not needed, none ships | not needed, none ships |
-| Desktop package | VALIDATED | VALIDATED in CI, unsigned | VALIDATED in CI, unsigned and not notarized |
+| Device discovery | SUPPORTED (`usb-flash`) | SUPPORTED (`usb-flash`, 2026-09-27) | IMPLEMENTED / UNVALIDATED |
+| File and folder erase | IMPLEMENTED / UNVALIDATED | SUPPORTED (host disk, class not recorded, 2026-09-27) | IMPLEMENTED / UNVALIDATED; **NOT VERIFIABLE on APFS** |
+| Free-space wipe | IMPLEMENTED / UNVALIDATED (FAT32, exFAT, ext4) | NOT IMPLEMENTED | NOT IMPLEMENTED |
+| Whole-drive clear (addressable overwrite) | SUPPORTED (`usb-flash` only) | IMPLEMENTED / UNVALIDATED | IMPLEMENTED / UNVALIDATED (external disks; internal Apple storage BLOCKED FOR SAFETY) |
+| Device sanitize (ATA SANITIZE, NVMe Sanitize, crypto erase) | DEVICE-DEPENDENT | DEVICE-DEPENDENT (ATA SECURITY ERASE NOT IMPLEMENTED, NVMe Format PLATFORM-LIMITED) | PLATFORM-LIMITED |
+| Raw physical-device acquisition | SUPPORTED (`usb-flash`) | IMPLEMENTED / UNVALIDATED (no software write block) | IMPLEMENTED / UNVALIDATED (no software write block) |
+| HPA / DCO modification | DEVICE-DEPENDENT | DEVICE-DEPENDENT | PLATFORM-LIMITED |
+| Backup restore | IMPLEMENTED / UNVALIDATED | IMPLEMENTED / UNVALIDATED | IMPLEMENTED / UNVALIDATED |
+| Signed certificate, hash-chained ledger | CI and physical (Linux stick, earlier build) | CI; physical certificate on 2026-09-27 | CI |
+| Desktop package | CI and physical host | CI, unsigned; installed on a physical machine 2026-09-27 | CI, unsigned and not notarized |
 
-Nothing above was performed on physical media on Windows or macOS.
+Nothing destructive at the device level, and no raw acquisition, has been
+performed on physical media on Windows or macOS. The run recorded in this
+report (sections 1 to 6) predates every Windows and macOS row that now reads
+IMPLEMENTED / UNVALIDATED or DEVICE-DEPENDENT.
 
 ## 8. Real validation records
 
@@ -175,7 +197,11 @@ Recorded results:
 | windows | PASS | PASS | PASS | NOT RUN | UNSUPPORTED | PASS |
 | macos | PASS | PASS | PASS | NOT RUN | UNSUPPORTED | PASS |
 
-NOT RUN is not PASS, and UNSUPPORTED is a refusal, not a gap.
+NOT RUN is not PASS, and UNSUPPORTED is a refusal, not a gap. (This table is
+the record at `ba13a9a`. Since then the file also holds `physical_validations`,
+matched on platform, capability and device class, and CI records the Windows
+and macOS clear from the backends suite; see the generated matrix for the
+current state.)
 
 Every CI row names commit `ba13a9a73bf8`, the commit run 35706589476
 tested; the two developer-host suites name the commit they ran at. No row
@@ -232,33 +258,41 @@ are not pinned by hash.
 
 ## 10. Remaining hardware-only validation
 
-Full list in [`hardware-platform-matrix.md`](hardware-platform-matrix.md).
+Full list in [`hardware-platform-matrix.md`](hardware-platform-matrix.md);
+the procedure is [`physical-validation-procedure.md`](physical-validation-procedure.md).
 None of this can be closed in CI, because a hosted runner has virtual disks
-and no removable media.
+and no removable media. Windows discovery (USB stick), Windows file erase
+(host disk) and the Windows package install by a human were closed on
+2026-09-27.
 
 | What | Needs |
 |---|---|
-| Windows device discovery and file erase on a physical machine with removable media | a Windows 11 box and a disposable USB stick |
-| macOS device discovery and file erase on a physical Mac with removable media | a Mac and a disposable USB stick |
-| Windows and macOS package installed by a human | the same two machines |
-| Firmware Purge (ATA SANITIZE, SECURITY ERASE, NVMe sanitize/format, Opal) | a Linux host and a drive that reports the capability, plus permission to lose its data |
-| HPA/DCO unlock | a drive with a hidden area set |
+| Windows whole-drive clear and raw acquisition | a Windows machine run as Administrator and a disposable USB stick taken offline |
+| macOS discovery, file erase, whole-drive clear and raw acquisition | a Mac and a disposable external disk |
+| macOS package installed by a human | the same Mac |
+| Device sanitize (ATA SANITIZE, SECURITY ERASE, NVMe Sanitize/Format, Opal) | a Linux or Windows host and a drive that reports the capability, plus permission to lose its data |
+| HPA modification through the guarded workflow | a drive with a hidden area set |
+| Backup restore | a disposable device and an independent hashing tool |
 | SSD residual behaviour after an overwrite | physical media and out-of-band reading |
-| Whole-drive Clear on internal SATA/NVMe | a spare internal drive; the development host's are refused because they hold the running system |
+| Whole-drive clear on internal SATA/NVMe | a spare internal drive; the development host's are refused because they hold the running system |
 
-## 11. Remaining unsupported functionality
+Each run validates only its own `(platform, capability, device class)`.
 
-Deliberate refusals. The app states the reason and performs nothing.
+## 11. Remaining unavailable functionality
 
-| Not available | Where | Why |
-|---|---|---|
-| Whole-drive sanitization | Windows, macOS | No validated raw-disk engine. `\\.\PhysicalDriveN` with `IOCTL_STORAGE_PROTOCOL_COMMAND` could reach it, but writing that without hardware to validate against is the one component where being wrong destroys the wrong disk. On macOS, internal storage is purged by *Erase All Content and Settings*, which this app can neither perform nor verify; it names that path instead. |
-| Firmware Purge | Windows, macOS | follows from the above |
-| Free-space wipe | Windows, macOS | no validated backend |
-| Resume of an interrupted erase | Windows, macOS | there is no erase to resume |
-| Privileged helper | Windows, macOS | nothing implemented there needs elevation, so nothing is escalated |
-| File-erase verification | macOS (APFS) | copy-on-write: the overwrite cannot be proved to have reached the old blocks. Reported as *not verifiable*, with the reason, never as a pass. |
-| Code signing, notarization | all | no certificates |
+The app states the reason and performs nothing.
+
+| Not available | Where | State | Why |
+|---|---|---|---|
+| ATA SECURITY ERASE UNIT | Windows | NOT IMPLEMENTED | The sequence sets a drive password first; a refused or interrupted erase leaves the drive locked, and no recovery path has been built and tested on Windows. ATA SANITIZE is offered instead where supported. |
+| NVMe Format NVM | Windows | PLATFORM-LIMITED | The in-box NVMe driver does not pass Format NVM through `IOCTL_STORAGE_PROTOCOL_COMMAND`. NVMe Sanitize is used instead where supported. |
+| Device sanitize, crypto erase, HPA/DCO | macOS | PLATFORM-LIMITED | No public ATA pass-through or NVMe admin-command interface. Internal storage is purged by *Erase All Content and Settings*, which this app names and can neither perform nor verify. |
+| Raw write or image of internal Apple storage | macOS | BLOCKED FOR SAFETY | Secure Enclave-encrypted; a raw image is ciphertext, and a raw write is never the purge path. |
+| Free-space wipe | Windows, macOS | NOT IMPLEMENTED | NTFS and APFS fill behaviour has not been measured |
+| DCO modification | all | not issued | DCO RESTORE can make a drive report a different model's geometry |
+| Software write block | Windows, macOS | not available on the OS | raw acquisition opens read-only and the report names a hardware write blocker as the control |
+| File-erase verification | macOS (APFS) | NOT VERIFIABLE | copy-on-write: the overwrite cannot be proved to have reached the old blocks. Reported as *not verifiable*, with the reason, never as a pass. |
+| Code signing, notarization | all | not performed | no certificates |
 
 ## 12. Commands to reproduce each build
 
@@ -305,11 +339,18 @@ SANCTUM_HELPER_SOCKET=/run/sanctum/helper.sock SANCTUM_STATE_DIR=/var/lib/sanctu
 ```powershell
 # Windows
 .\SanctumSetup.exe        # per-user, no elevation prompt; then Sanctum in the Start menu
+# Whole-drive, device sanitize, raw acquisition, HPA/DCO and restore need an
+# elevated process: right-click Sanctum > Run as administrator. The Windows
+# build has no separate helper. Take the target disk offline first
+# (Devices > Prepare, or Disk Management > Offline).
 ```
 
 ```bash
 # macOS
 open Sanctum.dmg          # drag Sanctum to Applications, then right-click > Open the first time
+# Raw-device work on an external disk needs root: the adapter's advice is to
+# start the Sanctum helper with sudo, then rescan. Unmount the disk first
+# (Devices > Prepare, or diskutil unmountDisk).
 ```
 
 From a source checkout, on any of the three: `python -m api.desktop`, or
@@ -326,7 +367,7 @@ Linux, Windows and macOS, and three package jobs. No pre-existing work was
 discarded; the uncommitted work that was in the tree at the start of this
 effort was committed first, on its own, as `a0964be`.
 
-The claim this evidence supports, and the one to make:
+The claim this evidence supported at `ba13a9a`, kept as made:
 
 > Sanctum provides a unified cross-platform desktop experience with native
 > Linux, Windows and macOS capability adapters. File and folder sanitization
@@ -339,6 +380,20 @@ What must **not** be claimed: that Windows or macOS whole-drive sanitization
 works, that any package is signed or notarized, that a physical device has
 been sanitized on Windows or macOS, or that the project is "cross-platform
 complete".
+
+The claim the evidence supports on 2026-09-28, at `bf4c59b`:
+
+> Whole-drive clear, raw acquisition and backup restore are implemented on
+> Linux, Windows and macOS, and device sanitize on Linux and Windows where the
+> drive reports it. Only Linux whole-drive clear and raw acquisition, on one
+> USB flash stick, are physically validated; everything else at the device
+> level is implemented and tested against fixtures and adapter doubles, not
+> physically validated, and says so on every screen and report.
+
+What must still **not** be claimed: that a Windows or macOS whole-drive clear,
+raw acquisition, device sanitize or restore has been run on a physical device,
+that any firmware Purge has run on any drive, or that any package is signed or
+notarized.
 
 ## 15. Files changed
 

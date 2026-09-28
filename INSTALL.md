@@ -12,17 +12,29 @@ copy:
 - **From source** — for development, running the test suite, or when you want
   the exact code in this checkout.
 
-Before you start, know what each platform can do. Whole-drive sanitization
-(M1) runs **only on Linux**. File and folder erasure (M2), recovery from an
-image (M3), and signed reports work on all three. The full matrix is in
-[`docs/platform-support.md`](docs/platform-support.md).
+Before you start, know what each platform can do. Two questions are kept
+apart everywhere in this repository: **is it implemented** on that platform,
+and **has it been run on a physical device** of that class. File and folder
+erasure (M2), recovery from an image (M3), and signed reports are implemented
+on all three. Whole-drive clear and raw device acquisition are now implemented
+on all three too, but outside Linux they have only been tested against
+synthetic media and adapter doubles.
 
 | | Linux | Windows | macOS |
 |---|---|---|---|
 | Supported OS | x86_64; packages run on Debian 12 and Ubuntu 22.04, source verified on Fedora 44 | Windows 10 1809+ / 11, x64 | macOS 12+ (arm64 package; source install on Intel too) |
-| Whole-drive erase (M1) | yes, through the root helper | refused, with the reason | refused, with the reason |
-| File / folder erase (M2) | yes | yes | yes (verification is not possible on APFS; reported, not claimed) |
+| Whole-drive clear (M1, addressable overwrite) | SUPPORTED on `usb-flash` (one TOSHIBA TransMemory stick, 2026-09-05); IMPLEMENTED / UNVALIDATED on every other class; needs the root helper | IMPLEMENTED / UNVALIDATED; needs **Run as administrator** and the disk taken offline | IMPLEMENTED / UNVALIDATED for external disks; needs root; internal Apple storage is never raw-written |
+| Device sanitize (M1 Purge: ATA / NVMe) | DEVICE-DEPENDENT, never run on a physical drive | ATA SANITIZE and NVMe Sanitize DEVICE-DEPENDENT, never run on a physical drive; ATA SECURITY ERASE NOT IMPLEMENTED; NVMe Format PLATFORM-LIMITED | PLATFORM-LIMITED (no public ATA/NVMe pass-through) |
+| Raw device acquisition (M3) | SUPPORTED on `usb-flash` (same stick, 2026-09-05) | IMPLEMENTED / UNVALIDATED; read-only handle, no software write block | IMPLEMENTED / UNVALIDATED for external disks; no software write block |
+| File / folder erase (M2) | IMPLEMENTED / UNVALIDATED | SUPPORTED on the host system disk (class not recorded, 2026-09-27) | IMPLEMENTED / UNVALIDATED (APFS: the overwrite cannot be verified; reported, not claimed) |
 | Recovery from image (M3) | yes | yes | yes |
+
+These states come from the capability resolver, not from this page. The
+generated per-platform matrix, with the reason and limit for every row, is
+[`capability-matrix.md`](docs/validation/capability-completion-2026-09-28/capability-matrix.md);
+what changed and what is physically validated is in
+[`capability-completion-2026-09-28/`](docs/validation/capability-completion-2026-09-28/README.md).
+The app shows the same states, with their reasons, on its **Platform** screen.
 
 ---
 
@@ -166,6 +178,8 @@ key before the first ledger entry, is in
 1. Run `SanctumSetup.exe`. The installer is **unsigned**, so SmartScreen shows
    *Windows protected your PC*; choose **More info → Run anyway**.
 2. It installs per-user by default and does not ask for Administrator.
+   Installing needs no elevation; whole-drive and raw device work later does
+   (see [Windows: what to expect](#windows-what-to-expect)).
 3. Start **Sanctum** from the Start menu. It opens in its own window (WebView2).
 
 Uninstall from **Settings → Apps**. The ledger and reports in
@@ -217,12 +231,31 @@ Bash or any shell with GNU make; it detects the Windows venv layout.
 
 ### Windows: what to expect
 
-- Whole-drive sanitization is **refused** on Windows, with the reason. To
-  sanitize a whole drive on a Windows machine, boot a Linux live USB and run
-  the Linux AppImage on the same hardware.
+- **Device work needs Run as administrator.** Whole-drive clear, device
+  sanitize (ATA SANITIZE, NVMe Sanitize), raw physical-device and volume
+  acquisition, and the HPA/DCO workflow open `\\.\PhysicalDriveN` or send
+  a pass-through command, which Windows grants to an elevated process only.
+  The Windows build has **no separate helper**: close Sanctum and start it
+  again with *Run as administrator* (right-click the Start menu entry, or an
+  elevated PowerShell for a source install). Without elevation those
+  capabilities read **REQUIRES PRIVILEGE**; discovery and file erasure still
+  work unelevated.
+- **Take the disk offline first.** A disk that still exposes any volume is
+  refused, and no erase takes a disk offline by itself. Use **Devices →
+  Prepare** (a dry run first, then the real step with the serial typed by
+  hand; the offline state is not persistent and the disk returns online at the
+  next reboot or when you bring it online), or *Disk Management → Offline*.
+  The system disk is always refused.
+- **What has been run on physical hardware.** Device discovery on a USB stick
+  and file/folder erase on the host system disk (2026-09-27). Whole-drive
+  clear, device sanitize and raw acquisition on Windows are implemented and
+  tested against adapter doubles only; the app shows them as
+  **IMPLEMENTED / UNVALIDATED** or **DEVICE-DEPENDENT**, never as validated.
+- ATA SECURITY ERASE is **NOT IMPLEMENTED** on Windows, NVMe Format is
+  **PLATFORM-LIMITED**, and free-space wipe is **NOT IMPLEMENTED**; the app
+  says why for each.
 - File-erase verification reads the disk back; without elevation it is
-  reported as *not verified*, never as a pass. The app never asks to run as
-  Administrator.
+  reported as *not verified*, never as a pass.
 
 ---
 
@@ -279,9 +312,27 @@ python -m api.desktop       # opens a native window
 
 ### macOS: what to expect
 
-- Whole-drive sanitization is **refused** on macOS, with the reason. macOS
-  purges its own internal storage through *Erase All Content and Settings*,
-  which the app names but does not perform.
+- **Internal Apple storage is never raw-written or imaged.** On Apple silicon
+  and T2 Macs the Secure Enclave encrypts it; the purge path is macOS's own
+  **System Settings → General → Transfer or Reset → Erase All Content and
+  Settings**, which destroys the storage encryption keys. The app names it as
+  the recommended action and cannot perform or verify it.
+- **External disks: whole-drive clear and raw acquisition need root.** They
+  go through `/dev/rdiskN`, which macOS opens for root only; without it the
+  capabilities read **REQUIRES PRIVILEGE**. The in-app advice says to start
+  Sanctum itself with `sudo`. Note that the Linux socket daemon
+  (`python -m helper`) does not start on macOS — it exits with *"The
+  privileged helper is Linux-only"* — so in this build the raw work runs in
+  the Sanctum server process itself, and that process must be the one started
+  with `sudo`. Unmount every volume on the disk first: **Devices → Prepare**
+  (dry run, then the real step with the typed serial) or
+  `diskutil unmountDisk /dev/diskN`. A mounted disk is refused and no erase
+  unmounts one itself.
+- **Nothing on macOS has been run on a physical device.** Discovery, file
+  erase, whole-drive clear of an external disk and raw acquisition are
+  **IMPLEMENTED / UNVALIDATED**. Device sanitize, crypto erase and HPA/DCO are
+  **PLATFORM-LIMITED** (macOS exposes no public ATA or NVMe pass-through), and
+  free-space wipe is **NOT IMPLEMENTED**.
 - File erasure runs on APFS, but APFS is copy-on-write, so the erase cannot be
   verified. The report says *not verifiable* and gives the reason.
 

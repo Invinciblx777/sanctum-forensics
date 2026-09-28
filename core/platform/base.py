@@ -29,11 +29,21 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Generator
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
-from core.errors import PlatformUnsupported
+from core.errors import (
+    ConfirmationMismatch,
+    MountedRefused,
+    PlatformUnsupported,
+    SystemDiskRefused,
+    UnsupportedCapability,
+)
 from core.platform.model import (
     OPERATION_LABELS,
+    RUNNABLE_STATES,
+    STATE_LABELS,
+    Capability,
+    CapabilityState,
     CapabilityStatus,
     DeviceAssessment,
     MediaClassSupport,
@@ -43,9 +53,13 @@ from core.platform.model import (
     PlatformFamily,
     PlatformInfo,
     PrivilegeState,
+    ResolvedCapability,
     SafetyCheck,
     SanitizeOption,
 )
+
+if TYPE_CHECKING:  # pragma: no cover
+    from core.platform.capability import MechanismProbe, StrategyResolution
 
 __all__ = [
     "PlatformAdapter",
@@ -74,13 +88,115 @@ _RUNNABLE = frozenset(
 def _offerable(option: SanitizeOption) -> bool:
     """Whether a drive option is offered to the operator.
 
-    A runnable status, or UNVERIFIED with a method the engine would run: the
-    code path exists and the drive reported the command, but no hardware
-    result is recorded. It is offered under that word, never as supported.
+    The resolver's state decides when it is set: only a runnable state is
+    offered, and IMPLEMENTED / UNVALIDATED is offered under that word, never as
+    supported. Without a state (an option built before resolution) the older
+    rule applies: a runnable status, or UNVERIFIED with a method.
     """
+    if option.state is not None:
+        available = option.state in RUNNABLE_STATES or (
+            option.state is CapabilityState.AVAILABLE_BUT_REQUIRES_PRIVILEGE
+        )
+        return available and (option.method is not None or option.level == "CLEAR")
     if option.status in _RUNNABLE:
         return True
     return option.status is CapabilityStatus.UNVERIFIED and option.method is not None
+
+
+#: Which resolver capability backs each platform-matrix row. Rows whose
+#: operation is not here (none today) keep the adapter's own status.
+_OPERATION_CAPABILITY: dict[Operation, Capability] = {
+    Operation.DEVICE_DISCOVERY: Capability.DEVICE_DISCOVERY,
+    Operation.FILE_ERASE: Capability.FILE_ERASE,
+    Operation.FOLDER_ERASE: Capability.FILE_ERASE,
+    Operation.BATCH_ERASE: Capability.FILE_ERASE,
+    Operation.METADATA_CLEANSE: Capability.FILE_ERASE,
+    Operation.FILE_VERIFICATION: Capability.FILE_ERASE,
+    Operation.FREE_SPACE_WIPE: Capability.FREE_SPACE_WIPE,
+    Operation.WHOLE_DRIVE_CLEAR: Capability.WHOLE_DRIVE_CLEAR,
+    Operation.DRIVE_VERIFICATION: Capability.WHOLE_DRIVE_CLEAR,
+    Operation.RESUME: Capability.WHOLE_DRIVE_CLEAR,
+}
+
+#: Device-sanitize capabilities, the ones a "Purge" row summarises.
+FIRMWARE_CAPABILITIES: tuple[Capability, ...] = (
+    Capability.NVME_SANITIZE,
+    Capability.ATA_SANITIZE,
+    Capability.CRYPTO_ERASE,
+    Capability.NVME_FORMAT,
+    Capability.ATA_SECURITY_ERASE,
+)
+
+#: ``core.models.EraseMethod`` value -> the capability that performs it.
+METHOD_CAPABILITY: dict[str, Capability] = {
+    "SINGLE_PASS_OVERWRITE": Capability.WHOLE_DRIVE_CLEAR,
+    "DOD_5220_22_M_3PASS": Capability.WHOLE_DRIVE_CLEAR,
+    "ATA_SECURITY_ERASE_ENHANCED": Capability.ATA_SECURITY_ERASE,
+    "ATA_SANITIZE_BLOCK_ERASE": Capability.ATA_SANITIZE,
+    "ATA_SANITIZE_OVERWRITE": Capability.ATA_SANITIZE,
+    "NVME_SANITIZE_BLOCK": Capability.NVME_SANITIZE,
+    "NVME_SANITIZE_CRYPTO": Capability.CRYPTO_ERASE,
+    "NVME_FORMAT_SES1": Capability.NVME_FORMAT,
+    "ATA_SANITIZE_CRYPTO_SCRAMBLE": Capability.CRYPTO_ERASE,
+    "SED_CRYPTO_ERASE": Capability.CRYPTO_ERASE,
+}
+
+#: How restrictive each state is. Merging two answers keeps the higher.
+_RANK: dict[CapabilityState, int] = {
+    CapabilityState.VALIDATED_PHYSICAL: 0,
+    CapabilityState.IMPLEMENTED_NOT_PHYSICALLY_VALIDATED: 1,
+    CapabilityState.IMPLEMENTED_DEVICE_DEPENDENT: 2,
+    CapabilityState.AVAILABLE_BUT_REQUIRES_PRIVILEGE: 3,
+    CapabilityState.UNSUPPORTED_BY_DEVICE: 4,
+    CapabilityState.BLOCKED_BY_SAFETY_POLICY: 5,
+    CapabilityState.NOT_IMPLEMENTED: 6,
+    CapabilityState.UNSUPPORTED_BY_PLATFORM: 6,
+}
+
+
+def implied_state(status: CapabilityStatus) -> CapabilityState | None:
+    """The state an adapter's own status word implies, or None if it implies none.
+
+    Used only to *restrict*: an adapter that refused something for a reason the
+    resolver cannot see (a container, a missing tool) wins over the table.
+    """
+    privileged = CapabilityState.AVAILABLE_BUT_REQUIRES_PRIVILEGE
+    return {
+        CapabilityStatus.NOT_AUTHORIZED: privileged,
+        CapabilityStatus.INCONCLUSIVE: CapabilityState.IMPLEMENTED_DEVICE_DEPENDENT,
+        CapabilityStatus.NOT_VERIFIABLE: CapabilityState.UNSUPPORTED_BY_PLATFORM,
+        CapabilityStatus.UNSUPPORTED: CapabilityState.BLOCKED_BY_SAFETY_POLICY,
+    }.get(status)
+
+
+def more_restrictive(
+    first: CapabilityState, second: CapabilityState | None
+) -> CapabilityState:
+    if second is None:
+        return first
+    return second if _RANK[second] > _RANK[first] else first
+
+
+def purge_summary(
+    resolved: dict[Capability, ResolvedCapability],
+) -> ResolvedCapability | None:
+    """One answer for "hardware purge" from the per-protocol answers.
+
+    The least restrictive firmware capability wins, because the row asks
+    whether *any* device-sanitize path exists here; each path keeps its own
+    row in the resolver's list.
+    """
+    candidates = [resolved[item] for item in FIRMWARE_CAPABILITIES if item in resolved]
+    if not candidates:
+        return None
+    best = min(candidates, key=lambda item: _RANK[item.state])
+    names = [
+        f"{item.label}: {item.state_label.lower()}"
+        for item in candidates
+    ]
+    return best.model_copy(
+        update={"reason": best.reason + " Per protocol - " + "; ".join(names) + "."}
+    )
 
 
 def row(
@@ -92,8 +208,14 @@ def row(
     verification: str = "",
     limitations: list[str] | None = None,
     requires_privilege: bool = False,
+    state: CapabilityState | None = None,
 ) -> OperationCapability:
-    """Build one capability row. ``source`` is mandatory by construction."""
+    """Build one capability row. ``source`` is mandatory by construction.
+
+    ``state`` is set only when the adapter knows a precise reason the resolver
+    cannot see (a container, a missing tool); it then restricts the resolver's
+    answer rather than being replaced by it.
+    """
     if not source:
         raise ValueError(f"capability row {operation} has no source")
     return OperationCapability(
@@ -105,6 +227,8 @@ def row(
         verification=verification,
         limitations=list(limitations or []),
         requires_privilege=requires_privilege,
+        state=state,
+        state_label=STATE_LABELS[state] if state else "",
     )
 
 
@@ -169,9 +293,17 @@ class BaseAdapter:
     name = "base"
     family: PlatformFamily = "other"
 
-    def __init__(self, *, helper: str = "in-process", helper_basis: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        helper: str = "in-process",
+        helper_basis: str = "",
+        privilege: PrivilegeState | None = None,
+    ) -> None:
         self._helper = helper
         self._helper_basis = helper_basis
+        #: Tests only: the privilege this adapter reports instead of the host's.
+        self._privilege_override = privilege
         self.discovery = DiscoveryOutcome()
 
     # -- host ---------------------------------------------------------------
@@ -182,6 +314,8 @@ class BaseAdapter:
         return platform_info()
 
     def privilege_state(self) -> PrivilegeState:
+        if self._privilege_override is not None:
+            return self._privilege_override
         from core.platform.host import privilege_state
 
         return privilege_state(helper=self._helper, helper_basis=self._helper_basis)
@@ -255,6 +389,185 @@ class BaseAdapter:
             remediation=self.whole_drive_recommended_action(),
         )
         yield {}  # pragma: no cover - makes this a generator
+
+    def authorization_probe(self, path: str) -> dict[str, Any]:
+        """The fresh read the erase workflow binds and the write seam re-checks.
+
+        ``{"device": {path, serial, model, size_bytes, is_system_disk,
+        mounted_at, ...}, "capabilities": {achievable_levels,
+        est_erase_seconds, limitations}}``. The default refuses: a platform
+        without an engine has nothing to authorize.
+        """
+        raise PlatformUnsupported(
+            self.whole_drive_unavailable_reason()
+            + " No operation was performed on the device.",
+            remediation=self.whole_drive_recommended_action(),
+        )
+
+    def prepare_device(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Unmount or take offline, as a separate explicit step. Default: none."""
+        raise PlatformUnsupported(
+            f"This build has no device preparation step for {self.family}; "
+            "unmount the device with the operating system's own tools.",
+        )
+
+    #: Device-sanitize capabilities this adapter can execute, strongest first.
+    sanitize_capabilities: tuple[Capability, ...] = ()
+
+    def _revalidated(self, params: dict[str, Any]) -> NormalizedDevice:
+        """Re-read the device now and apply every refusal before anything opens."""
+        wanted = str(params["path"])
+        device = self.inspect_device(wanted)
+        dry_run = params.get("dry_run", True) is not False
+        if device.system_device:
+            raise SystemDiskRefused(
+                f"Refusing {device.path}: it is the system or boot disk. "
+                + " ".join(device.system_reasons)
+            )
+        if device.mounted:
+            raise MountedRefused(
+                f"Refusing {device.path}: volumes on it are mounted at "
+                + ", ".join(device.mount_points)
+                + ". Nothing was written.",
+                remediation=self.whole_drive_recommended_action(),
+            )
+        serial = normalized_serial(device.serial)
+        if not serial:
+            raise ConfirmationMismatch(
+                f"{device.path} reports no serial number, so its identity cannot "
+                "be bound. Nothing was written.",
+                remediation="Use a device that reports a serial, or clear it on "
+                "Linux where the by-id path is available.",
+            )
+        twins = [
+            item.id
+            for item in self.discovery.devices
+            if item.id != device.id and normalized_serial(item.serial) == serial
+        ]
+        if twins:
+            raise ConfirmationMismatch(
+                f"{device.path} and {', '.join(twins)} report the same serial "
+                f"{device.serial!r}; the identity is ambiguous. Nothing was written.",
+                remediation="Detach the other device, rescan and try again.",
+            )
+        if not dry_run:
+            typed = normalized_serial(str(params.get("typed_serial") or ""))
+            if typed != serial:
+                raise ConfirmationMismatch(
+                    f"The typed serial does not match {device.path}, whose serial "
+                    f"is {device.serial!r}. Nothing was written."
+                )
+        return device
+
+    def _choose(
+        self, device: NormalizedDevice, level: str, *, dry_run: bool
+    ) -> tuple[Capability, Any]:
+        resolution = self.device_resolution(device)
+        allowed = set(RUNNABLE_STATES)
+        if dry_run:
+            allowed.add(CapabilityState.AVAILABLE_BUT_REQUIRES_PRIVILEGE)
+        if level == "CLEAR":
+            row = resolution.get(Capability.WHOLE_DRIVE_CLEAR)
+            if row.state not in allowed:
+                raise UnsupportedCapability(
+                    f"Whole-drive clear of {device.path} is {row.state_label}: "
+                    f"{row.reason}",
+                    remediation=self.whole_drive_recommended_action(),
+                )
+            return Capability.WHOLE_DRIVE_CLEAR, resolution
+        for capability in (
+            Capability.NVME_SANITIZE,
+            Capability.ATA_SANITIZE,
+            Capability.CRYPTO_ERASE,
+        ):
+            if resolution.get(capability).state in allowed and (
+                capability in self.sanitize_capabilities
+            ):
+                return capability, resolution
+        reasons = "; ".join(
+            f"{row.label}: {row.state_label} ({row.reason})"
+            for row in resolution.capabilities
+            if row.capability
+            in {
+                Capability.NVME_SANITIZE,
+                Capability.ATA_SANITIZE,
+                Capability.CRYPTO_ERASE,
+                Capability.NVME_FORMAT,
+                Capability.ATA_SECURITY_ERASE,
+            }
+        )
+        raise UnsupportedCapability(
+            f"No device sanitize is available for {device.path}. It is never "
+            f"replaced by an overwrite. {reasons}",
+            remediation="Choose Clear, or attach the drive where its controller "
+            "is reachable (a direct SATA or NVMe connection).",
+        )
+
+    def _block_engine_rows(
+        self, privilege: PrivilegeState
+    ) -> list[OperationCapability]:
+        """Whole-drive rows for a platform whose engine is ``core.erase.blockclear``.
+
+        The resolver decides the final state; these rows carry only what the
+        adapter knows (privilege) and the verification wording.
+        """
+        privileged = self._privileged_enough(privilege)
+        status = (
+            CapabilityStatus.NOT_AUTHORIZED
+            if privileged is False
+            else CapabilityStatus.UNVERIFIED
+        )
+        src = "core.erase.blockclear; " + privilege.basis
+        return [
+            row(
+                Operation.FREE_SPACE_WIPE,
+                CapabilityStatus.UNSUPPORTED,
+                "Free-space wipe is not implemented on this platform.",
+                "core.erase.freespace.FREE_SPACE_PLATFORMS",
+                verification="Nothing runs here, so there is nothing to verify.",
+                state=CapabilityState.NOT_IMPLEMENTED,
+            ),
+            row(
+                Operation.WHOLE_DRIVE_CLEAR,
+                status,
+                "Every addressable LBA is overwritten through a handle bound to "
+                "the planned disk, then read back.",
+                src,
+                verification="Full read-back up to 64 GiB, seeded sampling "
+                "above it with the detection probability stated.",
+                limitations=[FLASH_LIMITATION],
+                requires_privilege=True,
+            ),
+            row(
+                Operation.WHOLE_DRIVE_PURGE,
+                status,
+                "Decided per device from the controller's own report.",
+                "core.erase.devicesanitize; " + privilege.basis,
+                verification="The device's or driver's completion status, then a "
+                "sampled read-back of the medium.",
+                requires_privilege=True,
+            ),
+            row(
+                Operation.DRIVE_VERIFICATION,
+                status,
+                "Overwrites are read back; device sanitize is sampled after the "
+                "command completes.",
+                "core.erase.blockclear.verify_target",
+                verification="A sampled verification states its seed and "
+                "detection probability; uncertainty is never reported as a pass.",
+                requires_privilege=True,
+            ),
+            row(
+                Operation.RESUME,
+                status,
+                "An interrupted clear continues from its last ledgered "
+                "checkpoint, through a handle bound to the same disk.",
+                "core.erase.blockclear.clear(resume_from=...)",
+                verification="The resumed run is verified over the whole "
+                "device, exactly as an uninterrupted one.",
+                requires_privilege=True,
+            ),
+        ]
 
     # -- restrictions -------------------------------------------------------
 
@@ -392,6 +705,10 @@ class BaseAdapter:
         privilege = self.privilege_state()
         checks = self.safety_checks(device, privilege)
         options, verification = self.drive_options(device)
+        resolution = self.device_resolution(
+            device, privilege, planned=_planned_probes(options)
+        )
+        options = [self._annotate_option(item, resolution) for item in options]
         runnable = [item for item in options if _offerable(item)]
         unavailable = [item for item in options if not _offerable(item)]
         recommended = runnable[0] if runnable else None
@@ -403,6 +720,8 @@ class BaseAdapter:
             "safety_checks": checks,
             "flash_limitation": flash_note,
             "verification": verification,
+            "device_class": resolution.device_class,
+            "capabilities": resolution.capabilities,
         }
 
         if device.system_device:
@@ -414,11 +733,7 @@ class BaseAdapter:
                     "This is the system or boot disk, or holds a protected "
                     "operating-system volume. " + " ".join(device.system_reasons)
                 ).strip(),
-                recommended_action=(
-                    "Boot the machine from external media (for example the "
-                    "Sanctum Linux build on a USB stick) and sanitize the "
-                    "internal disk from there, or use the OS's own reset flow."
-                ),
+                recommended_action=self._system_disk_advice(device),
                 unavailable=options,
             )
         if device.mounted:
@@ -438,7 +753,11 @@ class BaseAdapter:
                 unavailable=options,
             )
         if recommended is None:
-            first = options[0] if options else None
+            # The Clear option's reason when there is one: it is the path every
+            # device has, so why *it* is unavailable is the answer an operator
+            # needs; why a firmware path is also absent is secondary.
+            clears = [item for item in options if item.level == "CLEAR"]
+            first = clears[0] if clears else options[0] if options else None
             return DeviceAssessment(
                 **base,
                 status=CapabilityStatus.UNSUPPORTED,
@@ -476,6 +795,13 @@ class BaseAdapter:
 
     def _elevation_advice(self) -> str:
         return "Start the privileged helper, then rescan."
+
+    def _system_disk_advice(self, device: NormalizedDevice) -> str:
+        return (
+            "Boot the machine from external media (for example the Sanctum "
+            "Linux build on a USB stick) and sanitize the internal disk from "
+            "there, or use the OS's own reset flow."
+        )
 
     # -- file-side capability rows, shared -----------------------------------
 
@@ -640,7 +966,168 @@ class BaseAdapter:
         rows = [self._discovery_row()]
         rows += self._file_backend_rows(privilege)
         rows += self._platform_rows(privilege)
-        return rows
+        resolved = {
+            item.capability: item for item in self.platform_capabilities(privilege)
+        }
+        return [self._with_state(item, resolved) for item in rows]
+
+    # -- resolver ----------------------------------------------------------
+
+    def platform_capabilities(
+        self, privilege: PrivilegeState | None = None
+    ) -> list[ResolvedCapability]:
+        """The resolver's platform matrix for this host, adapter facts applied."""
+        from core.platform.capability import resolve_platform
+
+        privilege = privilege or self.privilege_state()
+        resolved = resolve_platform(
+            self.family,
+            privileged=self._privileged_enough(privilege),
+            privilege_basis=privilege.basis,
+        )
+        return [self._adjust_capability(item) for item in resolved]
+
+    def _adjust_capability(self, item: ResolvedCapability) -> ResolvedCapability:
+        """Restrict one resolved capability with a fact only the adapter knows.
+
+        The default is no adjustment. Linux uses it for a container (the host's
+        system disk is invisible) and for a missing firmware tool.
+        """
+        return item
+
+    def _with_state(
+        self,
+        item: OperationCapability,
+        resolved: dict[Capability, ResolvedCapability],
+    ) -> OperationCapability:
+        """One matrix row with the resolver's state merged in.
+
+        The more restrictive of the resolver's answer and the adapter's own
+        wins, and its reason travels with it. ``status`` is re-derived from the
+        merged state, except NOT_VERIFIABLE, which says something no state does.
+        """
+        from core.platform.capability import legacy_status
+
+        if item.operation is Operation.WHOLE_DRIVE_PURGE:
+            answer = purge_summary(resolved)
+        else:
+            capability = _OPERATION_CAPABILITY.get(item.operation)
+            answer = resolved.get(capability) if capability else None
+        if answer is None:
+            return item
+        own = item.state or implied_state(item.status)
+        state = more_restrictive(answer.state, own)
+        adapter_wins = state is not answer.state
+        reason = item.reason if adapter_wins else answer.reason
+        if not adapter_wins and item.reason and item.reason not in reason:
+            reason = reason + " " + item.reason
+        limits = list(item.limitations)
+        limits += [text for text in answer.limitations if text not in limits]
+        status = (
+            item.status
+            if item.status is CapabilityStatus.NOT_VERIFIABLE
+            else legacy_status(state, has_limits=bool(limits))
+        )
+        return item.model_copy(
+            update={
+                "state": state,
+                "state_label": STATE_LABELS[state],
+                "status": status,
+                "reason": reason,
+                "mechanism": answer.mechanism,
+                "assurance": answer.assurance,
+                "limitations": limits,
+                "validated_classes": list(answer.validated_classes),
+                "evidence": list(answer.evidence),
+                "source": item.source
+                + ("" if answer.source in item.source else "; " + answer.source),
+            }
+        )
+
+    def device_probes(self, device: NormalizedDevice) -> dict[str, MechanismProbe]:
+        """What the device reported about each firmware mechanism.
+
+        The default knows nothing, so every device mechanism resolves to
+        DEVICE-DEPENDENT with "not probed". Adapters with a probe override it.
+        """
+        return {}
+
+    def device_resolution(
+        self,
+        device: NormalizedDevice,
+        privilege: PrivilegeState | None = None,
+        *,
+        planned: dict[str, MechanismProbe] | None = None,
+    ) -> StrategyResolution:
+        """The resolver's answer for one device on this host.
+
+        ``planned`` carries mechanisms an engine already planned for this
+        device from its own probe; an explicit probe from
+        :meth:`device_probes` overrides them.
+        """
+        from core.platform.capability import (
+            profile_from_device,
+            resolve_device,
+        )
+
+        privilege = privilege or self.privilege_state()
+        probes = dict(planned or {})
+        probes.update(self.device_probes(device))
+        profile = profile_from_device(
+            device,
+            privileged=self._privileged_enough(privilege),
+            privilege_basis=privilege.basis,
+            probes=probes,
+            apple_managed=self.apple_managed(device),
+        )
+        resolution = resolve_device(profile)
+        adjusted = [self._adjust_capability(item) for item in resolution.capabilities]
+        return resolution.model_copy(update={"capabilities": adjusted})
+
+    def apple_managed(self, device: NormalizedDevice) -> bool:
+        """Whether ``device`` is internal storage Apple manages. macOS only."""
+        return False
+
+    def _annotate_option(
+        self, option: SanitizeOption, resolution: StrategyResolution
+    ) -> SanitizeOption:
+        """An option with the resolver's state for the capability it would run."""
+        from core.platform.capability import legacy_status
+
+        if option.method and option.method in METHOD_CAPABILITY:
+            capability = METHOD_CAPABILITY[option.method]
+        elif option.level == "CLEAR":
+            capability = Capability.WHOLE_DRIVE_CLEAR
+        else:
+            by_cap = {item.capability: item for item in resolution.capabilities}
+            summary = purge_summary(by_cap)
+            capability = summary.capability if summary else Capability.NVME_SANITIZE
+        try:
+            answer = resolution.get(capability)
+        except KeyError:
+            return option
+        own = option.state or implied_state(option.status)
+        state = more_restrictive(answer.state, own)
+        adapter_wins = state is not answer.state
+        why = option.why if adapter_wins or not answer.reason else option.why
+        if not adapter_wins and answer.reason and answer.reason not in why:
+            why = (why + " " + answer.reason).strip()
+        limits = list(option.limitations)
+        limits += [text for text in answer.limitations if text not in limits]
+        return option.model_copy(
+            update={
+                "state": state,
+                "state_label": STATE_LABELS[state],
+                "status": legacy_status(state, has_limits=bool(limits)),
+                "capability": capability,
+                "why": why,
+                "mechanism": answer.mechanism,
+                "protocol": answer.protocol,
+                "assurance": answer.assurance,
+                "limitations": limits,
+                "verification": option.verification or answer.verification,
+            }
+        )
 
     def _discovery_row(self) -> OperationCapability:
         if not self.discovery.ran:
@@ -777,6 +1264,98 @@ class BaseAdapter:
         return result
 
 
+def _planned_probes(options: list[SanitizeOption]) -> dict[str, MechanismProbe]:
+    """Mechanisms an engine planned for a device, as probe results.
+
+    An engine that planned a firmware method did so because the device's own
+    capability probe reported the command. That is the probe result; it is
+    recorded as such rather than probed a second time.
+    """
+    from core.platform.capability import MechanismProbe
+
+    out: dict[str, MechanismProbe] = {}
+    for option in options:
+        if not option.method or option.method not in METHOD_CAPABILITY:
+            continue
+        capability = METHOD_CAPABILITY[option.method]
+        if capability is Capability.WHOLE_DRIVE_CLEAR:
+            continue
+        planned = option.status in _RUNNABLE or option.status in {
+            CapabilityStatus.UNVERIFIED
+        }
+        if planned:
+            out[capability.value] = MechanismProbe(
+                exposed=True,
+                basis=f"The device's capability probe reported {option.method}.",
+                command="engine capability probe",
+            )
+    return out
+
+
+def json_records(
+    generator: Generator[Any, None, Any],
+) -> Generator[dict[str, Any], None, dict[str, Any]]:
+    """Yield each engine record as JSON; return the result as JSON.
+
+    Closing this generator closes the engine's at its next yield, which is how
+    a cancel reaches a running wipe.
+    """
+    try:
+        while True:
+            try:
+                record = next(generator)
+            except StopIteration as stop:
+                return {"result": stop.value.model_dump(mode="json")}
+            yield record.model_dump(mode="json")
+    finally:
+        generator.close()
+
+
+def ledger_sink(params: dict[str, Any]) -> Any:
+    """The hash-chained ledger a helper request names, as an erase sink."""
+    from pathlib import Path
+
+    from core.erase.sink import ChainLedgerSink
+    from core.ledger.chain import Ledger
+
+    owner = params.get("owner_uid")
+    return ChainLedgerSink(
+        Ledger(
+            Path(str(params["ledger_root"])),
+            tool_version=str(params.get("tool_version", "sanctum-forensics/0.0.0")),
+            pubkey_fingerprint=str(params.get("pubkey_fingerprint", "")),
+            owner_uid=int(owner) if isinstance(owner, int) else None,
+        )
+    )
+
+
+def core_device(device: NormalizedDevice) -> Any:
+    """A normalized device as the erase engines' :class:`core.models.Device`."""
+    from core.models import Device
+
+    transport = (
+        device.interface
+        if device.interface in {"sata", "nvme", "usb", "mmc"}
+        else "unknown"
+    )
+    return Device(
+        path=device.path,
+        model=device.model,
+        serial=device.serial,
+        size_bytes=device.capacity_bytes,
+        rotational=device.media_type == "hdd",
+        transport=transport,
+        is_system_disk=device.system_device,
+        mounted_at=list(device.mount_points),
+        pt_type=None,
+        by_id_path=device.stable_id or None,
+    )
+
+
+def normalized_serial(serial: str) -> str:
+    return "".join(serial.split()).upper()
+
+
 def running_on(family: PlatformFamily) -> bool:
     """True when this process runs on ``family``."""
     from core.platform.host import family as host_family
@@ -819,6 +1398,9 @@ def legacy_row(device: NormalizedDevice, reason: str) -> dict[str, Any]:
         "erase_preview": None,
         "capability_error": reason,
         "hidden_areas": None,
-        "hidden_area_error": "Hidden-area (HPA/DCO) probing is Linux-only.",
+        "hidden_area_error": (
+            "Hidden-area (HPA/DCO) state is in the assessment's resolved "
+            "capabilities for this platform."
+        ),
         "normalized": device.model_dump(mode="json"),
     }

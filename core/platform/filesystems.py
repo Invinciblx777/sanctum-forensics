@@ -74,7 +74,13 @@ FILESYSTEMS = tuple(_NATIVE)
 
 
 def _drive_status(platform: str) -> CapabilityStatus:
-    return L if platform == "linux" else U
+    """Whole-drive clear is filesystem-independent; this is its platform word.
+
+    Linux has a physically validated run (usb-flash); Windows and macOS have
+    an engine that no physical run has exercised. Per-device answers come
+    from the capability resolver, not from this table.
+    """
+    return L if platform == "linux" else CapabilityStatus.UNVERIFIED
 
 
 def registry() -> list[FilesystemSupport]:
@@ -147,7 +153,10 @@ def registry() -> list[FilesystemSupport]:
             "free_space": "Implemented and measured for "
             + ", ".join(sorted(free_names))
             + " on Linux only.",
-            "whole_drive": "Filesystem-independent; Linux whole-drive engine only.",
+            "whole_drive": "Filesystem-independent; decided per device by the "
+            "capability resolver. Linux: core.erase.drive, physically validated "
+            "on USB flash. Windows and macOS: core.erase.blockclear, implemented, "
+            "not physically validated.",
         }
         rows.append(FilesystemSupport(filesystem=name, cells=cells, notes=notes))
     return rows

@@ -931,6 +931,37 @@ details.tech > .tech-body { display: flex; flex-direction: column; gap: var(--sp
   gap: var(--space-2);
   max-width: 100ch;
 }
+/* A device's capability list: name, the resolver's word, then its reason and
+   mechanism on their own lines, so a long reason never pushes the word off. */
+.cap-list { list-style: none; margin: 0; padding: 0; display: flex;
+            flex-direction: column; max-width: 120ch; }
+.cap-list li {
+  display: grid;
+  grid-template-columns: 22ch max-content;
+  column-gap: var(--space-3);
+  row-gap: 2px;
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--rule);
+}
+.cap-list-name { font-size: var(--type-sm); color: var(--text-primary);
+                 font-weight: 600; letter-spacing: 0.02em; }
+.cap-list-reason { grid-column: 1 / -1; font-size: var(--type-sm);
+                   color: var(--text-secondary); overflow-wrap: anywhere; }
+.cap-list-mech { grid-column: 1 / -1; font-size: var(--type-xs);
+                 color: var(--text-muted); overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .cap-list li { grid-template-columns: 1fr; }
+}
+
+/* The resolver matrix on the platform screen. */
+.matrix-table td { vertical-align: top; white-space: normal; }
+/* A reason is read in full, never ellipsised. */
+.matrix-table .cell-stack > * { white-space: normal; overflow: visible; }
+.matrix-table .matrix-reason { color: var(--text-secondary); font-size: var(--type-sm);
+                               overflow-wrap: anywhere; }
+.matrix-table .matrix-mech { color: var(--text-muted); font-size: var(--type-xs);
+                             overflow-wrap: anywhere; }
+
 .link-button {
   background: none;
   border: 0;

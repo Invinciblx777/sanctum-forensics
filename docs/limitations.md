@@ -4,6 +4,18 @@ Every guarantee this tool cannot make, stated plainly. If something here reads
 as uncomfortable, that is the point: an operator who over-trusts a wipe is worse
 off than one who knows exactly what it did and did not cover.
 
+What each platform implements, and what has run on real hardware of which device
+class, is not restated here: it is generated from the capability resolver into
+[`validation/capability-completion-2026-09-28/capability-matrix.md`](validation/capability-completion-2026-09-28/capability-matrix.md),
+and summarised in
+[`validation/capability-completion-2026-09-28/README.md`](validation/capability-completion-2026-09-28/README.md).
+In short, the only physical runs on record are: on Linux, whole-drive clear,
+discovery and raw acquisition of one USB flash stick (TOSHIBA TransMemory,
+2026-09-05); on Windows, discovery of a USB stick and a file erase on the host's
+own system disk (device class not recorded), both 2026-09-27. Everything else in
+this file that runs is **IMPLEMENTED / UNVALIDATED** or **DEVICE-DEPENDENT** at
+best.
+
 ## The ATA security-erase password is fixed and published
 
 `core/erase/drive.py` uses a fixed password for the ATA SECURITY ERASE sequence:
@@ -34,6 +46,13 @@ hdparm --user-master u --security-disable SanctumForensics /dev/sdX
 A fixed, published value is a deliberate trade. The password protects nothing —
 it is a transient precondition of the erase command, not a secret — and making
 it recoverable matters far more than making it unguessable.
+
+This sequence exists on Linux only. **ATA SECURITY ERASE UNIT is NOT IMPLEMENTED
+on Windows**, for exactly the reason above: the drive is password-locked between
+the first and last command, and no recovery path for a refused or interrupted
+erase has been built and tested on Windows. ATA SANITIZE is offered there
+instead, where the drive reports it. On macOS it is PLATFORM-LIMITED: macOS
+exposes no public ATA pass-through to applications.
 
 ## DoD 5220.22-M's third pass is not random here
 
@@ -207,6 +226,12 @@ fails and neither SANITIZE nor SECURITY ERASE can be issued or even confirmed to
 exist. Those devices are limited to overwrite-based CLEAR. Attach the drive to a
 native SATA port to do better.
 
+The resolver applies this per device class on every platform: on `usb-flash` and
+`mmc` devices, ATA SANITIZE, ATA SECURITY ERASE, cryptographic erase and HPA/DCO
+discovery and modification read DEVICE-DEPENDENT and are refused, because the
+bridge usually translates only reads and writes. A firmware command is offered
+only when the controller itself reports it and no bridge hides it.
+
 ## A software write block is a claim about a flag, not about a refusal
 
 `core/carve/acquire.py:apply_write_block` sets `BLKROSET`, reads it back with
@@ -245,6 +270,18 @@ Two paths are not covered by the flag at all, on any bridge:
 
 Use a hardware write blocker for evidence that will be presented.
 
+**Windows and macOS have no software write block at all.** Raw acquisition on
+Windows (`core/carve/win_source.py`) opens the disk or volume with `GENERIC_READ`
+only, and on macOS (`core/carve/mac_source.py`) opens `/dev/rdiskN` `O_RDONLY`.
+That means Sanctum itself cannot write through the handle; it does nothing to stop
+the operating system, another process, or an automount from writing to the device
+during the read. The acquisition record says so and names a hardware write blocker
+as the control. Internal Apple storage is never imaged: it is encrypted by the
+Secure Enclave, and a raw image of it is ciphertext that cannot be decrypted off
+the machine. Raw acquisition on both platforms is IMPLEMENTED / UNVALIDATED: it has
+been tested through adapter doubles only, and no physical device has been imaged on
+Windows or macOS.
+
 ## Verification above 64 GiB is sampled, not exhaustive
 
 At or below 64 GiB every block is read. Above it, verification reads the first
@@ -270,7 +307,21 @@ behaviour. Verification therefore always reads the medium as well, and a clean
 attestation never excuses residual data found by sampling.
 
 Firmware sanitize is accepted as leaving either `0x00` or `0xFF`, because vendors
-differ. Any other byte value is treated as residual data.
+differ. Any other byte value is treated as residual data. A crypto erase leaves
+ciphertext under a new key, which reads as noise, so no pattern can be required of
+it: the same seeded windows are hashed before and after and every one must differ.
+That shows the command changed every sampled window; it cannot show the old key is
+gone (`core/erase/devicesanitize.py`).
+
+**Windows NVMe Sanitize reports no progress.** It is issued through
+`IOCTL_STORAGE_REINITIALIZE_MEDIA`, which returns when the driver reports
+completion or the timeout expires; nothing in between can be shown. **NVMe Format
+NVM is PLATFORM-LIMITED on Windows**: the in-box NVMe driver does not pass it
+through `IOCTL_STORAGE_PROTOCOL_COMMAND`, so NVMe Sanitize is used instead where
+the drive supports it. The Windows storage driver may also refuse an ATA
+pass-through; the refusal is reported and nothing is retried another way. None of
+the Windows firmware paths (ATA SANITIZE block erase and crypto scramble, NVMe
+Sanitize block and crypto) has run on a physical drive.
 
 ## Unwritable ranges are skipped, not fixed
 
@@ -281,33 +332,49 @@ level to high.
 
 ## HPA and DCO
 
-Hidden areas are detected read-only. For overwrite, the native max is unlocked
-before the wipe and restored afterwards, and the original accessible sector count
-is written to the ledger first so an interrupted job leaves a record of what to
-restore to. If the unlock fails, the hidden region is **not** erased and the
-report says so. Firmware sanitize covers the full media by design, so no unlock
-is attempted there.
+Hidden areas are detected read-only. **An ordinary erase never unlocks or
+modifies an HPA or a DCO.** When the probe finds hidden bytes, an overwrite
+erases the accessible range only, the result records `hidden_covered=False`,
+the limitations name the hidden byte count and tell the operator to run the
+HPA/DCO workflow first, and the residual risk is high ("part of the medium was
+not erased"). Firmware sanitize covers the full media by design, so nothing is
+reported missing there.
 
-The `HIDDEN_AREA_UNLOCK` phase is ledgered on **every** run, including when the
-drive reports no hidden area at all — as `not_required`, carrying the probed
-sector counts. A chain that simply omitted the phase would be indistinguishable
-from one where the tool never probed, and those two support opposite conclusions
-about whether the sectors beyond the accessible max were ever considered. The
-same is true of `HIDDEN_AREA_RESTORE`, which has always recorded its own
-negative case.
+The `HIDDEN_AREA_UNLOCK` phase is ledgered on **every** run: `not_required`
+when the drive reports no hidden area, carrying the probed sector counts;
+`not_authorized` when it reports one that this erase deliberately left alone;
+`skipped` for a firmware method. A chain that simply omitted the phase would be
+indistinguishable from one where the tool never probed. `HIDDEN_AREA_RESTORE`
+always records `not_required`, because the erase never changed anything.
 
-No loopback device reports an HPA or a DCO — they are ATA features of real
-media — so the branch where sectors genuinely are hidden cannot be reached by
-pointing the erase engine at one. It is covered against a faked hidden-area
-report in `tests/erase/test_hidden_area_phases.py`, which fakes the *probe* and
-leaves the unlock decision, the geometry widening, the ledger entries and the
-restore running unaltered.
+Exposing the hidden sectors is the separate, guarded HPA/DCO workflow
+(`core/device/hidden_area_workflow.py`, `POST /workflow/hidden-area`): a
+plausibility-checked reading of the native and accessible maxima, a verified
+backup of at least the accessible range, a human approval with the serial typed,
+a dry run by default, a re-read of the drive immediately before the command
+(a drifted plan is refused as stale), and a read-back afterwards. The change is
+**volatile by default** (lost at the next power cycle); a permanent change is
+made only when explicitly requested and acknowledged. Only SET MAX ADDRESS is
+ever sent: **DCO RESTORE and DCO SET are never issued**, so sectors a DCO hides
+beyond the native maximum stay hidden and the workflow says so. The workflow
+erases nothing; the exposed sectors are sanitized by a later ordinary erase. On
+Linux the kernel keeps the size it read at attach time, so the device must be
+rescanned or re-attached before that erase sees the new size. On macOS HPA/DCO
+discovery and modification are PLATFORM-LIMITED: macOS exposes no public ATA
+pass-through, so neither the native maximum can be read nor SET MAX ADDRESS
+issued.
 
-**HPA/DCO unlock is HARDWARE-UNVERIFIED.** No drive with a hidden area has been
-through it. On the one physical stick the project has run (2026-09-05), the probe
-was skipped behind the USB bridge, which is the bridge-discard behaviour working,
-not an unlock. The Platform screen's Clear row carries this as a limitation until
-the validation record's hardware section records a PASS.
+No loopback device reports an HPA or a DCO - they are ATA features of real
+media. The erase branch is covered against a faked hidden-area report in
+`tests/erase/test_hidden_area_phases.py`; the workflow against a fake hdparm
+runner and the Windows ATA pass-through double (`testkit/fake_windows.py`) in
+`tests/device/test_hidden_area_workflow.py` and
+`tests/api/test_hidden_area_workflow.py`.
+
+**The HPA/DCO workflow is DEVICE-DEPENDENT and physically unvalidated.** No drive with a hidden area has
+been through it on Linux or Windows. On the one physical stick the project has
+run (2026-09-05), the probe was skipped behind the USB bridge, which is the
+bridge-discard behaviour working.
 
 ## NVMe scope
 
@@ -729,10 +796,14 @@ Updated 2026-09-27: a human has now installed the package on a physical
 Windows 11 machine and driven it against a real USB stick — device discovery,
 the mounted-device refusal, and a file/folder erase → verify → certificate on
 that machine's own NTFS, all real (`docs/validation/windows-hardware-2026-09-27-fixes/`).
-What has still never happened on Windows: raw physical-device acquisition (not
-implemented — plain `open()` cannot address the Win32 device namespace) and
-whole-drive sanitization (unsupported by design). Every method still degrades
-to an honest unknown plus a recorded limitation when a call fails.
+What has still never happened on Windows: raw physical-device acquisition and
+whole-drive clear or device sanitize of a physical disk. All three are now
+implemented (`core/carve/win_source.py`, `core/erase/blockclear.py`,
+`core/erase/devicesanitize.py` over the native layer in `core/device/win/`) and
+tested through the adapter double `testkit/fake_windows.py` only, so they read
+IMPLEMENTED / UNVALIDATED or DEVICE-DEPENDENT; none has run against a physical disk.
+Every file-erase method still degrades to an honest unknown plus a recorded
+limitation when a call fails.
 
 One defect that testing found and fixed: the extent map recorded one cluster
 per run, so a post-erase read-back of a contiguous 256 KiB file verified
@@ -744,48 +815,73 @@ says so.
 The full matrix is [`platform-support.md`](platform-support.md). The limits
 that change what an operator can do:
 
-- **Whole-drive sanitization is Linux-only.** Windows and macOS discover and
-  assess devices and refuse whole-drive work with the reason, performing
-  nothing. No raw-disk writer has been written and validated for either, and
-  the tool does not offer one it cannot verify. Use the Linux AppImage on the
-  same hardware (from a live USB for an internal disk).
+- **Whole-drive clear runs on all three platforms; it has run on hardware only on
+  Linux.** Linux uses `core/erase/drive.py`; Windows and macOS use
+  `core/erase/blockclear.py` over a handle bound to the planned disk. On Linux it
+  is SUPPORTED for `usb-flash` only (one stick, 2026-09-05); on Windows and macOS
+  it is IMPLEMENTED / UNVALIDATED. A Windows disk must be offline before it is
+  written (Devices > Prepare takes it offline, non-persistently; any exposed
+  volume refuses the write), and Sanctum must be started with *Run as
+  administrator*. A macOS external disk must be unmounted (Prepare, or `diskutil
+  unmountDisk`) and the raw work needs root. A Storage Spaces or virtual disk is
+  refused on Windows, and internal Apple storage is never raw-written on macOS.
 - **Firmware Purge has never run on hardware**, on any platform. It is
-  selected from probed capability and dispatched on Linux; that path is
-  UNVERIFIED. The Platform row, each device's Purge option and the Devices badge
-  (PURGE · UNVERIFIED, never a green PURGE AVAILABLE) say so until the validation
-  record's hardware section records a PASS. The option is still offered, under
-  that word: the code exists and the drive reported the command, and it is never
-  presented as a hardware-validated result.
+  selected from probed capability and dispatched on Linux (ATA SANITIZE, ATA
+  SECURITY ERASE, NVMe Sanitize, NVMe Format, Opal) and on Windows (ATA SANITIZE,
+  NVMe Sanitize); that path is DEVICE-DEPENDENT and physically unvalidated. The
+  Platform row, each device's Purge option and the Devices badge (PURGE ·
+  UNVERIFIED, never a green PURGE AVAILABLE) say so until the validation record
+  holds a PASS for that capability on that device class. The option is still
+  offered, under that word: the code exists and the drive reported the command,
+  and it is never presented as a hardware-validated result. On Windows, ATA
+  SECURITY ERASE is NOT IMPLEMENTED and NVMe Format is PLATFORM-LIMITED (above).
+  On macOS every device sanitize command and cryptographic erase is
+  PLATFORM-LIMITED: macOS exposes no public ATA pass-through or NVMe
+  admin-command interface to applications.
+- **Free-space wipe is NOT IMPLEMENTED on Windows or macOS.** On NTFS, how the
+  filling file is allocated (MFT zone, reserved clusters) has not been measured,
+  so the fill could not be described honestly; APFS is copy-on-write and shares
+  free space across a container's volumes, so a fill does not map to released
+  blocks in a way that could be verified.
 - **APFS, Btrfs, ReFS and F2FS are copy-on-write.** A file erase on them
   removes the file and reports residuals; it cannot destroy the old blocks and
   is never reported as verified.
 - **macOS internal storage** is purged by macOS's own *Erase All Content and
   Settings* (Apple silicon, T2), which destroys the storage keys. The app
   names that path and does not perform or verify it.
-- **macOS discovery is UNVERIFIED.** The parser is tested from captured
-  `diskutil` output on Linux; it has not been run against a real macOS disk
-  set. **Windows discovery was run against a real disk set** on 2026-09-27,
+- **macOS discovery is IMPLEMENTED / UNVALIDATED.** The parser is tested from
+  captured `diskutil` output on Linux, and the CI macOS runner discovers its own
+  virtual disks; it has not been run against a physical macOS disk set, and no
+  macOS physical device run of any capability is recorded. **Windows discovery was run against a real disk set** on 2026-09-27,
   through the installed package on a physical Windows 11 machine: it found 3
   real devices, and correctly assessed the mounted one NOT AVAILABLE
   (`docs/validation/windows-hardware-2026-09-27-fixes/`).
-- **Windows raw physical-device acquisition is not implemented**, not only
-  untested. `POST /jobs/acquire` opens its source with a plain `open(...,
-  "rb")`; nothing in `core/carve/acquire.py` or `core/carve/evidence.py`
-  special-cases a `\\.\PhysicalDriveN` or raw-volume path, and Python's
-  buffered `open()` cannot address the Win32 device namespace. Confirmed
-  directly, 2026-09-27 (`docs/validation/windows-hardware-2026-09-27-fixes/`). M3
-  carving itself has run correctly on real Windows hardware, including
-  through the installed package's own API (`/jobs/acquire` + `/jobs/carve`),
-  but only against a synthetic image — never against an image acquired from a
-  physical device, which this same limitation is why. A separate, now-fixed
-  defect meant the *installed* package could not carve at all until
-  2026-09-27: `core/carve/signature.py`'s signature table
-  (`testkit/signatures.yaml`) was never bundled into any packaged build, on
+- **Windows and macOS raw physical-device acquisition are IMPLEMENTED /
+  UNVALIDATED.** Until 2026-09-28 Windows raw acquisition was not implemented:
+  `POST /jobs/acquire` opened its source with a plain `open(..., "rb")`, which
+  cannot address the Win32 device namespace (confirmed on a physical Windows 11
+  machine, 2026-09-27, `docs/validation/windows-hardware-2026-09-27-fixes/`).
+  `core/carve/win_source.py` now opens `\\.\PhysicalDriveN` or a volume with
+  `GENERIC_READ` only and binds the handle to the selected disk's number, serial
+  and length; `core/carve/mac_source.py` opens `/dev/rdiskN` `O_RDONLY`, bound to
+  the selected size. Neither has imaged a physical device. M3 carving itself has
+  run correctly on real Windows hardware, including through the installed
+  package's own API (`/jobs/acquire` + `/jobs/carve`), but only against a
+  synthetic image. A separate, now-fixed defect meant the *installed* package
+  could not carve at all until 2026-09-27: `core/carve/signature.py`'s signature
+  table (`testkit/signatures.yaml`) was never bundled into any packaged build, on
   any platform - `docs/validation/windows-hardware-2026-09-27-fixes/` §5.
 - **Windows file verification needs elevation** (raw volume read); the app
   never elevates, so unelevated erases are reported *not verified*.
-- **diskutil reports no serial numbers.** macOS devices are identified by BSD
-  name, size and media UUID.
+- **diskutil reports no serial numbers, and no macOS ioctl returns one.** Serials
+  come from `system_profiler`. A raw `/dev/rdiskN` handle is bound only by its
+  size (`DKIOCGETBLOCKCOUNT` × `DKIOCGETBLOCKSIZE`, read from the open descriptor)
+  against the plan; the serial is re-read from `system_profiler` / `diskutil`
+  immediately before the device is opened. Between that re-read and `open()` there
+  is a window in which a different disk of the same size could take the same
+  `diskN`. It is not closed; the report records how the binding was made and does
+  not claim more
+  ([security review](security-review-cross-platform.md#the-native-device-layer-windows-and-macos)).
 - **The development server is loopback-only and session-protected**, like the
   packaged app: `python -m api.main` prints a `/session/<token>` URL and
   refuses anything without that cookie. `SANCTUM_DEV_INSECURE=1` disables the
@@ -796,9 +892,13 @@ that change what an operator can do:
   cannot be identified. Whole-drive work is refused there unless
   `SANCTUM_ALLOW_CONTAINER_DEVICES=1` is set for a container that was given
   exactly the target device.
-- **Hardware validation of this change: none.** No designated disposable media
-  was used; no device was written. See
-  [`validation/platform-matrix.md`](validation/platform-matrix.md).
+- **Hardware validation of the Windows and macOS device layers: none.** No
+  designated disposable media was used on either platform; no device was written or
+  raw-read. They are tested through adapter doubles, and `scripts/native_smoke.py`
+  exercises the real bindings read-only on the CI runners, which is not physical
+  validation. See
+  [`validation/platform-matrix.md`](validation/platform-matrix.md) and the
+  [capability matrix](validation/capability-completion-2026-09-28/capability-matrix.md).
 
 ## PII triage counts shapes, stores no values, and reads only some types
 
@@ -922,9 +1022,22 @@ VALIDATION). What that does not establish:
 
 - **Backup provenance is not proven.** The image is checked by SHA-256 at open
   and by size, mtime, ctime and inode at execution. Nothing proves it is a copy
-  of this device, and it is not re-hashed at execution. **Restoring a backup is
-  not implemented in the app.** The benchmark harness prints a manual `dd`
-  restore command, which has never been run.
+  of this device, and it is not re-hashed at execution. A backup record made from
+  Sanctum's own acquisition of that device carries the acquisition job id, which
+  establishes the image equals what that run read from that path, still not that
+  the device carried the recorded identity at that moment (`core/backup.py`).
+- **Restore is implemented and has never run on a physical device.**
+  `core/restore.py` with `/workflow/restore` verifies every chunk against the
+  backup record before writing it, accounts for every byte, and reads the range
+  back afterwards; it is gated like an erase (dry run, typed serial, one-use
+  authorization re-checked at the write seam) on Linux, Windows and macOS. It is
+  IMPLEMENTED / UNVALIDATED everywhere: tested against image files and adapter
+  doubles only. The post-restore read-back goes through the operating system, so
+  a drive's volatile cache can answer it; a pass shows the target returns the
+  image's bytes now, not that they survive a power loss. The physical benchmark
+  harness still prints a manual `dd` restore command, which has never been run,
+  and the physical benchmark itself is still BLOCKED at gate 1
+  ([`validation/physical-benchmark-checklist.md`](validation/physical-benchmark-checklist.md)).
 - **The helper's check and the first write are not proven race-free.** The
   helper re-reads the device and the backup immediately before entering the
   engine; between that check and the first write only the engine's own guards
@@ -944,11 +1057,12 @@ it. Run it on a single-user examination workstation. See
 
 ## Platform
 
-Whole-device sanitization is Linux only. `core/erase/drive.py` refuses to import
-elsewhere rather than offer a shim that would have to fake `O_DIRECT` alignment,
-`BLKGETSIZE64` and ATA/NVMe pass-through. On Windows, use WSL2 with
-`usbipd-win`, or a Linux VM with the controller passed through.
-`core/erase/files.py` stays cross-platform.
+`core/erase/drive.py`, the Linux whole-drive engine, still refuses to import
+elsewhere: it needs `O_DIRECT`, `BLKGETSIZE64` and hdparm/nvme-cli. Windows and
+macOS use their own engine, `core/erase/blockclear.py`, over the native handles
+in `core/device/win/` and `core/device/mac/` (see "Platform differences" above
+for what that path has and has not done). `core/erase/files.py` stays
+cross-platform.
 
 **The Windows file-erasure backend (`core/erase/_platform/win.py`) is
 type-checked under `--platform win32` and now also runs on a real Windows 11
@@ -961,8 +1075,8 @@ and exercised by no test. **An erase has now run on physical Windows media**:
 2026-09-27, a file/folder erase → verify → certificate through the installed
 package on a real Windows 11 machine's own NTFS
 (`docs/validation/windows-hardware-2026-09-27-fixes/`); no erase has run against a
-physical Windows *removable* device, since the raw-acquisition path Windows
-would need for that is not implemented.
+physical Windows *removable* device, and no whole-drive clear, device sanitize or
+raw acquisition has run on any physical Windows disk.
 
 This paragraph previously said the backend had never executed on a Windows
 host. That stopped being true when `platform-ci` began running the suites on a
@@ -989,16 +1103,46 @@ Destroy for that media is the facility's determination, not the tool's.
 ## Trace sweep
 
 The sweep after a file erase searches the desktop's shared thumbnail cache,
-recent-files lists (GTK and KDE), the home Trash, the Trash on the file's volume,
-the Windows Recycle Bin and Recent shortcuts, and the macOS Trash. It does not
-search application caches and history (office suites, viewers, browsers), search
-and activity indexes (Tracker, the KDE activity database, Windows Search,
-Spotlight), jump lists, `thumbcache_*.db`, the QuickLook cache, snapshots, backups
-or sync clients; every report lists these as not searched. A thumbnail made under a
-URI other than the one the file was erased by (through a link, another mount point
-or a network share) is found only when its `Thumb::URI` names a file inside an
-erased folder. On macOS the Trash records where an item came from only in its
-`.DS_Store`, which is not parsed, so a same-name item is reported and never removed.
+recent-files lists (GTK 2, 3 and 4, and KDE), the home Trash, the Trash on the
+file's volume (`.Trash-$uid`, or `.Trash/$uid` when `.Trash` is sticky and not a
+link), the Windows Recycle Bin, Recent shortcuts and jump lists
+(AutomaticDestinations and CustomDestinations), and on macOS the Trash (home and
+per-volume `.Trashes/$uid`), the recent items (`.sfl2`/`.sfl3` shared file lists)
+and the Quick Look thumbnail cache. Every report lists each place inspected with
+its outcome (searched, absent, unreadable, permission-denied). It does not search
+application caches and history (office suites, viewers, browsers), search and
+activity indexes (Tracker, the KDE activity database, Windows Search, Spotlight),
+snapshots, backups or sync clients; every report lists these as not searched.
+
+- `thumbcache_*.db` is listed as not searched: its entries are keyed by a cache
+  hash, not the file path, so none can be tied to an erased path on evidence.
+- A macOS Trash item is removed only when its put-back record (`ptbL`/`ptbN` in
+  the Trash's `.DS_Store`) names the erased path. A same-name item with no record,
+  or with a record naming another path, is reported as a possible copy and never
+  removed. The record itself stays in the `.DS_Store`, which Finder owns; it
+  names the path, not the content. Put-back paths are compared literally: a
+  firmlink or symlinked alias of the erased path is not resolved.
+- A macOS recent item, a Quick Look cache entry, a jump-list entry in a jump list
+  that also names other files, and any custom jump-list entry are tied on
+  evidence but **reported only**, with the reason: each sits in a file a daemon
+  or the shell owns and rewrites, and editing it in place could corrupt the other
+  entries. A jump list every entry of which names an erased path is erased as a
+  whole file. `qlmanage -r cache` resets the Quick Look cache by deleting, not
+  overwriting, its files.
+- A recent item's bookmark is matched only when its whole path decodes; a
+  bookmark that holds only a file ID or volume-relative data is not matched. The
+  Quick Look index is read immutable, so an entry still only in
+  `index.sqlite-wal` is not seen (the report notes when such a log exists), and a
+  cache whose schema is not the known `files(folder, file_name)` layout is listed
+  as not searched with that reason.
+
+A thumbnail made under a URI other than the one the file was erased by (through a
+link, another mount point or a network share) is found only when its `Thumb::URI`
+names a file inside an erased folder.
+
+The `.DS_Store`, bookmark, shared-file-list and jump-list parsers are tested
+against artifacts built byte for byte from their format descriptions, not against
+files taken from a real Mac or Windows profile.
 
 **Removal not validated on a live desktop.** The sweep has run against synthetic
 home directories in the test suite and in a sandboxed browser run

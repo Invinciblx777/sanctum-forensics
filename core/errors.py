@@ -171,20 +171,18 @@ class SignatureInvalid(SanctumError):
 
 
 class PlatformUnsupported(SanctumError):
-    """The operation requires a platform this host does not provide.
+    """The operation has no path on this host's platform in this build.
 
-    Whole-device sanitization needs Linux block-device semantics: O_DIRECT with
-    logical-block alignment, the BLKGETSIZE64 ioctl, sysfs queue attributes, and
-    ATA/NVMe pass-through. None of these have a faithful equivalent elsewhere, and
-    a shim that pretended otherwise would be a silent correctness hazard on the
-    one code path where being wrong destroys evidence.
+    Raised with the platform's own reason (the capability resolver's, or the
+    adapter's). Each platform's backend is its own code: Linux block-device
+    semantics in core.erase.drive, the Win32 and raw-device layers in
+    core.device.win and core.device.mac; nothing is shimmed across them.
     """
 
     default_remediation = (
-        "Run this on Linux. On Windows use WSL2 and attach the target disk with "
-        "usbipd-win (`usbipd bind --busid <id>` then `usbipd attach --wsl`), or "
-        "use a Linux VM with the controller passed through. File and folder "
-        "erasure (core.erase.files) remains available on this platform."
+        "Open the Platform screen: it names, per capability, the platforms and "
+        "device classes where this runs and why it does not run here. Nothing "
+        "was done."
     )
 
 

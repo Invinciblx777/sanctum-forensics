@@ -9,7 +9,7 @@
  * disappearing, because a missing line reads as "nothing to report".
  */
 import type { CaseDetail, PlatformStatus } from './api'
-import { statusWord } from './platform.ts'
+import { capabilityWord } from './states.ts'
 import { isSafetyRefusal } from './refusal.ts'
 
 export interface ExecutiveSummary {
@@ -145,20 +145,29 @@ export interface JudgeSummary {
 }
 
 /**
- * Not validated on a physical device, or not implemented at all, from
- * docs/validation/evidence-reconciliation-2026-09-28/reconciliation.json. Each
- * line names its state: "not run on hardware" and "not implemented" are
+ * Not validated on a physical device, or not available at all, reconciled with
+ * the resolver's table (core/platform/capability.py) and the validation record
+ * (core/platform/validation_record.json). Each line names its state in the
+ * resolver's words: IMPLEMENTED / UNVALIDATED (the code exists and runs; no
+ * physical run is recorded), NOT IMPLEMENTED and PLATFORM-LIMITED are
  * different claims and are never merged.
  */
 export const NOT_PHYSICALLY_VALIDATED: readonly string[] = [
-  'Physical runs on record: Linux 2026-09-05 and 2026-09-23 (earlier builds), Windows 11 2026-09-27. No macOS physical device run is recorded.',
+  'Physical runs on record: Linux 2026-09-05 and 2026-09-23 (earlier builds; one USB flash stick), Windows 11 2026-09-27 (device discovery, the mounted-device refusal, file and folder erase on NTFS). No macOS physical device run is recorded.',
   'Registered physical carve benchmark: not run. Benchmark figures are SYNTHETIC (three physical recovery passes are recorded separately).',
-  'Firmware Purge (ATA SANITIZE, ATA SECURITY ERASE, NVMe sanitize, NVMe format / crypto erase): implemented and fixture-tested, never run on a drive.',
-  'HPA/DCO unlock: implemented, not run on hardware.',
+  'Firmware Purge: ATA SANITIZE, NVMe Sanitize and crypto erase on Linux and Windows, ATA SECURITY ERASE UNIT and NVMe Format on Linux only. DEVICE-DEPENDENT, fixture-tested, never run on a physical drive on any platform.',
+  'Windows whole-drive clear (WriteFile to \\\\.\\PhysicalDriveN): IMPLEMENTED / UNVALIDATED. Adapter-double tests only.',
+  'Windows raw physical-device acquisition (read-only \\\\.\\PhysicalDriveN, bound to the selected disk\'s serial): IMPLEMENTED / UNVALIDATED.',
+  'Windows device sanitize (ATA SANITIZE through IOCTL_ATA_PASS_THROUGH, NVMe Sanitize through IOCTL_STORAGE_REINITIALIZE_MEDIA): IMPLEMENTED / UNVALIDATED, offered only where the drive reports the command and no bridge hides it.',
+  'macOS whole-drive clear and raw acquisition of external disks (/dev/rdiskN): IMPLEMENTED / UNVALIDATED. Internal Apple storage is never raw-written or raw-imaged.',
+  'Backup restore (a verified image written back, then the written range hashed): IMPLEMENTED / UNVALIDATED on Linux, Windows and macOS.',
+  'HPA change (guarded, volatile SET MAX by default): IMPLEMENTED / UNVALIDATED on Linux and Windows, never run on hardware. DCO is discovered only, never modified.',
+  'ATA SECURITY ERASE on Windows: NOT IMPLEMENTED. The sequence sets a drive password first, and no tested recovery exists for a drive left locked by a refused or interrupted erase.',
+  'NVMe Format on Windows: PLATFORM-LIMITED. The in-box NVMe driver does not pass Format NVM; NVMe Sanitize is used where the drive supports it.',
+  'HPA/DCO discovery and modification on macOS: PLATFORM-LIMITED. macOS exposes no public ATA pass-through to applications.',
+  'Device sanitize, crypto erase, ATA SECURITY ERASE and NVMe Format on macOS: PLATFORM-LIMITED. No public ATA or NVMe admin-command interface.',
+  'Free-space wipe on Windows and macOS: NOT IMPLEMENTED. How NTFS and APFS allocate a filling file has not been measured.',
   'Trace sweep: searched a real Windows 11 desktop (2026-09-27) and found nothing to remove; removing a real desktop trace has not been run.',
-  'Backup restoration: not implemented in the app. The benchmark prints a manual restore command that has never been run.',
-  'Whole-drive sanitization: Linux only. Not implemented on Windows or macOS.',
-  'Raw physical-device acquisition on Windows: not implemented; refused with the reason.',
 ]
 
 export const SAFETY_LINES: readonly string[] = [
@@ -171,7 +180,9 @@ export const SAFETY_LINES: readonly string[] = [
 function capabilityLine(platform: PlatformStatus | null, operation: string, name: string): string {
   const row = platform?.operations.find((item) => item.operation === operation)
   if (!row) return `${name}: not probed on this host.`
-  return `${name}: ${statusWord(row.status).word}.`
+  // The resolver's word when the row carries a state; the older status word
+  // only for a payload saved before the resolver existed.
+  return `${name}: ${capabilityWord(row).word}.`
 }
 
 export function judgeSummary(

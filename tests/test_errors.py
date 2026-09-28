@@ -32,9 +32,10 @@ def test_explicit_remediation_overrides_default() -> None:
     assert err.remediation == "type it again"
 
 
-def test_platform_unsupported_names_a_linux_route() -> None:
+def test_platform_unsupported_points_at_the_capability_screen() -> None:
+    """The default names where to read the platform's own reason, not a guess."""
     from core.errors import PlatformUnsupported
 
-    err = PlatformUnsupported("drive erasure requires Linux")
-    assert "WSL2" in err.remediation
-    assert "usbipd-win" in err.remediation
+    err = PlatformUnsupported("no path on this platform")
+    assert "Platform screen" in err.remediation
+    assert "Nothing was done" in err.remediation

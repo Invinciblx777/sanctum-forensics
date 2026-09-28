@@ -240,14 +240,47 @@ def mac_root() -> dict[str, Any]:
     }
 
 
-def mac_runner() -> FakeRunner:
+def mac_profiler() -> dict[str, Any]:
+    """``system_profiler -json`` naming the T7's serial under its hub."""
+    return {
+        "SPUSBDataType": [
+            {
+                "_name": "USB 3.1 Bus",
+                "serial_num": "HUB-SERIAL",
+                "_items": [
+                    {
+                        "_name": "PSSD T7",
+                        "serial_num": "S5T7NS0R123456",
+                        "Media": [{"bsd_name": "disk4", "_name": "PSSD T7"}],
+                    }
+                ],
+            }
+        ],
+        "SPNVMeDataType": [],
+    }
+
+
+def mac_runner(
+    *,
+    listing: dict[str, Any] | None = None,
+    profiler: dict[str, Any] | None = None,
+    unmount_ok: bool = True,
+) -> FakeRunner:
     """A runner answering diskutil exactly as the macOS adapter calls it."""
     infos = mac_infos()
+    served_listing = listing if listing is not None else mac_listing()
+    served_profiler = profiler if profiler is not None else mac_profiler()
 
     def answer(argv: list[str]) -> CommandResult:
         args = argv[1:]
+        if argv[0].endswith("system_profiler"):
+            return ok(argv, json.dumps(served_profiler))
+        if args[:1] == ["unmountDisk"]:
+            if unmount_ok:
+                return ok(argv, f"Unmount of all volumes on {args[1]} was successful")
+            return CommandResult(argv, 1, "", "Unmount failed: resource busy")
         if args == ["list", "-plist"]:
-            return ok(argv, plistlib.dumps(mac_listing()))
+            return ok(argv, plistlib.dumps(served_listing))
         if args == ["apfs", "list", "-plist"]:
             return ok(argv, plistlib.dumps(mac_apfs()))
         if args == ["info", "-plist", "/"]:

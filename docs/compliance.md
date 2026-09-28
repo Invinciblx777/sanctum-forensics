@@ -55,8 +55,8 @@ Appendix A) say what Rev.1's definitions said in all but wording:
 
 | Method | r2's definition | Where in this tool |
 |---|---|---|
-| **Clear** | logical techniques applied to all user-addressable storage locations, protecting against simple, non-invasive recovery through the same interface available to the user | **Implemented.** `SINGLE_PASS_OVERWRITE`, `DOD_5220_22_M_3PASS` (`core/erase/patterns.py`) |
-| **Purge** | physical or logical techniques that make recovery infeasible using state-of-the-art laboratory techniques | **Implemented, per media type** — see below. `ATA_SANITIZE_*`, `NVME_SANITIZE_BLOCK`, `NVME_FORMAT_SES1`, `SED_CRYPTO_ERASE`; `ATA_SECURITY_ERASE_ENHANCED` and `ATA_SANITIZE_OVERWRITE` on magnetic media only |
+| **Clear** | logical techniques applied to all user-addressable storage locations, protecting against simple, non-invasive recovery through the same interface available to the user | **Implemented.** `SINGLE_PASS_OVERWRITE`, `DOD_5220_22_M_3PASS` (`core/erase/patterns.py`); `core/erase/drive.py` on Linux, `core/erase/blockclear.py` on Windows and macOS |
+| **Purge** | physical or logical techniques that make recovery infeasible using state-of-the-art laboratory techniques | **Implemented, per media type and per platform** — see below. On Linux `ATA_SANITIZE_*`, `NVME_SANITIZE_BLOCK`, `NVME_FORMAT_SES1`, `SED_CRYPTO_ERASE`; `ATA_SECURITY_ERASE_ENHANCED` and `ATA_SANITIZE_OVERWRITE` on magnetic media only. On Windows ATA SANITIZE (block erase, crypto scramble) and NVMe Sanitize (block, crypto) through `core/erase/devicesanitize.py`. On macOS none: PLATFORM-LIMITED. **No Purge method has run on a physical drive on any platform.** |
 | **Destroy** | recovery infeasible using state-of-the-art laboratory techniques, and the medium can no longer store data | **Never returned.** No software can perform it. |
 
 `SanitizationLevel` in `core/models.py` has exactly these three members.
@@ -158,9 +158,11 @@ r2 bases the sanitization decision on the confidentiality categorisation of the
 information (FIPS 199 for federal systems) and on whether the medium is to be
 reused. The media type then decides the technique. This tool implements only
 the technique half: the method is derived from probed device capability, never
-chosen by the operator (`core/erase/drive.py:select_method`). The
-categorisation, the reuse decision and the policy are organisational inputs
-this tool does not have and does not guess at.
+chosen by the operator (`core/erase/drive.py:select_method` on Linux; on Windows
+the options the capability resolver, `core/platform/capability.py`, derives from
+the controller's own IDENTIFY answer). The categorisation, the reuse decision and
+the policy are organisational inputs this tool does not have and does not guess
+at.
 
 A request for Purge on a device that cannot reach it raises
 `UnsupportedCapability`; it is never quietly delivered as Clear.
@@ -221,6 +223,26 @@ so the gap travels with the document.
 The certificate is issued as two artifacts: a canonical JSON that is
 authoritative and carries the Ed25519 detached signature, and a PDF that states
 on its own face that it is a rendering and not the authoritative artifact.
+
+### The five certificate categories, against r2's methods
+
+Every certificate names one category of what was done
+(`core/report/semantics.py`), with the method, protocol, scope, verification and
+assurance words it prints. The categories are never merged, and none of them
+produces the words "unrecoverable" or an undifferentiated "secure erase".
+
+| Category | What was done | r2 method it maps to | Physically run here |
+|---|---|---|---|
+| **FILE ERASE** | A file's current blocks overwritten through the filesystem | None. Partial sanitization in r2 Sec. 4.2; not a clear, purge or destroy of anything | Windows NTFS on the host's system disk, 2026-09-27 (device class not recorded) |
+| **ADDRESSABLE WHOLE-DRIVE CLEAR** | Every LBA the operating system exposes overwritten by the host and read back | **Clear** only. Never Purge, and on flash never NAND-level destruction: remapped and over-provisioned blocks are not addressable | Linux, one USB flash stick, 2026-09-05. Windows and macOS: IMPLEMENTED / UNVALIDATED |
+| **DEVICE SANITIZE** | The drive's own firmware command (ATA SANITIZE, ATA SECURITY ERASE, NVMe Sanitize, NVMe Format) | **Purge**, only when the drive's firmware performs the command as its specification requires; completion is the drive's or driver's own claim, and the medium is also read back | None, on any platform. DEVICE-DEPENDENT on Linux and Windows; PLATFORM-LIMITED on macOS |
+| **CRYPTO ERASE** | The media encryption key replaced | **Purge** by cryptographic erase (r2 Sec. 3.2), with the r2 Sec. 3.2.4 caveat that it rests on key management the host cannot inspect; the ciphertext remains | None, on any platform |
+| **PHYSICAL DESTRUCTION ATTESTATION** | A person's signed statement about a destruction | **Destroy**, as attested. The tool neither performs nor observes it | n/a: nothing is observed |
+
+What is implemented on which platform, and which device classes have a recorded
+physical run, is generated from the resolver:
+[`validation/capability-completion-2026-09-28/capability-matrix.md`](validation/capability-completion-2026-09-28/capability-matrix.md).
+A mapping row here is not a claim that the path has run on hardware.
 
 ### Trust establishment — what r2 asks, mapped against what this tool built
 
@@ -439,8 +461,14 @@ not random, and why that is not a security-relevant difference.
 * A free-space wipe is not a clear of the volume. It reads nothing back, and every
   result lists the residue it does not reach. It has run only on loop volumes, never
   on real media.
-* Hidden-area coverage depends on an unlock that can fail; when it fails the
-  region is not erased and the report says so.
+* An ordinary erase never unlocks an HPA/DCO. A hidden region is not erased
+  unless the separate, approved HPA/DCO workflow exposed it first, and the report
+  says so. DCO RESTORE is never issued.
+* An addressable whole-drive clear is a Clear on every platform, never a Purge.
+  Device sanitize and crypto erase are Purge only when the device performs them,
+  and no Purge has run on a physical drive here. Windows ATA SECURITY ERASE is not
+  implemented; Windows NVMe Format and every macOS firmware command are
+  platform-limited.
 * ATA enhanced SECURITY ERASE is counted as purge on magnetic media only, on the
   withdrawn r1 Table A-5; r2 does not name it. On flash it is a Clear. Neither
   case has been run on real media.

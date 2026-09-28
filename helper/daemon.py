@@ -28,7 +28,12 @@ Destructive operations keep both of their gates on this side of the boundary.
 ``run_erase`` refuses unless ``dry_run`` is explicitly false *and* the typed
 serial matches the device the helper itself re-reads. The API cannot talk the
 helper out of either check, which is the point of putting them here rather than
-in the request handler.
+in the request handler. ``run_restore`` keeps the same two gates, plus its own
+write-seam revalidation of a ``restore``-kind authorization
+(:func:`helper.authorization.revalidate_restore`). ``run_hpa_change`` - the only
+operation that changes a drive's Host Protected Area - keeps them too, with an
+``hpa``-kind authorization (:func:`helper.authorization.revalidate_hpa`); an
+ordinary erase never changes the HPA.
 
 Streaming, and liveness
 -----------------------
@@ -329,14 +334,7 @@ def _require_drive_engine(params: dict[str, Any]) -> None:
 def _op_probe_capabilities(params: dict[str, Any]) -> dict[str, Any]:
     """Probe sanitization capability for one device."""
     _require_drive_engine(params)
-    from core.device import capabilities
-    from core.device.enumerate import get_device
-
-    device = get_device(str(params["path"]))
-    return {
-        "device": device.model_dump(mode="json"),
-        "capabilities": capabilities.probe(device).model_dump(mode="json"),
-    }
+    return _adapter(params).authorization_probe(str(params["path"]))
 
 
 def _op_detect_hidden_areas(params: dict[str, Any]) -> dict[str, Any]:
@@ -349,6 +347,32 @@ def _op_detect_hidden_areas(params: dict[str, Any]) -> dict[str, Any]:
     return {
         "hidden_areas": hidden_areas.detect_hidden_areas(device).model_dump(mode="json")
     }
+
+
+def _op_prepare_device(params: dict[str, Any]) -> dict[str, Any]:
+    """Take a disk offline (Windows) or unmount it (macOS), as its own step.
+
+    Dry run unless ``dry_run`` is explicitly false; a real run needs the typed
+    serial of the device this process re-reads. Never part of an erase, and it
+    writes nothing to the medium. The action and its outcome are ledgered.
+    """
+    from core.ledger.chain import Ledger
+
+    answer = _adapter(params).prepare_device(params)
+    ledger_root = params.get("ledger_root")
+    if ledger_root:
+        Ledger(
+            Path(str(ledger_root)),
+            tool_version=str(params.get("tool_version", "sanctum-forensics/0.0.0")),
+            pubkey_fingerprint=str(params.get("pubkey_fingerprint", "")),
+            owner_uid=_owner_uid(params),
+        ).append(
+            actor=str(params.get("actor") or "sanctum"),
+            operation="device.prepare",
+            params={key: answer[key] for key in ("device", "serial", "action")},
+            result={"performed": answer.get("performed"), "dry_run": answer["dry_run"]},
+        )
+    return answer
 
 
 def _owner_uid(params: dict[str, Any]) -> int | None:
@@ -498,6 +522,220 @@ def _stream_acquire_image(
         yield record.model_dump(mode="json")
 
 
+def _open_restore_target(target: Any) -> Any:
+    """Open the restore target for writing. Only reached past the write seam.
+
+    Linux: :class:`core.restore.LinuxBlockDeviceTarget` (``O_WRONLY | O_SYNC``).
+    Windows: an unbuffered, write-through ``\\\\.\\PhysicalDriveN`` handle
+    bound to the planned serial and size. macOS: ``/dev/rdiskN`` bound to the
+    planned size. Each implements :class:`core.restore.BlockTarget`.
+    """
+    if sys.platform == "win32":
+        from core.device.win.disk import WindowsDisk, parse_disk_number, volumes_on_disk
+        from core.device.win.native import default_api
+        from core.errors import MountedRefused
+
+        api = default_api()
+        number = parse_disk_number(str(target.path))
+        disk = WindowsDisk(api, number, write=True).open()
+        disk.bind(serial=str(target.serial), size_bytes=int(target.size_bytes))
+        if volumes_on_disk(api, number):
+            disk.close()
+            raise MountedRefused(
+                f"{disk.path} still exposes a volume at the write seam. Nothing "
+                "was written.",
+                remediation="Take the disk offline first, then retry the restore.",
+            )
+        return disk
+    if sys.platform == "darwin":
+        from core.device.mac.rawdisk import MacRawDisk
+
+        return (
+            MacRawDisk(str(target.path), write=True)
+            .open()
+            .bind(size_bytes=int(target.size_bytes))
+        )
+    from core.restore import LinuxBlockDeviceTarget
+
+    return LinuxBlockDeviceTarget(str(target.path))
+
+
+def _op_run_restore(params: dict[str, Any]) -> dict[str, Any]:
+    """Restore a backup image onto a device, returning its progress in one batch."""
+    return _drain(_stream_run_restore(params))
+
+
+def _stream_run_restore(
+    params: dict[str, Any],
+) -> Generator[dict[str, Any], None, dict[str, Any]]:
+    """Write a verified backup image onto a target device, then read it back.
+
+    ``dry_run`` defaults to True when absent, as for an erase. Every request -
+    dry or real - must carry a restore authorization, which
+    :func:`helper.authorization.revalidate_restore` re-checks against a fresh
+    read of the target and the image in *this* process before anything is
+    opened. A real restore also needs the typed serial of the device this
+    process re-reads and takes the single-use ``.executed`` marker. A dry run
+    never opens the target.
+
+    Closing this generator stops the engine at its next yield; the engine
+    ledgers the byte range written before the exception propagates.
+    """
+    _require_drive_engine(params)
+    from core.ledger.chain import Ledger
+    from core.restore import execute_restore
+
+    from helper.authorization import revalidate_restore
+
+    authorized = revalidate_restore(params)
+    ledger_root = params.get("ledger_root")
+    ledger = (
+        Ledger(
+            Path(str(ledger_root)),
+            tool_version=str(params.get("tool_version", "sanctum-forensics/0.0.0")),
+            pubkey_fingerprint=str(params.get("pubkey_fingerprint", "")),
+            owner_uid=_owner_uid(params),
+        )
+        if ledger_root
+        else None
+    )
+    job_id = str(params.get("job_id", "restore"))
+    actor = str(params.get("actor") or "sanctum")
+    target = (
+        None if authorized.dry_run else _open_restore_target(authorized.plan.target)
+    )
+    try:
+        generator = execute_restore(
+            authorized.record,
+            authorized.plan,
+            target,
+            job_id=job_id,
+            actor=actor,
+            ledger=ledger,
+            dry_run=authorized.dry_run,
+        )
+        try:
+            while True:
+                try:
+                    record = next(generator)
+                except StopIteration as stop:
+                    return {"result": stop.value.model_dump(mode="json")}
+                yield record.model_dump(mode="json")
+        finally:
+            generator.close()
+    finally:
+        if target is not None:
+            target.close()
+
+
+def _hpa_backend() -> Any:
+    """The HPA backend for this host: Linux (hdparm) or Windows (ATA pass-through).
+
+    macOS and anything else raise ``PlatformUnsupported`` with the capability
+    resolver's own reason, before any device is read.
+    """
+    from core.device.hidden_area_workflow import platform_backend
+    from core.platform.host import family
+
+    return platform_backend(family())
+
+
+def _hpa_device(path: str) -> Any:
+    """A fresh read of the device through this host's platform adapter."""
+    from core.models import Device
+    from core.platform import current_adapter
+
+    return Device.model_validate(current_adapter().authorization_probe(path)["device"])
+
+
+def _op_discover_hidden_area(params: dict[str, Any]) -> dict[str, Any]:
+    """Read one drive's native and accessible maxima. Read-only.
+
+    A drive that cannot be asked - behind a bridge, NVMe, no privilege - is
+    reported as ``unavailable`` with the reason, never as "no hidden area".
+    """
+    from core.errors import UnsupportedCapability
+
+    backend = _hpa_backend()
+    device = _hpa_device(str(params["path"]))
+    try:
+        state = backend.discover(device)
+    except UnsupportedCapability as exc:
+        return {
+            "platform": backend.platform,
+            "device": device.model_dump(mode="json"),
+            "state": None,
+            "unavailable": exc.message,
+        }
+    return {
+        "platform": backend.platform,
+        "device": device.model_dump(mode="json"),
+        "state": state.model_dump(mode="json"),
+        "unavailable": "",
+    }
+
+
+def _op_run_hpa_change(params: dict[str, Any]) -> dict[str, Any]:
+    """Run an approved HPA change, returning its progress in one batch."""
+    return _drain(_stream_run_hpa_change(params))
+
+
+def _stream_run_hpa_change(
+    params: dict[str, Any],
+) -> Generator[dict[str, Any], None, dict[str, Any]]:
+    """Set a drive's accessible maximum to its native maximum, then read it back.
+
+    ``dry_run`` defaults to True when absent. Every request must carry an
+    ``hpa`` authorization, which :func:`helper.authorization.revalidate_hpa`
+    re-checks against a fresh read of the device in *this* process; a real
+    change also needs the typed serial and takes the single-use ``.executed``
+    marker. The engine re-discovers the drive immediately before the command
+    and refuses a stale plan. A macOS host is refused before any record is
+    read: it has no ATA pass-through.
+    """
+    from core.device.hidden_area_workflow import execute
+    from core.errors import WorkflowGateRefused
+    from core.ledger.chain import Ledger
+
+    from helper.authorization import revalidate_hpa
+
+    backend = _hpa_backend()
+    authorized = revalidate_hpa(params)
+    ledger_root = params.get("ledger_root")
+    if not ledger_root:
+        raise WorkflowGateRefused(
+            "REFUSED: an HPA change must be recorded in the hash-chained ledger "
+            "and the request names none. Nothing was sent to the drive.",
+            why_blocked=["the request carries no ledger_root"],
+        )
+    ledger = Ledger(
+        Path(str(ledger_root)),
+        tool_version=str(params.get("tool_version", "sanctum-forensics/0.0.0")),
+        pubkey_fingerprint=str(params.get("pubkey_fingerprint", "")),
+        owner_uid=_owner_uid(params),
+    )
+    generator = execute(
+        authorized.plan,
+        backend,
+        device=authorized.device,
+        dry_run=authorized.dry_run,
+        typed_serial=str(params.get("typed_serial") or ""),
+        ledger=ledger,
+        actor=str(params.get("actor") or "sanctum"),
+        job_id=str(params.get("job_id", "hpa")),
+        authorization_id=authorized.auth_id,
+    )
+    try:
+        while True:
+            try:
+                record = next(generator)
+            except StopIteration as stop:
+                return {"result": stop.value.model_dump(mode="json")}
+            yield record
+    finally:
+        generator.close()
+
+
 #: Static allowlist. The only operations the daemon will ever perform.
 OPERATIONS: dict[str, Handler] = {
     "whoami": _op_whoami,
@@ -509,6 +747,10 @@ OPERATIONS: dict[str, Handler] = {
     "run_erase": _op_run_erase,
     "resume_erase": _op_resume_erase,
     "acquire_image": _op_acquire_image,
+    "run_restore": _op_run_restore,
+    "prepare_device": _op_prepare_device,
+    "discover_hidden_area": _op_discover_hidden_area,
+    "run_hpa_change": _op_run_hpa_change,
 }
 
 #: The subset of :data:`OPERATIONS` served incrementally. A name here must also
@@ -518,6 +760,8 @@ STREAMING_OPERATIONS: dict[str, StreamHandler] = {
     "run_erase": _stream_run_erase,
     "resume_erase": _stream_resume_erase,
     "acquire_image": _stream_acquire_image,
+    "run_restore": _stream_run_restore,
+    "run_hpa_change": _stream_run_hpa_change,
 }
 
 
@@ -818,9 +1062,7 @@ class HelperDaemon:
         if not chunk:
             return True
         return any(
-            rpc.is_cancel_frame(part)
-            for part in chunk.split(b"\n")
-            if part.strip()
+            rpc.is_cancel_frame(part) for part in chunk.split(b"\n") if part.strip()
         )
 
     @staticmethod
@@ -945,7 +1187,7 @@ class HelperDaemon:
         check that makes this a boundary rather than a string-prefix test.
         """
         requested = Path(candidate)
-        target = (base / requested if not requested.is_absolute() else requested)
+        target = base / requested if not requested.is_absolute() else requested
         resolved = target.resolve()
         if resolved != base and base not in resolved.parents:
             raise PermissionError(

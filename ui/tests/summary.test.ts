@@ -109,6 +109,32 @@ test('the limitations always lead with what is not physically validated', () => 
   assert.ok(summary.limitations.some((line) => line.includes('SYNTHETIC')))
 })
 
+test('each unvalidated or unavailable capability is named with its state', () => {
+  const find = (prefix: string) => NOT_PHYSICALLY_VALIDATED.filter((line) => line.startsWith(prefix))
+  for (const prefix of [
+    'Windows whole-drive clear',
+    'Windows raw physical-device acquisition',
+    'Windows device sanitize',
+    'macOS whole-drive clear and raw acquisition',
+    'Backup restore',
+  ]) {
+    const lines = find(prefix)
+    assert.equal(lines.length, 1, prefix)
+    // The resolver's label (core/platform/model.py STATE_LABELS), not a paraphrase.
+    assert.match(lines[0], /IMPLEMENTED \/ UNVALIDATED/, prefix)
+    assert.doesNotMatch(lines[0], /not implemented/i, prefix)
+  }
+  assert.match(find('ATA SECURITY ERASE on Windows')[0], /NOT IMPLEMENTED/)
+  assert.match(find('NVMe Format on Windows')[0], /PLATFORM-LIMITED/)
+  assert.match(find('HPA/DCO discovery and modification on macOS')[0], /PLATFORM-LIMITED/)
+  assert.match(find('Firmware Purge')[0], /never run on a physical drive/)
+  assert.match(find('Device sanitize, crypto erase')[0], /on macOS: PLATFORM-LIMITED/)
+  assert.match(find('Free-space wipe on Windows and macOS')[0], /NOT IMPLEMENTED/)
+  assert.match(find('HPA change')[0], /DCO is discovered only, never modified/)
+  assert.ok(!NOT_PHYSICALLY_VALIDATED.some((line) => /NOT PHYSICALLY VALIDATED|HPA\/DCO unlock/.test(line)))
+  assert.ok(NOT_PHYSICALLY_VALIDATED.some((line) => /No macOS physical device run is recorded/.test(line)))
+})
+
 test('the judge summary never counts a dry run as an erasure', () => {
   const summary = judgeSummary(detail([op('erase-drive', 'complete', { dry_run: true })]), null, 'VALID')
   assert.ok(!summary.erasure.some((line) => /drive sanitization completed/.test(line)))

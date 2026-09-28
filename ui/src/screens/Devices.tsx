@@ -1,11 +1,14 @@
 import { Fragment, useEffect, useState } from 'react'
 import { api, RequestFailed } from '../lib/api'
-import type { DeviceRow, HiddenAreaReport } from '../lib/api'
+import type { DeviceAssessment, DeviceRow, HiddenAreaReport } from '../lib/api'
 import { capabilityBadge } from '../lib/capability'
+import { deviceCapability, deviceClassWord } from '../lib/states'
+import { DeviceCapabilityList, StateMark } from '../components/capabilityState'
 import { bytes, exactBytes } from '../lib/format'
 import { flashOf } from '../lib/erasePlan'
 import { Empty, ErrorNotice, Limitations, Panel, Verdict } from '../components/widgets'
 import { DestroyRecordPanel } from '../components/destroyRecord'
+import { PreparePanel } from '../components/preparePanel'
 
 /**
  * Hidden areas.
@@ -14,8 +17,20 @@ import { DestroyRecordPanel } from '../components/destroyRecord'
  * probed" and "HPA 1.05 GB" are already distinct read as text alone, so this
  * column loses nothing in greyscale and needs no glyph beside it.
  */
-function HiddenAreas({ report }: { report: HiddenAreaReport | null }) {
-  if (!report) return <span className="state-mark is-muted">not probed</span>
+function HiddenAreas({
+  report,
+  assessment,
+}: {
+  report: HiddenAreaReport | null
+  assessment?: DeviceAssessment
+}) {
+  if (!report) {
+    // No measurement in the row. Where the resolver answered for HPA/DCO
+    // discovery on this device, its word stands in, never a bare "not probed".
+    const resolved = deviceCapability(assessment, 'hpa_dco_discovery')
+    if (resolved) return <StateMark row={resolved} title={resolved.reason} />
+    return <span className="state-mark is-muted">not probed</span>
+  }
   if (report.hidden_bytes <= 0) {
     return <span className="state-mark is-success">none</span>
   }
@@ -104,7 +119,7 @@ export default function Devices({
 
         <Panel
           title={`Block devices (${rows.length})`}
-          subtitle="Capability is what the probe reported, not what was requested."
+          subtitle="Capability is what the probe and the resolver reported, not what was requested. Open a verdict to see every capability, its state and why."
           tight
         >
           {rows.length === 0 ? (
@@ -115,7 +130,7 @@ export default function Devices({
             </Empty>
           ) : (
             <div className="scroll-x-narrow">
-              <table className="itable" style={{ minWidth: 1000 }}>
+              <table className="itable" style={{ minWidth: 1120 }}>
                 {/* Fixed widths so the columns line up down the table and the
                     header never truncates mid-word. Capability takes what is
                     left, and its basis line ellipsises rather than wrapping -
@@ -134,8 +149,9 @@ export default function Devices({
                   <col style={{ width: 186 }} />
                   <col style={{ width: 92 }} />
                   <col style={{ width: 104 }} />
+                  <col style={{ width: 112 }} />
                   <col style={{ width: 238 }} />
-                  <col style={{ width: 140 }} />
+                  <col style={{ width: 150 }} />
                 </colgroup>
                 <thead>
                   <tr>
@@ -145,6 +161,7 @@ export default function Devices({
                     <th>Serial</th>
                     <th>Size</th>
                     <th>Bus</th>
+                    <th>Class</th>
                     <th>Capability</th>
                     <th>Hidden areas</th>
                   </tr>
@@ -203,6 +220,11 @@ export default function Devices({
                             {row.device.transport}
                             {flashOf(row).flash ? ' flash' : ''}
                           </td>
+                          {/* The evidence bucket the resolver matched physical
+                              runs against: validation is scoped to it. */}
+                          <td className="mono" data-testid="device-class">
+                            {deviceClassWord(row.assessment)}
+                          </td>
                           <td>
                             <Verdict
                               level={badge.label}
@@ -215,7 +237,10 @@ export default function Devices({
                             />
                           </td>
                           <td>
-                            <HiddenAreas report={row.hidden_areas} />
+                            <HiddenAreas
+                              report={row.hidden_areas}
+                              assessment={row.assessment}
+                            />
                           </td>
                         </tr>
                         {barred && (
@@ -223,7 +248,7 @@ export default function Devices({
                             <td className="rail is-destructive" aria-hidden>
                               <i />
                             </td>
-                            <td colSpan={7}>
+                            <td colSpan={8}>
                               <span className="lock-reason">
                                 <strong>BLOCKED</strong> · WHY BLOCKED: {reason}
                               </span>
@@ -235,22 +260,28 @@ export default function Devices({
                             <td className="rail" aria-hidden>
                               <i />
                             </td>
-                            <td colSpan={7}>
+                            <td colSpan={8}>
                               <dl className="evidence">
                                 <dt>Claim</dt>
                                 <dd>{badge.label}</dd>
                                 <dt>Because</dt>
                                 <dd>{badge.why}</dd>
-                                <dt>Levels</dt>
-                                <dd className="mono">
-                                  {row.capabilities?.achievable_levels.join(', ') ||
-                                    'none reported'}
-                                </dd>
-                                <dt>Sanitize ops</dt>
-                                <dd className="mono">
-                                  {row.capabilities?.ata_sanitize_ops.join(', ') ||
-                                    'none reported'}
-                                </dd>
+                                <dt>Device class</dt>
+                                <dd className="mono">{deviceClassWord(row.assessment)}</dd>
+                                {row.capabilities && (
+                                  <>
+                                    <dt>Levels</dt>
+                                    <dd className="mono">
+                                      {row.capabilities.achievable_levels.join(', ') ||
+                                        'none reported'}
+                                    </dd>
+                                    <dt>Sanitize ops</dt>
+                                    <dd className="mono">
+                                      {row.capabilities.ata_sanitize_ops.join(', ') ||
+                                        'none reported'}
+                                    </dd>
+                                  </>
+                                )}
                                 {row.hidden_areas && row.hidden_areas.hidden_bytes > 0 && (
                                   <>
                                     <dt>Hidden</dt>
@@ -265,6 +296,11 @@ export default function Devices({
                                   </>
                                 )}
                               </dl>
+                              {/* Each capability with the resolver's word, its
+                                  reason and its mechanism. Physical validation
+                                  is scoped to the device class above. */}
+                              <DeviceCapabilityList assessment={row.assessment} />
+                              <PreparePanel row={row} onDone={refresh} />
                             </td>
                           </tr>
                         )}
@@ -280,11 +316,24 @@ export default function Devices({
         {/* On Windows and macOS these carry the platform's own reason - the
             probe is not offered there at all - so the panel is titled for
             what it actually lists rather than implying a failure. */}
-        {rows.some((row) => row.capability_error || row.hidden_area_error) && (
+        {rows.some(
+          (row) =>
+            row.capability_error ||
+            (row.hidden_area_error &&
+              !deviceCapability(row.assessment, 'hpa_dco_discovery')),
+        ) && (
           <Panel title="What was not probed on this computer, and why">
             <ul className="limitations">
               {rows.flatMap((row) =>
-                [row.capability_error, row.hidden_area_error]
+                [
+                  row.capability_error,
+                  // Where the resolver answered for HPA/DCO discovery, its
+                  // reason (in the device's capability list) is the answer; a
+                  // row-level message from before the resolver would contradict it.
+                  deviceCapability(row.assessment, 'hpa_dco_discovery')
+                    ? ''
+                    : row.hidden_area_error,
+                ]
                   .filter(Boolean)
                   .map((message, index) => (
                     <li key={`${row.device.path}-${index}`}>

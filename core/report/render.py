@@ -36,6 +36,7 @@ import structlog
 from core.ledger.canon import CANON_VERSION, canonical_bytes
 from core.ledger.chain import ChainVerification
 from core.models import Signature
+from core.report.semantics import describe as describe_semantics
 
 __all__ = [
     "SECTION_ORDER",
@@ -45,6 +46,7 @@ __all__ = [
     "build_file_erase_report",
     "build_carve_report",
     "build_destroy_report",
+    "build_restore_report",
     "dpdp_erasure_reference",
     "drive_report_inputs",
     "excerpt_gaps",
@@ -205,6 +207,13 @@ _SECTION_TITLES = {
     "recovery": "4. Recovery",
     "confidence": "5. Confidence",
     "pii_triage": "6. PII Triage",
+    # Restore. Method, source, target, scope and verification, then the shared
+    # limitations and audit trail.
+    "restore_method": "2. Method",
+    "restore_source": "3. Source",
+    "restore_target": "4. Target",
+    "restore_scope": "5. Scope",
+    "restore_verification": "6. Verification",
 }
 
 #: Fields rendered in monospace: hashes, serials, paths, and anything an
@@ -369,6 +378,15 @@ def build_report(
             "level_achieved": method.get("level_achieved", ""),
             "justification": method.get("justification", ""),
             "capability_evidence": method.get("capability_evidence", {}),
+            # What this method may be called, and what it may not claim:
+            # FILE ERASE, ADDRESSABLE WHOLE-DRIVE CLEAR, DEVICE SANITIZE or
+            # CRYPTO ERASE, never an undifferentiated "secure erase".
+            "semantics": describe_semantics(
+                str(method.get("method", "")),
+                verification=verification,
+                limitations=list(limitations),
+                transport=str(device.get("transport", "")),
+            ),
             "standards": sanitization_standards(),
             "regulatory_references": [dpdp_erasure_reference()],
         },
@@ -548,8 +566,20 @@ def trace_section(sweep: dict[str, Any] | None) -> dict[str, Any]:
         "found": len(traces),
         "exact": sum(1 for trace in traces if trace.get("exact")),
         "removed": sum(1 for trace in traces if trace.get("removed")),
+        "report_only": sum(1 for trace in traces if trace.get("report_only")),
         "content_copies": sum(1 for trace in traces if trace.get("content_copy")),
         "searched": _or_none_recorded(list(sweep.get("searched") or [])),
+        "inspected": _rows_or_none_recorded(
+            [
+                {
+                    "place": str(entry.get("label", "")),
+                    "path": str(entry.get("location", "")),
+                    "outcome": str(entry.get("outcome", "")),
+                    "detail": str(entry.get("detail") or ""),
+                }
+                for entry in list(sweep.get("inspected") or [])
+            ]
+        ),
         "not_searched": _or_none_recorded(list(sweep.get("not_searched") or [])),
         "unreadable": _or_none_recorded(list(sweep.get("notes") or [])),
         "note": (
@@ -560,7 +590,10 @@ def trace_section(sweep: dict[str, Any] | None) -> dict[str, Any]:
             "steps as a target, so the residual findings above apply to it "
             "too; a list entry is cut out and the list overwritten in place. A "
             "running application that holds the list in memory can write an "
-            "entry back."
+            "entry back. A trace tied on evidence but held inside a file another "
+            "process owns (a macOS shared file list, the Quick Look cache, a "
+            "jump list that also names other files, a Trash .DS_Store) is "
+            "reported only, with the reason, and not edited."
         ),
         "items": _rows_or_none_recorded(
             [
@@ -571,9 +604,13 @@ def trace_section(sweep: dict[str, Any] | None) -> dict[str, Any]:
                     "evidence": str(trace.get("evidence", "")),
                     "content_copy": bool(trace.get("content_copy")),
                     "exact": bool(trace.get("exact")),
-                    "action": str(trace.get("action") or "none"),
+                    "action": str(
+                        trace.get("action")
+                        or ("reported only" if trace.get("report_only") else "none")
+                    ),
                     "removed": bool(trace.get("removed")),
                     "error": str(trace.get("error") or ""),
+                    "report_only_reason": str(trace.get("report_only_reason") or ""),
                 }
                 for trace in traces
             ]
@@ -1007,6 +1044,99 @@ def build_carve_report(
             ),
         },
         "limitations": {"items": _or_none_recorded(list(limitations))},
+        "audit_trail": _audit_trail(
+            ledger_excerpt=ledger_excerpt,
+            chain_verification=chain_verification,
+            merkle_root=merkle_root,
+            anchor=anchor,
+        ),
+        "signature": signature.model_dump() if signature else {},
+    }
+    return _envelope(
+        case_id=case_id,
+        generated_at=generated_at,
+        tool_version=tool_version,
+        pubkey_fingerprint=pubkey_fingerprint,
+        sections=sections,
+        signature=signature,
+    )
+
+
+def build_restore_report(
+    *,
+    case_id: str,
+    operator: str,
+    generated_at: datetime,
+    tool_version: str,
+    result: dict[str, Any],
+    ledger_excerpt: list[dict[str, Any]],
+    chain_verification: ChainVerification,
+    pubkey_fingerprint: str,
+    merkle_root: str | None = None,
+    anchor: dict[str, Any] | None = None,
+    signature: Signature | None = None,
+    job_state: str | None = None,
+    platform: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """A restore of a backup image onto a target, from its ``RestoreResult``.
+
+    A restore is not a sanitization and the method section says so; the
+    verification section is the read-back of the written range, not a claim
+    about where the image came from.
+    """
+    verification = result.get("verification") or {}
+    first = verification.get("first_mismatch") or {}
+    target = result.get("target") or {}
+    sections: dict[str, Any] = {
+        "case_identity": _case_identity(
+            case_id=case_id,
+            operator=operator,
+            generated_at=generated_at,
+            tool_version=tool_version,
+            job_state=job_state,
+            platform=platform,
+        ),
+        "restore_method": {
+            "method": "image restore (sector-aligned write of a recorded backup)",
+            "dry_run": bool(result.get("dry_run", True)),
+            "result": str(result.get("result", NONE_RECORDED)),
+            "note": "A restore writes data; it is not a NIST SP 800-88 "
+            "Clear, Purge or Destroy outcome.",
+        },
+        "restore_source": {
+            "backup_id": str(result.get("backup_id", "")),
+            "backup_record_digest": str(result.get("backup_record_digest", "")),
+            "path": str(result.get("backup_image_path", "")),
+            "image_sha256": str(result.get("image_sha256", "")),
+            "source_device": dict(result.get("source") or {}),
+        },
+        "restore_target": {
+            "path": str(target.get("path", "")),
+            "serial": str(target.get("serial") or NONE_RECORDED),
+            "model": str(target.get("model") or NONE_RECORDED),
+            "size_bytes": target.get("size_bytes"),
+            "identity_relation": str(result.get("identity_relation", "")),
+        },
+        "restore_scope": {
+            "write_offset": result.get("write_offset"),
+            "bytes_planned": result.get("bytes_planned"),
+            "bytes_written": result.get("bytes_written"),
+            "unwritable": _rows_or_none_recorded(list(result.get("unwritable") or [])),
+            "plan_digest": str(result.get("plan_digest", "")),
+        },
+        "restore_verification": {
+            "performed": bool(verification),
+            "passed": bool(verification.get("passed", False)),
+            "expected_sha256": str(verification.get("expected_sha256", "")),
+            "actual_sha256": str(verification.get("actual_sha256", "")),
+            "bytes_verified": verification.get("bytes_verified", 0),
+            "first_mismatching_chunk": first.get("index"),
+        },
+        "limitations": {
+            "items": _or_none_recorded(
+                [str(item) for item in result.get("limitations") or []]
+            )
+        },
         "audit_trail": _audit_trail(
             ledger_excerpt=ledger_excerpt,
             chain_verification=chain_verification,

@@ -220,8 +220,10 @@ def _trace_words(traces: dict[str, Any]) -> str:
     if not found:
         return "none found"
     removed = int(traces.get("removed") or 0)
+    report_only = int(traces.get("report_only") or 0)
     left = found - removed
-    return f"{found} found, {removed} removed" + (f", {left} left" if left else "")
+    words = f"{found} found, {removed} removed" + (f", {left} left" if left else "")
+    return words + (f" ({report_only} report-only)" if report_only else "")
 
 
 def _facts(
@@ -250,6 +252,21 @@ def _facts(
             )
         )
         hidden_bytes = int(hidden.get("hidden_bytes") or 0)
+        words = method.get("semantics") or {}
+        if words:
+            groups.append(
+                (
+                    "What was done",
+                    [
+                        ("Category", _text(words.get("category")), False),
+                        ("Command", _text(words.get("method")), True),
+                        ("Protocol", _text(words.get("protocol")), False),
+                        ("Scope", _text(words.get("scope")), False),
+                        ("Verification", _text(words.get("verification")), False),
+                        ("Assurance", _text(words.get("assurance")), False),
+                    ],
+                )
+            )
         groups.append(
             (
                 "Sanitization",

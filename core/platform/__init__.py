@@ -72,12 +72,14 @@ def platform_status(adapter: BaseAdapter) -> PlatformStatus:
     from core.platform.filesystems import registry
 
     operations = adapter.operation_capabilities()
+    privilege = adapter.privilege_state()
     return PlatformStatus(
         platform=adapter.platform_info(),
-        privilege=adapter.privilege_state(),
+        privilege=privilege,
         operations=operations,
         media_classes=adapter.media_classes(),
         filesystems=registry(),
         restrictions=adapter.restrictions(),
         adapter=adapter.name,
+        capabilities=adapter.platform_capabilities(privilege),
     )

@@ -30,7 +30,10 @@ one of them writes to a device and the rest do not:
                 block applied, and records throughput and read errors.
     score       read-only. Ground truth from the acquired image, one carve run,
                 the scorer, and the comparison against the pre-registered
-                synthetic baseline.
+                synthetic baseline. Also seals a PHYSICAL ground-truth manifest
+                and writes a sealed first-class result through core.benchmark,
+                from the records ``preflight --work``, ``build`` and ``acquire``
+                leave in the work directory.
 
 Nothing here decides its own target. ``--device`` names it, ``--expect-serial``
 declares what that device must report, and a mismatch is a refusal rather than
@@ -49,6 +52,7 @@ import random
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
@@ -77,6 +81,12 @@ FAIL_BELOW_POINTS = 10.0
 #: A device larger than this is not a test stick, and reading it whole into
 #: memory to compute ground truth would not fit either.
 MAX_SANE_BYTES = 128 * 1024 * 1024 * 1024
+
+#: Records the read-only steps leave in the work directory, for the sealed
+#: ground-truth manifest (``core.benchmark.sources.PhysicalWork`` reads them).
+BUILD_RECORD = "build.json"
+PREFLIGHT_RECORD = "preflight.json"
+ACQUISITION_RECORD = "acquisition.json"
 
 #: Where the kernel publishes block devices. A name, not a literal inside the
 #: probe, so the tests can point it at a tree they built.
@@ -461,7 +471,7 @@ def build_corpus(work: Path, *, seed: int = 0) -> dict[str, Any]:
     counts: dict[str, int] = {}
     for obj in truth.objects:
         counts[obj.status] = counts.get(obj.status, 0) + 1
-    return {
+    record = {
         "image": str(image),
         "image_sha256": sha256_file(image),
         "image_bytes": image.stat().st_size,
@@ -470,6 +480,10 @@ def build_corpus(work: Path, *, seed: int = 0) -> dict[str, Any]:
         "seed": seed,
         "host": _host_facts(),
     }
+    # Kept beside the image so the sealed manifest can name the seed the corpus
+    # was built with, rather than a seed someone remembers.
+    (work / BUILD_RECORD).write_text(json.dumps(record, indent=1), encoding="utf-8")
+    return record
 
 
 def backup_paths(work: Path) -> tuple[Path, Path]:
@@ -1399,7 +1413,8 @@ def acquire(device: str, work: Path, *, length: int) -> dict[str, Any]:
     elapsed = time.monotonic() - started
     _hand_back(target)
 
-    return {
+    record = {
+        "job_id": f"media-benchmark-acquire-{uuid.uuid4().hex}",
         "device": device,
         "acquired": str(target),
         "bytes": read,
@@ -1412,7 +1427,14 @@ def acquire(device: str, work: Path, *, length: int) -> dict[str, Any]:
             "verified_by": getattr(block, "verified_by", ""),
             "detail": getattr(block, "detail", ""),
         },
+        "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+    # The acquisition's identity - job id, image hash, size - for the sealed
+    # manifest. Written beside the image, never over it.
+    meta = out / ACQUISITION_RECORD
+    meta.write_text(json.dumps(record, indent=1), encoding="utf-8")
+    _hand_back(meta)
+    return record
 
 
 def baseline_row() -> dict[str, Any]:
@@ -1436,12 +1458,111 @@ def baseline_row() -> dict[str, Any]:
     raise Refused(f"no baseline row for {BASELINE_IMAGE}/{BASELINE_TOOL}")
 
 
-def score_physical(work: Path, *, timeout: int = 3600) -> dict[str, Any]:
+def first_class_result(
+    work: Path,
+    *,
+    run_dir: Path,
+    image: Path,
+    run_meta: dict[str, Any],
+    legacy: dict[str, Any],
+    benchmark_id: str | None = None,
+    key: Path | None = None,
+    ledger_root: Path | None = None,
+) -> dict[str, Any]:
+    """The sealed PHYSICAL manifest and the sealed result, via ``core.benchmark``.
+
+    The manifest is sealed once, at ``physical/manifest.json``, from the
+    records the read-only steps left (``preflight --work``, ``build``,
+    ``acquire``); a later score loads and re-verifies it rather than re-deriving
+    it. Without a SAFE preflight record no PHYSICAL manifest is sealed and no
+    first-class result is produced; the reason is returned instead, and the
+    legacy output above is unaffected.
+
+    The result is scored by the same attribution as the legacy score, and the
+    two sets of totals are compared here; a disagreement is reported, not
+    hidden.
+    """
+    from core.benchmark.manifest import load_manifest, write_manifest
+    from core.benchmark.outputs import OUTPUT_INDEX
+    from core.benchmark.pipeline import read_buckets, score_and_record, tool_identity
+    from core.benchmark.result import append_manifest_to_ledger
+    from core.benchmark.sources import physical_manifest_from_work
+    from core.errors import SanctumError
+
+    physical = work / "physical"
+    manifest_path = physical / "manifest.json"
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    passphrase = os.environ.get("SANCTUM_KEY_PASSPHRASE")
+    try:
+        if manifest_path.exists():
+            manifest = load_manifest(manifest_path)
+        else:
+            manifest = physical_manifest_from_work(
+                work, benchmark_id=benchmark_id or f"physical-{stamp}"
+            )
+            write_manifest(manifest, manifest_path)
+            if ledger_root is not None:
+                append_manifest_to_ledger(
+                    manifest, ledger_root, key=key, passphrase=passphrase
+                )
+        files = run_dir / "files"
+        out = physical / "results" / f"result-{stamp}-{uuid.uuid4().hex[:8]}.json"
+        result = score_and_record(
+            manifest,
+            files if files.is_dir() else run_dir / OUTPUT_INDEX,
+            out=out,
+            tool=tool_identity(BASELINE_TOOL, run_meta=run_meta),
+            payloads=work / "payloads",
+            image=image,
+            buckets=read_buckets(run_dir / "sanctum-result.json"),
+            baseline_csv=BASELINE_CSV,
+            key=key,
+            passphrase=passphrase,
+            ledger_root=ledger_root,
+        )
+    except SanctumError as refusal:
+        return {"produced": False, "reason": refusal.message}
+    counts = result.score.counts.model_dump()
+    compared = ("full", "exact", "corrupt", "missed", "duplicate_outputs", "fp_total")
+    disagreements = {
+        name: {"legacy": legacy.get(name), "first_class": counts[name]}
+        for name in compared
+        if legacy.get(name) != counts[name]
+    }
+    return {
+        "produced": True,
+        "manifest": str(manifest_path),
+        "manifest_digest": manifest.manifest_digest,
+        "acquisition_recorded": manifest.acquisition is not None,
+        "result": str(out),
+        "result_digest": result.result_digest,
+        "rule_outcome": str(result.rule.outcome),
+        "rule_binding": result.rule.binding,
+        "rule_reason": result.rule.reason,
+        "signed": result.signature is not None,
+        "unsigned_reason": result.unsigned_reason,
+        "ledgered": ledger_root is not None,
+        "matches_legacy_score": not disagreements,
+        "legacy_disagreements": disagreements,
+    }
+
+
+def score_physical(
+    work: Path,
+    *,
+    timeout: int = 3600,
+    benchmark_id: str | None = None,
+    key: Path | None = None,
+    ledger_root: Path | None = None,
+) -> dict[str, Any]:
     """Ground truth from the acquired image, one carve run, and the verdict.
 
     The truth is recomputed **from the acquired image**, not carried over from
     the build: what the benchmark must score is what came back off the medium,
     and any difference between the two is itself a finding.
+
+    The legacy fields are unchanged. ``first_class_result`` adds the sealed
+    manifest and sealed result from :func:`first_class_result`.
     """
     from testkit.benchmark import (
         OUTPUT_INDEX,
@@ -1515,6 +1636,16 @@ def score_physical(work: Path, *, timeout: int = 3600) -> dict[str, Any]:
         "recall_delta_points": delta,
         "run": meta,
         "host": _host_facts(),
+        "first_class_result": first_class_result(
+            work,
+            run_dir=run_dir,
+            image=acquired,
+            run_meta=meta,
+            legacy={**measured, "fp_total": result.fp_total},
+            benchmark_id=benchmark_id,
+            key=key,
+            ledger_root=ledger_root,
+        ),
     }
 
 
@@ -1526,6 +1657,11 @@ def main(argv: list[str] | None = None) -> int:
     pre.add_argument("--device", required=True)
     pre.add_argument("--expect-serial", required=True)
     pre.add_argument("--allow-fixed", action="store_true")
+    pre.add_argument(
+        "--work",
+        type=Path,
+        help="also record the verdict in <work>/preflight.json for the manifest",
+    )
 
     bld = sub.add_parser("build", help="build the corpus image on host storage")
     bld.add_argument("--work", required=True, type=Path)
@@ -1570,6 +1706,9 @@ def main(argv: list[str] | None = None) -> int:
     sc = sub.add_parser("score", help="truth, one carve run, and the verdict")
     sc.add_argument("--work", required=True, type=Path)
     sc.add_argument("--timeout", type=int, default=3600)
+    sc.add_argument("--id", dest="benchmark_id", help="benchmark id for the manifest")
+    sc.add_argument("--key", type=Path, help="signing key file or directory")
+    sc.add_argument("--ledger-root", type=Path, help="append ledger entries here")
 
     args = parser.parse_args(argv)
     try:
@@ -1579,6 +1718,12 @@ def main(argv: list[str] | None = None) -> int:
                 expect_serial=args.expect_serial,
                 allow_fixed=args.allow_fixed,
             )
+            if args.work is not None:
+                args.work.mkdir(parents=True, exist_ok=True)
+                (args.work / PREFLIGHT_RECORD).write_text(
+                    json.dumps({**payload, "host": _host_facts()}, indent=1),
+                    encoding="utf-8",
+                )
         elif args.command == "build":
             payload = build_corpus(args.work, seed=args.seed)
         elif args.command == "backup":
@@ -1618,7 +1763,13 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "acquire":
             payload = acquire(args.device, args.work, length=args.bytes)
         elif args.command == "score":
-            payload = score_physical(args.work, timeout=args.timeout)
+            payload = score_physical(
+                args.work,
+                timeout=args.timeout,
+                benchmark_id=args.benchmark_id,
+                key=args.key,
+                ledger_root=args.ledger_root,
+            )
         else:  # pragma: no cover - argparse rejects anything else
             raise Refused(f"unknown command {args.command}")
     except Refused as refusal:
@@ -1652,4 +1803,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":  # pragma: no cover - process entry point
+    import structlog
+
+    # stdout carries the JSON this script prints; log lines go to stderr.
+    structlog.configure(logger_factory=structlog.PrintLoggerFactory(file=sys.stderr))
     raise SystemExit(main())

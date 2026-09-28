@@ -187,10 +187,9 @@ _WIN32_DEVICE_NAMES = ("physicaldrive", "volume{", "globalroot")
 def is_win32_device_path(path: Path | str) -> bool:
     """Whether ``path`` names a Win32 raw device rather than a file.
 
-    Raw physical-device acquisition on Windows is not implemented: ``open()``
-    cannot address the device namespace, and no ``CreateFile`` path exists in
-    this build. Such a path is refused with that reason instead of the
-    misleading "not found" a plain ``exists()`` check produces.
+    ``open()`` cannot address the device namespace, so such a path is routed to
+    the ``CreateFileW`` reader in :mod:`core.carve.win_source` rather than to
+    :class:`FileSourceReader`.
     """
     text = os.fspath(path)
     if text.startswith(_WIN32_DEVICE_PREFIXES):
@@ -211,13 +210,12 @@ class FileSourceReader:
     ) -> None:
         if is_win32_device_path(path):
             raise EvidenceIntegrityError(
-                "raw physical-device acquisition is not implemented on Windows: "
-                f"{os.fspath(path)} is in the Win32 device namespace, which this "
-                "build cannot open",
+                f"{os.fspath(path)} is in the Win32 device namespace; plain file "
+                "I/O cannot open it",
                 remediation=(
-                    "Image the device with a hardware write blocker and a dedicated "
-                    "imager, or boot Linux and acquire it there, then acquire the "
-                    "resulting image file. Nothing was opened."
+                    "Acquire it through core.carve.acquire.acquire(), which opens "
+                    "Win32 devices with the read-only CreateFileW reader. Nothing "
+                    "was opened."
                 ),
             )
         self.path = Path(path)
@@ -283,6 +281,10 @@ class AcquireOptions:
     examiner: str = ""
     description: str = ""
     notes: str = ""
+    #: The identity the operator selected, for a raw device on Windows or
+    #: macOS. The reader binds its handle to it and refuses a different disk.
+    expected_serial: str = ""
+    expected_size: int = 0
 
     def __post_init__(self) -> None:
         if self.block_bytes % self.sector_size:
@@ -625,11 +627,67 @@ def _open_source(
     source: SourceReader | Path | str, options: AcquireOptions
 ) -> tuple[SourceReader, Path | None, bool]:
     if isinstance(source, (str, Path)):
+        text = os.fspath(source)
+        if is_win32_device_path(text):
+            return _open_win32_source(text, options), Path(text), True
+        if _is_macos_disk(text):
+            from core.carve.mac_source import open_macos_source
+
+            reader: SourceReader = open_macos_source(
+                text,
+                expected_size=options.expected_size,
+                sector_size=options.sector_size,
+            )
+            return reader, Path(text), True
         # The reader gets the caller's spelling: Path() on POSIX folds the
         # ``//./`` device prefix to ``//``, and the device check must see it.
         reader = FileSourceReader(source, sector_size=options.sector_size)
         return reader, Path(source), True
     return source, None, False
+
+
+def _bound_identity(reader: SourceReader) -> dict[str, Any] | None:
+    """The identity a device reader bound its handle to, for the ledger."""
+    identity = getattr(reader, "identity", None)
+    if identity is None:
+        return None
+    from dataclasses import asdict, is_dataclass
+
+    if is_dataclass(identity) and not isinstance(identity, type):
+        return asdict(identity)
+    return None
+
+
+def _is_macos_disk(text: str) -> bool:
+    return sys.platform == "darwin" and text.startswith(("/dev/disk", "/dev/rdisk"))
+
+
+def _open_win32_source(text: str, options: AcquireOptions) -> SourceReader:
+    """The Windows raw-device reader, or a refusal naming why there is none."""
+    from core.carve.win_source import open_windows_source
+    from core.device.win.native import NativeError
+
+    if sys.platform != "win32":
+        raise EvidenceIntegrityError(
+            f"{text} is a Win32 device path, and this host is "
+            f"{platform.system()}, not Windows",
+            remediation="Acquire the device on the Windows machine it is "
+            "attached to. Nothing was opened.",
+        )
+    try:
+        return open_windows_source(
+            text,
+            expected_serial=options.expected_serial,
+            expected_size=options.expected_size,
+            sector_size=options.sector_size,
+        )
+    except NativeError as exc:
+        raise EvidenceIntegrityError(
+            f"Windows refused to open {text} for reading (Win32 error "
+            f"{exc.winerror})",
+            remediation="Raw device acquisition needs Sanctum running as "
+            "Administrator. Nothing was read.",
+        ) from exc
 
 
 def _salvage_block(
@@ -784,6 +842,7 @@ def acquire(
                 params={
                     "job_id": job_id,
                     "source": str(source_path) if source_path else "<reader>",
+                    "source_identity": _bound_identity(reader),
                     "dest": str(destination),
                     "fmt": fmt,
                     "size_bytes": reader.size,

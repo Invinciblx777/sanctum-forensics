@@ -1,9 +1,10 @@
 // The per-device capability verdict on the Devices screen. Pure, and free of
 // React, so `node --test` runs it: see ui/tests/capability.test.ts.
 
-import type { Capabilities, DeviceAssessment } from './api'
+import type { Capabilities, DeviceAssessment, SanitizeOption } from './api'
 import type { Tone } from '../components/widgets'
-import { runnableStatus } from './platform.ts'
+import { offeredOption, runnableStatus } from './platform.ts'
+import { capabilityWord, honestLevel, purgeAbsence } from './states.ts'
 
 /**
  * The capability verdict.
@@ -35,10 +36,19 @@ export function capabilityBadge(
     ...(assessment?.alternatives ?? []),
     ...(assessment?.unavailable ?? []),
   ].find((option) => option?.level === 'PURGE')
-  const purgeVerified = runnableStatus(purge?.status)
+  // With a resolver state, only VALIDATED_PHYSICAL is a verified Purge; the
+  // older status rule is kept for payloads saved before the resolver.
+  const purgeVerified = purge?.state
+    ? purge.state === 'VALIDATED_PHYSICAL'
+    : runnableStatus(purge?.status)
   const unverified =
     ' UNVERIFIED: no firmware sanitize has been run on a physical drive by ' +
     'this project; the path is fixture-tested only.'
+  if (!caps && assessment && (assessment.capabilities?.length || assessment.recommended)) {
+    // Windows and macOS rows carry no Linux probe, but the resolver answered
+    // for the device: the verdict is read from its options, not "not probed".
+    return assessmentBadge(assessment)
+  }
   if (!caps) {
     return {
       label: 'Not probed',
@@ -101,5 +111,53 @@ export function capabilityBadge(
       'No firmware sanitize or cryptographic erase was reported, so a host ' +
       'overwrite is the strongest available result. On flash media that ' +
       'leaves remapped and over-provisioned blocks untouched.',
+  }
+}
+
+/**
+ * The verdict from the server's assessment alone (no Linux capability probe).
+ *
+ * The strongest offered option decides the word, under its honest level: a
+ * host overwrite is CLEAR whatever it is labelled. The basis carries the
+ * resolver's state word, so IMPLEMENTED / UNVALIDATED is never read as a pass.
+ */
+export function assessmentBadge(assessment: DeviceAssessment): {
+  label: string
+  tone: Tone
+  basis: string
+  why: string
+} {
+  const options = [assessment.recommended, ...assessment.alternatives].filter(
+    (option): option is SanitizeOption => Boolean(option) && offeredOption(option),
+  )
+  const purge = options.find((option) => honestLevel(option) === 'PURGE')
+  if (purge) {
+    const word = capabilityWord(purge)
+    const validated = purge.state === 'VALIDATED_PHYSICAL'
+    return {
+      label: validated ? 'PURGE AVAILABLE' : `PURGE \u00b7 ${word.word}`,
+      tone: validated ? 'success' : 'unknown',
+      basis: [purge.protocol, word.word].filter(Boolean).join(' \u00b7 '),
+      why: purge.why,
+    }
+  }
+  const clear = options.find((option) => honestLevel(option) === 'CLEAR')
+  const absence = purgeAbsence(assessment)
+  if (clear) {
+    const word = capabilityWord(clear)
+    return {
+      label: 'CLEAR ONLY',
+      tone: 'warning',
+      basis: `clear ${word.word}${absence ? ` \u00b7 purge ${absence.word}` : ''}`,
+      why:
+        `${clear.why}` +
+        (absence ? ` No Purge: ${absence.causeWord}. ${absence.reason}` : ''),
+    }
+  }
+  return {
+    label: assessment.headline || 'NOT AVAILABLE',
+    tone: assessment.headline === 'NOT AUTHORIZED' ? 'warning' : 'destructive',
+    basis: absence ? `purge ${absence.word}` : 'nothing offered',
+    why: assessment.reason,
   }
 }

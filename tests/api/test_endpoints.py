@@ -15,8 +15,11 @@ them:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+from typing import Any
 
+import pytest
 from api.deps import AppServices
 from fastapi.testclient import TestClient
 
@@ -237,11 +240,16 @@ def test_acquire_rejects_a_missing_source(client: TestClient) -> None:
     assert answer.json()["detail"]["kind"] == "EvidenceIntegrityError"
 
 
-def test_acquire_refuses_a_win32_raw_device_as_not_implemented(
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="about a host that is not Windows; on Windows the path is a real device "
+    "path, covered by tests/carve/test_platform_sources.py",
+)
+def test_acquire_of_a_win32_device_off_windows_says_why(
     client: TestClient,
 ) -> None:
-    # Raw physical-device acquisition on Windows is not implemented. The refusal
-    # must say so, not report the device as "not found".
+    # A Win32 device path on a host that is not Windows is refused by name,
+    # never reported as "not found".
     answer = client.post(
         "/jobs/acquire",
         json={"source": "\\\\.\\PhysicalDrive2", "dest": "/tmp/out.dd"},
@@ -249,7 +257,7 @@ def test_acquire_refuses_a_win32_raw_device_as_not_implemented(
     assert answer.status_code == 422
     detail = answer.json()["detail"]
     assert detail["kind"] == "EvidenceIntegrityError"
-    assert "not implemented on Windows" in detail["error"]
+    assert "not Windows" in detail["error"]
     assert "not found" not in detail["error"]
 
 
@@ -411,3 +419,73 @@ def test_an_unanticipated_failure_returns_an_incident_id_and_not_the_message(
     assert len(body["incident"]) == 12
     assert body["incident"] in body["error"]
     assert body["incident"] in body["remediation"]
+
+
+def test_acquire_of_a_windows_disk_binds_to_the_serial_the_os_reports_now(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The operator's serial is checked against a fresh read, never trusted."""
+    import json as _json
+
+    from core.device._sysio import CommandResult
+    from core.platform.windows import WindowsAdapter
+
+    inventory = _json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "platform"
+            / "fixtures"
+            / "windows_inventory.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    class _Runner:
+        def run(self, argv: list[str]) -> CommandResult:
+            return CommandResult(argv, 0, _json.dumps(inventory), "")
+
+    monkeypatch.setattr("api.routes.jobs.sys.platform", "win32")
+    monkeypatch.setattr(
+        "core.platform.current_adapter",
+        lambda **kw: WindowsAdapter(runner=_Runner(), **kw),
+    )
+    for serial, word in (("", "needs the serial"), ("WRONG", "must match")):
+        answer = client.post(
+            "/jobs/acquire",
+            json={
+                "source": "\\\\.\\PhysicalDrive2",
+                "dest": "out.dd",
+                "expected_serial": serial,
+            },
+        )
+        assert answer.status_code == 422, answer.text
+        assert word in answer.json()["detail"]["error"]
+
+
+def test_prepare_device_is_a_separate_dry_run_first_step(
+    client: TestClient, helper: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unmount / offline is its own call, dry run by default, errors kept."""
+    from helper.rpc import RpcError
+
+    seen: list[dict[str, Any]] = []
+
+    def call(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        assert method == "prepare_device"
+        seen.append(params)
+        if params["path"] == "disk0":
+            raise RpcError(
+                "Refusing to unmount disk0: it is internal Mac storage.",
+                remediation="",
+                kind="SystemDiskRefused",
+            )
+        return {"device": params["path"], "performed": False, "dry_run": True}
+
+    monkeypatch.setattr(helper, "call", call)
+    answer = client.post("/devices/prepare", json={"path": "disk4"})
+    assert answer.status_code == 200
+    assert answer.json()["performed"] is False
+    assert seen[0]["dry_run"] is True
+    assert seen[0]["typed_serial"] == ""
+    refused = client.post("/devices/prepare", json={"path": "disk0"})
+    assert refused.status_code >= 400
+    assert refused.json()["detail"]["kind"] == "SystemDiskRefused"

@@ -6,9 +6,9 @@ Built for SIH 26149 (NTRO): one tool that erases storage by a method the
 device itself supports, recovers evidence without writing to it, and signs a
 record of both that a third party can check on their own machine.
 
-`SECURE ERASE` · `FILE ERASURE` · `FORENSIC RECOVERY` · `VERIFICATION` · `AUDIT`
+`SANITIZATION` · `FILE ERASURE` · `FORENSIC RECOVERY` · `VERIFICATION` · `AUDIT`
 
-![tests](https://img.shields.io/badge/pytest-2046%20passed%20·%2034%20skipped%20·%200%20failed-2ea44f)
+![tests](https://img.shields.io/badge/pytest-3113%20passed%20·%2048%20skipped%20·%200%20failed-2ea44f)
 ![python](https://img.shields.io/badge/Python-3.11-3776ab)
 ![stack](https://img.shields.io/badge/FastAPI%20%2B%20React-localhost%20only-555)
 ![signing](https://img.shields.io/badge/reports-Ed25519-555)
@@ -19,14 +19,14 @@ record of both that a third party can check on their own machine.
 >
 > | | |
 > |---|---|
-> | Release | branch `docs/readme-redesign`, packages built at `76dde42` (2026-09-26, after the release-hold remediation); see [`release-report-2026-09-25.md`](docs/validation/release-report-2026-09-25.md) |
-> | Test suite | 2046 passed · 34 skipped · 0 failed (Linux host, 2026-09-26, at `76dde42`), host-device guard 0 refusals; Windows and macOS suites run in `platform-ci` |
-> | Primary platform | Linux. Whole-drive sanitization runs only there |
-> | Physical validation in this release | **Windows: real**, 2026-09-27 — packaged installer built and installed on a physical Windows 11 machine; device discovery and the mounted-device refusal ran against a real USB stick (`SANCTUMREC`); file/folder erase → verify → certificate ran on real NTFS. See [`windows-hardware-2026-09-27-fixes/`](docs/validation/windows-hardware-2026-09-27-fixes/README.md). **Linux/macOS: none new this release** |
-> | Physically run earlier | One USB flash stick (Toshiba TransMemory, 7.76 GB), with earlier builds: overwrite Clear with full read-back and three recovery passes (2026-09-05), mounted-device refusal (2026-09-23) |
-> | Supported, not physically validated | Firmware Purge (ATA SANITIZE, ATA SECURITY ERASE, NVMe sanitize, NVMe format / crypto erase; shown as *Unverified*), HPA/DCO unlock, the registered physical recovery benchmark (not yet run), removing a real trace from a live desktop (the sweep searched a real Windows 11 desktop on 2026-09-27 and found nothing to remove), any macOS physical device |
-> | Not implemented | Windows whole-drive sanitization, Windows raw physical-device acquisition (both refused with the reason), macOS whole-drive sanitization, in-app backup restoration |
-> | Evidence record | Per-capability reconciliation, 2026-09-28: [`evidence-reconciliation-2026-09-28/`](docs/validation/evidence-reconciliation-2026-09-28/README.md) |
+> | Source | branch `feat/platform-capability-completion` at `bf4c59b` (2026-09-28). The last packaged builds on record are `76dde42` ([`release-report-2026-09-25.md`](docs/validation/release-report-2026-09-25.md)) and the Windows installer at `437081e` ([`windows-hardware-2026-09-27-fixes/`](docs/validation/windows-hardware-2026-09-27-fixes/README.md)); no package build from `bf4c59b` is recorded here |
+> | Test suite | 3113 passed · 48 skipped · 0 failed (Linux host, 2026-09-28, at `16c9ae6`); UI 148 passed. CI proves every platform backend ships and runs a read-only native smoke on real Windows and macOS runners; that is not physical validation |
+> | Capability state | Per platform and capability, generated from the resolver: [`capability-matrix.md`](docs/validation/capability-completion-2026-09-28/capability-matrix.md). What changed and why: [`capability-completion-2026-09-28/`](docs/validation/capability-completion-2026-09-28/README.md) |
+> | Physically validated (device class) | Linux whole-drive clear, device discovery and raw acquisition on one TOSHIBA TransMemory USB stick (`usb-flash`, 2026-09-05, earlier build, [`hardware.md`](docs/validation/hardware.md)); Windows device discovery on a USB stick (`usb-flash`, 2026-09-27); Windows file erase on the host system disk (class not recorded, 2026-09-27). Nothing else |
+> | Implemented, not physically validated | Windows whole-drive clear; Windows raw physical-device and volume acquisition; macOS whole-drive clear and raw acquisition of external disks; Firmware device sanitize on Linux and Windows (ATA SANITIZE, NVMe Sanitize, crypto erase; ATA SECURITY ERASE UNIT and NVMe Format on Linux only), DEVICE-DEPENDENT; the guarded HPA/DCO change (Linux, Windows); Backup restore with post-restore verification (Linux, Windows, macOS); file erase on Linux and macOS; Linux free-space wipe; removing a real trace from a live desktop; any macOS physical device; the registered physical recovery benchmark (BLOCKED at gate 1) |
+> | Platform-limited | NVMe Format on Windows (the in-box driver does not pass it); every device sanitize, crypto erase and HPA/DCO operation on macOS (no public ATA or NVMe pass-through). Internal Apple storage is never raw-written or imaged; Erase All Content and Settings is the recommended path |
+> | Not implemented | ATA SECURITY ERASE UNIT on Windows (no tested recovery for a drive left locked); Free-space wipe on Windows and macOS; DCO RESTORE or SET (never issued, by design) |
+> | Evidence record | [`capability-completion-2026-09-28/`](docs/validation/capability-completion-2026-09-28/README.md); the earlier [`evidence-reconciliation-2026-09-28/`](docs/validation/evidence-reconciliation-2026-09-28/README.md) is kept as the record of the state before this work |
 
 ---
 
@@ -56,13 +56,18 @@ RECOVER    ACQUIRE  → CARVE     → VALIDATE → SCORE → EXPLAIN → REPORT
 ## What makes it different
 
 **Device-aware sanitization.** The erase method comes from what the device
-reports it can do (`hdparm -I`, NVMe Identify, `sedutil-cli`, sysfs). The UI
-has no method dropdown. If the requested level cannot be reached, the job is
-NOT AUTHORIZED; it never silently downgrades.
+reports it can do (`hdparm -I`, NVMe Identify, `sedutil-cli` and sysfs on Linux;
+ATA IDENTIFY through `IOCTL_ATA_PASS_THROUGH` and the NVMe Identify data on
+Windows). The UI has no method dropdown. If the requested level cannot be
+reached, the job is NOT AUTHORIZED; it never silently downgrades, and an
+overwrite is never labelled a Purge.
 
-**Destructive-operation safety.** Serial and `/dev/disk/by-id` binding, a
-typed-serial confirmation, refusal of mounted and system disks, dry run by
-default, and no automatic `sudo` or unmount. See [The safety model](#the-safety-model).
+**Destructive-operation safety.** Identity binding (serial and
+`/dev/disk/by-id` on Linux; disk number, serial and length read from the open
+`\\.\PhysicalDriveN` handle on Windows; size and a fresh `system_profiler`
+serial on macOS), a typed-serial confirmation, refusal of mounted and system
+disks, dry run by default, and no automatic `sudo`, elevation or unmount. See
+[The safety model](#the-safety-model).
 
 **Residual traces, not only residual data.** Erasing a file leaves what the
 desktop made of it: a thumbnail named by the MD5 of its URI, a recent-files
@@ -89,11 +94,16 @@ party runs themselves. One changed field fails verification.
 manifests, a bounded fuzz pass, 1 GiB and 7 GiB image runs, and a benchmark
 against PhotoRec and Foremost. Every figure links to its raw result.
 
-**Honest cross-platform adapters.** Linux, Windows and macOS each report what
-they can really do. An operation with no engine on a platform is refused with
-the reason. One whose code exists but has no recorded hardware result, such as
-firmware Purge, is marked *Unverified* on every screen that shows it; it may
-still be offered, and it is never presented as a hardware-validated result.
+**Honest cross-platform capability states.** One resolver
+(`core/platform/capability.py`) answers for every capability on every platform
+and device, and keeps three things apart: whether code exists, whether this
+device and this process can run it, and whether a run on real hardware *of this
+device class* is recorded. Its words are SUPPORTED (physically validated for
+that class), IMPLEMENTED / UNVALIDATED, DEVICE-DEPENDENT, PLATFORM-LIMITED,
+REQUIRES PRIVILEGE, BLOCKED FOR SAFETY and NOT IMPLEMENTED, each with a reason.
+A run on one USB stick validates `usb-flash` only, never an internal SSD. The
+committed [capability matrix](docs/validation/capability-completion-2026-09-28/capability-matrix.md)
+is generated from the resolver, and a test fails if it goes stale.
 
 **Explicit uncertainty.** Every result carries its population: physical,
 synthetic, simulation, CI, documented or hardware-unverified. They are never
@@ -124,10 +134,21 @@ COMPLETE / FAILED
 ```
 
 - **Mounted and system disks are refused**, with the mount point named. No
-  code path calls `umount` or `udisksctl`; a human unmounts.
+  erase unmounts anything. On Linux a human unmounts. On Windows and macOS an
+  explicit **Prepare** step (`POST /devices/prepare`: dry run first, typed
+  serial, ledgered, system and internal disks refused) takes a disk offline
+  (Windows, not persistent) or runs `diskutil unmountDisk` (macOS); it is never
+  part of an erase.
 - **Identity is the serial, not the kernel name.** The operator types the
   serial of the selected disk. Right before writing, the engine re-reads the
-  device and raises `DeviceVanished` if the serial or by-id link changed.
+  device and raises `DeviceVanished` if the serial or by-id link changed. On
+  Windows the identity is read from the open handle itself, and a drive letter
+  is never a target. On macOS no ioctl returns a serial: the serial is re-read
+  from `system_profiler` just before the raw device is opened, and the size is
+  bound from the open descriptor. A different disk of the same size taking the
+  same `diskN` between the re-read and the open would not be detected; that
+  window is documented, not closed
+  ([security review](docs/security-review-cross-platform.md)).
 - **Nothing is substituted.** A missing or stale device path is a structured
   refusal; no other device is tried.
 - **Dry run is the default.** A real erase needs a backup image the server has
@@ -136,9 +157,21 @@ COMPLETE / FAILED
   plan and backup before its first write. SYNTHETIC VALIDATION only; the backup
   is not proven to be a copy of the device, and the API does not authenticate
   who approved.
-- **Privilege is explicit.** The UI and API run unprivileged. Raw device work
-  goes through one helper that a human starts with `sudo`, over a static
-  allowlist of typed operations ([privilege boundary](docs/privilege-boundary.md)).
+- **Privilege is explicit.** On Linux the UI and API run unprivileged, and
+  raw device work goes through one helper that a human starts with `sudo`, over
+  a static allowlist of typed operations
+  ([privilege boundary](docs/privilege-boundary.md)). That socket helper is
+  Linux-only. On Windows and macOS raw device work runs in the Sanctum process
+  itself, so that process must be elevated: *Run as administrator* on Windows,
+  started with `sudo` on macOS. Otherwise those capabilities read REQUIRES
+  PRIVILEGE. Elevating the whole process is a wider privileged surface than the
+  Linux split, and the [security review](docs/security-review-cross-platform.md)
+  records it.
+- **The HPA is never changed by an erase.** An ordinary erase covers the
+  accessible range, and when hidden sectors exist the report says how many were
+  not covered. Changing the HPA is its own guarded workflow
+  (`/workflow/hidden-area`: volatile SET MAX by default, typed serial,
+  read-back); DCO is read, never modified.
 - **Verification follows every erase.** Full read-back up to 64 GiB, seeded
   sampling above that, with the detection probability in the report.
 - **The physical benchmark has its own backup gate too.** `scripts/media_benchmark.py
@@ -170,7 +203,14 @@ Explainable candidate       offset, runs, SHA-256, score breakdown
 ```
 
 The evidence path is read-only: `core/carve/evidence.py` opens `O_RDONLY` and
-has no write method.
+has no write method. Raw acquisition opens the device read-only on every
+platform: `O_RDONLY` with `BLKROSET` applied and read back on Linux,
+`GENERIC_READ` on a `\\.\PhysicalDriveN` handle bound to the selected disk on
+Windows (`core/carve/win_source.py`), `O_RDONLY` on `/dev/rdiskN` for an
+external disk on macOS (`core/carve/mac_source.py`). Windows and macOS have no
+software write block, and the acquisition record says so; a hardware write
+blocker is the answer there. Only the Linux path is physically validated
+(`usb-flash`).
 
 **The media map.** Before anything is carved, the Recovery screen draws the
 image as one strip: where it is zeroed, where it holds a fill pattern (erased
@@ -226,6 +266,13 @@ chain, and the stored blobs. It returns a graded verdict: `VERIFIED`,
 `VERIFIED_WITH_LIMITATIONS`, `PARTIAL` or `FAILED_VERIFICATION`, with a reason
 for every downgrade.
 
+**What a certificate says was done.** Every report names one of five
+categories (`core/report/semantics.py`): FILE ERASE, ADDRESSABLE WHOLE-DRIVE
+CLEAR, DEVICE SANITIZE, CRYPTO ERASE or PHYSICAL DESTRUCTION ATTESTATION, with
+the command, protocol, scope, verification and assurance. An overwrite is never
+called a Purge or NAND-level destruction, and a crypto erase says the
+ciphertext remains.
+
 **Change one field and verification fails.** The Audit screen shows this live
 on a server-side scratch copy: chain `VALID` before, `BROKEN` at the altered
 entry after.
@@ -244,11 +291,14 @@ How to verify a report on your own machine:
 
 ## Validation
 
-**Automated.** 2046 passed · 34 skipped · 0 failed on the Linux host
-(2026-09-26, at `76dde42`, pytest's temporary directory on ext4). Each skip names its
-reason: root and `losetup` (10), Windows-only behaviour (12), macOS-only behaviour
-(10), one Pillow TIFF byte-order case, and one test of a filesystem *without* extent
-mapping, which ext4 has (on tmpfs that test runs and passes instead). With
+**Automated.** 3113 passed · 48 skipped · 0 failed on the Linux host
+(2026-09-28, at `16c9ae6`). Each skip names its reason: root and `losetup`, and
+behaviour that only exists on Windows or macOS, which runs on those runners in
+`platform-ci`. The Windows and macOS whole-drive, raw-acquisition, device-sanitize
+and restore paths are exercised on every host through adapter doubles
+(`testkit/fake_windows.py`, `testkit/fake_macos.py`) that answer the native
+calls from a byte buffer; no test touches a device. The last run
+with a per-skip breakdown is 2046 passed · 34 skipped at `76dde42` (2026-09-26). With
 `/tmp` on tmpfs, one test that writes 2000 MiB fails on the per-user quota; that is
 an environment limit, and the test is unchanged
 ([release record](docs/validation/release-report-2026-09-25.md)). The suite
@@ -260,12 +310,16 @@ volumes, `diskpart`, PowerShell's `Get-Disk`, ...), and each run's summary names
 one it applied (`Host-device guard: Linux rules active`). Its self-test checks all
 three rule sets on every host through intercepted launches and replayed audit events;
 no physical device was used to test it. The guard's docstring lists its limits.
-The Windows and macOS suites run on their own runners in `platform-ci`.
+The Windows and macOS suites run on their own runners in `platform-ci`, which
+also proves every platform backend ships in the package and binds on its real
+OS, and runs a read-only native smoke (one read handle, identity IOCTLs, one
+sector; no write handle exists in it). That is CI evidence, not physical
+validation: the runners' disks are virtual.
 
 **Static analysis.** Ruff clean. Four `mypy --strict` passes clean: Linux,
 two `--platform win32` passes, and `--platform darwin`.
 
-**UI.** 123 of 123 unit tests pass (`cd ui && npm test`, 2026-09-26).
+**UI.** 148 of 148 unit tests pass (`cd ui && npm test`, at `bf4c59b`).
 
 **Browser.** Playwright in Chromium at 1366 × 768: 24 of 24 checks on the real
 API, 16 of 16 on fixture devices, no page errors
@@ -285,7 +339,11 @@ Verify ([`remediation-2026-09-25/`](docs/validation/remediation-2026-09-25/READM
 All four ran on 2026-09-26 against the UI bundle packaged at `76dde42`. The Devices
 and Sanitize screens were checked against synthetic devices, not real ones.
 
-**Packages.** AppImage and `.deb` rebuilt from `76dde42`; all 92 packaged
+**Packages.** The last recorded package build is `76dde42` (2026-09-26); no
+package build from `bf4c59b` is recorded here, so the packaged figures below
+predate the Windows and macOS drive backends. `tests/test_package_completeness.py`
+pins that every module the capability table names is collected by the
+PyInstaller spec. AppImage and `.deb` rebuilt from `76dde42`; all 92 packaged
 `core`/`api`/`helper` modules are bytecode-identical to that commit, and the bundled
 UI matches file for file. The isolated smoke test, inside a no-device sandbox, is
 **22 PASS and 2 NOT RUN** for each package: the two NOT RUN checks need a real
@@ -302,57 +360,78 @@ false positives to PhotoRec's 0 ([`benchmark.md`](docs/performance/benchmark.md)
 ([`large-image.md`](docs/validation/large-image.md)). Fuzz: 66,000 cases, 0
 crashes after one fix ([`fuzz.md`](docs/validation/fuzz.md)).
 
-**Physical.** Windows, 2026-09-27, this release: packaged installer built,
-installed and driven on a physical Windows 11 machine — device discovery and
-the mounted-device refusal against a real USB stick (`SANCTUMREC`), and file/
-folder erase → verify → certificate on real NTFS, 23 of 23 packaged checks
-([`windows-hardware-2026-09-27-fixes/`](docs/validation/windows-hardware-2026-09-27-fixes/README.md)).
-Windows whole-drive/Purge and raw acquisition were not exercised — the first
-is UNSUPPORTED by design, the second is unimplemented. Linux: earlier builds
-ran on one USB flash stick, recorded in [`hardware.md`](docs/validation/hardware.md):
-three overwrite Clear runs (the first two found nine defects; the third,
-2026-09-05, is clean), a power-cycle re-verification, detection of a
-controller that acknowledges zero writes 3.25 to 3.6 times faster than it
-programs them, three recovery passes (FAT32 delete 456/456, exFAT delete
-460/460, FAT32 quick format 10 of the 10 carvable), and the mounted-device
-refusal (2026-09-23). macOS: none.
+**Physical.** The validation record
+(`core/platform/validation_record.json`, `physical_validations`) holds exactly
+these runs, and the capability matrix reads SUPPORTED only for them, only for
+that device class:
 
-**Supported, not physically validated.** Firmware Purge on any drive, HPA/DCO
-unlock, removing a real trace from a live desktop, a power cut or device removal
-during a write, the registered physical recovery benchmark (blocked at its first
-gate: [`physical-benchmark-checklist.md`](docs/validation/physical-benchmark-checklist.md)),
-and macOS on physical media.
+| Platform | Capability | Device class | Device, date | Evidence |
+|---|---|---|---|---|
+| Linux | Whole-drive clear (addressable overwrite) | `usb-flash` | TOSHIBA TransMemory 7.76 GB, 2026-09-05, earlier build | [`hardware.md`](docs/validation/hardware.md) Phase A: full read-back; PhotoRec 14 of 14 planted files before, 0 after |
+| Linux | Device discovery | `usb-flash` | same stick, 2026-09-05 | `hardware.md` A.1: 0 disagreements with `lsblk` and `udevadm` |
+| Linux | Raw physical-device acquisition | `usb-flash` | same stick, 2026-09-05 | `hardware.md` Phase B: three acquisitions, carving 456/456, 460/460, 10 of 10 recoverable |
+| Windows | Device discovery | `usb-flash` | TOSHIBA TransMemory (`SANCTUMREC`), Windows 11, 2026-09-27 | [`windows-hardware-2026-09-27-fixes/`](docs/validation/windows-hardware-2026-09-27-fixes/README.md) |
+| Windows | File erase | not recorded (host system disk) | Windows 11, NTFS, 2026-09-27, `437081e` | same folder: read-back, signed certificate verified |
 
-**Not implemented.** Windows whole-drive sanitization, Windows raw
-physical-device acquisition, macOS whole-drive sanitization, and in-app backup
-restoration. Each is refused or absent, and says so.
+Also on record, as dated runs rather than capability rows: the mounted-device
+refusal on the stick (2026-09-23, earlier build, [`demo/qa.md`](docs/demo/qa.md)
+§24), two earlier Clear runs that found nine defects, a power-cycle
+re-verification, and detection of a controller that acknowledges zero writes
+3.25 to 3.6 times faster than it programs them (all in `hardware.md`).
+
+**Implemented, not physically validated.** Each of these has code, runs
+through the full workflow gates, and is tested with fixtures or adapter doubles
+only: Windows whole-drive clear (`core/erase/blockclear.py` over
+`\\.\PhysicalDriveN`, disk offline first); Windows raw physical-device and
+volume acquisition; macOS whole-drive clear and raw acquisition of external
+disks through `/dev/rdiskN`; firmware device sanitize on any platform (ATA
+SANITIZE and NVMe Sanitize on Linux and Windows, ATA SECURITY ERASE UNIT and NVMe
+Format on Linux, crypto erase), each DEVICE-DEPENDENT and offered only when the
+controller reports it and no USB bridge hides it; the guarded HPA/DCO change on
+Linux and Windows; backup verification and restore with post-restore
+verification on all three platforms; file erase on Linux and macOS; the Linux
+free-space wipe; removing a real trace from a live desktop; a power cut or
+device removal during a write; and any macOS physical device. The registered
+physical recovery benchmark has a first-class runner (`core/benchmark`,
+SYNTHETIC and PHYSICAL never merged) and is BLOCKED at its first gate
+([`physical-benchmark-checklist.md`](docs/validation/physical-benchmark-checklist.md)).
+
+**Platform-limited or not implemented.** NVMe Format on Windows and every
+device sanitize, crypto erase and HPA/DCO operation on macOS are
+PLATFORM-LIMITED: the operating system offers no path to the command. ATA
+SECURITY ERASE UNIT on Windows and the free-space wipe on Windows and macOS are
+NOT IMPLEMENTED, each with its reason in the matrix. DCO RESTORE and SET are
+never issued.
 
 ## What we have actually proven
 
 | Capability | Evidence | Status |
 |---|---|---|
-| Overwrite Clear with read-back, USB flash | three recorded runs on one stick, the third clean (2026-09-05) | **PHYSICAL VALIDATION** (one device, one model, an earlier build) |
+| Linux whole-drive clear (addressable overwrite) with read-back | three recorded runs on one stick, the third clean (2026-09-05) | **PHYSICAL VALIDATION**, `usb-flash` only (one device, one model, an earlier build) |
 | Mounted-device refusal | refusal on the stick, no I/O recorded (2026-09-23) | **PHYSICAL VALIDATION** (an earlier build) |
-| Recovery after delete and quick format | three passes on the same stick (2026-09-05) | **PHYSICAL VALIDATION** (an earlier build; not the registered benchmark) |
-| Windows packaged install, device discovery and mounted-device refusal, file/folder erase → verify → certificate | 23 of 23 packaged checks on a physical Windows 11 machine, 2026-09-27 | **PHYSICAL VALIDATION** (this release; [`windows-hardware-2026-09-27-fixes/`](docs/validation/windows-hardware-2026-09-27-fixes/README.md)) |
-| Secure file and folder erase | suites plus packaged app on each OS runner | **CI VALIDATION** (Linux host also validated) |
-| Cross-platform adapters, discovery, system-disk refusal | `platform-ci` against each runner's own disks | **CI VALIDATION** |
+| Linux raw acquisition, then recovery after delete and quick format | three passes on the same stick (2026-09-05) | **PHYSICAL VALIDATION**, `usb-flash` only (an earlier build; not the registered benchmark) |
+| Windows packaged install, device discovery and mounted-device refusal, file/folder erase → verify → certificate | 23 of 23 packaged checks on a physical Windows 11 machine, 2026-09-27, `437081e` | **PHYSICAL VALIDATION**: discovery on `usb-flash`; file erase on the host system disk, class not recorded ([`windows-hardware-2026-09-27-fixes/`](docs/validation/windows-hardware-2026-09-27-fixes/README.md)) |
+| File and folder erase | suites plus packaged app on each OS runner | **CI VALIDATION**; physical on Windows only (above) |
+| Cross-platform adapters, discovery, system-disk refusal, backends shipped, read-only native smoke | `platform-ci` against each runner's own (virtual) disks | **CI VALIDATION**, not physical |
 | Fragmented JPEG recovery | 10 of 10 on the benchmark volumes | **SYNTHETIC VALIDATION** |
 | Fragmented PNG recovery | 120/120 layouts, 0/800 wrong joins accepted | **SYNTHETIC VALIDATION** |
 | Recovery benchmark and calibration | 40 images, 8 pooled seeds | **SYNTHETIC VALIDATION** |
 | Tamper-evident report and ledger | `tests/report/`, `tests/ledger/`, live tamper demo | **SYNTHETIC VALIDATION**; verifier also run on the physical-run report |
 | Discovery-to-certificate journey | `scripts/demo_simulation.py` on host files, real engine | **SIMULATION** |
 | NIST SP 800-88 Rev. 2, IEEE 2883, ISO/IEC 27040 | section-by-section mapping | **DOCUMENTED** (mapped, not certified) |
-| Firmware Purge (ATA, NVMe, Opal) | selected and dispatched in fixture tests only; every screen reads *Unverified* | **SUPPORTED, NOT PHYSICALLY VALIDATED** |
-| HPA/DCO unlock | detection tested against a faked probe; unlock never run on a drive | **SUPPORTED, NOT PHYSICALLY VALIDATED** |
+| Firmware device sanitize (ATA SANITIZE, ATA SECURITY ERASE UNIT, NVMe Sanitize, NVMe Format, crypto erase; a TCG Opal drive is recognised but not reverted, no PSID input) | selected and dispatched in fixture and adapter-double tests only (all on Linux; ATA SANITIZE, NVMe Sanitize and crypto erase also on Windows); offered only when the controller reports it | **IMPLEMENTED / UNVALIDATED**, DEVICE-DEPENDENT |
+| Guarded HPA change (DCO read only) | state machine, plan, typed serial and read-back tested against faked probes on Linux and Windows; never run on a drive | **IMPLEMENTED / UNVALIDATED**, DEVICE-DEPENDENT; PLATFORM-LIMITED on macOS |
 | Trace sweep | synthetic home directories, tests and a sandboxed browser run; on a physical Windows 11 desktop (2026-09-27) it searched the real Recycle Bin and Recent shortcuts and found nothing to remove | **SYNTHETIC VALIDATION**; removing a real desktop trace not validated |
 | Record of Destruction | signed attestation by the people named in it | **SYNTHETIC VALIDATION**; destruction attested, not observed |
-| Physical recovery benchmark | harness built, preflight run; no result | **SUPPORTED, NOT PHYSICALLY VALIDATED** |
-| Windows whole-drive sanitization, Windows raw acquisition | no engine; both refused with the reason | **NOT IMPLEMENTED** |
-| Backup restoration | no restore in the app; the benchmark prints a manual `dd` command that has never been run | **NOT IMPLEMENTED** |
-| Windows raw physical-device acquisition | `open()` cannot address `\\.\PhysicalDriveN` or a volume path; no code wires up `CreateFile` | **NOT IMPLEMENTED**, not only unvalidated |
+| Physical recovery benchmark | first-class runner (`core/benchmark`), harness built, preflight run; no result | **BLOCKED at gate 1** |
+| Windows whole-drive clear, Windows raw physical-device and volume acquisition | `core/erase/blockclear.py`, `core/carve/win_source.py` over a handle bound to disk number, serial and length; adapter-double tests only | **IMPLEMENTED / UNVALIDATED** |
+| macOS whole-drive clear and raw acquisition, external disks | `/dev/rdiskN`; internal Apple storage refused; adapter-double tests only | **IMPLEMENTED / UNVALIDATED** |
+| Backup verification and restore | `core/backup.py`, `core/restore.py`: pre-write chunk verification, exact byte accounting, post-restore read-back hash; synthetic targets only | **IMPLEMENTED / UNVALIDATED** on Linux, Windows and macOS |
+| ATA SECURITY ERASE UNIT on Windows; free-space wipe on Windows and macOS | no code, each with its reason in the matrix | **NOT IMPLEMENTED** |
+| NVMe Format on Windows; device sanitize, crypto erase and HPA/DCO on macOS | the OS offers no path to the command | **PLATFORM-LIMITED** |
 
 Row by row with code paths and tests: [`feature-matrix.md`](docs/validation/feature-matrix.md).
+Per platform and capability: [`capability-matrix.md`](docs/validation/capability-completion-2026-09-28/capability-matrix.md).
 
 ## The 4½-minute demo
 
@@ -394,7 +473,10 @@ named, and the tool never unmounts. Physically validated on the stick on
 
 **How is SSD or flash different?** Overwrite cannot reach remapped or
 over-provisioned blocks, so on flash it is at most Clear and every report says
-so. Purge needs the device's own firmware, and that path is hardware-unverified.
+so. Purge needs the device's own firmware command; that path is implemented,
+offered only when the controller reports it, and has never run on a physical
+drive. Behind a USB bridge it is refused, because the bridge does not pass the
+command through.
 
 **How is fragmented recovery different from normal carving?** A split file is
 rebuilt only when a decoder-level check proves the join, and the result is
@@ -407,18 +489,21 @@ ground truth, not seized media.
 **How do you prove the report was not changed?** Ed25519 over canonical JSON,
 checked with the ledger chain by `verify-report`. One changed field fails.
 
-**What is physically validated?** On Windows, this release (2026-09-27):
-packaged install, device discovery, the mounted-device refusal, and
-file/folder erase → verify → certificate, on a real machine and a real USB
-stick. On Linux, earlier builds ran overwrite Clear, three recovery passes
-(2026-09-05) and the mounted refusal (2026-09-23) on one USB stick. macOS:
-none.
+**What is physically validated?** Linux whole-drive clear, discovery and raw
+acquisition on one USB flash stick (`usb-flash`, 2026-09-05, earlier build);
+Windows device discovery on a USB stick (`usb-flash`) and file erase on the host
+system disk (class not recorded), both 2026-09-27. macOS: none. A run on a USB
+stick says nothing about an internal SSD or NVMe drive, and the matrix never
+extends it.
 
-**What is still not physically validated?** Firmware Purge, HPA/DCO unlock,
-the registered physical benchmark, removing a real trace from a live desktop, a
-power cut mid-write, and any macOS physical device. **Not implemented at all:**
-Windows whole-drive sanitization, Windows raw acquisition, and in-app backup
-restoration.
+**What is still not physically validated?** Windows and macOS whole-drive
+clear and raw acquisition, firmware device sanitize on any platform, the HPA
+change, backup restore, the registered physical benchmark (BLOCKED at gate 1),
+removing a real trace from a live desktop, a power cut mid-write, and any macOS
+physical device. All of these are implemented and tested with fixtures or
+adapter doubles. **Not implemented:** ATA SECURITY ERASE UNIT on Windows and the
+free-space wipe on Windows and macOS. **Platform-limited:** NVMe Format on
+Windows; device sanitize and HPA/DCO on macOS.
 
 **What happens if the device disappears?** Before the job: `DeviceVanished`,
 nothing written, no other device tried. During a write: the job ends `failed`
@@ -429,19 +514,23 @@ All 37 questions, with evidence and a status for each:
 
 ## What Sanctum does not claim
 
-- Physical validation this release is Windows-only: packaged install, device
-  discovery, the mounted-device refusal, and file/folder erase on real NTFS
-  (2026-09-27). Windows whole-drive sanitization and raw physical-device
-  acquisition were not exercised — the first refuses by design, the second is
-  unimplemented. The Linux physical runs on record are from 2026-09-05 and
-  2026-09-23, with earlier builds. macOS has no physical run.
+- Physical validation is scoped to device class and limited to the runs in
+  the [validation record](docs/validation/capability-completion-2026-09-28/README.md):
+  Linux whole-drive clear, discovery and raw acquisition on `usb-flash`
+  (2026-09-05, earlier build); Windows discovery on `usb-flash` and file erase on
+  the host system disk (2026-09-27). The Windows and macOS whole-drive clear and
+  raw acquisition added since are implemented and have never run on a physical
+  disk. macOS has no physical run of anything.
 - Firmware Purge has not run on any physical drive. It is selected and
-  dispatched from probed capability, tested with fixtures, and shown as
-  *Unverified* (PURGE · UNVERIFIED on the Devices screen) until a hardware result
-  is recorded.
-- HPA/DCO unlock has not run on a drive that has a hidden area.
+  dispatched from probed capability, tested with fixtures and adapter doubles,
+  and shown as IMPLEMENTED / UNVALIDATED (PURGE · UNVERIFIED on the Devices
+  screen) until a hardware result for that device class is recorded.
+- The HPA change has not run on a drive that has a hidden area. An ordinary
+  erase never changes the HPA; hidden sectors it did not reach are counted in
+  the report.
 - A real erase's backup is hashed, sized and re-checked, but nothing proves it
-  is a copy of the device. Restoring a backup is not implemented in the app.
+  is a copy of the device. Restore is implemented, verifies what it wrote, and
+  has never been run on a physical device.
 - The helper re-checks device, plan and backup just before the engine starts;
   the window from that check to the first write is not proven race-free.
 - The API does not authenticate a human. Approval is a deliberate second call
@@ -456,8 +545,14 @@ All 37 questions, with evidence and a status for each:
 - No certification or compliance is claimed. Sanctum uses NIST SP 800-88
   Rev. 2 vocabulary and maps to it, IEEE 2883 and ISO/IEC 27040. DoD
   5220.22-M is a legacy engine method with a warning, not a standard claimed.
-- Windows and macOS do not do whole-drive sanitization. They refuse with the
-  reason.
+- Windows and macOS have no software write block, so raw acquisition there
+  relies on a read-only handle and the report says so; use a hardware write
+  blocker for evidence. Internal Apple storage is never raw-written or imaged:
+  macOS's own Erase All Content and Settings is the recommended path, and
+  Sanctum cannot perform or verify it.
+- On Windows, NVMe Sanitize reports no progress, and the storage driver may
+  refuse an ATA pass-through; the refusal is reported and nothing is retried
+  another way. ATA SECURITY ERASE UNIT is not issued on Windows.
 - Recovery rates are synthetic. No result exists yet under the registered
   physical benchmark.
 - Per-file erasure is often unverifiable (copy-on-write filesystems, FAT
@@ -468,8 +563,12 @@ All 37 questions, with evidence and a status for each:
   named in it attest (destruction attested, not observed), and the application
   does not authenticate them.
 - The trace sweep covers the desktop's shared thumbnail cache, recent-files
-  lists, Trash and Recycle Bin. Application caches, search indexes, jump lists,
-  snapshots and sync clients are listed in each report as not searched. On a
+  lists, Trash and Recycle Bin, Windows jump lists, and macOS recent items and
+  the Quick Look cache. The macOS recent items, the Quick Look cache and a jump
+  list that also names other files are reported only, never edited, because a
+  daemon or the shell owns them. Application caches, search indexes,
+  `thumbcache_*.db` (keyed by hash, not path), snapshots and sync clients are
+  listed in each report as not searched. On a
   physical Windows 11 desktop (2026-09-27) it searched the real Recycle Bin and
   Recent shortcuts and found nothing to remove; removing a real desktop trace
   has not been validated on any platform.
@@ -482,11 +581,21 @@ upgrading it into a guarantee.** The full list is
 
 ## Platform support
 
-| Platform | Recovery | File erase | Whole-drive Clear | Firmware Purge | Status |
-|---|---|---|---|---|---|
-| Linux | full pipeline; synthetic + one physical stick (earlier build) | VALIDATED | VALIDATED; physically run on one USB flash stick, 2026-09-05, earlier build | SUPPORTED, NOT PHYSICALLY VALIDATED (shown *Unverified*) | primary platform |
-| Windows | not run as a suite; synthetic ground-truth demo run on physical Windows hardware, 2026-09-27 | CI-VALIDATED (NTFS); also PHYSICAL on real NTFS, 2026-09-27 | NOT IMPLEMENTED, refused | NOT IMPLEMENTED | packaged install + discovery + file erase PHYSICAL, 2026-09-27; raw acquisition not implemented |
-| macOS | not run as a suite | CI-VALIDATED; APFS reported NOT VERIFIABLE | NOT IMPLEMENTED, refused | NOT IMPLEMENTED | CI only, no physical device |
+A summary of the generated [capability matrix](docs/validation/capability-completion-2026-09-28/capability-matrix.md),
+which is authoritative. SUPPORTED means physically validated, for the device
+class named, and nothing wider.
+
+| Platform | File erase | Whole-drive clear | Device sanitize | Raw acquisition | HPA/DCO change | Restore |
+|---|---|---|---|---|---|---|
+| Linux | IMPLEMENTED / UNVALIDATED | **SUPPORTED** (`usb-flash`) | DEVICE-DEPENDENT | **SUPPORTED** (`usb-flash`) | DEVICE-DEPENDENT (HPA only) | IMPLEMENTED / UNVALIDATED |
+| Windows | **SUPPORTED** (host disk, class not recorded) | IMPLEMENTED / UNVALIDATED (disk offline, administrator) | DEVICE-DEPENDENT (ATA SANITIZE, NVMe Sanitize); ATA SECURITY ERASE UNIT NOT IMPLEMENTED; NVMe Format PLATFORM-LIMITED | IMPLEMENTED / UNVALIDATED (no software write block) | DEVICE-DEPENDENT (HPA only) | IMPLEMENTED / UNVALIDATED |
+| macOS | IMPLEMENTED / UNVALIDATED (APFS copy-on-write limit) | IMPLEMENTED / UNVALIDATED (external disks; internal Apple storage refused) | PLATFORM-LIMITED | IMPLEMENTED / UNVALIDATED (external disks; no software write block) | PLATFORM-LIMITED | IMPLEMENTED / UNVALIDATED (external disks) |
+
+Device discovery is SUPPORTED on Linux and Windows (`usb-flash`) and
+IMPLEMENTED / UNVALIDATED on macOS. The free-space wipe is IMPLEMENTED /
+UNVALIDATED on Linux and NOT IMPLEMENTED on Windows and macOS. Recovery
+(carving, undelete, scoring) runs on an image and is the same code on every
+platform; its figures are synthetic plus the three Linux passes on one stick.
 
 Packages: AppImage and `.deb`, `SanctumSetup.exe`, `Sanctum.dmg`. All are
 unsigned and not notarized. CI runners have virtual disks, so CI-validated is
@@ -522,7 +631,10 @@ python scripts/demo_simulation.py     # SIMULATION: discovery to certificate
 python scripts/demo_fragmented.py     # SYNTHETIC: split PNG and JPEG rebuilt
 ```
 
-Whole-device operations need the privileged helper; see the
+Whole-device operations need privilege: on Linux, the helper started with
+`sudo`; on macOS, the Sanctum process itself started with `sudo` (the Linux
+helper does not run there); on Windows, Sanctum started with *Run as
+administrator* and the disk taken offline first. See [`INSTALL.md`](INSTALL.md) and the
 [user manual §3](docs/user-manual.md#3-starting-it).
 
 ## Documentation map
@@ -553,6 +665,8 @@ Whole-device operations need the privileged helper; see the
 
 **For validation**
 [Hardware runs](docs/validation/hardware.md) ·
+[Capability matrix](docs/validation/capability-completion-2026-09-28/capability-matrix.md) ·
+[Physical validation procedure](docs/validation/physical-validation-procedure.md) ·
 [Hardware platform matrix](docs/validation/hardware-platform-matrix.md) ·
 [CI platform matrix](docs/validation/platform-matrix.md) ·
 [Release readiness](docs/release-readiness.md) ·
@@ -574,12 +688,16 @@ Whole-device operations need the privileged helper; see the
 ### Layout
 
 ```text
-core/device/   enumeration, capability probe, HPA/DCO, safety guards
-core/erase/    M1 whole-device and M2 file/folder engines
+core/device/   enumeration, capability probe, HPA/DCO workflow, safety guards;
+               win/ (kernel32 behind a NativeApi seam), mac/ (/dev/rdiskN)
+core/erase/    M1 whole-device (drive.py on Linux, blockclear.py on Windows
+               and macOS, devicesanitize.py) and M2 file/folder engines
 core/carve/    M3 acquisition, undelete, signature, structure, validate, score
 core/ledger/   hash-chained append-only audit log
 core/report/   render, detached-sign, independently verify
-core/platform/ Linux, Windows and macOS adapters
+core/platform/ Linux, Windows and macOS adapters; capability.py, the resolver
+core/backup.py, core/restore.py   backup verification and authorized restore
+core/benchmark/  recovery benchmark runner, SYNTHETIC and PHYSICAL never merged
 helper/        the one privileged process
 api/           FastAPI, localhost, SSE progress
 ui/            React + Vite, fully bundled, zero CDN

@@ -64,6 +64,20 @@ IMPLEMENTED = (
     # Covered by tests/api/test_gate_hardening.py and
     # tests/helper/test_write_seam_authorization.py.
     "core.authorization",
+    # Covered by tests/benchmark/.
+    "core.benchmark",
+    # Covered by tests/restore/ and tests/api/test_restore_workflow.py.
+    "core.backup",
+    "core.restore",
+    # Covered by tests/erase/test_blockclear.py and tests/platform/test_*_engine.py.
+    "core.erase.blockclear",
+    "core.erase.devicesanitize",
+    # Covered by tests/carve/test_platform_sources.py.
+    "core.carve.win_source",
+    "core.carve.mac_source",
+    # Covered by tests/device/test_hidden_area_workflow.py and
+    # tests/api/test_hidden_area_workflow.py.
+    "core.device.hidden_area_workflow",
 )
 
 

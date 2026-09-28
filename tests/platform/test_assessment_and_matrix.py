@@ -131,33 +131,44 @@ def test_a_passing_record_for_that_platform_is_what_lifts_it(
     rows = {
         r.operation: r for r in _windows(windows_inventory).operation_capabilities()
     }
+    # The record names the Windows run as the source on every host.
+    assert "windows PASS" in rows[Operation.FILE_ERASE].source
     if sys.platform == "win32":
-        assert rows[Operation.FILE_ERASE].status is (
-            CapabilityStatus.SUPPORTED_WITH_LIMITATIONS
-        )
-    else:
-        # Off Windows the file backend is this host's, not Windows's; the
-        # record still names the Windows run as the source.
-        assert "windows PASS" in rows[Operation.FILE_ERASE].source
+        # A CI suite pass is not physical evidence: without a
+        # ``physical_validations`` entry the resolver keeps file erase at
+        # IMPLEMENTED / UNVALIDATED, which the legacy status reads as UNVERIFIED.
+        assert rows[Operation.FILE_ERASE].status is CapabilityStatus.UNVERIFIED
 
 
-def test_windows_and_macos_never_offer_whole_drive(
+def test_windows_and_macos_offer_whole_drive_through_the_resolver(
     windows_inventory: dict[str, Any],
 ) -> None:
     from core.platform.macos import MacOSAdapter
+    from core.platform.model import CapabilityState
 
     from .conftest import mac_runner
 
-    for adapter in (_windows(windows_inventory), MacOSAdapter(runner=mac_runner())):
+    offered = {
+        CapabilityState.IMPLEMENTED_NOT_PHYSICALLY_VALIDATED,
+        CapabilityState.AVAILABLE_BUT_REQUIRES_PRIVILEGE,
+    }
+    windows = _windows(windows_inventory)
+    mac = MacOSAdapter(runner=mac_runner())
+    for adapter in (windows, mac):
         rows = {r.operation: r for r in adapter.operation_capabilities()}
-        for op in (
-            Operation.WHOLE_DRIVE_CLEAR,
-            Operation.WHOLE_DRIVE_PURGE,
-            Operation.DRIVE_VERIFICATION,
-            Operation.RESUME,
-            Operation.FREE_SPACE_WIPE,
-        ):
-            assert rows[op].status is CapabilityStatus.UNSUPPORTED, (adapter.name, op)
+        assert rows[Operation.WHOLE_DRIVE_CLEAR].state in offered, adapter.name
+        assert rows[Operation.WHOLE_DRIVE_CLEAR].mechanism
+        assert rows[Operation.FREE_SPACE_WIPE].state is CapabilityState.NOT_IMPLEMENTED
+    windows_rows = {r.operation: r for r in windows.operation_capabilities()}
+    mac_rows = {r.operation: r for r in mac.operation_capabilities()}
+    assert windows_rows[Operation.WHOLE_DRIVE_PURGE].state in {
+        CapabilityState.IMPLEMENTED_DEVICE_DEPENDENT,
+        CapabilityState.AVAILABLE_BUT_REQUIRES_PRIVILEGE,
+    }
+    assert (
+        mac_rows[Operation.WHOLE_DRIVE_PURGE].state
+        is CapabilityState.UNSUPPORTED_BY_PLATFORM
+    )
 
 
 def test_media_classes_count_what_discovery_found(
@@ -169,7 +180,9 @@ def test_media_classes_count_what_discovery_found(
     assert classes["USB SSD / flash drive"].detected_now == 2
     assert classes["Internal HDD"].detected_now == 1
     assert classes["Internal SSD"].detected_now == 1
-    assert all(m.whole_drive is CapabilityStatus.UNSUPPORTED for m in classes.values())
+    assert all(
+        m.whole_drive is not CapabilityStatus.SUPPORTED for m in classes.values()
+    )
 
 
 def test_the_filesystem_registry_separates_detection_from_support(
@@ -188,8 +201,8 @@ def test_the_filesystem_registry_separates_detection_from_support(
     assert rows["NTFS"].cells["free_space"]["linux"] is CapabilityStatus.UNSUPPORTED
     assert rows["NTFS"].cells["free_space"]["windows"] is CapabilityStatus.UNSUPPORTED
     for row in rows.values():
-        assert row.cells["whole_drive"]["windows"] is CapabilityStatus.UNSUPPORTED
-        assert row.cells["whole_drive"]["macos"] is CapabilityStatus.UNSUPPORTED
+        assert row.cells["whole_drive"]["windows"] is CapabilityStatus.UNVERIFIED
+        assert row.cells["whole_drive"]["macos"] is CapabilityStatus.UNVERIFIED
         assert set(row.notes) == set(row.cells)
     # Without a recorded run, nothing on Windows or macOS reads as supported.
     assert rows["NTFS"].cells["erase_files"]["windows"] is CapabilityStatus.UNVERIFIED
@@ -293,8 +306,12 @@ def test_a_per_device_purge_is_unverified_without_a_hardware_record(
     """The drive reporting SANITIZE is not evidence the purge path works.
 
     The option stays offered - the code exists and the drive reported the
-    command - but under UNVERIFIED, never SUPPORTED, and it says why.
+    command - but under IMPLEMENTED / UNVALIDATED, never SUPPORTED, and it says
+    why. Evidence is matched on the device class: a run on a SATA HDD lifts it
+    for a SATA HDD, and a run on some other class does not.
     """
+    from core.platform.model import CapabilityState
+
     path = tmp_path / "validation_record.json"
     path.write_text(json.dumps({"suites": {}, "hardware": {}}), encoding="utf-8")
     monkeypatch.setattr("core.platform.validation.RECORD_PATH", path)
@@ -303,25 +320,52 @@ def test_a_per_device_purge_is_unverified_without_a_hardware_record(
     assessment = adapter.assess_device(_device(interface="sata", media_type="hdd"))
 
     assert assessment.headline == "READY"
+    assert assessment.device_class == "sata-hdd"
     assert assessment.recommended is not None
     assert assessment.recommended.level == "PURGE"
     assert assessment.recommended.status is CapabilityStatus.UNVERIFIED
+    assert (
+        assessment.recommended.state
+        is CapabilityState.IMPLEMENTED_NOT_PHYSICALLY_VALIDATED
+    )
     assert assessment.status is CapabilityStatus.UNVERIFIED
     assert "UNVERIFIED" in assessment.recommended.why
     assert "physical drive" in assessment.recommended.why
     clear = assessment.alternatives[0]
     assert clear.level == "CLEAR"
-    assert clear.status is CapabilityStatus.SUPPORTED
+    assert clear.state is CapabilityState.IMPLEMENTED_NOT_PHYSICALLY_VALIDATED
 
-    recorded_pass = {"linux": {"whole_drive_purge": {"state": "PASS"}}}
+    def run(device_class: str) -> dict[str, Any]:
+        return {
+            "platform": "linux",
+            "capability": "ata_sanitize",
+            "device_class": device_class,
+            "model": "M",
+            "serial": "S",
+            "date": "2026-09-28",
+            "commit": "abc",
+            "result": "PASS",
+        }
+
     path.write_text(
-        json.dumps({"suites": {}, "hardware": recorded_pass}), encoding="utf-8"
+        json.dumps({"physical_validations": [run("nvme")]}), encoding="utf-8"
+    )
+    other = _Fixed(ROOT, _linux_options(purge_reachable=True, flash=False))
+    unrelated = other.assess_device(_device(interface="sata", media_type="hdd"))
+    assert unrelated.recommended is not None
+    assert unrelated.recommended.status is CapabilityStatus.UNVERIFIED
+
+    path.write_text(
+        json.dumps({"physical_validations": [run("sata-hdd")]}), encoding="utf-8"
     )
     adapter = _Fixed(ROOT, _linux_options(purge_reachable=True, flash=False))
     recorded = adapter.assess_device(_device(interface="sata", media_type="hdd"))
     assert recorded.recommended is not None
-    assert recorded.recommended.status is CapabilityStatus.SUPPORTED
-    assert "UNVERIFIED" not in recorded.recommended.why
+    assert recorded.recommended.state is CapabilityState.VALIDATED_PHYSICAL
+    assert recorded.recommended.status in {
+        CapabilityStatus.SUPPORTED,
+        CapabilityStatus.SUPPORTED_WITH_LIMITATIONS,
+    }
 
 
 def test_an_unprivileged_host_is_not_authorized_not_ready() -> None:

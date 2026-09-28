@@ -52,6 +52,18 @@ SUITES: dict[str, list[str]] = {
     "recovery": ["tests/carve"],
     "whole_drive": ["tests/erase", "tests/device", "tests/helper"],
     "api": ["tests/api"],
+    # The Windows and macOS disk layers, the block engine and the resolver,
+    # through adapter doubles. Run on each OS so the struct packing and the
+    # engines are exercised under that OS's Python; no device is touched.
+    "platform_backends": [
+        "tests/device/test_windows_native.py",
+        "tests/erase/test_blockclear.py",
+        "tests/carve/test_platform_sources.py",
+        "tests/platform/test_windows_engine.py",
+        "tests/platform/test_macos_engine.py",
+        "tests/platform/test_capability_resolver.py",
+        "tests/test_package_completeness.py",
+    ],
 }
 #: whole_drive includes tests/erase, which contains the file suite too; the
 #: file tests are excluded there so the two suites measure different code.
@@ -82,6 +94,12 @@ FEATURES: dict[str, tuple[str | None, str]] = {
     "packaged_application": (
         None,
         "Installed and driven by a script; no human, no desktop session.",
+    ),
+    "platform_backends": (
+        "platform_backends",
+        "Adapter doubles only: the Windows and macOS disk layers, the block "
+        "engine and device sanitize were driven against byte buffers, never a "
+        "real device. Not physical validation.",
     ),
 }
 
@@ -233,7 +251,17 @@ def feature_rows(
         tests: list[str] = []
         evidence = ""
         if feature == "whole_drive_sanitization" and family != "linux":
-            result, evidence = "UNSUPPORTED", "core/platform/<family>.py refusal"
+            # Windows and macOS clear through core.erase.blockclear; what CI
+            # can run is the platform_backends suite against adapter doubles.
+            backends = suites.get("platform_backends")
+            if isinstance(backends, dict):
+                result = str(backends.get("state", "NOT RUN"))
+                tests = list(backends.get("paths") or [])
+                evidence = "pytest (adapter doubles; no device)"
+            limitation = (
+                "Adapter doubles only on this platform: never executed against a "
+                "physical device in CI. Not physical validation."
+            )
         elif feature == "device_discovery":
             if smoke:
                 result = str(smoke.get("result", "NOT RUN"))

@@ -169,11 +169,27 @@ def test_discovery_inside_the_suite_is_stopped_before_diskutil_starts() -> None:
     assert all("diskutil" in refusal for refusal in refusals), refusals
 
 
-def test_whole_drive_is_refused_on_macos() -> None:
+def test_whole_drive_inside_the_suite_is_stopped_before_diskutil_starts() -> None:
+    """A real whole-drive request never reaches this Mac's disks from the suite.
+
+    macOS has a whole-drive clear engine since 0697c9c, so the request is no
+    longer refused as unsupported: the adapter first inspects the named disk
+    through ``diskutil``. The host-device guard refuses that launch, so the
+    request fails before any device is opened, let alone written. The engine
+    itself, including the refusal of ``disk0`` and of internal Apple storage, is
+    tested against a fake in ``tests/platform/test_macos_engine.py``.
+    """
     from core.errors import PlatformUnsupported
     from core.platform import current_adapter
 
-    adapter = current_adapter()
+    from tests._host_device_guard import expect_refusal, launch_barrier
 
-    with pytest.raises(PlatformUnsupported, match="No operation was performed"):
+    adapter = current_adapter()
+    with (
+        expect_refusal() as refusals,
+        launch_barrier(),
+        pytest.raises(PlatformUnsupported, match="diskutil"),
+    ):
         next(adapter.execute_drive_sanitization({"path": "disk0", "dry_run": False}))
+
+    assert all("diskutil" in refusal for refusal in refusals), refusals

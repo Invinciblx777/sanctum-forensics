@@ -24,9 +24,8 @@ def test_importing_drive_off_linux_raises_platform_unsupported() -> None:
 def test_platform_error_is_a_sanctum_error_with_remediation() -> None:
     err = PlatformUnsupported("nope")
     assert isinstance(err, SanctumError)
-    assert "WSL2" in err.remediation
-    assert "usbipd-win" in err.remediation
-    assert "core.erase.files" in err.remediation
+    assert err.remediation.strip()
+    assert "Platform screen" in err.remediation
 
 
 def test_file_erasure_stays_importable_on_every_platform() -> None:

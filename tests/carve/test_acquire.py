@@ -482,17 +482,24 @@ def test_missing_source_refuses_before_creating_a_destination(
         "\\\\?\\E:",
     ],
 )
-def test_a_win32_raw_device_is_refused_as_not_implemented(
+def test_a_win32_raw_device_is_routed_to_the_windows_reader(
     path: str, tmp_path: Path
 ) -> None:
+    """Plain file I/O never opens a Win32 device; acquire() routes it instead.
+
+    On a host that is not Windows there is no reader to route to, and the
+    refusal says so by name. The Windows reader itself is exercised through
+    the native-adapter double in ``test_platform_sources.py``.
+    """
     from core.carve.acquire import FileSourceReader, is_win32_device_path
 
     assert is_win32_device_path(path)
-    with pytest.raises(EvidenceIntegrityError, match="not implemented on Windows"):
+    with pytest.raises(EvidenceIntegrityError, match="Win32 device namespace"):
         FileSourceReader(path)
     dest = tmp_path / "never.dd"
-    with pytest.raises(EvidenceIntegrityError, match="not implemented on Windows"):
-        _run(acquire(path, dest, fmt="raw"))
+    if sys.platform != "win32":
+        with pytest.raises(EvidenceIntegrityError, match="not Windows"):
+            _run(acquire(path, dest, fmt="raw"))
     assert not dest.exists()
 
 

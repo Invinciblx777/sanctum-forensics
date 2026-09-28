@@ -25,6 +25,12 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 __all__ = [
+    "Capability",
+    "CAPABILITY_LABELS",
+    "CapabilityState",
+    "ResolvedCapability",
+    "RUNNABLE_STATES",
+    "STATE_LABELS",
     "CapabilityStatus",
     "OperationStatus",
     "Operation",
@@ -67,6 +73,91 @@ class CapabilityStatus(StrEnum):
     #: No backend exists on this platform, or the target is refused outright.
     UNSUPPORTED = "UNSUPPORTED"
 
+
+class CapabilityState(StrEnum):
+    """Where one capability stands for one device (or one platform)."""
+
+    #: Runnable here, and a run on real hardware of this device class is
+    #: recorded in the validation record.
+    VALIDATED_PHYSICAL = "VALIDATED_PHYSICAL"
+    #: Runnable here; synthetic and adapter-double tests only.
+    IMPLEMENTED_NOT_PHYSICALLY_VALIDATED = "IMPLEMENTED_NOT_PHYSICALLY_VALIDATED"
+    #: Implemented; whether it runs depends on what the device reports, and
+    #: there is no device (platform matrix) or its probe did not settle it.
+    IMPLEMENTED_DEVICE_DEPENDENT = "IMPLEMENTED_DEVICE_DEPENDENT"
+    #: Implemented and exposed, but this process lacks the OS privilege.
+    AVAILABLE_BUT_REQUIRES_PRIVILEGE = "AVAILABLE_BUT_REQUIRES_PRIVILEGE"
+    #: Implemented; this device (or the bridge in front of it) does not expose
+    #: the mechanism.
+    UNSUPPORTED_BY_DEVICE = "UNSUPPORTED_BY_DEVICE"
+    #: The operating system offers no path to the mechanism at all.
+    UNSUPPORTED_BY_PLATFORM = "UNSUPPORTED_BY_PLATFORM"
+    #: The OS could do it; this build has no code for it.
+    NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
+    #: Exposed and implemented, refused by a safety rule for this device.
+    BLOCKED_BY_SAFETY_POLICY = "BLOCKED_BY_SAFETY_POLICY"
+
+
+#: The words the interface shows. Two device states share one word because to
+#: an operator they are the same answer ("depends on the device"); the reason
+#: sentence says which.
+STATE_LABELS: dict[CapabilityState, str] = {
+    CapabilityState.VALIDATED_PHYSICAL: "SUPPORTED",
+    CapabilityState.IMPLEMENTED_NOT_PHYSICALLY_VALIDATED: "IMPLEMENTED / UNVALIDATED",
+    CapabilityState.IMPLEMENTED_DEVICE_DEPENDENT: "DEVICE-DEPENDENT",
+    CapabilityState.AVAILABLE_BUT_REQUIRES_PRIVILEGE: "REQUIRES PRIVILEGE",
+    CapabilityState.UNSUPPORTED_BY_DEVICE: "DEVICE-DEPENDENT",
+    CapabilityState.UNSUPPORTED_BY_PLATFORM: "PLATFORM-LIMITED",
+    CapabilityState.NOT_IMPLEMENTED: "NOT IMPLEMENTED",
+    CapabilityState.BLOCKED_BY_SAFETY_POLICY: "BLOCKED FOR SAFETY",
+}
+
+#: States in which the operation may be started (after the workflow gates).
+RUNNABLE_STATES = frozenset(
+    {
+        CapabilityState.VALIDATED_PHYSICAL,
+        CapabilityState.IMPLEMENTED_NOT_PHYSICALLY_VALIDATED,
+    }
+)
+
+
+class Capability(StrEnum):
+    """Every capability the resolver answers for."""
+
+    DEVICE_DISCOVERY = "device_discovery"
+    FILE_ERASE = "file_erase"
+    FREE_SPACE_WIPE = "free_space_wipe"
+    WHOLE_DRIVE_CLEAR = "whole_drive_clear"
+    ATA_SANITIZE = "ata_sanitize"
+    ATA_SECURITY_ERASE = "ata_security_erase"
+    NVME_SANITIZE = "nvme_sanitize"
+    NVME_FORMAT = "nvme_format"
+    CRYPTO_ERASE = "crypto_erase"
+    RAW_ACQUISITION = "raw_acquisition"
+    VOLUME_ACQUISITION = "volume_acquisition"
+    HPA_DCO_DISCOVERY = "hpa_dco_discovery"
+    HPA_DCO_MODIFY = "hpa_dco_modify"
+    BACKUP_RESTORE = "backup_restore"
+    TRACE_SWEEP = "trace_sweep"
+
+
+CAPABILITY_LABELS: dict[Capability, str] = {
+    Capability.DEVICE_DISCOVERY: "Device discovery",
+    Capability.FILE_ERASE: "File erase",
+    Capability.FREE_SPACE_WIPE: "Free-space wipe",
+    Capability.WHOLE_DRIVE_CLEAR: "Whole-drive clear (addressable overwrite)",
+    Capability.ATA_SANITIZE: "ATA SANITIZE (device sanitize)",
+    Capability.ATA_SECURITY_ERASE: "ATA SECURITY ERASE UNIT (device sanitize)",
+    Capability.NVME_SANITIZE: "NVMe Sanitize (device sanitize)",
+    Capability.NVME_FORMAT: "NVMe Format NVM, user-data erase (device sanitize)",
+    Capability.CRYPTO_ERASE: "Cryptographic erase",
+    Capability.RAW_ACQUISITION: "Raw physical-device acquisition",
+    Capability.VOLUME_ACQUISITION: "Logical volume acquisition",
+    Capability.HPA_DCO_DISCOVERY: "HPA / DCO discovery",
+    Capability.HPA_DCO_MODIFY: "HPA / DCO modification",
+    Capability.BACKUP_RESTORE: "Backup restore",
+    Capability.TRACE_SWEEP: "Live-desktop trace sweep",
+}
 
 class OperationStatus(StrEnum):
     """What happened, established *after* an operation ran (reports only)."""
@@ -172,6 +263,48 @@ class OperationCapability(BaseModel):
     verification: str = ""
     limitations: list[str] = Field(default_factory=list)
     requires_privilege: bool = False
+    #: The resolver's precise state (:mod:`core.platform.capability`). ``status``
+    #: is derived from it for clients that still read the older word.
+    state: CapabilityState | None = None
+    state_label: str = ""
+    mechanism: str = ""
+    assurance: str = ""
+    #: Device classes with a recorded physical run backing ``state``.
+    validated_classes: list[str] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+
+
+class ResolvedCapability(BaseModel):
+    """One capability, resolved for one device or one platform."""
+
+    capability: Capability
+    label: str
+    state: CapabilityState
+    #: The word the UI shows (``STATE_LABELS``).
+    state_label: str
+    #: Plain-language reason. Never empty.
+    reason: str
+    #: What established the state: table entry, probe, record.
+    source: str
+    mechanism: str = ""
+    protocol: str = ""
+    required_privilege: str = "none"
+    safety_restrictions: list[str] = Field(default_factory=list)
+    verification: str = ""
+    assurance: str = ""
+    limitations: list[str] = Field(default_factory=list)
+    #: The device class physical evidence was matched against ("" for a
+    #: device-free capability or the platform matrix).
+    device_class: str = ""
+    #: Recorded physical runs this state rests on.
+    evidence: list[str] = Field(default_factory=list)
+    #: Device classes with recorded physical runs (platform matrix only).
+    validated_classes: list[str] = Field(default_factory=list)
+    module: str = ""
+
+    @property
+    def runnable(self) -> bool:
+        return self.state in RUNNABLE_STATES
 
 
 class PartitionInfo(BaseModel):
@@ -212,6 +345,9 @@ class NormalizedDevice(BaseModel):
     #: Sentence naming the signal that decided ``media_type``.
     media_basis: str = ""
     removable: bool | None = None
+    #: The OS reports the disk as internal to the machine (macOS ``Internal``).
+    #: ``None`` when the OS does not say.
+    internal: bool | None = None
     mounted: bool = False
     mount_points: list[str] = Field(default_factory=list)
     system_device: bool = False
@@ -240,6 +376,14 @@ class SanitizeOption(BaseModel):
     technical: list[str] = Field(default_factory=list)
     verification: str = ""
     remediation: str = ""
+    #: The resolver's state for the capability this option would run.
+    state: CapabilityState | None = None
+    state_label: str = ""
+    capability: Capability | None = None
+    mechanism: str = ""
+    protocol: str = ""
+    assurance: str = ""
+    limitations: list[str] = Field(default_factory=list)
 
 
 class DeviceAssessment(BaseModel):
@@ -265,6 +409,10 @@ class DeviceAssessment(BaseModel):
     verification: str = ""
     safety_checks: list[SafetyCheck] = Field(default_factory=list)
     flash_limitation: str = ""
+    #: The evidence bucket this device falls in (``usb-flash``, ``nvme``, ...).
+    device_class: str = ""
+    #: Every device capability as the resolver answers it, each with a reason.
+    capabilities: list[ResolvedCapability] = Field(default_factory=list)
 
 
 FilesystemCapability = Literal[
@@ -305,3 +453,5 @@ class PlatformStatus(BaseModel):
     restrictions: list[str]
     #: Which adapter produced this (``linux``, ``windows``, ``macos``).
     adapter: str
+    #: The resolver's platform matrix: every capability with its precise state.
+    capabilities: list[ResolvedCapability] = Field(default_factory=list)

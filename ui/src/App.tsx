@@ -13,6 +13,7 @@ import {
 import type { DeviceRow, PlatformStatus } from './lib/api'
 import { api } from './lib/api'
 import { deviceKind, privilegeWord, statusWord } from './lib/platform'
+import { capabilityWord } from './lib/states'
 import { bytes } from './lib/format'
 import Platform from './screens/Platform'
 import { CaseProvider, useCase } from './lib/caseContext'
@@ -160,7 +161,9 @@ function StatusStrip({
   const assessment = selected?.assessment
   const sanitization = assessment
     ? assessment.headline === 'READY'
-      ? statusWord(assessment.status)
+      ? assessment.recommended?.state
+        ? capabilityWord(assessment.recommended)
+        : statusWord(assessment.status)
       : { word: assessment.headline.toLowerCase(), tone: assessment.headline === 'NOT AUTHORIZED' ? 'warning' : 'destructive' }
     : null
   const verification = assessment?.recommended?.verification

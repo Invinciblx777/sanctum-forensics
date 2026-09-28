@@ -21,6 +21,13 @@ from core.models import DestructionRecord
 from pydantic import BaseModel, Field
 
 __all__ = [
+    "ApproveHiddenAreaRequest",
+    "ExecuteHiddenAreaRequest",
+    "OpenHiddenAreaRequest",
+    "ApproveRestoreRequest",
+    "CreateBackupRequest",
+    "ExecuteRestoreRequest",
+    "OpenRestoreRequest",
     "CaseCreateRequest",
     "EvidenceAttachRequest",
     "TamperDemoRequest",
@@ -176,6 +183,10 @@ class AcquireRequest(BaseModel):
     compression: Literal["none", "fast", "best"] = "fast"
     case_id: str = ""
     operator: str = "sanctum"
+    #: For a raw device on Windows or macOS: the serial of the disk the operator
+    #: selected. Not trusted - the reader binds its handle to it and refuses a
+    #: disk that answers differently.
+    expected_serial: str = Field(default="", max_length=128)
 
 
 class CarveRequest(BaseModel):
@@ -248,3 +259,76 @@ class JobAccepted(BaseModel):
     stream_url: str
     #: Set on every dry run so a simulation cannot be read as a wipe.
     notice: str = ""
+
+
+class CreateBackupRequest(BaseModel):
+    """Body for ``POST /workflow/backup``: record an image as a backup of a device."""
+
+    #: A raw image under the evidence directory. Hashed read-only.
+    backup_image: str
+    #: The device the image is a backup of. Its identity is re-read by the helper.
+    source_path: str
+    #: Set when the image is the product of ``POST /jobs/acquire`` of this device:
+    #: the acquisition's own hashes are reused and its job id is recorded.
+    acquisition_job_id: str = ""
+    case_id: str = ""
+    operator: str = "sanctum"
+
+
+class OpenRestoreRequest(BaseModel):
+    """Body for ``POST /workflow/restore``: plan a restore, write nothing."""
+
+    backup_id: str
+    target_path: str
+
+
+class ApproveRestoreRequest(BaseModel):
+    """Body for ``POST /workflow/restore/{id}/approve``."""
+
+    typed_serial: str = ""
+    #: Must be sent true, deliberately. The typed serial alone is not approval.
+    acknowledge_data_overwrite: bool = False
+
+
+class ExecuteRestoreRequest(BaseModel):
+    """Body for ``POST /workflow/restore/{id}/execute``."""
+
+    #: Gate one. True means nothing is written. Defaults closed.
+    dry_run: bool = True
+    #: Gate two. Re-checked by the helper against the serial it reads itself.
+    typed_serial: str = ""
+    case_id: str = ""
+    operator: str = "sanctum"
+
+
+class OpenHiddenAreaRequest(BaseModel):
+    """Body for ``POST /workflow/hidden-area``: discover, analyze, plan. No write."""
+
+    path: str
+    #: A recorded backup of the device (``POST /workflow/backup``). It must be
+    #: verified, and cover the accessible range, before approval.
+    backup_id: str = ""
+    #: True (the default): the change lasts until the next power cycle. False
+    #: asks for a permanent SET MAX, which approval must acknowledge separately.
+    volatile: bool = True
+
+
+class ApproveHiddenAreaRequest(BaseModel):
+    """Body for ``POST /workflow/hidden-area/{id}/approve``."""
+
+    typed_serial: str = ""
+    #: Must be sent true, deliberately. The typed serial alone is not approval.
+    acknowledge_configuration_change: bool = False
+    #: Must also be true when the plan is permanent (``volatile`` false).
+    acknowledge_permanent: bool = False
+
+
+class ExecuteHiddenAreaRequest(BaseModel):
+    """Body for ``POST /workflow/hidden-area/{id}/execute``."""
+
+    #: Gate one. True means nothing is sent to the drive. Defaults closed.
+    dry_run: bool = True
+    #: Gate two. Re-checked by the helper against the serial it reads itself.
+    typed_serial: str = ""
+    case_id: str = ""
+    operator: str = "sanctum"

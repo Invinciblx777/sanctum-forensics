@@ -41,7 +41,6 @@ Never touches a device. Every image is an ordinary file.
 from __future__ import annotations
 
 import argparse
-import base64
 import csv
 import gzip
 import hashlib
@@ -60,6 +59,17 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from core.benchmark.outputs import (
+    HEAD_BYTES,
+    MIN_AGREEMENT,
+    OUTPUT_INDEX,
+    REPORT_FILES,
+    attribute_outputs,
+    common_prefix,
+    index_outputs,
+    load_outputs,
+    select_outputs,
+)
 from PIL import Image
 
 from testkit.damage import (
@@ -97,13 +107,12 @@ TOOLS = ("sanctum-carve", "photorec", "foremost", "sanctum-full")
 #: The rows that are compared with each other.
 COMPARABLE = ("sanctum-carve", "photorec", "foremost")
 
-#: Files a tool writes about its run rather than recovered objects.
-_REPORT_FILES = frozenset({"photorec.log", "report.xml", "audit.txt"})
-
-#: Leading bytes compared when attributing a non-identical output.
-_HEAD_BYTES = 64 * KIB
-#: Agreement shorter than this attributes nothing: every JPEG shares its SOI.
-_MIN_AGREEMENT = 64
+#: Files a tool writes about its run rather than recovered objects, and the
+#: attribution thresholds. They live in :mod:`core.benchmark.outputs`, which is
+#: the one attribution both this benchmark and the first-class scorer run.
+_REPORT_FILES = REPORT_FILES
+_HEAD_BYTES = HEAD_BYTES
+_MIN_AGREEMENT = MIN_AGREEMENT
 
 PHOTOREC_OPTIONS = "partition_none,wholespace,search"
 
@@ -789,40 +798,6 @@ def _sanctum_worker(image: Path, run_dir: Path, undelete: bool) -> None:
     )
 
 
-#: Per-run record of every output: name, size, SHA-256 and first 64 KiB.
-OUTPUT_INDEX = "outputs.json"
-
-
-def index_outputs(files: Path) -> list[dict[str, Any]]:
-    """What the scorer needs from each output file, without keeping the file.
-
-    Sanctum writes a candidate that no parser could bound as the span to the end
-    of the image, so one run over a 255 MiB volume wrote 2.8 GiB. The scorer
-    reads only an output's digest and its first :data:`_HEAD_BYTES`, so those
-    are recorded and the files can go.
-    """
-    entries: list[dict[str, Any]] = []
-    for path in sorted(item for item in files.rglob("*") if item.is_file()):
-        digest = hashlib.sha256()
-        with open(path, "rb") as handle:
-            head = handle.read(_HEAD_BYTES)
-            digest.update(head)
-            size = len(head)
-            for chunk in iter(lambda: handle.read(MIB), b""):
-                digest.update(chunk)
-                size += len(chunk)
-        entries.append(
-            {
-                "path": str(path.relative_to(files)),
-                "name": path.name,
-                "size": size,
-                "sha256": digest.hexdigest(),
-                "head": base64.b64encode(head).decode("ascii"),
-            }
-        )
-    return entries
-
-
 def run_tool(
     tool: str,
     image: Path,
@@ -991,19 +966,8 @@ class RunScore:
         return self.exact + self.corrupt
 
 
-def _agreement(left: bytes, right: bytes) -> int:
-    """Length of the common prefix, found by halving rather than byte by byte."""
-    limit = min(len(left), len(right))
-    if left[:limit] == right[:limit]:
-        return limit
-    low, high = 0, limit
-    while high - low > 1:
-        middle = (low + high) // 2
-        if left[:middle] == right[:middle]:
-            low = middle
-        else:
-            high = middle
-    return low
+#: Kept under its old name for callers of the private helper.
+_agreement = common_prefix
 
 
 def _reference(obj: TruthObject, medium: bytes | None, payloads: Path) -> bytes:
@@ -1034,79 +998,15 @@ def score_run(
     )
 
     references = {obj.name: _reference(obj, medium, payloads) for obj in truth.objects}
-    by_digest: dict[str, list[TruthObject]] = {}
-    for obj in truth.objects:
-        if obj.sha256:
-            by_digest.setdefault(obj.sha256, []).append(obj)
-    heads: dict[bytes, list[TruthObject]] = {}
-    for obj in truth.objects:
-        if obj.role in ("file", "decoy") and len(references[obj.name]) >= 8:
-            heads.setdefault(references[obj.name][:8], []).append(obj)
-
-    exact: set[str] = set()
-    corrupt: set[str] = set()
-    entries = (
-        index_outputs(files)
-        if files.is_dir()
-        else json.loads(files.read_text(encoding="utf-8"))
-    )
-    outputs = sorted(
-        (
-            entry
-            for entry in entries
-            if entry["name"] not in _REPORT_FILES
-            and (only is None or entry["name"] in only)
-        ),
-        key=lambda entry: str(entry["path"]),
-    )
+    outputs = select_outputs(load_outputs(files), only)
     result.outputs = len(outputs)
-    for entry in outputs:
-        data = base64.b64decode(entry["head"])
-        matched = by_digest.get(str(entry["sha256"]))
-        if matched:
-            names = {obj.name for obj in matched}
-            if names <= exact:
-                result.duplicate_outputs += 1
-            exact |= names
-            continue
-        scored = sorted(
-            (
-                (
-                    _agreement(data[:_HEAD_BYTES], references[obj.name][:_HEAD_BYTES]),
-                    obj,
-                )
-                for obj in heads.get(data[:8], [])
-            ),
-            key=lambda pair: -pair[0],
-        )
-        if scored and scored[0][0] >= _MIN_AGREEMENT:
-            best, winner = scored[0]
-            rivals = [
-                obj
-                for agreement, obj in scored[1:]
-                if agreement == best
-                and references[obj.name][:best] != b""
-                and (obj.sha256 != winner.sha256 or not obj.sha256)
-            ]
-            if rivals:
-                result.fp_ambiguous += 1
-            elif winner.role == "decoy":
-                result.fp_decoy += 1
-            else:
-                if winner.name in corrupt or winner.name in exact:
-                    result.duplicate_outputs += 1
-                corrupt.add(winner.name)
-            continue
-        probe = data[:256]
-        inside = len(probe) >= 32 and any(
-            references[obj.name].find(probe, 1) != -1
-            for obj in truth.objects
-            if obj.role == "file"
-        )
-        if inside:
-            result.fp_fragment += 1
-        else:
-            result.fp_unrelated += 1
+    attribution = attribute_outputs(truth.objects, references, outputs)
+    exact, corrupt = attribution.exact, attribution.corrupt
+    result.duplicate_outputs = attribution.duplicate_outputs
+    result.fp_fragment = attribution.count("fp_fragment")
+    result.fp_decoy = attribution.count("fp_decoy")
+    result.fp_ambiguous = attribution.count("fp_ambiguous")
+    result.fp_unrelated = attribution.count("fp_unrelated")
 
     groups: dict[str, list[TruthObject]] = {}
     for obj in truth.objects:

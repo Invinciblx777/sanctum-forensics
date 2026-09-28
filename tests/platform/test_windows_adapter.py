@@ -137,23 +137,45 @@ def test_virtual_disks_are_hidden_unless_asked_for(
     }
 
 
-def test_whole_drive_is_not_available_and_says_why(
+def test_whole_drive_is_offered_through_the_resolver_and_says_what_it_needs(
     windows_inventory: dict[str, Any],
 ) -> None:
-    adapter, _ = _adapter(windows_inventory)
+    from core.platform.model import CapabilityState, PrivilegeState
+
+    user = PrivilegeState(
+        level="standard", elevated=False, basis="IsUserAnAdmin() returned 0"
+    )
+    runner = FakeRunner(lambda argv: ok(argv, json.dumps(windows_inventory)))
+    adapter = WindowsAdapter(runner=runner, privilege=user)
     stick = next(d for d in adapter.enumerate_devices() if d.id == "PhysicalDrive2")
 
     assessment = adapter.assess_device(stick)
 
-    assert assessment.headline == "NOT AVAILABLE"
-    assert assessment.status is CapabilityStatus.UNSUPPORTED
-    assert assessment.recommended is None
-    assert "not implemented for Windows" in assessment.reason
-    assert "Linux build" in assessment.recommended_action
-    assert {option.level for option in assessment.unavailable} == {"PURGE", "CLEAR"}
+    assert assessment.headline == "NOT AUTHORIZED"
+    assert assessment.recommended is not None
+    assert assessment.recommended.level == "CLEAR"
+    assert (
+        assessment.recommended.state is CapabilityState.AVAILABLE_BUT_REQUIRES_PRIVILEGE
+    )
+    assert "Run as administrator" in assessment.recommended_action
     checks = {check.key: check for check in assessment.safety_checks}
     assert checks["not_system"].passed is True
     assert checks["not_mounted"].passed is True
+
+
+def test_a_disk_without_a_serial_is_blocked_for_identity(
+    windows_inventory: dict[str, Any],
+) -> None:
+    for row in windows_inventory["physical"]:
+        if row["DeviceId"] == "3":
+            row["SerialNumber"] = ""
+    adapter, _ = _adapter(windows_inventory)
+    anonymous = next(d for d in adapter.enumerate_devices() if d.id == "PhysicalDrive3")
+
+    assessment = adapter.assess_device(anonymous)
+
+    assert assessment.headline == "NOT AVAILABLE"
+    assert "no serial number" in assessment.reason
 
 
 def test_the_boot_disk_assessment_names_the_system_reason_first(
@@ -170,22 +192,29 @@ def test_the_boot_disk_assessment_names_the_system_reason_first(
     assert {c.key: c for c in assessment.safety_checks}["not_system"].passed is False
 
 
-def test_executing_a_whole_drive_job_raises_before_anything_runs(
+def test_a_real_job_with_a_mistyped_serial_opens_nothing(
     windows_inventory: dict[str, Any],
 ) -> None:
-    adapter, runner = _adapter(windows_inventory)
+    from core.errors import ConfirmationMismatch
+    from testkit.fake_windows import FakeWindowsApi
 
-    with pytest.raises(PlatformUnsupported) as excinfo:
+    api = FakeWindowsApi([])
+    runner = FakeRunner(lambda argv: ok(argv, json.dumps(windows_inventory)))
+    adapter = WindowsAdapter(runner=runner, native=api)
+
+    with pytest.raises(ConfirmationMismatch):
         next(
             adapter.execute_drive_sanitization(
-                {"path": "PhysicalDrive2", "dry_run": False}
+                {
+                    "path": "PhysicalDrive2",
+                    "dry_run": False,
+                    "typed_serial": "X",
+                    "ledger_root": "unused",
+                    "job_id": "j",
+                }
             )
         )
-
-    assert "No operation was performed" in excinfo.value.message
-    assert runner.calls == [], "not even discovery ran: nothing was touched"
-    with pytest.raises(PlatformUnsupported):
-        next(adapter.resume_drive_sanitization({"path": "PhysicalDrive2"}))
+    assert [call for call in api.calls if call[0] == "open"] == []
 
 
 def test_a_failed_discovery_is_inconclusive_not_empty() -> None:
@@ -213,6 +242,6 @@ def test_legacy_rows_keep_the_device_screen_fields(
     assert stick["device"]["path"] == "\\\\.\\PhysicalDrive2"
     assert stick["device"]["transport"] == "usb"
     assert stick["capabilities"] is None
-    assert "not implemented for Windows" in stick["capability_error"]
-    assert stick["assessment"]["headline"] == "NOT AVAILABLE"
+    assert stick["capability_error"] == ""
+    assert stick["assessment"]["device_class"] == "usb-flash"
     assert stick["media"]["flash"] is True

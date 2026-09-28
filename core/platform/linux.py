@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from core.errors import PlatformUnsupported, SanctumError
-from core.platform.base import FLASH_LIMITATION, BaseAdapter, row
+from core.platform.base import FLASH_LIMITATION, BaseAdapter, json_records, row
 from core.platform.model import (
     CapabilityStatus,
     Interface,
@@ -504,6 +504,17 @@ class LinuxAdapter(BaseAdapter):
             drive.preview(core_device, probed), core_device.size_bytes
         )
 
+    def authorization_probe(self, path: str) -> dict[str, Any]:
+        """``lsblk``/sysfs identity and the hdparm/nvme capability probe, now."""
+        from core.device import capabilities
+        from core.device.enumerate import get_device
+
+        device = get_device(path)
+        return {
+            "device": device.model_dump(mode="json"),
+            "capabilities": capabilities.probe(device).model_dump(mode="json"),
+        }
+
     def whole_drive_unavailable_reason(self) -> str:
         try:
             import core.erase.drive  # noqa: F401
@@ -604,14 +615,17 @@ class LinuxAdapter(BaseAdapter):
             if not hardware_passed("linux", "hidden_area_unlock"):
                 clear_limits.append(
                     "HPA/DCO unlock has not been run on a physical drive: no "
-                    "hardware result is recorded for it, and the branch where "
-                    "sectors really are hidden is tested against a faked probe."
+                    "hardware result is recorded for the HPA/DCO workflow, and "
+                    "the case where sectors really are hidden is tested against "
+                    "a faked probe and a fake hdparm."
                 )
             clear = row(
                 Operation.WHOLE_DRIVE_CLEAR,
                 CapabilityStatus.SUPPORTED_WITH_LIMITATIONS,
-                "Every addressable block is overwritten with O_DIRECT writes; "
-                "hidden HPA/DCO areas are unlocked first where the drive allows.",
+                "Every addressable block is overwritten with O_DIRECT writes. "
+                "An HPA/DCO hidden area is reported as not covered and never "
+                "unlocked by the erase; exposing it is the separate, approved "
+                "HPA/DCO workflow.",
                 source,
                 verification="Full read-back up to 64 GiB, seeded "
                 "sampling above it with a stated detection probability.",
@@ -781,7 +795,7 @@ class LinuxAdapter(BaseAdapter):
 
         job, probed, ledger = self._job_and_ledger(params)
         generator = execute(job, probed, ledger=ChainLedgerSink(ledger))
-        return (yield from _json_records(generator))
+        return (yield from json_records(generator))
 
     def resume_drive_sanitization(
         self, params: dict[str, Any]
@@ -790,23 +804,5 @@ class LinuxAdapter(BaseAdapter):
 
         job, probed, ledger = self._job_and_ledger(params)
         generator = resume(job, probed, ledger=ChainLedgerSink(ledger))
-        return (yield from _json_records(generator))
+        return (yield from json_records(generator))
 
-
-def _json_records(
-    generator: Generator[Any, None, Any],
-) -> Generator[dict[str, Any], None, dict[str, Any]]:
-    """Yield each engine record as JSON; return the result as JSON.
-
-    Closing this generator closes the engine's at its next yield, which is how
-    a cancel reaches a running wipe.
-    """
-    try:
-        while True:
-            try:
-                record = next(generator)
-            except StopIteration as stop:
-                return {"result": stop.value.model_dump(mode="json")}
-            yield record.model_dump(mode="json")
-    finally:
-        generator.close()
