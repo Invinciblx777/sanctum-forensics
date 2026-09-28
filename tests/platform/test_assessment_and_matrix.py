@@ -293,8 +293,12 @@ def test_a_per_device_purge_is_unverified_without_a_hardware_record(
     """The drive reporting SANITIZE is not evidence the purge path works.
 
     The option stays offered - the code exists and the drive reported the
-    command - but under UNVERIFIED, never SUPPORTED, and it says why.
+    command - but under IMPLEMENTED / UNVALIDATED, never SUPPORTED, and it says
+    why. Evidence is matched on the device class: a run on a SATA HDD lifts it
+    for a SATA HDD, and a run on some other class does not.
     """
+    from core.platform.model import CapabilityState
+
     path = tmp_path / "validation_record.json"
     path.write_text(json.dumps({"suites": {}, "hardware": {}}), encoding="utf-8")
     monkeypatch.setattr("core.platform.validation.RECORD_PATH", path)
@@ -303,25 +307,52 @@ def test_a_per_device_purge_is_unverified_without_a_hardware_record(
     assessment = adapter.assess_device(_device(interface="sata", media_type="hdd"))
 
     assert assessment.headline == "READY"
+    assert assessment.device_class == "sata-hdd"
     assert assessment.recommended is not None
     assert assessment.recommended.level == "PURGE"
     assert assessment.recommended.status is CapabilityStatus.UNVERIFIED
+    assert (
+        assessment.recommended.state
+        is CapabilityState.IMPLEMENTED_NOT_PHYSICALLY_VALIDATED
+    )
     assert assessment.status is CapabilityStatus.UNVERIFIED
     assert "UNVERIFIED" in assessment.recommended.why
     assert "physical drive" in assessment.recommended.why
     clear = assessment.alternatives[0]
     assert clear.level == "CLEAR"
-    assert clear.status is CapabilityStatus.SUPPORTED
+    assert clear.state is CapabilityState.IMPLEMENTED_NOT_PHYSICALLY_VALIDATED
 
-    recorded_pass = {"linux": {"whole_drive_purge": {"state": "PASS"}}}
+    def run(device_class: str) -> dict[str, Any]:
+        return {
+            "platform": "linux",
+            "capability": "ata_sanitize",
+            "device_class": device_class,
+            "model": "M",
+            "serial": "S",
+            "date": "2026-09-28",
+            "commit": "abc",
+            "result": "PASS",
+        }
+
     path.write_text(
-        json.dumps({"suites": {}, "hardware": recorded_pass}), encoding="utf-8"
+        json.dumps({"physical_validations": [run("nvme")]}), encoding="utf-8"
+    )
+    other = _Fixed(ROOT, _linux_options(purge_reachable=True, flash=False))
+    unrelated = other.assess_device(_device(interface="sata", media_type="hdd"))
+    assert unrelated.recommended is not None
+    assert unrelated.recommended.status is CapabilityStatus.UNVERIFIED
+
+    path.write_text(
+        json.dumps({"physical_validations": [run("sata-hdd")]}), encoding="utf-8"
     )
     adapter = _Fixed(ROOT, _linux_options(purge_reachable=True, flash=False))
     recorded = adapter.assess_device(_device(interface="sata", media_type="hdd"))
     assert recorded.recommended is not None
-    assert recorded.recommended.status is CapabilityStatus.SUPPORTED
-    assert "UNVERIFIED" not in recorded.recommended.why
+    assert recorded.recommended.state is CapabilityState.VALIDATED_PHYSICAL
+    assert recorded.recommended.status in {
+        CapabilityStatus.SUPPORTED,
+        CapabilityStatus.SUPPORTED_WITH_LIMITATIONS,
+    }
 
 
 def test_an_unprivileged_host_is_not_authorized_not_ready() -> None:
