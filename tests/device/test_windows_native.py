@@ -153,6 +153,21 @@ def test_an_unelevated_open_is_refused_with_the_reason() -> None:
         WindowsDisk(api, 2).open()
 
 
+def test_a_native_error_keeps_its_win32_code() -> None:
+    """On Windows OSError owns a ``winerror`` slot; the code must survive it.
+
+    Set before ``OSError.__init__``, the slot was reset to None on Windows, so
+    no refusal (access denied, device gone, bridge) was ever translated there.
+    Off Windows the attribute is an ordinary one and this always held.
+    """
+    from core.device.win.native import NativeError
+
+    error = NativeError(ioctl.ERROR_ACCESS_DENIED, "CreateFileW", r"\\.\PhysicalDrive2")
+    assert error.winerror == ioctl.ERROR_ACCESS_DENIED
+    assert error.call == "CreateFileW"
+    assert "Win32 error 5" in str(error)
+
+
 def test_a_missing_disk_is_vanished() -> None:
     api = FakeWindowsApi([_disk()])
     with pytest.raises(DeviceVanished):

@@ -39,12 +39,16 @@ class NativeError(OSError):
     """A failed Win32 call, with its error code in ``winerror``."""
 
     def __init__(self, winerror: int, call: str, detail: str = "") -> None:
-        self.winerror = winerror
-        self.call = call
         super().__init__(
             f"{call} failed with Win32 error {winerror}"
             + (f": {detail}" if detail else "")
         )
+        # After OSError.__init__, never before: on Windows OSError has a
+        # ``winerror`` slot, and a one-argument __init__ resets it to None.
+        # Set first, every Win32 code (access denied, device gone, bridge
+        # refusal) read back as None and no translation matched.
+        self.winerror = winerror
+        self.call = call
 
 
 class NativeApi(Protocol):
