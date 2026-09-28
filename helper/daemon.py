@@ -825,6 +825,13 @@ class HelperDaemon:
         # umask would otherwise leave a world-writable socket for the window
         # between bind and chmod.
         os.chmod(self.socket_path, SOCKET_MODE)
+        # A 0600 socket owned by root cannot be opened by the operator, so the
+        # daemon that the manual says the operator's API talks to would refuse
+        # its only client. Hand the file to that one uid; the mode stays 0600,
+        # so no other account gains access, and SO_PEERCRED still checks every
+        # peer. Only root may chown, so an unprivileged daemon (tests) skips it.
+        if os.geteuid() == 0:
+            os.chown(self.socket_path, self.operator_uid, -1)
         server.listen(8)
         self._server = server
         logger.info(

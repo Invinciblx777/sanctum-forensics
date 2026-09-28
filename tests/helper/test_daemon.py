@@ -378,3 +378,22 @@ def test_the_socket_is_created_owner_only(short_socket_dir: Path) -> None:
         assert mode == 0o600, f"socket mode is {oct(mode)}, not 0600"
     finally:
         daemon.close()
+
+
+def test_a_root_daemon_hands_the_socket_to_the_operator(
+    short_socket_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A root-owned 0600 socket would lock out the one uid it exists to serve."""
+    chowned: list[tuple[str, int, int]] = []
+    monkeypatch.setattr("helper.daemon.os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "helper.daemon.os.chown",
+        lambda path, uid, gid: chowned.append((str(path), uid, gid)),
+    )
+    socket_path = short_socket_dir / "h.sock"
+    daemon = HelperDaemon(operator_uid=_uid(), socket_path=str(socket_path))
+    try:
+        daemon.bind()
+    finally:
+        daemon.close()
+    assert chowned == [(str(socket_path), _uid(), -1)]
