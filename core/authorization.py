@@ -10,20 +10,29 @@ An authorization binds four things: the target's identity (path, serial, model,
 size), the capability plan the operator approved, the backup image that was
 verified, and a recorded human approval. It does not bind the device's contents
 and it cannot prove the backup is a copy of the target.
+
+Every authorization also has a ``kind`` (``erase`` or ``restore``); see
+:func:`kind_mismatch`. A record written before kinds existed carries none and is
+an erase authorization. An approval of one kind is never spendable as the other.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 __all__ = [
     "AUTH_ID",
+    "AUTH_KINDS",
+    "authorization_kind",
     "backup_drift",
     "build_plan",
     "device_identity",
     "identity_drift",
+    "image_drift",
+    "kind_mismatch",
     "plan_drift",
     "stat_fingerprint",
 ]
@@ -31,7 +40,37 @@ __all__ = [
 #: The only shape of authorization id. Anything else names no record.
 AUTH_ID = re.compile(r"^auth-[0-9a-f]{16}$")
 
+#: What an authorization may authorize. One record authorizes one kind.
+AUTH_KINDS = frozenset({"erase", "restore"})
+
 _PLAN_LISTS = ("achievable_levels", "limitations", "blocking")
+
+
+def authorization_kind(record: Mapping[str, Any]) -> str:
+    """The kind a stored record authorizes.
+
+    Records written before kinds existed carry no ``kind`` and were all erase
+    authorizations, so a missing or empty kind reads as ``erase``. An unknown
+    kind is returned as given, and matches no expected kind.
+    """
+    kind = record.get("kind")
+    return "erase" if kind is None or kind == "" else str(kind)
+
+
+def kind_mismatch(record: Mapping[str, Any], expected: str) -> list[str]:
+    """One sentence if ``record`` does not authorize ``expected``. Empty if it does.
+
+    An erase authorization is never spendable as a restore and vice versa: both
+    overwrite a device, and an approval of one is not an approval of the other.
+    """
+    kind = authorization_kind(record)
+    if kind == expected:
+        return []
+    article = "an" if expected[:1] in "aeiou" else "a"
+    return [
+        f"authorization {record.get('auth_id', '?')} is a {kind!r} authorization; "
+        f"it cannot authorize {article} {expected}"
+    ]
 
 
 def device_identity(probe: dict[str, Any]) -> dict[str, Any]:
@@ -129,3 +168,24 @@ def backup_drift(backup: dict[str, Any], device_size: int) -> list[str]:
         if same
         else ["the verified backup image changed or no longer covers the device"]
     )
+
+
+def image_drift(backup: Mapping[str, Any]) -> list[str]:
+    """Reasons an image is no longer the one that was recorded. Empty if none.
+
+    Size, mtime, ctime and inode, as :func:`backup_drift` compares them, without
+    its requirement that the image cover a device: a restore image need only
+    fit on its target, which the restore plan checks. A record missing any of
+    the four is refused, never assumed unchanged.
+    """
+    try:
+        stat = Path(str(backup.get("path", ""))).stat()
+    except OSError:
+        return ["the recorded backup image is no longer readable"]
+    same = (
+        stat.st_size == backup.get("size_bytes")
+        and stat.st_mtime_ns == backup.get("mtime_ns")
+        and stat.st_ctime_ns == backup.get("ctime_ns")
+        and stat.st_ino == backup.get("inode")
+    )
+    return [] if same else ["the recorded backup image changed since it was planned"]

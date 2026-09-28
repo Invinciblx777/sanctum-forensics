@@ -1,4 +1,9 @@
-"""The write seam's own check of an erase authorization.
+"""The write seam's own check of an erase or restore authorization.
+
+Each authorization has a ``kind``. :func:`revalidate_execution` accepts only an
+erase authorization (a record with no kind was written before kinds existed and
+is an erase one); :func:`revalidate_restore` accepts only a restore one. An
+approval of one is never spendable as the other.
 
 The API opens, approves and spends an authorization, then hands the helper a
 real erase. The helper is the process that would write, so it does not take the
@@ -31,6 +36,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -40,11 +46,22 @@ from core.authorization import (
     build_plan,
     device_identity,
     identity_drift,
+    image_drift,
+    kind_mismatch,
     plan_drift,
 )
-from core.errors import WorkflowGateRefused
+from core.backup import BackupRecord, check_record_digest
+from core.errors import EvidenceIntegrityError, WorkflowGateRefused
+from core.restore import (
+    RestorePlan,
+    confirmation_token,
+    plan_digest_of,
+    plan_restore,
+    restore_plan_drift,
+    target_identity_from_probe,
+)
 
-__all__ = ["revalidate_execution"]
+__all__ = ["RestoreAuthorized", "revalidate_execution", "revalidate_restore"]
 
 _HINT = (
     "Open a workflow (POST /workflow/erase-drive), approve it, and execute with "
@@ -104,6 +121,12 @@ def revalidate_execution(
     if not isinstance(record, dict):
         raise _refuse([f"authorization {auth_id} is unreadable"])
 
+    # An erase is authorized only by an erase authorization. Records written
+    # before kinds existed carry none and read as erase.
+    kind_reasons = kind_mismatch({**record, "auth_id": auth_id}, "erase")
+    if kind_reasons:
+        raise _refuse(kind_reasons)
+
     reasons: list[str] = []
     if not record.get("approved_by"):
         reasons.append("no person has approved this authorization")
@@ -155,19 +178,171 @@ def revalidate_execution(
 
     # Last, so a refusal above never burns the marker and two racers cannot both
     # pass: exclusive create is atomic on a local filesystem.
+    _take_marker(root, auth_id, _refuse)
+
+
+def _take_marker(
+    root: Path, auth_id: str, refuse: Callable[[list[str]], WorkflowGateRefused]
+) -> None:
+    """Take ``<id>.executed`` by exclusive create, or refuse: one execution each."""
     try:
         fd = os.open(
             root / f"{auth_id}.executed", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
         )
     except FileExistsError:
-        raise _refuse(
+        raise refuse(
             [
                 f"authorization {auth_id} was already executed; it authorizes "
                 "one execution"
             ]
         ) from None
     except OSError as exc:
-        raise _refuse(
+        raise refuse(
             [f"the execution marker could not be taken ({type(exc).__name__})"]
         ) from None
     os.close(fd)
+
+
+# --------------------------------------------------------------------------
+# Restore
+# --------------------------------------------------------------------------
+
+_RESTORE_HINT = (
+    "Open a restore workflow (POST /workflow/restore), approve it, and execute "
+    "with the authorization it returns. Nothing was written."
+)
+
+
+def _refuse_restore(reasons: list[str]) -> WorkflowGateRefused:
+    return WorkflowGateRefused(
+        "REFUSED at the restore write seam: "
+        + "; ".join(reasons)
+        + ". Nothing was written.",
+        why_blocked=reasons,
+        remediation=_RESTORE_HINT,
+    )
+
+
+def _fresh_restore_probe(path: str) -> dict[str, Any]:
+    """Re-read the restore target's identity from the host, now."""
+    from core.device.enumerate import get_device
+
+    return {"device": get_device(path).model_dump(mode="json")}
+
+
+@dataclass(frozen=True)
+class RestoreAuthorized:
+    """What passed the restore write seam.
+
+    The backup record, the approved plan, and the plan re-derived from this
+    process's own read of the target.
+    """
+
+    auth_id: str
+    dry_run: bool
+    record: BackupRecord
+    plan: RestorePlan
+    fresh: RestorePlan
+
+
+def revalidate_restore(
+    params: dict[str, Any],
+    *,
+    probe: Callable[[str], dict[str, Any]] | None = None,
+) -> RestoreAuthorized:
+    """Refuse a restore unless its authorization holds up here, now.
+
+    The restore mirror of :func:`revalidate_execution`. A dry run (``dry_run``
+    absent or not exactly ``False``) still needs an opened record of kind
+    ``restore`` and a target that re-plans without drift - a simulation of a
+    plan that would be refused is not a simulation - but needs no approval,
+    typed serial or marker. A real restore also needs a recorded approval, the
+    API's ``.spent`` marker, a typed serial equal to the one this process just
+    read, and takes the ``.executed`` marker last.
+
+    Every fact about the target and the image is read from the host here. The
+    request's binding is compared with the stored record, never trusted.
+    """
+    dry_run = params.get("dry_run", True) is not False
+    binding = params.get("authorization")
+    root_raw = params.get("authorization_dir")
+    if not isinstance(binding, dict) or not root_raw:
+        raise _refuse_restore(["the request carries no restore authorization"])
+    auth_id = str(binding.get("auth_id", ""))
+    if not AUTH_ID.match(auth_id):
+        raise _refuse_restore(["the authorization id is malformed"])
+    root = Path(str(root_raw))
+    try:
+        record = json.loads((root / f"{auth_id}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise _refuse_restore([f"authorization {auth_id} does not exist"]) from None
+    if not isinstance(record, dict):
+        raise _refuse_restore([f"authorization {auth_id} is unreadable"])
+    kind_reasons = kind_mismatch({**record, "auth_id": auth_id}, "restore")
+    if kind_reasons:
+        raise _refuse_restore(kind_reasons)
+
+    reasons: list[str] = []
+    if not dry_run:
+        if not record.get("approved_by"):
+            reasons.append("no person has approved this restore")
+        if not (root / f"{auth_id}.spent").exists():
+            reasons.append("the authorization was not consumed by the API gate")
+    path = str(params.get("path", ""))
+    if path != record.get("path"):
+        reasons.append(
+            f"the request's target {path!r} is not the approved "
+            f"{record.get('path')!r}"
+        )
+    for key in ("device", "backup", "plan"):
+        if binding.get(key) != record.get(key):
+            reasons.append(f"the request's {key} does not match the recorded approval")
+    if reasons:
+        raise _refuse_restore(reasons)
+
+    try:
+        backup = BackupRecord.model_validate(record["backup"]["record"])
+        check_record_digest(backup)
+        approved = RestorePlan.model_validate(record["plan"])
+    except (KeyError, TypeError, ValueError, EvidenceIntegrityError):
+        raise _refuse_restore(
+            ["the recorded backup or plan is unreadable or was altered"]
+        ) from None
+    if approved.plan_digest != plan_digest_of(approved):
+        reasons.append("the approved restore plan was altered after it was made")
+    if approved.backup_record_digest != backup.record_digest:
+        reasons.append("the approved plan names a different backup record")
+
+    # From here every fact is read from the host, not from either party.
+    try:
+        fresh_probe = (probe or _fresh_restore_probe)(path)
+        fresh = plan_restore(backup, target_identity_from_probe(fresh_probe))
+    except Exception as exc:  # noqa: BLE001 - any failure to re-read is a refusal
+        raise _refuse_restore(
+            [
+                "the target could not be re-read at the write seam "
+                f"({type(exc).__name__})"
+            ]
+        ) from None
+    reasons.extend(identity_drift(record["device"], device_identity(fresh_probe)))
+    reasons.extend(restore_plan_drift(approved, fresh))
+    reasons.extend(image_drift(record["backup"]))
+    if not dry_run:
+        typed = str(params.get("typed_serial") or "").strip()
+        token = confirmation_token(fresh.target).strip()
+        if not typed:
+            reasons.append("no serial was typed; a real restore is opt-in twice")
+        elif typed.casefold() != token.casefold():
+            reasons.append(
+                "the typed serial does not match the target re-read at the "
+                "write seam"
+            )
+    if reasons:
+        # De-duplicated, order kept: identity and plan drift can name one change.
+        raise _refuse_restore(list(dict.fromkeys(reasons)))
+
+    if not dry_run:
+        _take_marker(root, auth_id, _refuse_restore)
+    return RestoreAuthorized(
+        auth_id=auth_id, dry_run=dry_run, record=backup, plan=approved, fresh=fresh
+    )

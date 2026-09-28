@@ -66,6 +66,9 @@ IMPLEMENTED = (
     "core.authorization",
     # Covered by tests/benchmark/.
     "core.benchmark",
+    # Covered by tests/restore/ and tests/api/test_restore_workflow.py.
+    "core.backup",
+    "core.restore",
 )
 
 
