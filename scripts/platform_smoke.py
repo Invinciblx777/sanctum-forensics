@@ -13,7 +13,10 @@ depends on:
   protection is not working on this platform);
 * every system or mounted device is assessed NOT AVAILABLE;
 * every capability row carries a source and a reason;
-* whole-drive rows are UNSUPPORTED off Linux.
+* every capability row carries the resolver's precise state, and the
+  whole-drive rows name a mechanism rather than a blanket UNSUPPORTED;
+* every system or mounted device's destructive capabilities resolve to
+  BLOCKED_BY_SAFETY_POLICY (or a platform/device limit), never runnable.
 
 Writes a JSON evidence file (``--out``) with the normalized devices, the
 capability rows and the host's own details, which CI uploads as the evidence
@@ -63,7 +66,6 @@ def check(evidence: dict[str, Any]) -> list[str]:
     problems: list[str] = []
     devices = evidence["devices"]
     assessments = {item["device_id"]: item for item in evidence["assessments"]}
-    family = evidence["platform"]["family"]
 
     if not devices:
         problems.append("discovery found no storage devices at all")
@@ -100,11 +102,31 @@ def check(evidence: dict[str, Any]) -> list[str]:
             problems.append(f"capability row {row['operation']} has no source")
         if not row["reason"].strip():
             problems.append(f"capability row {row['operation']} has no reason")
-        if family != "linux" and row["operation"].startswith("whole_drive"):
-            if row["status"] != "UNSUPPORTED":
+        if not row.get("state"):
+            problems.append(f"capability row {row['operation']} has no state")
+        if row["operation"] == "whole_drive_clear" and not row.get("mechanism"):
+            problems.append("whole_drive_clear names no mechanism")
+
+    runnable = {"VALIDATED_PHYSICAL", "IMPLEMENTED_NOT_PHYSICALLY_VALIDATED"}
+    destructive = {
+        "whole_drive_clear",
+        "ata_sanitize",
+        "ata_security_erase",
+        "nvme_sanitize",
+        "nvme_format",
+        "crypto_erase",
+        "hpa_dco_modify",
+        "backup_restore",
+    }
+    for device in evidence["devices"]:
+        if not (device.get("system_device") or device.get("mounted")):
+            continue
+        assessment = assessments.get(device["id"]) or {}
+        for row in assessment.get("capabilities", []):
+            if row["capability"] in destructive and row["state"] in runnable:
                 problems.append(
-                    f"{family}: {row['operation']} is {row['status']}, and this "
-                    "build has no whole-drive engine there"
+                    f"{device['id']} is system or mounted, yet "
+                    f"{row['capability']} resolves to {row['state']}"
                 )
     return problems
 

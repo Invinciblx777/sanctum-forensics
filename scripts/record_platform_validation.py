@@ -52,6 +52,18 @@ SUITES: dict[str, list[str]] = {
     "recovery": ["tests/carve"],
     "whole_drive": ["tests/erase", "tests/device", "tests/helper"],
     "api": ["tests/api"],
+    # The Windows and macOS disk layers, the block engine and the resolver,
+    # through adapter doubles. Run on each OS so the struct packing and the
+    # engines are exercised under that OS's Python; no device is touched.
+    "platform_backends": [
+        "tests/device/test_windows_native.py",
+        "tests/erase/test_blockclear.py",
+        "tests/carve/test_platform_sources.py",
+        "tests/platform/test_windows_engine.py",
+        "tests/platform/test_macos_engine.py",
+        "tests/platform/test_capability_resolver.py",
+        "tests/test_package_completeness.py",
+    ],
 }
 #: whole_drive includes tests/erase, which contains the file suite too; the
 #: file tests are excluded there so the two suites measure different code.
@@ -82,6 +94,12 @@ FEATURES: dict[str, tuple[str | None, str]] = {
     "packaged_application": (
         None,
         "Installed and driven by a script; no human, no desktop session.",
+    ),
+    "platform_backends": (
+        "platform_backends",
+        "Adapter doubles only: the Windows and macOS disk layers, the block "
+        "engine and device sanitize were driven against byte buffers, never a "
+        "real device. Not physical validation.",
     ),
 }
 

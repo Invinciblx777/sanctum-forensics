@@ -57,6 +57,45 @@ from typing import Any
 PASSPHRASE = "package smoke test passphrase"
 
 
+#: Every capability the resolver answers for (core.platform.model.Capability).
+#: Written out here because this script is stdlib-only and must not import the
+#: application it is checking.
+RESOLVER_CAPABILITIES = (
+    "device_discovery",
+    "file_erase",
+    "free_space_wipe",
+    "whole_drive_clear",
+    "ata_sanitize",
+    "ata_security_erase",
+    "nvme_sanitize",
+    "nvme_format",
+    "crypto_erase",
+    "raw_acquisition",
+    "volume_acquisition",
+    "hpa_dco_discovery",
+    "hpa_dco_modify",
+    "backup_restore",
+    "trace_sweep",
+)
+
+#: Capabilities whose implementation is a platform backend module. If the
+#: package lost the module, the resolver still answers from its table, so the
+#: check is on the table's own mechanism text being present.
+PLATFORM_BACKENDS: dict[str, tuple[str, ...]] = {
+    "linux": ("whole_drive_clear", "raw_acquisition", "backup_restore"),
+    "windows": (
+        "whole_drive_clear",
+        "raw_acquisition",
+        "volume_acquisition",
+        "ata_sanitize",
+        "nvme_sanitize",
+        "crypto_erase",
+        "backup_restore",
+    ),
+    "macos": ("whole_drive_clear", "raw_acquisition", "backup_restore"),
+}
+
+
 class Client:
     """Tiny HTTP client that keeps the session cookie, with no dependencies."""
 
@@ -307,20 +346,43 @@ def run(
             if isinstance(status, dict)
             else ""
         )
-        if family != "linux":
-            record(
-                "whole-drive unsupported off Linux",
-                all(
-                    operations[name]["status"] == "UNSUPPORTED"
-                    for name in ("whole_drive_clear", "whole_drive_purge")
-                    if name in operations
-                ),
-                {
-                    k: v["status"]
-                    for k, v in operations.items()
-                    if k.startswith("whole_drive")
-                },
-            )
+        # The capability resolver ships and answers for every capability on
+        # this platform, with a state, a reason and (where code exists) the
+        # exact mechanism. This is what catches a platform backend that did
+        # not make it into the package: its row would say NOT IMPLEMENTED.
+        resolved = (
+            {
+                row.get("capability"): row
+                for row in (status.get("capabilities") or [])
+                if isinstance(row, dict)
+            }
+            if isinstance(status, dict)
+            else {}
+        )
+        record(
+            "capability resolver answers for every capability",
+            set(RESOLVER_CAPABILITIES) <= set(resolved)
+            and all(
+                row.get("state") and row.get("reason") for row in resolved.values()
+            ),
+            sorted(set(RESOLVER_CAPABILITIES) - set(resolved)),
+        )
+        expected_backends = PLATFORM_BACKENDS.get(str(family), ())
+        record(
+            "platform backends shipped (not NOT_IMPLEMENTED)",
+            all(
+                resolved.get(name, {}).get("state") not in (None, "NOT_IMPLEMENTED")
+                and resolved.get(name, {}).get("mechanism")
+                for name in expected_backends
+            ),
+            {name: resolved.get(name, {}).get("state") for name in expected_backends},
+        )
+        record(
+            "whole-drive clear is never a blanket UNSUPPORTED",
+            operations.get("whole_drive_clear", {}).get("state")
+            not in (None, "NOT_IMPLEMENTED"),
+            operations.get("whole_drive_clear", {}).get("state"),
+        )
 
         code, devices = client.request("/devices")
         rows = devices.get("devices", []) if isinstance(devices, dict) else []

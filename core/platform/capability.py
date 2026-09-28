@@ -37,6 +37,8 @@ established it. A state without a reason is a checkmark nobody measured.
 
 from __future__ import annotations
 
+import functools
+import importlib.util
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -74,6 +76,7 @@ __all__ = [
     "device_class",
     "implementation",
     "legacy_status",
+    "module_present",
     "physical_evidence",
     "profile_from_device",
     "resolve_device",
@@ -696,9 +699,33 @@ IMPLEMENTATIONS: dict[tuple[PlatformFamily, Capability], Implementation] = {
 del C
 
 
+@functools.cache
+def module_present(name: str) -> bool:
+    """Whether ``name`` can be imported in this build (source or packaged).
+
+    A package that lost a backend module would otherwise still report the
+    capability from this table; checking the module is what keeps the table
+    honest about the build it is running in.
+    """
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def implementation(platform: PlatformFamily, capability: Capability) -> Implementation:
-    """The table entry, or a NOT_IMPLEMENTED entry for an unknown platform."""
+    """The table entry, or a NOT_IMPLEMENTED entry for an unknown platform.
+
+    An entry whose module is missing from this build becomes NOT_IMPLEMENTED
+    with that reason.
+    """
     found = IMPLEMENTATIONS.get((platform, capability))
+    if found is not None and found.state is None and not module_present(found.module):
+        return _absent(
+            CapabilityState.NOT_IMPLEMENTED,
+            f"This build is missing {found.module}, which performs "
+            f"{CAPABILITY_LABELS[capability].lower()}; the package is incomplete.",
+        )
     if found is not None:
         return found
     return _absent(

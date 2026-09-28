@@ -45,9 +45,9 @@ jobs:
       - run: python -m mypy --strict core/ helper/ api/
       - run: python -m mypy --strict --platform win32 core/erase/_platform/win.py
       - name: typecheck as Windows
-        run: python -m mypy --strict --platform win32 core/platform api/security.py api/deps.py api/desktop.py core/erase/files.py
+        run: python -m mypy --strict --platform win32 core/platform api/security.py api/deps.py api/desktop.py core/erase/files.py core/device/win core/carve/win_source.py core/carve/acquire.py core/erase/blockclear.py core/erase/devicesanitize.py
       - name: typecheck as macOS
-        run: python -m mypy --strict --platform darwin core/platform api/desktop.py
+        run: python -m mypy --strict --platform darwin core/platform api/desktop.py core/device/mac core/carve/mac_source.py core/carve/acquire.py core/erase/blockclear.py
       - name: full suite
         run: python -m pytest -o addopts="" -q
 
@@ -75,12 +75,22 @@ jobs:
       # adapter did on this runner.
       - name: Platform adapter against this runner's real disks
         run: python scripts/platform_smoke.py --out platform-smoke-${{ matrix.name }}.json
+      # Read-only: one read handle, identity IOCTLs and one sector read through
+      # the real kernel32 / raw-device bindings. No write handle is opened and
+      # no destructive command exists in the script.
+      - name: Native disk layer, read-only (Windows)
+        if: runner.os == 'Windows'
+        run: python scripts/native_smoke.py --out native-smoke-${{ matrix.name }}.json
+      - name: Native disk layer, read-only (macOS, root for /dev/rdisk0)
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        run: sudo -E "$(command -v python)" scripts/native_smoke.py --out native-smoke-${{ matrix.name }}.json
       - name: Full Python suite on this platform
         run: python -m pytest -o addopts="" -q
       - name: Record the suites and features this platform validated
         if: always()
         run: >
-          python scripts/record_platform_validation.py file_erase api
+          python scripts/record_platform_validation.py file_erase api platform_backends
           --smoke platform-smoke-${{ matrix.name }}.json
           --out validation-${{ matrix.name }}.json
       - uses: actions/upload-artifact@v4
@@ -89,6 +99,7 @@ jobs:
           name: evidence-${{ matrix.name }}
           path: |
             platform-smoke-${{ matrix.name }}.json
+            native-smoke-${{ matrix.name }}.json
             validation-${{ matrix.name }}.json
 
   package:

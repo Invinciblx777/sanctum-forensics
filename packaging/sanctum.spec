@@ -110,7 +110,11 @@ exe = EXE(  # noqa: F821
     # usable from a terminal; Windows and macOS are windowed apps.
     console=sys.platform.startswith("linux"),
     icon=icon,
-    # Never embed a UAC manifest asking for elevation: nothing needs it.
+    # Never embed a UAC manifest asking for elevation. File erase, discovery
+    # and acquisition of image files need none; whole-drive work, raw
+    # acquisition and device sanitize need an elevated process, and the
+    # operator starts one deliberately (Run as administrator) - the resolver
+    # reports REQUIRES PRIVILEGE until they do.
     uac_admin=False,
 )
 coll = COLLECT(exe, a.binaries, a.datas, name="Sanctum")  # noqa: F821
