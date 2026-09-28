@@ -27,7 +27,46 @@ import {
   WINDOWS_ROW,
 } from './fixtures'
 
-const screen = new URLSearchParams(window.location.search).get('screen') ?? 'devices'
+const query = new URLSearchParams(window.location.search)
+const screen = query.get('screen') ?? 'devices'
+
+// The theme is a query parameter, so both are previewed without clicking.
+try {
+  window.localStorage.setItem('sanctum.theme', query.get('theme') === 'dark' ? 'dark' : 'light')
+} catch {
+  // A preview without storage renders the system theme.
+}
+
+const CASES = [
+  {
+    case_id: 'case-2149',
+    title: 'Seized laptop, Andheri',
+    description:
+      'A laptop and one USB stick seized under warrant 2149/26. Recover deleted ' +
+      'images from the stick; sanitize the loaner drive once it has been imaged.',
+    status: 'open',
+    created_at: '2026-09-05T17:58:02+00:00',
+    created_by: 'operator@ntro',
+    updated_at: '2026-09-05T18:39:02+00:00',
+    evidence_count: 2,
+    operation_count: 7,
+    report_count: 1,
+    recovered_artifact_count: 14,
+  },
+  {
+    case_id: 'case-2150',
+    title: 'Returned loaner drives',
+    description: 'Three drives returned from field kits, to be sanitized and reissued.',
+    status: 'open',
+    created_at: '2026-09-06T09:12:40+00:00',
+    created_by: 'operator@ntro',
+    updated_at: '2026-09-06T10:02:11+00:00',
+    evidence_count: 3,
+    operation_count: 3,
+    report_count: 0,
+    recovered_artifact_count: 0,
+  },
+]
 
 // ---------------------------------------------------------------------------
 // The server, replaced
@@ -90,8 +129,31 @@ window.fetch = (input: RequestInfo | URL): Promise<Response> => {
     )
   }
   if (url.startsWith('/platform')) return Promise.resolve(respond(PLATFORM))
-  // The app now opens on Cases; an empty list keeps that screen quiet.
-  if (url.startsWith('/cases')) return Promise.resolve(respond({ cases: [] }))
+  if (url.startsWith('/cases/')) {
+    const id = decodeURIComponent(url.split('/')[2].split('?')[0])
+    const found = CASES.find((item) => item.case_id === id) ?? CASES[0]
+    return Promise.resolve(
+      respond({
+        case: found,
+        evidence: [],
+        operations: [],
+        reports: [],
+        audit: {
+          chain_status: 'VALID',
+          chain_explanation: LEDGER.explanation,
+          first_broken_seq: null,
+          entry_count: LEDGER.entry_count,
+          events: [],
+        },
+      }),
+    )
+  }
+  if (url.startsWith('/cases')) return Promise.resolve(respond({ cases: CASES }))
+  if (url.startsWith('/ledger/entries')) {
+    return Promise.resolve(
+      respond({ entries: LEDGER.entries, entry_count: LEDGER.entry_count }),
+    )
+  }
   if (url.startsWith('/devices')) {
     return Promise.resolve(
       respond({
@@ -102,6 +164,9 @@ window.fetch = (input: RequestInfo | URL): Promise<Response> => {
         ],
       }),
     )
+  }
+  if (url.startsWith('/artifacts/')) {
+    return Promise.resolve(respond({ root: url.split('/')[2], count: 0, artifacts: [] }))
   }
   if (url.startsWith('/ledger/verify')) return Promise.resolve(respond(LEDGER))
   if (url.includes('/verify')) return Promise.resolve(respond(REPORT_VERIFICATION))
@@ -210,7 +275,7 @@ async function driveFiles(): Promise<void> {
     click('button.btn', 'Add')
     await settle()
   }
-  click('button.primary')
+  click('.page button.primary', 'Simulate')
   await settle()
   await settle()
   click('tr.is-openable', 'DSC_0491.NEF')
@@ -251,7 +316,26 @@ async function drivePlatform(): Promise<void> {
   await settle()
 }
 
+async function driveCases(): Promise<void> {
+  click('.nav-item', 'Cases')
+  await settle()
+  await settle()
+  click('tr.is-openable', 'case-2149')
+  await settle()
+  await settle()
+}
+
+async function driveHomeWithCase(): Promise<void> {
+  await driveCases()
+  click('.nav-item', 'Overview')
+  await settle()
+  await settle()
+}
+
 const DRIVERS: Record<string, () => Promise<void>> = {
+  home: async () => { await settle() },
+  'home-case': driveHomeWithCase,
+  cases: driveCases,
   devices: openDevices,
   unavailable: driveUnavailable,
   platform: drivePlatform,

@@ -1,12 +1,14 @@
-"""Draw the Sanctum shield icon at build time, in every format a package needs.
+"""Render the Sanctum app icon at build time, in every format a package needs.
 
-The mark is the same shield-and-cross the sidebar draws inline (App.tsx), in
-the interface's primary text colour on its base surface. Generated rather than
-committed as binaries so there is one source for it and nothing opaque in the
-repository.
+The one source is ``packaging/icon/sanctum-logo.png``: the Sanctum Forensics
+logo, 1024x1024, square, on its own pink field. Every platform's icon is
+scaled from it here, so a new logo is a one-file change and the packages never
+drift apart.
 
     python packaging/make_icons.py build/icons
-    -> sanctum.png (512), sanctum.ico (Windows), sanctum.icns (macOS)
+    -> sanctum.png (512)   Linux: .deb hicolor icon, AppImage
+       sanctum.ico         Windows: the executable and the installer
+       sanctum.icns        macOS: the .app bundle
 """
 
 from __future__ import annotations
@@ -14,55 +16,33 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
-BASE = (14, 18, 22, 255)  # --surface-base
-MARK = (230, 237, 243, 255)  # --text-primary
+SOURCE = Path(__file__).resolve().parent / "icon" / "sanctum-logo.png"
+
+ICO_SIZES = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
 
 
-def draw(size: int) -> Image.Image:
-    scale = size / 32
-    image = Image.new("RGBA", (size, size), BASE)
-    pen = ImageDraw.Draw(image)
-    width = max(1, round(2 * scale))
-    shield = [
-        (16, 4),
-        (26, 8),
-        (26, 17),
-        (24, 22),
-        (20, 26),
-        (16, 28),
-        (12, 26),
-        (8, 22),
-        (6, 17),
-        (6, 8),
-        (16, 4),
-    ]
-    pen.line(
-        [(x * scale, y * scale) for x, y in shield],
-        fill=MARK,
-        width=width,
-        joint="curve",
-    )
-    pen.line(
-        [(11 * scale, 16 * scale), (21 * scale, 16 * scale)], fill=MARK, width=width
-    )
-    pen.line(
-        [(16 * scale, 11 * scale), (16 * scale, 21 * scale)], fill=MARK, width=width
-    )
+def load() -> Image.Image:
+    """The source, as square RGBA at 1024x1024."""
+    image = Image.open(SOURCE).convert("RGBA")
+    if image.width != image.height:
+        raise SystemExit(
+            f"{SOURCE} is {image.width}x{image.height}; an icon must be square"
+        )
+    if image.width != 1024:
+        image = image.resize((1024, 1024), Image.Resampling.LANCZOS)
     return image
 
 
 def main(out: str) -> int:
     target = Path(out)
     target.mkdir(parents=True, exist_ok=True)
-    big = draw(512)
-    big.save(target / "sanctum.png")
-    big.save(
-        target / "sanctum.ico",
-        sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
-    )
-    big.save(target / "sanctum.icns")
+    source = load()
+    source.resize((512, 512), Image.Resampling.LANCZOS).save(target / "sanctum.png")
+    # Pillow scales the larger image down to each size itself.
+    source.save(target / "sanctum.ico", sizes=ICO_SIZES)
+    source.save(target / "sanctum.icns")
     return 0
 
 

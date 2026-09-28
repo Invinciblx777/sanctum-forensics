@@ -181,7 +181,7 @@ Name=Sanctum (dev)
 Comment=Sanctum Forensics desktop window, run from the source checkout
 Exec=/path/to/sanctum-forensics/.venv/bin/python -m api.desktop
 Path=/path/to/sanctum-forensics
-Icon=/path/to/sanctum-forensics/ui/public/favicon.svg
+Icon=/path/to/sanctum-forensics/packaging/icon/sanctum-logo.png
 Terminal=false
 Categories=Utility;
 ```

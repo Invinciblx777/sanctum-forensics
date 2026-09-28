@@ -2,13 +2,21 @@ import { useEffect, useState } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import {
   Blocks,
+  ChevronRight,
   Cpu,
   FileX2,
   FolderKanban,
+  Globe,
   HardDrive,
   LayoutDashboard,
+  Moon,
+  Plus,
+  Power,
   ScanSearch,
+  Server,
+  ShieldCheck,
   ShieldX,
+  Sun,
 } from 'lucide-react'
 import type { DeviceRow, PlatformStatus } from './lib/api'
 import { api } from './lib/api'
@@ -24,18 +32,17 @@ import Home from './screens/Home'
 import FileEraser from './screens/FileEraser'
 import Recovery from './screens/Recovery'
 import Sanitize from './screens/Sanitize'
+import logoUrl from './assets/sanctum-logo.png'
 
 /**
  * Navigation, in the order an investigation happens.
  *
- * Overview first: the four workflows and the open case's summary, so the tool
+ * Overview first: the three modules and the open case's summary, so the tool
  * explains itself in one screen. Then Cases, because everything else files
- * itself against one. The previous
- * order started at Devices, which is the order the *tool* was built in and not
- * the order the work is done in: an examiner opens a case, registers what was
- * seized, recovers from it or sanitizes it, and then reports. A sidebar that
- * opened on a list of block devices invited the operator to start wiping
- * before anything recorded why.
+ * itself against one. An examiner opens a case, registers what was seized,
+ * recovers from it or sanitizes it, and then reports. A sidebar that opened
+ * on a list of block devices invited the operator to start wiping before
+ * anything recorded why.
  */
 type ScreenId =
   | 'home'
@@ -61,7 +68,7 @@ interface NavEntry {
  */
 const NAV: { group: string; items: NavEntry[] }[] = [
   {
-    group: '',
+    group: 'Navigation',
     items: [
       { id: 'home', label: 'Overview', hint: 'The chain of custody, the three modules, the open case', icon: LayoutDashboard },
       { id: 'cases', label: 'Cases', hint: 'Evidence, operations, reports, audit', icon: FolderKanban },
@@ -90,16 +97,55 @@ const NAV: { group: string; items: NavEntry[] }[] = [
   },
 ]
 
-/** Two blocks and the link between them: one open, one sealed. */
-function BrandMark() {
-  return (
-    <svg className="brand-mark" width="34" height="34" viewBox="0 0 32 32" aria-hidden>
-      <rect x="1" y="1" width="30" height="30" rx="8" fill="var(--seal-surface)" stroke="var(--seal-rule)" />
-      <rect x="5.5" y="11.5" width="8" height="8" rx="2" fill="none" stroke="var(--seal)" strokeWidth="1.8" />
-      <rect x="18.5" y="11.5" width="8" height="8" rx="2" fill="var(--seal)" />
-      <path d="M13.5 15.5 H18.5" stroke="var(--seal)" strokeWidth="1.8" />
-    </svg>
-  )
+const SCREEN_GROUP: Record<ScreenId, { group: string; label: string }> = Object.fromEntries(
+  NAV.flatMap((section) =>
+    section.items.map((item) => [item.id, { group: section.group, label: item.label }]),
+  ),
+) as Record<ScreenId, { group: string; label: string }>
+
+type Theme = 'light' | 'dark'
+const THEME_KEY = 'sanctum.theme'
+
+/**
+ * Light or dark, remembered on this workstation only. A stored choice wins;
+ * with none, the system's preference. Storage can be unavailable (a locked-down
+ * profile), so every read and write is allowed to fail.
+ */
+function useTheme(): [Theme, (theme: Theme) => void] {
+  const [theme, setTheme] = useState<Theme>(() => {
+    try {
+      const stored = window.localStorage.getItem(THEME_KEY)
+      if (stored === 'light' || stored === 'dark') return stored
+    } catch {
+      // Storage refused: fall through to the system preference.
+    }
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  })
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+  }, [theme])
+  return [
+    theme,
+    (next: Theme) => {
+      setTheme(next)
+      try {
+        window.localStorage.setItem(THEME_KEY, next)
+      } catch {
+        // Not remembered; the choice still holds for this session.
+      }
+    },
+  ]
+}
+
+interface ChainState {
+  status: string
+  entry_count: number
+}
+
+function chainToneOf(chain: ChainState | null): string {
+  if (chain?.status === 'VALID') return 'seal'
+  if (chain?.status === 'INCONCLUSIVE_TAIL' || chain?.status === 'INCOMPLETE_TAIL') return 'warning'
+  return chain ? 'destructive' : 'unknown'
 }
 
 /** One claim in the status bar: a muted label, and the value in its state. */
@@ -123,8 +169,7 @@ function Pill({
 }
 
 /**
- * The four claims that have to be true at a glance, at the bottom of every
- * screen.
+ * The claims that have to be true at a glance, at the bottom of every screen.
  *
  * Each one is read from the server rather than asserted by this file:
  * integrity is the chain's verdict, evidence read-only is a property of the
@@ -134,29 +179,13 @@ function Pill({
  */
 function StatusStrip({
   selected,
-  refreshKey,
+  chain,
+  platform,
 }: {
   selected: DeviceRow | null
-  /** Changes on every navigation, so the chain line is re-read, not remembered. */
-  refreshKey: string
+  chain: ChainState | null
+  platform: PlatformStatus | null
 }) {
-  const [chain, setChain] = useState<{ status: string; entry_count: number } | null>(
-    null,
-  )
-  const [platform, setPlatform] = useState<PlatformStatus | null>(null)
-
-  useEffect(() => {
-    void api.platform().then(setPlatform).catch(() => setPlatform(null))
-  }, [])
-  useEffect(() => {
-    void api
-      .ledgerVerify()
-      .then((answer) =>
-        setChain({ status: answer.status, entry_count: answer.entry_count }),
-      )
-      .catch(() => setChain(null))
-  }, [refreshKey])
-
   const device = selected?.normalized
   const assessment = selected?.assessment
   const sanitization = assessment
@@ -167,15 +196,6 @@ function StatusStrip({
       : { word: assessment.headline.toLowerCase(), tone: assessment.headline === 'NOT AUTHORIZED' ? 'warning' : 'destructive' }
     : null
   const verification = assessment?.recommended?.verification
-
-  const chainTone =
-    chain?.status === 'VALID'
-      ? 'seal'
-      : chain?.status === 'INCONCLUSIVE_TAIL' || chain?.status === 'INCOMPLETE_TAIL'
-        ? 'warning'
-        : chain
-          ? 'destructive'
-          : 'unknown'
   const osName = (platform?.platform.os_name ?? 'not read').replace(/\s*\(.*\)$/, '')
 
   return (
@@ -212,7 +232,7 @@ function StatusStrip({
       <Pill
         label="Chain"
         value={chain?.status === 'VALID' ? `valid (${chain.entry_count})` : (chain?.status.toLowerCase() ?? 'not read')}
-        tone={chainTone}
+        tone={chainToneOf(chain)}
         title={chain ? `${chain.entry_count} chain entries` : 'chain not read'}
       />
       <Pill label="Evidence" value="read-only" tone="success" title="core/carve never opens O_RDWR" />
@@ -224,11 +244,22 @@ function Shell() {
   const [screen, setScreen] = useState<ScreenId>('home')
   const [selected, setSelected] = useState<DeviceRow | null>(null)
   const [health, setHealth] = useState<Record<string, unknown> | null>(null)
-  const { openCase } = useCase()
+  const [platform, setPlatform] = useState<PlatformStatus | null>(null)
+  const [chain, setChain] = useState<ChainState | null>(null)
+  const [theme, setTheme] = useTheme()
+  const { openCase, cases } = useCase()
 
   useEffect(() => {
     void api.health().then(setHealth).catch(() => setHealth(null))
+    void api.platform().then(setPlatform).catch(() => setPlatform(null))
   }, [])
+  // Re-read on every navigation, so the chain line is read, not remembered.
+  useEffect(() => {
+    void api
+      .ledgerVerify()
+      .then((answer) => setChain({ status: answer.status, entry_count: answer.entry_count }))
+      .catch(() => setChain(null))
+  }, [screen])
   // Each screen opens at its top. The scroll container is shared, so without
   // this a screen opened from the bottom of another started half-way down.
   useEffect(() => {
@@ -237,85 +268,161 @@ function Shell() {
   const buildCommit = String(
     (health?.build as { commit?: string } | undefined)?.commit ?? '',
   )
+  const toolVersion = (health?.tool_version as string | undefined) ?? 'offline'
+
+  // A count is drawn only once it has been read from the server.
+  const badges: Partial<Record<ScreenId, { value: number; lime?: boolean }>> = {
+    cases: cases.length ? { value: cases.length } : undefined,
+    audit: chain ? { value: chain.entry_count, lime: true } : undefined,
+  }
+  const where = SCREEN_GROUP[screen]
 
   return (
     <div className="shell">
       <nav className="sidebar" aria-label="Sanctum">
         <div className="brand">
-          <BrandMark />
-          <div className="col" style={{ gap: 2 }}>
-            <span className="brand-name">Sanctum</span>
-            <span className="brand-sub">Sanitize, recover, prove</span>
+          <img className="brand-logo" src={logoUrl} alt="Sanctum Forensics" width={150} height={93} />
+        </div>
+
+        <div className="side-scroll">
+          <div className="nav">
+            {NAV.map((section) => (
+              <div key={section.group} className="col" style={{ gap: 0 }}>
+                <span className="nav-group">{section.group}</span>
+                <div className="nav-list">
+                  {section.items.map((item) => {
+                    const Icon = item.icon
+                    const badge = badges[item.id]
+                    return (
+                      <button
+                        key={item.id}
+                        className={screen === item.id ? 'nav-item active' : 'nav-item'}
+                        aria-current={screen === item.id ? 'page' : undefined}
+                        onClick={() => setScreen(item.id)}
+                        title={item.hint}
+                      >
+                        <Icon className="icon" size={18} aria-hidden />
+                        <span className="nav-text">{item.label}</span>
+                        {badge && (
+                          <span className={badge.lime ? 'nav-badge is-lime' : 'nav-badge'}>
+                            {badge.value}
+                          </span>
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* The open case, always visible. Every screen files what it does
+              against this, so hiding it on one screen would mean an operator
+              could start a wipe without seeing which investigation it lands in. */}
+          <div className="side-case">
+            <span className="side-label">Open case</span>
+            <button
+              className={openCase ? 'case-badge is-open' : 'case-badge'}
+              onClick={() => setScreen('cases')}
+              title={openCase ? openCase.title : 'No case is open'}
+            >
+              <span className="case-avatar">
+                <FolderKanban className="icon" size={16} aria-hidden />
+              </span>
+              <span className="case-badge-text">
+                <span className="case-badge-id">
+                  {openCase ? openCase.case_id : 'none open'}
+                </span>
+                <span className="case-badge-label">
+                  {openCase ? openCase.title || 'Untitled case' : 'Operations file nowhere'}
+                </span>
+              </span>
+            </button>
+            <button className="side-more" onClick={() => setScreen('cases')}>
+              <ChevronRight className="icon" size={14} aria-hidden />
+              {cases.length ? `All ${cases.length} cases` : 'Open a case'}
+            </button>
           </div>
         </div>
 
-        {/* The open case, always visible. Every screen files what it does
-            against this, so hiding it on one screen would mean an operator
-            could start a wipe without seeing which investigation it lands in. */}
-        <button
-          className={openCase ? 'case-badge is-open' : 'case-badge'}
-          onClick={() => setScreen('cases')}
-          title={openCase ? openCase.title : 'No case is open'}
-        >
-          <span className="case-badge-label">Case</span>
-          <span className="case-badge-id">
-            {openCase ? openCase.case_id : 'none open'}
-          </span>
-        </button>
-
-        <div className="nav">
-          {NAV.map((section) => (
-            <div key={section.group || 'top'} className="col" style={{ gap: 2 }}>
-              {section.group && <span className="nav-group">{section.group}</span>}
-              {section.items.map((item) => {
-                const Icon = item.icon
-                return (
-                  <button
-                    key={item.id}
-                    className={screen === item.id ? 'nav-item active' : 'nav-item'}
-                    aria-current={screen === item.id ? 'page' : undefined}
-                    onClick={() => setScreen(item.id)}
-                    title={item.hint}
-                  >
-                    <Icon className="icon" size={18} aria-hidden />
-                    {item.label}
-                  </button>
-                )
-              })}
-            </div>
-          ))}
-        </div>
-
         <div className="sidebar-foot">
-          <span>{(health?.tool_version as string) ?? 'offline'}</span>
+          <div className="host-row">
+            <span className="host-avatar">
+              <Server className="icon" size={16} aria-hidden />
+            </span>
+            <span className="col" style={{ gap: 0, minWidth: 0 }}>
+              <span className="host-name">{toolVersion}</span>
+              <span className="host-sub">Listening on 127.0.0.1 only</span>
+            </span>
+            {health?.launcher === true && (
+              <button
+                className="rail-btn"
+                aria-label="Quit Sanctum"
+                title="Quit Sanctum"
+                onClick={() => {
+                  void api.quit().then(() =>
+                    document.body.replaceChildren(
+                      Object.assign(document.createElement('p'), {
+                        className: 'empty',
+                        textContent: 'Sanctum has stopped. You can close this window.',
+                      }),
+                    ),
+                  )
+                }}
+              >
+                <Power className="icon" size={15} aria-hidden />
+              </button>
+            )}
+          </div>
           {buildCommit && (
             <span className="mono" title={buildCommit}>
               build {buildCommit.slice(0, 12)}
             </span>
           )}
-          <span>Listening on 127.0.0.1 only</span>
-          {selected && <span className="mono" title={selected.device.path}>Selected {selected.device.path}</span>}
-          {health?.launcher === true && (
-            <button
-              className="btn"
-              onClick={() => {
-                void api.quit().then(() =>
-                  document.body.replaceChildren(
-                    Object.assign(document.createElement('p'), {
-                      className: 'empty',
-                      textContent: 'Sanctum has stopped. You can close this window.',
-                    }),
-                  ),
-                )
-              }}
-            >
-              Quit Sanctum
-            </button>
+          {selected && (
+            <span className="mono" title={selected.device.path}>
+              Selected {selected.device.path}
+            </span>
           )}
         </div>
       </nav>
 
-      <main className="main">
+      <div className="main">
+        <header className="topbar">
+          <span className="topbar-where">
+            {where.group !== 'Navigation' && (
+              <>
+                {where.group}
+                <ChevronRight className="icon" size={14} aria-hidden />
+              </>
+            )}
+            <strong>{where.label}</strong>
+          </span>
+          <div className="topbar-actions">
+            <button className="top-link" onClick={() => setScreen('audit')} title="Open the audit trail">
+              <ShieldCheck className="icon" size={17} aria-hidden />
+              <span className={`state-mark is-${chainToneOf(chain)}`}>
+                {chain?.status === 'VALID'
+                  ? 'Chain valid'
+                  : chain
+                    ? `Chain ${chain.status.toLowerCase().replace(/_/g, ' ')}`
+                    : 'Chain not read'}
+              </span>
+            </button>
+            <button className="top-link is-secondary" onClick={() => setScreen('platform')}>
+              <Cpu className="icon" size={17} aria-hidden />
+              Platform
+            </button>
+            <button className="btn primary" onClick={() => setScreen('cases')}>
+              <span className="btn-dot">
+                <Plus className="icon" size={13} strokeWidth={3} aria-hidden />
+              </span>
+              Open a case
+            </button>
+          </div>
+        </header>
+
+        <main className="page">
         {screen === 'home' && <Home onOpen={(target) => setScreen(target)} />}
         {screen === 'cases' && <Cases />}
         {screen === 'devices' && (
@@ -331,8 +438,37 @@ function Shell() {
         {screen === 'recovery' && <Recovery />}
         {screen === 'audit' && <Audit />}
         {screen === 'platform' && <Platform />}
-        <StatusStrip selected={selected} refreshKey={screen} />
-      </main>
+        </main>
+
+        <footer className="page-foot">
+          <span className="foot-item">
+            <Globe className="icon" size={15} aria-hidden />
+            Offline: no request leaves this host
+          </span>
+          <span className="foot-item">NIST SP 800-88 Rev. 2</span>
+          <span className="foot-item is-muted">{toolVersion}</span>
+          <div className="theme-toggle" role="group" aria-label="Theme">
+            <button
+              type="button"
+              aria-label="Light theme"
+              aria-pressed={theme === 'light'}
+              onClick={() => setTheme('light')}
+            >
+              <Sun className="icon" size={15} aria-hidden />
+            </button>
+            <button
+              type="button"
+              aria-label="Dark theme"
+              aria-pressed={theme === 'dark'}
+              onClick={() => setTheme('dark')}
+            >
+              <Moon className="icon" size={15} aria-hidden />
+            </button>
+          </div>
+        </footer>
+
+        <StatusStrip selected={selected} chain={chain} platform={platform} />
+      </div>
     </div>
   )
 }

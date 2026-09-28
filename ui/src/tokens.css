@@ -1,89 +1,136 @@
-/* Design tokens, v2 (2026-09-25). Defined once, consumed everywhere.
+/* Design tokens, v3 (2026-09-28). Defined once, consumed everywhere.
  *
- * This is an instrument read off a projector in a lit room, from ten feet, by
- * someone who did not build it. The constraints below are measurements rather
- * than taste, and the contrast ratio of each pair is recorded beside it so a
- * change that breaks one is visible in the diff.
+ * Neo-brutalism in the Sanctum palette: ink borders, hard offset shadows,
+ * flat fills, no blur. The brand colours are the logo's own:
  *
- * 1. Graphite, not black. A projector crushes the bottom of its range, so #000
- *    and the first surface above it arrive as the same colour. The base is
- *    lifted to #0E1215.
+ *   --pink       #f65ba2  primary: the brand field, primary actions, the
+ *                         active navigation item
+ *   --hot-pink   #f72191  secondary: the logo's star, the hover of a primary,
+ *                         the shadow colour in dark mode
+ *   --lime       #cdf546  text and marks on black and on pink
+ *   --white      #ffffff
  *
- * 2. Colour is meaning, never decoration. Four state hues and one more:
+ * The rules that survive from v2, because they are safety properties and not
+ * taste:
+ *
+ * 1. Colour is meaning, never decoration, for the four state hues and the seal.
  *    - destructive (red): data is about to be lost, or an operation was refused
  *    - warning (amber): a limitation, an inconclusive result
  *    - success (green): verified, complete
- *    - seal (violet): cryptographically attested - a chain entry, a signature,
- *      a hash that was checked. It marks what the maths vouches for, and
- *      nothing else borrows it: not links, not navigation, not focus.
- *    Navigation and primary actions are neutral bright.
+ *    - seal (violet): cryptographically attested. Nothing else borrows it.
+ *    Pink is the brand, not a state: it never marks a result, only an action
+ *    or where you are.
  *
- * 3. Colour never carries meaning alone. Every state has a word beside it, so
- *    the interface loses nothing in greyscale.
+ * 2. Colour never carries meaning alone. Every state has a word beside it.
  *
- * 4. One family, two widths. Atkinson Hyperlegible Next for reading and
- *    Atkinson Hyperlegible Mono for everything an operator compares or types
- *    character by character - serials, hashes, paths, offsets. The family was
- *    drawn so that 0/O, 1/l/I and similar pairs cannot be confused, which is
- *    exactly the failure that makes a person type the wrong serial. Both are
- *    bundled with the app (src/main.tsx); nothing is fetched.
+ * 3. Pink is never text on a light surface: #f65ba2 on white is 2.8:1. Pink
+ *    is a fill with ink text on it (7.6:1), and --pink-ink is the pink that
+ *    can be read as text (6.1:1 on white).
+ *
+ * 4. Three faces. Brick Sans for display, Croogla 4F for reading, and
+ *    Atkinson Hyperlegible Mono for every serial, hash, path and offset. The
+ *    mono stays because an operator types a device serial to confirm an
+ *    erase, and Brick and Croogla both draw 0/O and 1/l/I alike; the mono was
+ *    drawn so those pairs cannot be confused. All three are bundled; nothing
+ *    is fetched.
+ *
+ * Contrast ratios are recorded beside each text pair, on --surface-raised.
  */
 
-:root {
-  /* ---- surfaces ------------------------------------------------------- */
-  --surface-base: #0e1215; /* the page */
-  --surface-raised: #151b20; /* panels and cards */
-  --surface-overlay: #1b232a; /* hover, table heads, the modal head */
-  --surface-sunken: #0a0d10; /* inputs, logs, code: things typed or read into */
+@font-face {
+  font-family: 'Brick Sans';
+  src: url('./assets/fonts/BrickSans-Bold.otf') format('opentype');
+  /* One cut, declared across the whole weight range so the browser never
+     synthesises a heavier or lighter version of a face that has only one. */
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
 
-  /* ---- rules ---------------------------------------------------------- */
-  --rule: #243039; /* separation: decorative, 1.29:1 on raised */
-  --rule-strong: #5e707d; /* control borders: 3.38:1 on raised, clears 3:1 */
+@font-face {
+  font-family: 'Croogla 4F';
+  src: url('./assets/fonts/Croogla4F.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  /* ---- brand ---------------------------------------------------------- */
+  --pink: #f65ba2;
+  --hot-pink: #f72191;
+  --lime: #cdf546;
+  --white: #ffffff;
+  --black: #000000;
+  --pink-ink: #c2126e; /* pink that reads as text: 6.1:1 on white */
+  --pink-wash: #ffe3f0; /* a pink tint behind a selected row */
+
+  /* ---- surfaces ------------------------------------------------------- */
+  --surface-base: #fff4f9; /* the page: white with a breath of the brand */
+  --surface-raised: #ffffff; /* panels and cards */
+  --surface-overlay: #ffe9f3; /* hover, table heads */
+  --surface-sunken: #fdf1f6; /* inputs, logs, code */
+
+  /* The navigation rail is black in both themes, like the logo's field. */
+  --rail-bg: #000000;
+  --rail-fg: #ffffff;
+  --rail-muted: #9c9097;
+  --rail-hover: #1c1c1c;
+  --rail-active: #262626;
+
+  /* ---- ink ------------------------------------------------------------ */
+  --edge: #000000; /* every border that draws a shape */
+  --shadow-ink: #000000; /* the hard offset shadow */
+  --rule: #ecd3df; /* a quiet separator inside a panel */
+  --rule-strong: #000000; /* control borders */
 
   /* ---- text ----------------------------------------------------------- */
-  --text-primary: #e8edf0; /* 15.95:1 base, 14.72:1 raised - AAA */
-  --text-secondary: #aab6bf; /*  9.10:1 base,  8.39:1 raised - AAA */
-  --text-muted: #808e99; /*  5.60:1 base,  5.16:1 raised - AA  */
+  --text-primary: #000000; /* 21:1 */
+  --text-secondary: #3f3439; /* 11.6:1 */
+  --text-muted: #6d5f66; /* 6.1:1 */
+  --text-on-pink: #000000; /* 7.6:1 on --pink */
+  --text-on-black: #ffffff;
 
   /* ---- state ---------------------------------------------------------- */
-  --state-destructive: #ff6a58; /* 6.68:1 base; 6.33:1 on its surface */
-  --state-destructive-surface: #2a100c;
-  --state-warning: #f2b544; /* 10.28:1 base; 9.32:1 on its surface */
-  --state-warning-surface: #251a09;
-  --state-success: #4cc993; /* 9.04:1 base; 8.15:1 on its surface */
-  --state-success-surface: #0d2018;
-  --seal: #a594ff; /* 7.42:1 base; 6.62:1 on its surface */
-  --seal-surface: #1e1a33;
-  --seal-rule: #4b4380;
+  --state-destructive: #c8201a; /* 5.9:1 */
+  --state-destructive-fill: #e5322b; /* the destructive button's field */
+  --state-destructive-surface: #ffe4e1;
+  --state-warning: #8f5600; /* 5.8:1 */
+  --state-warning-fill: #ffc83d;
+  --state-warning-surface: #fff3d1;
+  --state-success: #0c7040; /* 6.3:1 */
+  --state-success-fill: #3fd489;
+  --state-success-surface: #dcf8e8;
+  --seal: #5a3cf0; /* 6.9:1 */
+  --seal-surface: #ece8ff;
+  --seal-rule: #5a3cf0;
 
-  /* ---- data hues ------------------------------------------------------- */
-  /* The media map's five byte classes. Categories, not states: none of these
-     is a state hue or near one, and the legend always names the class, so
-     the strip reads in greyscale by its labels. */
-  --map-zero: #2c3842;
-  --map-fill: #5a6975;
-  --map-text: #7fb6e6;
-  --map-structured: #cdb27c;
-  --map-entropy: #e08fd0;
+  /* ---- data hues ------------------------------------------------------ */
+  /* The media map's five byte classes. Categories, not states. */
+  --map-zero: #e9dde3;
+  --map-fill: #9c8c95;
+  --map-text: #3f8fd8;
+  --map-structured: #c49a3c;
+  --map-entropy: #d23fb0;
 
   /* ---- type ----------------------------------------------------------- */
-  /* Sized for 1366x768 on a projector, where a CSS pixel is roughly twice the
-     angular size it has on a laptop. */
-  --type-xs: 12px; /* column heads, footnotes */
-  --type-sm: 13px; /* secondary prose, the basis under a verdict */
-  --type-md: 14px; /* everything read as prose or table data */
-  --type-lg: 18px; /* screen titles, verdict words */
-  --type-xl: 24px; /* figures on the overview */
-  --type-2xl: 30px; /* the one headline figure per screen */
+  --type-xs: 12px;
+  --type-sm: 13px;
+  --type-md: 14px;
+  --type-lg: 18px;
+  --type-xl: 24px;
+  --type-2xl: 34px;
+  --type-display: 40px;
 
   --weight-normal: 400;
-  --weight-medium: 560;
+  --weight-medium: 500;
   --weight-bold: 700;
 
-  --font-sans: "Atkinson Hyperlegible Next Variable", ui-sans-serif, system-ui,
-    -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: "Atkinson Hyperlegible Mono Variable", ui-monospace,
-    "SFMono-Regular", "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  --font-display: 'Brick Sans', 'Croogla 4F', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Croogla 4F', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+    Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'Atkinson Hyperlegible Mono Variable', ui-monospace, 'SFMono-Regular',
+    'SF Mono', Menlo, Consolas, 'DejaVu Sans Mono', monospace;
 
   /* ---- space: a 4px grid ---------------------------------------------- */
   --space-1: 4px;
@@ -93,25 +140,73 @@
   --space-5: 20px;
   --space-6: 24px;
   --space-8: 32px;
+  --space-10: 40px;
 
   /* ---- shape ---------------------------------------------------------- */
-  /* Rounded by hierarchy, not one radius for everything. The destructive
-     button keeps --radius-none: it must not look like any other control. */
-  --radius-none: 1px;
-  --radius-sm: 5px; /* controls, chips */
-  --radius-md: 8px; /* panels */
-  --radius-lg: 12px; /* dialogs, the overview's chain */
+  /* Neo-brutal: square by default. The one soft corner is a chip, so a
+     status reads as a label and not as a button. */
+  --radius-none: 0;
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
+  --radius-pill: 999px;
 
-  /* Separation is a rule. The only shadow lifts a dialog off the page. */
-  --shadow-dialog: 0 18px 48px rgba(0, 0, 0, 0.55);
+  --border: 2px;
+  --border-thin: 1.5px;
+  --lift-sm: 3px 3px 0 var(--shadow-ink);
+  --lift: 4px 4px 0 var(--shadow-ink);
+  --lift-lg: 8px 8px 0 var(--shadow-ink);
+  --shadow-dialog: 10px 10px 0 var(--shadow-ink);
+
+  /* The press: a control moves into its own shadow. */
+  --press: 120ms cubic-bezier(0.2, 0.8, 0.2, 1);
 
   /* ---- structure ------------------------------------------------------ */
-  /* The state rail: a fixed gutter down the left edge of every row and railed
-     block, filled only when there is something to say, so state is read in
-     one vertical scan. */
-  --rail: 3px;
+  --rail: 4px;
   --gutter: 14px;
-  --sidebar: 232px;
+  --sidebar: 248px;
+  --topbar: 64px;
+
+  color-scheme: light;
+}
+
+/* Dark: the same shapes, drawn in light ink on a near-black plum, with the
+   hard shadow in hot pink. Chosen explicitly, or by the system when nothing
+   has been chosen. */
+:root[data-theme='dark'] {
+  --surface-base: #140d12;
+  --surface-raised: #1e161c;
+  --surface-overlay: #2a1f27;
+  --surface-sunken: #110b0f;
+  --pink-wash: #3a1729;
+  --pink-ink: #ff8cc2; /* 7.2:1 on raised */
+
+  --edge: #f4e7ee;
+  --shadow-ink: #f72191;
+  --rule: #3a2d35;
+  --rule-strong: #f4e7ee;
+  --rail-active: #2a1f27;
+
+  --text-primary: #fbf3f7; /* 16.4:1 */
+  --text-secondary: #d9cad2; /* 11.9:1 */
+  --text-muted: #a8959f; /* 6.4:1 */
+
+  --state-destructive: #ff6a58;
+  --state-destructive-fill: #e5322b;
+  --state-destructive-surface: #3a1210;
+  --state-warning: #f2b544;
+  --state-warning-surface: #33240b;
+  --state-success: #4cc993;
+  --state-success-surface: #0f2a1d;
+  --seal: #a594ff;
+  --seal-surface: #251f45;
+  --seal-rule: #a594ff;
+
+  --map-zero: #3a2d35;
+  --map-fill: #6f5f68;
+  --map-text: #7fb6e6;
+  --map-structured: #cdb27c;
+  --map-entropy: #e08fd0;
 
   color-scheme: dark;
 }
