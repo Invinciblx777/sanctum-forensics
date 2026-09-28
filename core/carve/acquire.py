@@ -57,6 +57,7 @@ from core.models import (
 __all__ = [
     "SourceReader",
     "FileSourceReader",
+    "is_win32_device_path",
     "AcquireOptions",
     "AcquisitionPhase",
     "acquire",
@@ -176,12 +177,49 @@ class SourceReader(Protocol):
     def close(self) -> None: ...
 
 
+#: Win32 device-namespace prefixes: ``\\.\PhysicalDriveN``, ``\\.\E:`` and the
+#: ``\\?\`` spellings of a drive or volume. ``\\?\C:\...`` is a long file path,
+#: not a device, and is not matched.
+_WIN32_DEVICE_PREFIXES = ("\\\\.\\", "//./")
+_WIN32_DEVICE_NAMES = ("physicaldrive", "volume{", "globalroot")
+
+
+def is_win32_device_path(path: Path | str) -> bool:
+    """Whether ``path`` names a Win32 raw device rather than a file.
+
+    Raw physical-device acquisition on Windows is not implemented: ``open()``
+    cannot address the device namespace, and no ``CreateFile`` path exists in
+    this build. Such a path is refused with that reason instead of the
+    misleading "not found" a plain ``exists()`` check produces.
+    """
+    text = os.fspath(path)
+    if text.startswith(_WIN32_DEVICE_PREFIXES):
+        return True
+    if text.startswith(("\\\\?\\", "//?/")):
+        rest = text[4:].lower()
+        return rest.startswith(_WIN32_DEVICE_NAMES) or (
+            len(rest) == 2 and rest[1] == ":"
+        )
+    return False
+
+
 class FileSourceReader:
     """A file or block device opened read-only."""
 
     def __init__(
         self, path: Path | str, *, sector_size: int = DEFAULT_SECTOR_BYTES
     ) -> None:
+        if is_win32_device_path(path):
+            raise EvidenceIntegrityError(
+                "raw physical-device acquisition is not implemented on Windows: "
+                f"{os.fspath(path)} is in the Win32 device namespace, which this "
+                "build cannot open",
+                remediation=(
+                    "Image the device with a hardware write blocker and a dedicated "
+                    "imager, or boot Linux and acquire it there, then acquire the "
+                    "resulting image file. Nothing was opened."
+                ),
+            )
         self.path = Path(path)
         if not self.path.exists():
             raise EvidenceIntegrityError(
@@ -587,9 +625,10 @@ def _open_source(
     source: SourceReader | Path | str, options: AcquireOptions
 ) -> tuple[SourceReader, Path | None, bool]:
     if isinstance(source, (str, Path)):
-        path = Path(source)
-        reader = FileSourceReader(path, sector_size=options.sector_size)
-        return reader, path, True
+        # The reader gets the caller's spelling: Path() on POSIX folds the
+        # ``//./`` device prefix to ``//``, and the device check must see it.
+        reader = FileSourceReader(source, sector_size=options.sector_size)
+        return reader, Path(source), True
     return source, None, False
 
 

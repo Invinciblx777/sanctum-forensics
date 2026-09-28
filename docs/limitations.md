@@ -922,8 +922,9 @@ VALIDATION). What that does not establish:
 
 - **Backup provenance is not proven.** The image is checked by SHA-256 at open
   and by size, mtime, ctime and inode at execution. Nothing proves it is a copy
-  of this device, it is not re-hashed at execution, and it has never been
-  restored: backup restoration is unvalidated.
+  of this device, and it is not re-hashed at execution. **Restoring a backup is
+  not implemented in the app.** The benchmark harness prints a manual `dd`
+  restore command, which has never been run.
 - **The helper's check and the first write are not proven race-free.** The
   helper re-reads the device and the backup immediately before entering the
   engine; between that check and the first write only the engine's own guards
@@ -999,10 +1000,12 @@ or a network share) is found only when its `Thumb::URI` names a file inside an
 erased folder. On macOS the Trash records where an item came from only in its
 `.DS_Store`, which is not parsed, so a same-name item is reported and never removed.
 
-**Not validated on a live desktop.** The sweep has run against synthetic home
-directories in the test suite and in a sandboxed browser run
-(`validation/features-2026-09-25/`), never against a real user's desktop session
-with its own thumbnailer, recent-files writers and Trash.
+**Removal not validated on a live desktop.** The sweep has run against synthetic
+home directories in the test suite and in a sandboxed browser run
+(`validation/features-2026-09-25/`). On a physical Windows 11 desktop (2026-09-27, build `437081e`) the sweep searched the machine's real `C:\$Recycle.Bin` and Recent shortcuts and found nothing, because the erased file had no traces (`validation/windows-hardware-2026-09-27-fixes/` §4). So the enumeration has
+run against one real desktop; removing a real trace from a live session, with
+its own thumbnailer, recent-files writers and Trash, has not been run on any
+platform, and no Linux or macOS desktop run is recorded.
 
 ## Media map
 

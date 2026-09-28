@@ -237,6 +237,22 @@ def test_acquire_rejects_a_missing_source(client: TestClient) -> None:
     assert answer.json()["detail"]["kind"] == "EvidenceIntegrityError"
 
 
+def test_acquire_refuses_a_win32_raw_device_as_not_implemented(
+    client: TestClient,
+) -> None:
+    # Raw physical-device acquisition on Windows is not implemented. The refusal
+    # must say so, not report the device as "not found".
+    answer = client.post(
+        "/jobs/acquire",
+        json={"source": "\\\\.\\PhysicalDrive2", "dest": "/tmp/out.dd"},
+    )
+    assert answer.status_code == 422
+    detail = answer.json()["detail"]
+    assert detail["kind"] == "EvidenceIntegrityError"
+    assert "not implemented on Windows" in detail["error"]
+    assert "not found" not in detail["error"]
+
+
 def test_carve_rejects_a_missing_image(client: TestClient) -> None:
     answer = client.post("/jobs/carve", json={"image": "/nope.dd"})
     assert answer.status_code == 422

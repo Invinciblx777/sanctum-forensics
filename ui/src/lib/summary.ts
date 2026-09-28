@@ -144,14 +144,21 @@ export interface JudgeSummary {
   limitations: string[]
 }
 
-/** Not validated on a physical device, from docs/validation/feature-matrix.md. */
+/**
+ * Not validated on a physical device, or not implemented at all, from
+ * docs/validation/evidence-reconciliation-2026-09-28/reconciliation.json. Each
+ * line names its state: "not run on hardware" and "not implemented" are
+ * different claims and are never merged.
+ */
 export const NOT_PHYSICALLY_VALIDATED: readonly string[] = [
-  'This release: no physical validation. Every physical run on record (2026-09-05, 2026-09-23) used an earlier build.',
+  'Physical runs on record: Linux 2026-09-05 and 2026-09-23 (earlier builds), Windows 11 2026-09-27. No macOS physical device run is recorded.',
   'Registered physical carve benchmark: not run. Benchmark figures are SYNTHETIC (three physical recovery passes are recorded separately).',
-  'Firmware Purge (ATA/NVMe sanitize, crypto erase): fixture-tested, never run on a drive.',
-  'HPA/DCO unlock: not run on hardware.',
-  'Backup restoration before a destructive write: never validated.',
-  'Whole-drive sanitization: Linux only.',
+  'Firmware Purge (ATA SANITIZE, ATA SECURITY ERASE, NVMe sanitize, NVMe format / crypto erase): implemented and fixture-tested, never run on a drive.',
+  'HPA/DCO unlock: implemented, not run on hardware.',
+  'Trace sweep: searched a real Windows 11 desktop (2026-09-27) and found nothing to remove; removing a real desktop trace has not been run.',
+  'Backup restoration: not implemented in the app. The benchmark prints a manual restore command that has never been run.',
+  'Whole-drive sanitization: Linux only. Not implemented on Windows or macOS.',
+  'Raw physical-device acquisition on Windows: not implemented; refused with the reason.',
 ]
 
 export const SAFETY_LINES: readonly string[] = [
