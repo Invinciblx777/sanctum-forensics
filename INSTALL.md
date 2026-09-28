@@ -320,7 +320,7 @@ python -m api.desktop       # opens a native window
 - **External disks: whole-drive clear and raw acquisition need root.** They
   go through `/dev/rdiskN`, which macOS opens for root only; without it the
   capabilities read **REQUIRES PRIVILEGE**. The in-app advice says to start
-  the Sanctum helper with `sudo`. Note that the Linux socket daemon
+  Sanctum itself with `sudo`. Note that the Linux socket daemon
   (`python -m helper`) does not start on macOS — it exits with *"The
   privileged helper is Linux-only"* — so in this build the raw work runs in
   the Sanctum server process itself, and that process must be the one started

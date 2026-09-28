@@ -68,7 +68,7 @@ is right.
 | ATA SECURITY ERASE UNIT | DEVICE-DEPENDENT | NOT IMPLEMENTED | PLATFORM-LIMITED |
 | NVMe Sanitize | DEVICE-DEPENDENT | DEVICE-DEPENDENT (`IOCTL_STORAGE_REINITIALIZE_MEDIA`) | PLATFORM-LIMITED |
 | NVMe Format NVM | DEVICE-DEPENDENT | PLATFORM-LIMITED | PLATFORM-LIMITED |
-| Cryptographic erase | DEVICE-DEPENDENT (ATA crypto scramble or TCG Opal revert) | DEVICE-DEPENDENT (ATA crypto scramble or NVMe Sanitize crypto) | PLATFORM-LIMITED (Erase All Content and Settings is recommended, not performed) |
+| Cryptographic erase | DEVICE-DEPENDENT (ATA crypto scramble; a TCG Opal drive is recognised but not reverted: no PSID input) | DEVICE-DEPENDENT (ATA crypto scramble or NVMe Sanitize crypto) | PLATFORM-LIMITED (Erase All Content and Settings is recommended, not performed) |
 | Raw physical-device acquisition | SUPPORTED (usb-flash) | IMPLEMENTED / UNVALIDATED (`GENERIC_READ` only; no software write block exists, and the report says so) | IMPLEMENTED / UNVALIDATED (external disks; internal Apple storage not offered) |
 | Logical volume acquisition | IMPLEMENTED / UNVALIDATED | IMPLEMENTED / UNVALIDATED | IMPLEMENTED / UNVALIDATED |
 | HPA / DCO discovery | DEVICE-DEPENDENT | DEVICE-DEPENDENT | PLATFORM-LIMITED |
@@ -114,8 +114,9 @@ present in each package and binds on its own OS, and runs the read-only native
 smoke described above. None of that is physical validation.
 
 Separately, on 2026-09-27 a human installed the package on a physical Windows
-11 machine and ran it against a real USB stick: device discovery, the
-mounted-device refusal, and file/folder erase → verify → certificate
+11 machine: device discovery and the mounted-device refusal against a real
+USB stick, and file/folder erase → verify → certificate on the host system
+disk (the stick was not written)
 ([`validation/windows-hardware-2026-09-27-fixes/`](validation/windows-hardware-2026-09-27-fixes/README.md)).
 At that date Windows had no whole-drive or raw-acquisition engine; both have
 since been implemented and neither has run on a physical device. The
@@ -138,10 +139,10 @@ Row-by-row physical breakdown:
 The preparation step is never part of an erase: it is its own call, dry run by
 default, and a real run needs the serial typed by hand.
 
-The app's *Filesystems* table (`core/platform/filesystems.py`) still derives
-its whole-drive cell from the older rule and shows it UNSUPPORTED off Linux.
-The resolver, and the matrix generated from it, are authoritative for
-whole-drive state.
+The app's *Filesystems* table (`core/platform/filesystems.py`) gives one
+platform-wide word for whole-drive clear: SUPPORTED on Linux, UNVERIFIED on
+Windows and macOS. Per-device answers come from the resolver, and the matrix
+generated from it is authoritative for whole-drive state.
 
 ## Filesystems
 
@@ -208,7 +209,7 @@ limitation is never left out.
 | | Linux | Windows | macOS |
 |---|---|---|---|
 | UI and API | unprivileged, loopback only | unprivileged, loopback only | unprivileged, loopback only |
-| Raw-device work (whole-drive clear, device sanitize, raw acquisition, HPA/DCO, restore) | separate root helper over a `SO_PEERCRED`-authenticated Unix socket | an elevated process: **Run as administrator**. The Windows build has no separate helper | root: the adapter's advice is to start the Sanctum helper with `sudo`. The socket helper's `SO_PEERCRED` peer check is Linux-only, so on macOS privilege is the process's own effective uid |
+| Raw-device work (whole-drive clear, device sanitize, raw acquisition, HPA/DCO, restore) | separate root helper over a `SO_PEERCRED`-authenticated Unix socket | an elevated process: **Run as administrator**. The Windows build has no separate helper | root: the adapter's advice is to start Sanctum itself with `sudo`. The socket helper's `SO_PEERCRED` peer check is Linux-only, so on macOS privilege is the process's own effective uid |
 | Without it | the capability reads REQUIRES PRIVILEGE | the capability reads REQUIRES PRIVILEGE | the capability reads REQUIRES PRIVILEGE |
 
 The app never elevates itself. The Windows installer is per-user by default

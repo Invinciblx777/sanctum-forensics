@@ -84,8 +84,8 @@ container on it, a folder erase completes and its certificate verifies.)
    APFS container on this disk*; internal Apple storage is never raw-written
    or imaged, and Apple's own path is named (*Erase All Content and
    Settings*). The stick listed.
-4. Stick → whole-drive clear reads **REQUIRES PRIVILEGE** until the helper is
-   started with `sudo`, and **BLOCKED FOR SAFETY** while a volume is mounted.
+4. Stick → whole-drive clear reads **REQUIRES PRIVILEGE** until Sanctum itself
+   is started with `sudo`, and **BLOCKED FOR SAFETY** while a volume is mounted.
    Show the *Prepare* dry run only. No write on stage.
 5. **File eraser** on the stick; certificate.
 

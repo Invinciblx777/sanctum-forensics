@@ -1403,10 +1403,11 @@ The platform offers no path for this operation on this target. Windows and
 macOS now have a whole-drive clear engine, so for those the message and its
 remediation come from the adapter: on Windows *"Run Sanctum as Administrator.
 Take the disk offline first ..."*, on macOS *"External disks: unmount every
-volume (Devices > Prepare, or diskutil unmountDisk) and run the helper with
+volume (Devices > Prepare, or diskutil unmountDisk) and start Sanctum with
 sudo. Internal Mac storage: use ... Erase All Content and Settings"*. The
-generic remediation *"Run this on Linux. On Windows use WSL2 ..."* is only the
-fallback for a code path that supplies none.
+generic remediation *"Open the Platform screen: it names, per capability, the
+platforms and device classes where this runs ..."* is only the fallback for a
+code path that supplies none.
 *Do:* Follow the remediation shown. File and folder erasure remains available
 on every platform.
 

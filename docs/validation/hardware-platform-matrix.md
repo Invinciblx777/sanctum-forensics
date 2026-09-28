@@ -55,7 +55,7 @@ hardware result for that device class is recorded.
 |---|---|---|
 | Linux, USB flash (TransMemory 7.76 GB), Clear by overwrite | **VALIDATED** | `docs/validation/hardware.md`: three Phase A runs, the third (2026-09-05) clean |
 | Linux, SATA/NVMe internal, Clear | NOT YET VALIDATED | refused on this host: internal disks hold the running system |
-| Linux, firmware Purge (ATA SANITIZE, SECURITY ERASE, NVMe sanitize/format, Opal) | NOT YET VALIDATED (DEVICE-DEPENDENT) | selected and dispatched in code; no drive has executed it; refused behind USB and card-reader bridges |
+| Linux, firmware Purge (ATA SANITIZE, SECURITY ERASE, NVMe sanitize/format) | NOT YET VALIDATED (DEVICE-DEPENDENT) | selected and dispatched in code; no drive has executed it; refused behind USB and card-reader bridges. A TCG Opal drive is recognised but not reverted: the build has no PSID input |
 | Linux, HPA/DCO modification on a drive that has one | NOT YET VALIDATED (DEVICE-DEPENDENT) | guarded workflow (`core/device/hidden_area_workflow.py`): HPA only, volatile SET MAX by default, DCO never modified; an ordinary erase no longer changes the HPA. No device with an HPA was available |
 | Windows, whole-drive clear | NOT YET VALIDATED (IMPLEMENTED / UNVALIDATED) | `core/erase/blockclear.py` over `\\.\PhysicalDriveN`, bound to disk number, serial and length; disk must be offline. Adapter doubles only |
 | Windows, ATA SANITIZE / NVMe Sanitize (block, crypto) | NOT YET VALIDATED (DEVICE-DEPENDENT) | offered only when IDENTIFY reports it; never run on a drive |
@@ -70,7 +70,8 @@ hardware result for that device class is recorded.
 
 | Target | State | Evidence |
 |---|---|---|
-| Linux, host disks + USB stick | **VALIDATED** | `scripts/platform_smoke.py` on the development host and in CI |
+| Linux, USB stick | **VALIDATED** (`usb-flash`, 2026-09-05) | `docs/validation/hardware.md` A.1 |
+| Linux, host disks | **CI-VALIDATED** | `scripts/platform_smoke.py` on the development host and in CI; no physical record |
 | Windows, runner's own disks | **CI-VALIDATED** | `platform-smoke-Windows.json`, `platform-ci` |
 | Windows, physical machine with removable media | **VALIDATED** (2026-09-27) | installed package on a physical Windows 11 machine found 3 real devices including a USB stick, and correctly assessed the mounted one NOT AVAILABLE; [`windows-hardware-2026-09-27-fixes/`](windows-hardware-2026-09-27-fixes/README.md) |
 | macOS, runner's own APFS disks | **CI-VALIDATED** | `platform-smoke-macOS.json`, `platform-ci` |
@@ -80,7 +81,7 @@ hardware result for that device class is recorded.
 
 | Target | State | Evidence |
 |---|---|---|
-| Linux, ext4/xfs/tmpfs | **VALIDATED** | suite plus packaged smoke on the development host |
+| Linux, ext4/xfs/tmpfs | **CI-VALIDATED** (IMPLEMENTED / UNVALIDATED physically) | suite plus packaged smoke on the development host and in CI; no `physical_validations` record |
 | Windows, NTFS on the runner | **CI-VALIDATED** | `validation-Windows.json` |
 | Windows, real junction / reparse point | **CI-VALIDATED** | `tests/platform/test_windows_filesystem.py` creates a real junction on the runner |
 | Windows, real machine, NTFS via the installed package | **VALIDATED** (2026-09-27) | erase → read-back verify → certificate issue → certificate verify, real, in a scratch directory on the machine's own system disk; trace sweep enumeration confirmed real (searched this machine's actual Recycle Bin and Recent shortcuts, found nothing to remove); [`windows-hardware-2026-09-27-fixes/`](windows-hardware-2026-09-27-fixes/README.md) |

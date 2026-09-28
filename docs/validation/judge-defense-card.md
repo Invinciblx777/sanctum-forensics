@@ -51,10 +51,10 @@ BLOCKED at gate 1. What changed and how a row becomes validated:
 This section supersedes every "none" or "nothing" said about physical
 validation below; it does not change any row's evidence or wording, which
 stays as it was written for the `76dde42` release. A separate, later run
-installed the packaged app on a physical Windows 11 machine and drove it
-against a real USB stick: device discovery, the mounted-device refusal, and
-a file/folder erase → verify → certificate all ran on real hardware, 23 of
-23 packaged checks. That first run, at commit `2d00526`, is preserved at
+installed the packaged app on a physical Windows 11 machine: device
+discovery and the mounted-device refusal against a real USB stick, and a
+file/folder erase → verify → certificate on the host system disk (the stick
+was not written), 23 of 23 packaged checks. That first run, at commit `2d00526`, is preserved at
 [`windows-hardware-2026-09-27/`](windows-hardware-2026-09-27/README.md).
 
 Validating it end to end found two real defects no prior CI run or packaged
