@@ -548,8 +548,20 @@ def trace_section(sweep: dict[str, Any] | None) -> dict[str, Any]:
         "found": len(traces),
         "exact": sum(1 for trace in traces if trace.get("exact")),
         "removed": sum(1 for trace in traces if trace.get("removed")),
+        "report_only": sum(1 for trace in traces if trace.get("report_only")),
         "content_copies": sum(1 for trace in traces if trace.get("content_copy")),
         "searched": _or_none_recorded(list(sweep.get("searched") or [])),
+        "inspected": _rows_or_none_recorded(
+            [
+                {
+                    "place": str(entry.get("label", "")),
+                    "path": str(entry.get("location", "")),
+                    "outcome": str(entry.get("outcome", "")),
+                    "detail": str(entry.get("detail") or ""),
+                }
+                for entry in list(sweep.get("inspected") or [])
+            ]
+        ),
         "not_searched": _or_none_recorded(list(sweep.get("not_searched") or [])),
         "unreadable": _or_none_recorded(list(sweep.get("notes") or [])),
         "note": (
@@ -560,7 +572,10 @@ def trace_section(sweep: dict[str, Any] | None) -> dict[str, Any]:
             "steps as a target, so the residual findings above apply to it "
             "too; a list entry is cut out and the list overwritten in place. A "
             "running application that holds the list in memory can write an "
-            "entry back."
+            "entry back. A trace tied on evidence but held inside a file another "
+            "process owns (a macOS shared file list, the Quick Look cache, a "
+            "jump list that also names other files, a Trash .DS_Store) is "
+            "reported only, with the reason, and not edited."
         ),
         "items": _rows_or_none_recorded(
             [
@@ -571,9 +586,13 @@ def trace_section(sweep: dict[str, Any] | None) -> dict[str, Any]:
                     "evidence": str(trace.get("evidence", "")),
                     "content_copy": bool(trace.get("content_copy")),
                     "exact": bool(trace.get("exact")),
-                    "action": str(trace.get("action") or "none"),
+                    "action": str(
+                        trace.get("action")
+                        or ("reported only" if trace.get("report_only") else "none")
+                    ),
                     "removed": bool(trace.get("removed")),
                     "error": str(trace.get("error") or ""),
+                    "report_only_reason": str(trace.get("report_only_reason") or ""),
                 }
                 for trace in traces
             ]

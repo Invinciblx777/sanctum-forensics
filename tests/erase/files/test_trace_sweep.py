@@ -616,7 +616,7 @@ def test_a_windows_recent_shortcut_is_matched_by_its_link_target(
 def test_the_macos_trash_is_reported_and_never_removed(
     tmp_path: Path, photo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Where an item came from is only in .DS_Store, so a name match is a maybe."""
+    """With no put-back record in a .DS_Store, a name match is only a maybe."""
     trash = tmp_path / "mac-home" / ".Trash"
     trash.mkdir(parents=True)
     same_name = trash / photo.name
@@ -629,8 +629,10 @@ def test_the_macos_trash_is_reported_and_never_removed(
     (trace,) = sweep.traces
     assert trace.kind == "POSSIBLE_COPY"
     assert trace.exact is False and trace.removed is False
+    assert "no put-back record" not in trace.evidence
+    assert "the Trash has no .DS_Store" in trace.evidence
     assert same_name.exists()
-    assert any("QuickLook" in line for line in sweep.not_searched)
+    assert any("Spotlight" in line for line in sweep.not_searched)
 
 
 # --------------------------------------------------------------------------
@@ -729,7 +731,10 @@ def test_locations_follow_the_xdg_base_directories() -> None:
     env = {"XDG_CACHE_HOME": "/fast/cache", "XDG_DATA_HOME": "/data"}
     where = traces.locations_for("linux", env, Path("/home/asha"), uid=1000)
     assert where.thumbnail_roots[0] == Path("/fast/cache/thumbnails")
-    assert where.recent_lists == (Path("/data/recently-used.xbel"),)
+    assert where.recent_lists == (
+        Path("/data/recently-used.xbel"),
+        Path("/home/asha/.recently-used.xbel"),
+    ), "GTK 3 and 4 write the first; GTK 2 wrote the second"
     assert where.home_trash == Path("/data/Trash")
 
     relative = traces.locations_for("linux", {"XDG_DATA_HOME": "rel"}, Path("/h"))

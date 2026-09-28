@@ -220,8 +220,10 @@ def _trace_words(traces: dict[str, Any]) -> str:
     if not found:
         return "none found"
     removed = int(traces.get("removed") or 0)
+    report_only = int(traces.get("report_only") or 0)
     left = found - removed
-    return f"{found} found, {removed} removed" + (f", {left} left" if left else "")
+    words = f"{found} found, {removed} removed" + (f", {left} left" if left else "")
+    return words + (f" ({report_only} report-only)" if report_only else "")
 
 
 def _facts(

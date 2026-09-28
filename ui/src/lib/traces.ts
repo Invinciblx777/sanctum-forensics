@@ -2,7 +2,8 @@
  * The trace sweep, in words.
  *
  * After a file erase the server looks for what the desktop kept of the files:
- * thumbnails, recent-files entries, Trash and Recycle Bin copies. Each trace
+ * thumbnails, recent-files entries, Trash and Recycle Bin copies, jump lists
+ * and the Quick Look cache. Each trace
  * comes back with the evidence that ties it to an erased path and what became
  * of it. This file turns that into the words and tones the File eraser shows.
  */
@@ -22,6 +23,8 @@ const KIND_WORDS: Record<string, string> = {
   RECYCLE_BIN_RECORD: 'Recycle Bin record',
   RECENT_SHORTCUT: 'Recent shortcut',
   POSSIBLE_COPY: 'Possible copy',
+  JUMP_LIST_ENTRY: 'Jump-list entry',
+  QUICKLOOK_THUMBNAIL: 'Quick Look thumbnail',
 }
 
 /** A kind in words. A kind this file does not know keeps its own name. */
@@ -39,6 +42,7 @@ export function traceOutcome(
 ): { word: string; tone: TraceTone } {
   if (trace.removed) return { word: trace.action || 'removed', tone: 'success' }
   if (!trace.exact) return { word: 'left for you to judge', tone: 'warning' }
+  if (trace.report_only) return { word: 'reported, not edited', tone: 'warning' }
   if (trace.error) return { word: 'not removed', tone: 'destructive' }
   if (dryRun) return { word: 'would be removed', tone: 'unknown' }
   return { word: 'not removed', tone: 'warning' }
@@ -51,9 +55,13 @@ export function traceSummary(sweep: TraceSweep, dryRun: boolean): string {
   if (!found) {
     return `Nothing found in the ${places} place${places === 1 ? '' : 's'} searched.`
   }
-  const exact = sweep.traces.filter((trace) => trace.exact).length
+  const exact = sweep.traces.filter((trace) => trace.exact && !trace.report_only).length
+  const reportOnly = sweep.traces.filter((trace) => trace.report_only).length
   if (dryRun) {
-    return `${found} found. A real erase removes the ${exact} tied to these files on evidence; nothing was touched.`
+    const reported = reportOnly
+      ? ` ${reportOnly} more ${reportOnly === 1 ? 'is' : 'are'} tied on evidence but only reported.`
+      : ''
+    return `${found} found. A real erase removes the ${exact} tied to these files on evidence; nothing was touched.${reported}`
   }
   const removed = sweep.traces.filter((trace) => trace.removed).length
   const left = found - removed

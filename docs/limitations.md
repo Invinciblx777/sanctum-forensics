@@ -989,16 +989,46 @@ Destroy for that media is the facility's determination, not the tool's.
 ## Trace sweep
 
 The sweep after a file erase searches the desktop's shared thumbnail cache,
-recent-files lists (GTK and KDE), the home Trash, the Trash on the file's volume,
-the Windows Recycle Bin and Recent shortcuts, and the macOS Trash. It does not
-search application caches and history (office suites, viewers, browsers), search
-and activity indexes (Tracker, the KDE activity database, Windows Search,
-Spotlight), jump lists, `thumbcache_*.db`, the QuickLook cache, snapshots, backups
-or sync clients; every report lists these as not searched. A thumbnail made under a
-URI other than the one the file was erased by (through a link, another mount point
-or a network share) is found only when its `Thumb::URI` names a file inside an
-erased folder. On macOS the Trash records where an item came from only in its
-`.DS_Store`, which is not parsed, so a same-name item is reported and never removed.
+recent-files lists (GTK 2, 3 and 4, and KDE), the home Trash, the Trash on the
+file's volume (`.Trash-$uid`, or `.Trash/$uid` when `.Trash` is sticky and not a
+link), the Windows Recycle Bin, Recent shortcuts and jump lists
+(AutomaticDestinations and CustomDestinations), and on macOS the Trash (home and
+per-volume `.Trashes/$uid`), the recent items (`.sfl2`/`.sfl3` shared file lists)
+and the Quick Look thumbnail cache. Every report lists each place inspected with
+its outcome (searched, absent, unreadable, permission-denied). It does not search
+application caches and history (office suites, viewers, browsers), search and
+activity indexes (Tracker, the KDE activity database, Windows Search, Spotlight),
+snapshots, backups or sync clients; every report lists these as not searched.
+
+- `thumbcache_*.db` is listed as not searched: its entries are keyed by a cache
+  hash, not the file path, so none can be tied to an erased path on evidence.
+- A macOS Trash item is removed only when its put-back record (`ptbL`/`ptbN` in
+  the Trash's `.DS_Store`) names the erased path. A same-name item with no record,
+  or with a record naming another path, is reported as a possible copy and never
+  removed. The record itself stays in the `.DS_Store`, which Finder owns; it
+  names the path, not the content. Put-back paths are compared literally: a
+  firmlink or symlinked alias of the erased path is not resolved.
+- A macOS recent item, a Quick Look cache entry, a jump-list entry in a jump list
+  that also names other files, and any custom jump-list entry are tied on
+  evidence but **reported only**, with the reason: each sits in a file a daemon
+  or the shell owns and rewrites, and editing it in place could corrupt the other
+  entries. A jump list every entry of which names an erased path is erased as a
+  whole file. `qlmanage -r cache` resets the Quick Look cache by deleting, not
+  overwriting, its files.
+- A recent item's bookmark is matched only when its whole path decodes; a
+  bookmark that holds only a file ID or volume-relative data is not matched. The
+  Quick Look index is read immutable, so an entry still only in
+  `index.sqlite-wal` is not seen (the report notes when such a log exists), and a
+  cache whose schema is not the known `files(folder, file_name)` layout is listed
+  as not searched with that reason.
+
+A thumbnail made under a URI other than the one the file was erased by (through a
+link, another mount point or a network share) is found only when its `Thumb::URI`
+names a file inside an erased folder.
+
+The `.DS_Store`, bookmark, shared-file-list and jump-list parsers are tested
+against artifacts built byte for byte from their format descriptions, not against
+files taken from a real Mac or Windows profile.
 
 **Removal not validated on a live desktop.** The sweep has run against synthetic
 home directories in the test suite and in a sandboxed browser run

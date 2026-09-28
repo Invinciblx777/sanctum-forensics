@@ -522,6 +522,9 @@ function TracePanel({ sweep, dryRun }: { sweep: TraceSweep; dryRun: boolean }) {
                     <div className="col tight">
                       <FilePath value={trace.location} />
                       <span className="note">{trace.evidence}</span>
+                      {trace.report_only_reason && (
+                        <span className="note">{trace.report_only_reason}</span>
+                      )}
                       {trace.error && <span className="note">{trace.error}</span>}
                     </div>
                   </td>
@@ -540,9 +543,14 @@ function TracePanel({ sweep, dryRun }: { sweep: TraceSweep; dryRun: boolean }) {
         </summary>
         <div className="tech-body">
           <ul className="limitations mono">
-            {sweep.searched.map((place) => (
-              <li key={place}>{place}</li>
-            ))}
+            {sweep.inspected && sweep.inspected.length > 0
+              ? sweep.inspected.map((place) => (
+                  <li key={`${place.label}|${place.location}`}>
+                    {place.label}: {place.location} ({place.outcome})
+                    {place.detail ? ` ${place.detail}` : ''}
+                  </li>
+                ))
+              : sweep.searched.map((place) => <li key={place}>{place}</li>)}
           </ul>
           <strong>Not searched on this platform</strong>
           <ul className="limitations">

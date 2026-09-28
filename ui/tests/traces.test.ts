@@ -59,3 +59,17 @@ test('the summary counts what was found, removed and left', () => {
   )
   assert.match(traceSummary(sweep([trace(), trace({ exact: false })]), true), /removes the 1 tied/)
 })
+
+test('a trace tied on evidence but held in a daemon-owned file is reported, not removed', () => {
+  const reported = trace({
+    kind: 'QUICKLOOK_THUMBNAIL',
+    report_only: true,
+    report_only_reason: 'The Quick Look cache is a shared database owned by a system daemon.',
+  })
+  assert.equal(traceKind('JUMP_LIST_ENTRY'), 'Jump-list entry')
+  assert.deepEqual(traceOutcome(reported, false), { word: 'reported, not edited', tone: 'warning' })
+  assert.deepEqual(traceOutcome(reported, true), { word: 'reported, not edited', tone: 'warning' })
+  const summary = traceSummary(sweep([trace(), reported]), true)
+  assert.match(summary, /removes the 1 tied/)
+  assert.match(summary, /1 more is tied on evidence but only reported/)
+})
