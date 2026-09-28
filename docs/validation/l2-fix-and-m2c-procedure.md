@@ -6,8 +6,7 @@ unchanged; this file is a new record.
 
 ## Security property: API CANNOT BYPASS WORKFLOW SAFETY GATES
 
-`POST /jobs/erase-drive` (and `POST /jobs/{id}/resume`) with `dry_run=false`
-refuses unless an authorization record exists that `core.workflow.derive`
+`POST /jobs/erase-drive` (and `POST /jobs/{id}/resume`) refuses unless an authorization record exists that `core.workflow.derive`
 places at `PLAN_READY` from a fresh read of the device, and
 `core.workflow.advance(PLAN_READY, EXECUTING)` accepts. The record is built by
 `POST /workflow/erase-drive` (read-only backup image check) and
@@ -47,8 +46,9 @@ writing, that those files are disposable. Filenames are not evidence.
 
 1. Person confirms disposability and records who, when.
 2. Read-only: `sha256sum` each file and record the list.
-3. Dry run: `POST /jobs/erase-files` with `dry_run=true`; confirm the notice and
-   that hashes are unchanged.
+3. *(Superseded 2026-09-28: there is no dry-run mode.)* Instead, send
+   `POST /jobs/erase-files` without `confirm` and confirm it is refused (409)
+   and that the hashes are unchanged.
 4. Only then a real erase of a single confirmed file, `confirm=true`.
 5. Verify read-back, the certificate, and `sectors_written` deltas.
 Flash wear levelling means an overwrite is a Clear-level claim at best.

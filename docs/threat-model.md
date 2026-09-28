@@ -95,8 +95,9 @@ A seized disk is filled by an adversary. Every parser and decoder reads it.
 
 - Only the helper holds raw device access. The API never imports device or
   drive-erase modules directly (`docs/privilege-boundary.md`).
-- Destructive gates — dry-run default and typed serial — are re-checked inside
-  the helper against the serial it re-reads, so a stale or hostile client
+- Destructive gates — the one-use authorization and the typed serial — are
+  re-checked inside the helper against the serial it re-reads, and a request
+  that still carries a removed `dry_run`/`simulation` switch is refused there, so a stale or hostile client
   cannot authorise a wipe (`helper/daemon.py:_stream_run_erase`). Resume keeps
   both gates (`tests/api/test_resume.py`). A real erase also has its authorization
   re-checked by the helper against fresh reads at the write seam

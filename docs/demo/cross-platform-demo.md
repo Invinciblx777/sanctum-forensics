@@ -15,8 +15,9 @@ what changed on 2026-09-28 is in
 **SUPPORTED** means a physical run of that capability on that device class is
 recorded; **IMPLEMENTED / UNVALIDATED** means the code runs and has only been
 tested synthetically or against adapter doubles. Say which one is on screen.
-Only the Linux section below writes to a device; the Windows and macOS
-sections stop at dry runs and refusals.
+Only the Linux section below writes to a device, and only to the disposable
+test stick; the Windows and macOS sections stop at refusals and the approval
+gate. There is no dry-run mode to show instead.
 
 ## Linux (the full engine) — about 3 minutes
 
@@ -35,8 +36,9 @@ sections stop at dry runs and refusals.
    (device, what will happen, can it be verified); the flash limitation; Purge
    listed under *Unavailable, and why* (the USB bridge blocks pass-through) -
    no silent downgrade.
-5. *Review plan* → dry run → *Erase this device* → backup image → acknowledge and
-   type the serial → *Approve* → type the serial again → *Erase*.
+5. *Review plan* → the **REAL DEVICE** card → *Erase this device* → backup image
+   → acknowledge and type the serial → *Approve* → type the serial again →
+   *Erase*.
 6. Watch progress; verification result; *Get certificate*; verify it on the
    **Audit** screen.
 
@@ -61,9 +63,9 @@ folder and issues a certificate that verifies.)
    system volume, page file).
 4. Select the stick → whole-drive clear reads **REQUIRES PRIVILEGE** (*Run as
    administrator*) as a standard user, and a mounted stick is **BLOCKED FOR
-   SAFETY** until it is taken offline. Show the *Prepare* panel's dry run
-   only: it names what would be taken offline and performs nothing. Do not
-   run the real step or an erase on stage.
+   SAFETY** until it is taken offline. Show the *Prepare* panel: it lists the
+   volumes it would take offline and waits for the typed serial. Do not type
+   it, and do not run an erase on stage.
 5. **File eraser**: erase a scratch folder on the stick → per-file results,
    the NTFS residual findings → *Get certificate*.
 
@@ -86,7 +88,8 @@ container on it, a folder erase completes and its certificate verifies.)
    Settings*). The stick listed.
 4. Stick → whole-drive clear reads **REQUIRES PRIVILEGE** until Sanctum itself
    is started with `sudo`, and **BLOCKED FOR SAFETY** while a volume is mounted.
-   Show the *Prepare* dry run only. No write on stage.
+   Show the *Prepare* panel and its volume list only; do not type the serial.
+   No write on stage.
 5. **File eraser** on the stick; certificate.
 
 ## The close

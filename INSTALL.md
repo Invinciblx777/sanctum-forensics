@@ -293,7 +293,7 @@ Bash or any shell with GNU make; it detects the Windows venv layout.
   work unelevated.
 - **Take the disk offline first.** A disk that still exposes any volume is
   refused, and no erase takes a disk offline by itself. Use **Devices →
-  Prepare** (a dry run first, then the real step with the serial typed by
+  Prepare** (the volumes it affects are shown, then the serial is typed by
   hand; the offline state is not persistent and the disk returns online at the
   next reboot or when you bring it online), or *Disk Management → Offline*.
   The system disk is always refused.
@@ -376,7 +376,7 @@ python -m api.desktop       # opens a native window
   privileged helper is Linux-only"* — so in this build the raw work runs in
   the Sanctum server process itself, and that process must be the one started
   with `sudo`. Unmount every volume on the disk first: **Devices → Prepare**
-  (dry run, then the real step with the typed serial) or
+  (the volumes it unmounts are shown, then the serial is typed) or
   `diskutil unmountDisk /dev/diskN`. A mounted disk is refused and no erase
   unmounts one itself.
 - **Nothing on macOS has been run on a physical device.** Discovery, file

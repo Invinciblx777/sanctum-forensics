@@ -13,7 +13,7 @@ entry before it is considered done.
 | Errors | `core.errors` | none | no | Every error carries a `remediation`. |
 | Platform | `core.platform` | none | no | One adapter per OS (`linux.py`, `windows.py`, `macos.py`) and the capability resolver (`capability.py`), the one place that decides a capability state. |
 | Device | `core.device` | via helper | no | Enumerate, probe capability, detect HPA/DCO, safety guard; the Windows native layer (`core.device.win`) and macOS raw-disk layer (`core.device.mac`); the guarded HPA/DCO workflow (`hidden_area_workflow.py`). |
-| Erase | `core.erase` | via helper | no | Whole-drive (M1: `drive.py` on Linux, `blockclear.py` on Windows/macOS, `devicesanitize.py` for firmware commands on Windows) and file/folder (M2). Destructive, dry-run default. |
+| Erase | `core.erase` | via helper | no | Whole-drive (M1: `drive.py` on Linux, `blockclear.py` on Windows/macOS, `devicesanitize.py` for firmware commands on Windows) and file/folder (M2). Destructive: every call executes; the read-only plan is `drive.preview`. |
 | Carve | `core.carve` | via helper (read-only) | no | Acquire (`acquire.py`; `win_source.py` and `mac_source.py` for raw Windows/macOS sources), undelete, signature, structure, validate, score, classify. |
 | Backup / restore | `core.backup`, `core.restore` | via helper (restore writes) | no | Backup identity records and read-only verification; authorized restore with post-restore read-back. |
 | Benchmark | `core.benchmark` | none | no | Sealed ground-truth manifests and scored results; SYNTHETIC and PHYSICAL never merged. |
@@ -37,8 +37,12 @@ Each of these is enforced by a test, not by convention.
   safety policy, privilege) and physical evidence apart, and matches evidence on
   (platform, capability, device class) exactly. A package test asserts that every
   module the table names ships.
-- **Destructive ops require two gates**: dry-run cleared *and* an operator-typed serial
-  the server re-reads from the device itself.
+- **Destructive ops require two gates**: a server-issued, human-approved, single-use
+  authorization *and* an operator-typed serial the server re-reads from the device
+  itself. There is no dry-run or simulation mode: every request that passes the
+  gates reaches the real backend, and a request carrying `dry_run`, `simulation` or
+  `simulate` is refused at the API (422) and again at the helper's write seam
+  (`core.device.guard.refuse_removed_mode_keys`).
 - **Nothing under `core.carve` opens a device or image `O_RDWR`.**
   `core/carve/evidence.py` declares no write method at all and opens `O_RDONLY`;
   `core/carve/win_source.py` opens `GENERIC_READ` only and `core/carve/mac_source.py`
@@ -59,9 +63,9 @@ Each of these is enforced by a test, not by convention.
 ## How a job flows
 
 ```
-UI            POST /jobs/erase-drive          (dry_run; a real erase also carries
- │                                            authorization_id, issued by the server
- │                                            from POST /workflow/erase-drive and
+UI            POST /jobs/erase-drive          (typed_serial and authorization_id,
+ │                                            issued by the server from
+ │                                            POST /workflow/erase-drive and
  │                                            .../approve - see api/authorization.py)
  │
 API           api/routes/jobs.py              builds the job, opens the Ledger,
@@ -93,7 +97,7 @@ execute with a one-use authorization re-checked at the write seam):
 | Whole-drive erase | `POST /workflow/erase-drive`, `.../approve`, `POST /jobs/erase-drive` | `core/erase/drive.py` (Linux), `core/erase/blockclear.py`, `core/erase/devicesanitize.py` |
 | Backup and restore | `POST /workflow/backup`, `.../verify`; `POST /workflow/restore`, `.../approve`, `.../execute` | `core/backup.py`, `core/restore.py` |
 | HPA/DCO change | `POST /workflow/hidden-area`, `.../approve`, `.../execute` | `core/device/hidden_area_workflow.py` (Linux hdparm, Windows ATA pass-through) |
-| Device preparation | `POST /devices/prepare` (dry run by default) | the adapter's take-offline (Windows, non-persistent) or `diskutil unmountDisk` (macOS) step; never part of an erase |
+| Device preparation | `POST /devices/prepare` (typed serial) | the adapter's take-offline (Windows, non-persistent) or `diskutil unmountDisk` (macOS) step; never part of an erase |
 
 An authorization is issued for one kind (erase, restore, HPA) and cannot be spent as
 another.

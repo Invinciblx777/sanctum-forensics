@@ -1,5 +1,12 @@
 # Module validation matrix — campaign of 2026-09-24
 
+> **Current state (2026-09-28).** Current product execution no longer exposes
+> a user-facing simulation/dry-run mode: every operation runs against the
+> selected real device once its gates pass, and a request that asks for a
+> rehearsal is refused. References below to a dry run or a simulation record
+> what the build of that date did; they are historical evidence and are kept as
+> run.
+
 > This page is the record of one campaign and its rows are kept as run. For
 > the current state of every capability on every platform, with physical
 > validation scoped to device class, see the generated

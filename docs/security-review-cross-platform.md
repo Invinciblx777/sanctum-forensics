@@ -29,7 +29,7 @@ the generated
 | 6 | **Alternate data streams opened in text mode.** `os.open(stream, O_WRONLY)` without `O_BINARY` on Windows. Harmless for a zero fill, wrong for any other pattern. | Low | `O_BINARY` added. | type-checked as win32 |
 | 7 | **The packaged app could not sign a certificate** (no environment variable, no terminal to prompt), which would push an operator towards weakening the key protection. | Medium (usability → security) | The operator types the passphrase in the UI for that one request; never logged, stored or echoed; a new key needs ≥12 characters; a wrong one is reported as such. | `test_the_desktop_app_can_sign_with_a_typed_passphrase` |
 | 8 | **The helper entry point crashed on Windows** (`os.geteuid`) and the in-process helper could not construct (`os.getuid`). | Low | Helper daemon refuses to start off Linux with a reason; in-process helper uses `-1` for "no uid"; `whoami` on Windows reads the account from the process token (`GetUserNameW`), not `%USERNAME%`. | typecheck as win32; `test_platform_status_is_served_through_the_allowlist` |
-| 9 | **Inside a container, the host's system disks were assessed READY.** `/sys` lists every host disk while the container's mount table shows none of the host's root, mounts or swap, so system-disk detection found nothing. Found by running the packaged AppImage in Debian 12 and Ubuntu 22.04 containers. The same gap exists in the engine's own guard when a container is given host device nodes. | High (containers) | `core/platform/linux.py`: in a container (`/run/.containerenv`, `/.dockerenv`) whole-drive work is NOT AVAILABLE, the probe is refused, and a non-dry-run erase is refused in the privileged process before the device is opened. Override only with `SANCTUM_ALLOW_CONTAINER_DEVICES=1` when exactly the target device was passed in. | `test_inside_a_container_whole_drive_is_refused_not_guessed` |
+| 9 | **Inside a container, the host's system disks were assessed READY.** `/sys` lists every host disk while the container's mount table shows none of the host's root, mounts or swap, so system-disk detection found nothing. Found by running the packaged AppImage in Debian 12 and Ubuntu 22.04 containers. The same gap exists in the engine's own guard when a container is given host device nodes. | High (containers) | `core/platform/linux.py`: in a container (`/run/.containerenv`, `/.dockerenv`) whole-drive work is NOT AVAILABLE, the probe is refused, and an erase is refused in the privileged process before the device is opened. Override only with `SANCTUM_ALLOW_CONTAINER_DEVICES=1` when exactly the target device was passed in. | `test_inside_a_container_whole_drive_is_refused_not_guessed` |
 | 10 | **`.deb` built with PAX headers and without directory entries** — dpkg rejected it. | Build defect | GNU tar format, explicit root-owned directory entries. | installed and removed in a Debian 12 container |
 
 ## Checked, and correct by construction
@@ -174,8 +174,8 @@ physical disk.
 `POST /devices/prepare` is the only code that takes a disk offline (Windows,
 `IOCTL_DISK_SET_DISK_ATTRIBUTES`, **not persistent**: the disk returns online at
 the next reboot or re-attach) or unmounts it (macOS, `diskutil unmountDisk`). It
-is never part of an erase, defaults to a dry run, needs the serial typed for a
-real run, refuses the system disk and internal Apple storage, and is ledgered.
+is never part of an erase, needs the serial typed (there is no dry-run mode),
+refuses the system disk and internal Apple storage, and is ledgered.
 Taking a disk offline writes nothing to it.
 
 ## Residual risks (not fixed, stated)

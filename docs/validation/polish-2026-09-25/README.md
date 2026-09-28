@@ -1,5 +1,12 @@
 # Final polish run, 2026-09-25: Cases, Platform, Audit, Recovery
 
+> **Current state (2026-09-28).** Current product execution no longer exposes
+> a user-facing simulation/dry-run mode: every operation runs against the
+> selected real device once its gates pass, and a request that asks for a
+> rehearsal is refused. References below to a dry run or a simulation record
+> what the build of that date did; they are historical evidence and are kept as
+> run.
+
 **Repeated 2026-09-26 at `76dde42`** (the release-hold remediation), on a fresh
 sandboxed server and the UI bundle packaged at that commit: 66 of 66, no assertion changed.
 The pinned screenshots here were not regenerated. See

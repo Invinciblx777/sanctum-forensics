@@ -329,9 +329,8 @@ Use the **Devices** screen to pick a target, then **Sanitize**.
 ### The method is selected from probed capability, never from preference
 
 You choose a *level* — CLEAR or PURGE. The tool chooses the *mechanism*. The
-request the browser sends carries `path`, `level`, `dry_run` and `typed_serial`
-(plus, for a real erase only, the `authorization_id` the server issued), and has
-no field for a method at all; `core/erase/drive.py:select_method` reads a
+request the browser sends carries `path`, `level`, `typed_serial` and the
+`authorization_id` the server issued, and has no field for a method at all; `core/erase/drive.py:select_method` reads a
 decision table over what the capability probe returned.
 
 There is no method chooser on the Sanitize screen. An earlier build had one: an
@@ -390,19 +389,26 @@ Purge; the report will say so.**
 
 ### The gates
 
-Destructive erasure is opt-in twice, and both gates are re-checked inside the root
+There is no dry-run or simulation mode. Every erase this screen starts runs on
+the selected real device once its gates pass, so the gates run every time. A
+request that still carries `dry_run`, `simulation` or `simulate` is rejected
+with HTTP 422 and never reaches the helper: it is neither honoured nor ignored.
+What would run is shown **before** you commit, from the read-only plan
+(`core/erase/drive.py:preview`); that plan writes nothing and is not a rehearsal.
+
+Destructive erasure is opt-in twice, and the gates are re-checked inside the root
 helper, not in the browser:
 
-1. **Dry run is the default.** A request that omits `dry_run` simulates. Nothing
-   is written; you get the full plan, the chosen method and the limitations.
+1. **A human approval, bound to the plan.** See steps 3-5 below: a verified
+   backup, a recorded approval, and a one-use authorization the server issues.
 2. **You type the device serial.** The helper compares it against the serial *it*
    re-reads from the device, so a browser tab that went stale before the drive was
    swapped cannot authorise the wipe. A device that reports no serial is confirmed
    by typing its full `/dev/disk/by-id/...` path instead — still a value you read
    off the capability report, never one you can guess.
 
-A real erase also needs a **workflow authorization** the server issues and spends
-once (added 2026-09-25):
+The **workflow authorization** the server issues and spends once (added
+2026-09-25):
 
 3. **A backup image.** *Open workflow and verify backup* names an image inside the
    evidence directory, at least as large as the device. The server hashes and
@@ -427,15 +433,14 @@ filesystem. Unmount first; there is no override. On Windows a disk that still
 exposes any volume is refused, and on macOS a disk with any mounted volume.
 **No erase unmounts or takes a disk offline by itself.** On Windows and macOS
 the **Devices** screen offers a separate **Prepare** step for a mounted,
-non-system disk (`POST /devices/prepare`, body `path`, `dry_run`,
-`typed_serial`): a dry run first, reporting what would be taken offline
-(Windows) or unmounted (macOS), then the real step with the serial typed by
-hand. The Windows offline state is not persistent. System and internal disks
+non-system disk (`POST /devices/prepare`, body `path` and `typed_serial`):
+the screen lists the volumes the step affects from the device scan, and the
+step runs on the real disk once the serial is typed by hand. The Windows offline state is not persistent. System and internal disks
 are refused, and every call is ledgered. On Linux you unmount yourself.
 
 ### The 0xA5 write calibration
 
-Immediately after the gates clear and never in a dry run, a Clear-level overwrite
+Immediately after the gates clear, and never on a resume, a Clear-level overwrite
 runs a **write calibration**: 64 MiB of `0x00` and 64 MiB of `0xA5`, both
 `O_DIRECT`, both timed. It is destructive — it writes 128 MiB over a region of the
 target — and it exists because a flash controller can acknowledge an all-zero write
@@ -515,10 +520,10 @@ points here. Exposing them is its own workflow, authorized like an erase:
    `acknowledge_configuration_change`, plus `acknowledge_permanent` for a
    permanent change, and a recorded, verified backup of at least the
    accessible range.
-3. `POST /workflow/hidden-area/{id}/execute` simulates by default. With
-   `dry_run=false` and the typed serial, the drive is re-read just before the
-   command, a stale plan is refused, and the change is verified by reading the
-   maxima back.
+3. `POST /workflow/hidden-area/{id}/execute` sends the real command. With the
+   typed serial, the drive is re-read just before the command, a stale plan is
+   refused, and the change is verified by reading the maxima back. There is no
+   dry-run mode; a body carrying one is rejected (422).
 
 The DCO is discovered and reported only: DCO RESTORE and DCO SET are never
 issued, and sectors a DCO hides stay hidden, which the result says. Backends:
@@ -543,9 +548,11 @@ A restore overwrites its target, so it is authorized exactly like an erase:
    Nothing is written.
 2. `POST /workflow/restore/{id}/approve` needs the typed serial and
    `acknowledge_data_overwrite: true`.
-3. `POST /workflow/restore/{id}/execute` simulates by default. A real run
-   verifies each backup chunk before writing it, accounts for every byte, and
-   finishes with a read-back of the restored range against the backup hashes.
+3. `POST /workflow/restore/{id}/execute` runs the real restore, with the target
+   serial typed again. It verifies each backup chunk before writing it, accounts
+   for every byte, and finishes with a read-back of the restored range against
+   the backup hashes. There is no dry-run mode; a body carrying one is rejected
+   (422).
 
 An erase authorization can never be spent as a restore, or the reverse. On
 Windows the restore target also refuses a disk that still exposes a volume.
@@ -608,10 +615,13 @@ Use the **File eraser** screen, or `POST /jobs/erase-files`. This path is
 unprivileged: it writes through ordinary file handles and runs in the API process,
 because the API can already open any file you can.
 
-**Dry run is the default here too**, and the second gate is an explicit `confirm`
-rather than a serial — there is no device to identify. A dry run inspects every
-target and reports exactly what would happen and what would survive, writing
-nothing.
+**Every erase here is real**, and its gate is an explicit `confirm` rather than
+a serial — there is no device to identify. A request without `confirm: true` is
+refused before any path is inspected (HTTP 409), and a request that still
+carries `dry_run` is rejected (422). The screen shows the queued paths
+(**PLANNED**), then **AUTHORIZED** once you confirm, then **EXECUTING**,
+**VERIFYING** and **COMPLETE**, or **FAILED** / **BLOCKED** with the reason;
+**COMPLETE** is shown only when every path was erased.
 
 Eleven steps run per file in a fixed order: inspect, cleanse metadata, overwrite,
 alternate data streams, truncate, rename to a **same-length** random name (a shorter
@@ -668,8 +678,8 @@ API) searches for:
 | Recent shortcut (Windows) | `%APPDATA%\Microsoft\Windows\Recent` | the shortcut's LinkInfo target |
 | Possible copy (macOS) | `~/.Trash` | a same name only: **reported, never removed** |
 
-A dry run lists every trace and removes nothing. A real run removes only the
-traces tied to an erased path on evidence. A trace file is erased through the same
+A run removes only the traces tied to an erased path on evidence; every other
+trace is listed and left alone. A trace file is erased through the same
 steps as a target, so the same residual findings apply to it. An entry in a shared
 list is cut out and the list is overwritten in place, padded to its old length, so
 the bytes that named the file are overwritten rather than freed. Nothing follows a
@@ -710,7 +720,8 @@ the Recovery screen will carve it back. A file erase cannot reach it, because th
 file no longer exists. A free-space wipe does.
 
 Use the **Wipe free space** panel at the foot of the File eraser screen, or
-`POST /jobs/wipe-free-space` with `mount_point`, `dry_run` and `typed_identifier`.
+`POST /workflow/wipe-free-space` with `mount_point` to plan it (read-only), then
+`POST /jobs/wipe-free-space` with `mount_point` and `typed_identifier` to run it.
 
 **What it does.** It creates one directory, `.sanctum-freespace-<job id>`, at the
 root of the volume, writes `0xA5` into files inside it until the filesystem answers
@@ -728,16 +739,18 @@ implementation.
 
 **The gates.**
 
-1. **Dry run is the default.** A dry run identifies the volume, reports its free
-   space and the identifier to type, and writes nothing.
+1. **Plan first.** *Plan* (`POST /workflow/wipe-free-space`) resolves the
+   volume, applies every refusal below, and reports its filesystem, free space,
+   what the fill cannot reach and the identifier to type. It writes nothing,
+   creates no job, and is not a rehearsal of the wipe.
 2. **The system volume is refused outright** (`SystemDiskRefused`, HTTP 409). That
    means any volume holding `/`, `/boot`, `/boot/efi`, `/etc`, `/home`, `/opt`,
    `/root`, `/srv`, `/usr` or `/var`, an active swap file, or this deployment's
    state, ledger, report or key directory. Filling one of those to zero free space
    can stop the host, or leave the wipe unrecorded.
-3. **A real run needs the volume identifier** (`ConfirmationMismatch`, HTTP 409).
+3. **The wipe needs the volume identifier** (`ConfirmationMismatch`, HTTP 409).
    The identifier is the filesystem UUID when `/dev/disk/by-uuid` has one for the
-   volume, and the mount point otherwise, exactly as the dry run printed it.
+   volume, and the mount point otherwise, exactly as the plan printed it.
 
 While the wipe runs the volume is full, and anything else writing to it fails with
 "No space left on device".
@@ -787,7 +800,7 @@ ext4 with 4096-byte blocks. It has not been run on a real USB stick or SD card. 
 
 **The evidence path is read-only by construction.** Nothing under `core/carve`
 opens a device or an image `O_RDWR`; the evidence classes declare no write method
-at all and open `O_RDONLY`. There is no dry-run gate on acquisition or carving,
+at all and open `O_RDONLY`. Acquisition and carving need no confirmation gate,
 because there is nothing to destroy.
 
 ### Acquire
@@ -853,7 +866,7 @@ curl -s -X POST http://127.0.0.1:8787/jobs/carve \
 ```
 
 ```json
-{"job_id":"carve-43c34d2ca280","kind":"carve","state":"running","dry_run":false,
+{"job_id":"carve-43c34d2ca280","kind":"carve","state":"running",
  "stream_url":"/jobs/carve-43c34d2ca280/stream"}
 ```
 
@@ -1334,9 +1347,16 @@ Writing under a live filesystem corrupts the page cache's view of a device the
 kernel still believes it owns.
 *Do:* Unmount every filesystem on the device and retry.
 
-**`Refusing to erase {path}: dry_run is off but no serial was typed. Destructive erasure is opt-in twice.`** — HTTP 409, `ConfirmationMismatch`
-Gate two is missing. *Do:* Re-read the device serial from the capability report and
+**`Refusing to erase {path}: no serial was typed. Destructive erasure is opt-in twice: an approved authorization and the typed serial.`** — HTTP 409, `ConfirmationMismatch`
+The serial is missing. *Do:* Re-read the device serial from the capability report and
 type it exactly.
+
+**`dry_run is not accepted: there is no simulation or dry-run mode. Every destructive request runs against the real device. Remove the field.`** — HTTP 422
+The client sent a switch from an older build (`dry_run`, `simulation` or
+`simulate`). It is refused rather than honoured or ignored, because the sender
+expected nothing to be written. The helper refuses the same keys at its write
+seam (`WorkflowGateRefused`). *Do:* Remove the field; send the request only
+when the operation is meant to run on the real device.
 
 **`The typed serial {typed!r} does not match {path}, whose serial is {serial!r}. Nothing was erased.`** — HTTP 409, `ConfirmationMismatch`
 Also seen as `Typed value does not match the serial of {device}.` from inside the
@@ -1348,9 +1368,9 @@ Nothing has been modified.
 *Do:* This device exposes no serial. Confirm it by typing its full
 `/dev/disk/by-id` path from the capability report instead.
 
-**`Refusing to erase: dry_run is off but confirm was not set. Destructive file erasure is opt-in twice.`** — HTTP 409, `ConfirmationMismatch`
-The M2 equivalent. *Do:* Set `confirm=true` to proceed, or leave `dry_run=true` to
-see what would survive without writing anything.
+**`Refusing to erase: confirm was not set. Destructive file erasure needs an explicit confirmation. Nothing was touched.`** — HTTP 409, `ConfirmationMismatch`
+The M2 equivalent. *Do:* Review the selected paths, then send `confirm=true` to
+erase them.
 
 **`Refusing to erase {path}: it is a filesystem root.`** / **`… it is a protected system location, and erasing it would break the running system.`** — `SystemDiskRefused`
 *Do:* Name the files or folders, not the root.
@@ -1603,8 +1623,9 @@ FAILED, CANCELLED, RUNNING) except in two cases: **BLOCKED** is a safety refusal
 at the helper's write seam, before any write (the registry says failed; the
 screen reads the job's structured `error_kind`, never its message), and **VERIFY
 FAILED** is a drive erase that ran but whose read-back failed (the registry says
-complete). It adds a **DRY RUN** label on a dry run, and whether a signed
-report exists. A case that cannot be read shows **REQUEST FAILED**, never an
+complete). A record an earlier build filed as a rehearsal is marked
+**HISTORICAL · NOTHING WRITTEN** and never counted as an erasure; this build
+creates none. It also shows whether a signed report exists. A case that cannot be read shows **REQUEST FAILED**, never an
 empty case and never BLOCKED. The Overview's *Secure erasure* column says the
 same four things apart: blocked (nothing was erased), failed (the target may be
 partly overwritten), stopped on request (CANCELLED), and a read-back that
@@ -1636,8 +1657,8 @@ job's result is written to the ledger, so a report can be generated and verified
 after the API restarts. The Audit screen offers Open PDF, Download PDF, View
 JSON and Verify; no host path is shown.
 
-**Tamper simulation** (`tests/api/test_tamper_demo.py`). On the Audit screen,
-**Simulate tampering** copies the chain to a scratch directory, changes one
+**Tamper demonstration** (`tests/api/test_tamper_demo.py`). On the Audit screen,
+**Tamper a scratch copy** copies the chain to a scratch directory, changes one
 entry's `actor` in the copy, and runs the real verifier on it. You see BEFORE:
 VALID, AFTER: BROKEN at the exact sequence, and how much of the chain still
 verifies. The live chain is not opened for writing, and the screen re-reads it
@@ -1645,13 +1666,14 @@ afterwards so you can see it is still VALID.
 
 **Resume** (`tests/api/test_resume.py`). After an overwrite is cancelled or
 fails, the Sanitize screen reads the chain for a checkpoint. If there is one it
-offers Resume (dry run) and Resume erasure; the real resume needs the serial
-typed again. A firmware sanitize shows **RESUME NOT AVAILABLE** with the reason:
+offers *Authorize resume on the real device*: a resume writes, so it goes
+through the same approval dialog as an erase (backup, approval with the typed
+serial, a new one-use authorization) and the server refuses it without one. A firmware sanitize shows **RESUME NOT AVAILABLE** with the reason:
 the drive reports no progress, so there is no offset to continue from.
 
 **Verification panel.** After a run the Sanitize screen shows one of four
-words: PASSED, FAILED, INCONCLUSIVE, NOT APPLICABLE. A dry run is always NOT
-APPLICABLE. An unsettled read-back is INCONCLUSIVE, never PASSED.
+words: PASSED, FAILED, INCONCLUSIVE, NOT APPLICABLE. No recorded verification is
+NOT APPLICABLE. An unsettled read-back is INCONCLUSIVE, never PASSED.
 
 **Demo state** (`tests/scripts/test_demo_workflow.py`).
 `SANCTUM_KEY_PASSPHRASE=… python scripts/demo_setup.py --state-dir ~/sanctum-demo`

@@ -1,5 +1,12 @@
 # Release record, 2026-09-25
 
+> **Current state (2026-09-28).** Current product execution no longer exposes
+> a user-facing simulation/dry-run mode: every operation runs against the
+> selected real device once its gates pass, and a request that asks for a
+> rehearsal is refused. References below to a dry run or a simulation record
+> what the build of that date did; they are historical evidence and are kept as
+> run.
+
 Population: SYNTHETIC VALIDATION, SIMULATION and PACKAGE IDENTITY. **PHYSICAL
 VALIDATION: none.** No sudo was used. Nothing was pushed.
 

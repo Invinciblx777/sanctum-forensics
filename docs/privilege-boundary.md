@@ -41,8 +41,10 @@ image to a path they choose, and request an erase.
 
 **What they cannot do.**
 
-- *Erase without both gates.* `run_erase` refuses unless `dry_run` is explicitly false
-  **and** the typed serial matches a serial the helper re-reads from the device itself
+- *Erase without both gates.* `run_erase` refuses unless its authorization holds up
+  against a fresh read **and** the typed serial matches a serial the helper re-reads
+  from the device itself; there is no non-writing mode to fall back to, and a request
+  carrying `dry_run` or `simulation` is refused outright
   (`helper/daemon.py:150`). The API cannot talk the helper out of either check, which
   is precisely why both live on this side of the socket rather than in the request
   handler. A caller who has compromised the API still cannot wipe a drive without

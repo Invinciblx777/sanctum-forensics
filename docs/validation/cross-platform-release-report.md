@@ -238,7 +238,7 @@ The ones that changed behaviour:
 | The development server had no such protection | High | `python -m api.main` now mints a token per start, binds 127.0.0.1 only, and prints the session URL. `SANCTUM_DEV_INSECURE=1` is the only way off and says so in the banner. A source guard test refuses any wildcard bind. |
 | State directory defaulted to the current directory | Medium | per-user data directory per OS |
 | Windows protected paths were case-sensitive and assumed `C:` | Medium, Windows | `core/platform/paths.py` reads `%SystemRoot%` and the Program Files variables, compares case-insensitively, and covers whole subtrees |
-| Inside a container, the host's disks were assessed READY | High, containers | whole-drive work is NOT AVAILABLE in a container unless `SANCTUM_ALLOW_CONTAINER_DEVICES=1`, and a non-dry-run erase is refused in the privileged process before the device is opened |
+| Inside a container, the host's disks were assessed READY | High, containers | whole-drive work is NOT AVAILABLE in a container unless `SANCTUM_ALLOW_CONTAINER_DEVICES=1`, and an erase is refused in the privileged process before the device is opened |
 | The packaged app could not sign a certificate | Medium | the passphrase is typed in the UI for that one request; never logged, stored or echoed |
 
 Packaged security regression tests run against the **installed** application

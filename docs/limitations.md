@@ -351,7 +351,7 @@ Exposing the hidden sectors is the separate, guarded HPA/DCO workflow
 (`core/device/hidden_area_workflow.py`, `POST /workflow/hidden-area`): a
 plausibility-checked reading of the native and accessible maxima, a verified
 backup of at least the accessible range, a human approval with the serial typed,
-a dry run by default, a re-read of the drive immediately before the command
+a one-use authorization, a re-read of the drive immediately before the command
 (a drifted plan is refused as stale), and a read-back afterwards. The change is
 **volatile by default** (lost at the next power cycle); a permanent change is
 made only when explicitly requested and acknowledged. Only SET MAX ADDRESS is
@@ -1029,8 +1029,8 @@ VALIDATION). What that does not establish:
 - **Restore is implemented and has never run on a physical device.**
   `core/restore.py` with `/workflow/restore` verifies every chunk against the
   backup record before writing it, accounts for every byte, and reads the range
-  back afterwards; it is gated like an erase (dry run, typed serial, one-use
-  authorization re-checked at the write seam) on Linux, Windows and macOS. It is
+  back afterwards; it is gated like an erase (recorded approval, typed serial,
+  one-use authorization re-checked at the write seam) on Linux, Windows and macOS. It is
   IMPLEMENTED / UNVALIDATED everywhere: tested against image files and adapter
   doubles only. The post-restore read-back goes through the operating system, so
   a drive's volatile cache can answer it; a pass shows the target returns the
@@ -1044,10 +1044,14 @@ VALIDATION). What that does not establish:
   (system disk, mount, serial re-read) stand.
 - **The API does not authenticate a human.** Approval is a deliberate second
   call with the typed serial, not proof of who made it (see below).
-- **A dry run opens the device read-only.** A dry run opens the device node
-  `O_RDONLY` for the `BLKGETSIZE64` size ioctl and reads metadata. It never opens
-  a device for writing and never reaches the write path; "a dry run never
-  opens /dev" would be false.
+- **There is no rehearsal mode.** Every erase, restore, HPA change, free-space
+  wipe and device preparation that passes its gates runs against the real
+  target; a request carrying `dry_run`, `simulation` or `simulate` is refused.
+  What would run is shown by the read-only plan (`core.erase.drive.preview`,
+  the workflow `open` calls, `POST /workflow/wipe-free-space`), which writes
+  nothing. Reports signed by earlier builds may record a rehearsal (a
+  "SIMULATION" or "DRY RUN" limitation); those remain historical evidence and
+  still render as "nothing was sanitized".
 
 ## The API has no authentication
 
