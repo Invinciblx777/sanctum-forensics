@@ -77,7 +77,7 @@ touches the live tree.
 | A mounted device is refused, with no sudo and no unmount | Devices (WHY BLOCKED) | `media_benchmark.py preflight` | `tests/scripts/test_media_benchmark_preflight.py` | `docs/demo/qa.md` §24 | refusal on the stick, 2026-09-23 | YES |
 | A missing or stale device path is refused and never substituted | none | `media_benchmark.py plan` on a nonexistent path | `tests/scripts/test_media_benchmark_absent_device.py` | none | `scripts/media_benchmark.py:_require_present` | YES |
 | The write re-verifies the backup itself | none | `media_benchmark.py write` (never run in a demo) | `tests/scripts/test_media_benchmark_boundary.py` | `docs/demo/qa.md` §25 | `scripts/media_benchmark.py:write_image` | DOCUMENTATION ONLY |
-| Backup restoration works | none | none | none | none | none | PHYSICAL VALIDATION REQUIRED |
+| Backup restoration works | none | none | none | none | none | NOT IMPLEMENTED (no restore in the app; the benchmark prints a manual `dd` command, never run) |
 | Workflow state and WHY BLOCKED are named with one vocabulary | Sanitize, Devices | `media_benchmark.py plan` | `tests/test_workflow.py`, `ui/tests/workflowState.test.ts`, `tests/ui/test_workflow_vocabulary.py` | none | `core/workflow.py`, `ui/src/lib/workflowState.ts` | YES |
 | One simulation walks discovery to certificate on the real engine | none (terminal) | `scripts/demo_simulation.py` | `tests/scripts/test_demo_simulation.py` | the journey's own signed report | `scripts/demo_simulation.py` | SIMULATION ONLY |
 | Split PNG and JPEG are rebuilt only when their bytes prove the join | Recovery | `scripts/demo_fragmented.py` | `tests/carve/signature/test_png_fragmentation.py`, `tests/carve/signature/test_fragmentation.py` | `docs/validation/png-reassembly.md` | `core/carve/fragmentation.py` | YES |
@@ -124,7 +124,8 @@ not need that capture, and none should be made for it during the freeze.
 - That any certificate is government-signed or PKI-backed.
 - That firmware Purge (ATA SANITIZE, SECURITY ERASE, NVMe sanitize/format) has
   run on a drive. It has been selected and dispatched only.
-- That a backup has been restored. Restoration was never validated.
+- That a backup has been restored, or that the app can restore one. Restoration
+  is not implemented in the app.
 - That general fragmented-file reconstruction is solved. Two runs, two formats.
 - That the evidence score is a probability or a confidence percentage.
 - Compliance with DoD 5220.22-M, or with NIST SP 800-88 beyond using its
@@ -139,8 +140,9 @@ not need that capture, and none should be made for it during the freeze.
   validated packaged install, device discovery, the mounted-device refusal
   and file erase — none of that is part of this demo's beats, and it must not
   be presented as such.
-- That HPA/DCO unlock has run on a drive, or that the trace sweep was validated
-  on a live desktop.
+- That HPA/DCO unlock has run on a drive, or that the trace sweep has removed a
+  trace from a live desktop. It searched a real Windows 11 desktop on 2026-09-27
+  and found nothing to remove.
 - That a Record of Destruction proves a destruction. It is attested, not
   observed.
 - That the backup is proven to be a copy of the device, that the helper's

@@ -471,6 +471,41 @@ def test_missing_source_refuses_before_creating_a_destination(
     assert not dest.exists()
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "\\\\.\\PhysicalDrive0",
+        "\\\\.\\E:",
+        "//./PhysicalDrive1",
+        "\\\\?\\PhysicalDrive3",
+        "\\\\?\\Volume{0b1c2d3e-0000-0000-0000-100000000000}",
+        "\\\\?\\E:",
+    ],
+)
+def test_a_win32_raw_device_is_refused_as_not_implemented(
+    path: str, tmp_path: Path
+) -> None:
+    from core.carve.acquire import FileSourceReader, is_win32_device_path
+
+    assert is_win32_device_path(path)
+    with pytest.raises(EvidenceIntegrityError, match="not implemented on Windows"):
+        FileSourceReader(path)
+    dest = tmp_path / "never.dd"
+    with pytest.raises(EvidenceIntegrityError, match="not implemented on Windows"):
+        _run(acquire(path, dest, fmt="raw"))
+    assert not dest.exists()
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/dev/sdb", "evidence.dd", "C:\\cases\\disk.E01", "\\\\?\\C:\\cases\\disk.dd"],
+)
+def test_an_ordinary_path_is_not_taken_for_a_win32_device(path: str) -> None:
+    from core.carve.acquire import is_win32_device_path
+
+    assert not is_win32_device_path(path)
+
+
 def test_source_reader_protocol_accepts_the_file_backed_reader(
     source_file: Path,
 ) -> None:

@@ -11,8 +11,12 @@ Four states, and they are not interchangeable:
 |---|---|
 | **VALIDATED** | Performed on real hardware, on real media, with the run recorded in `docs/validation/`. |
 | **CI-VALIDATED** | Executed on a real runner of that OS, against that runner's own disks and filesystems. No physical media. |
-| **NOT YET VALIDATED** | The software path exists; nobody has run it on hardware of that kind. |
-| **UNSUPPORTED** | Not implemented on that platform. Refused by the app with a reason. |
+| **NOT YET VALIDATED** | The software path exists; nobody has run it on hardware of that kind (supported, not physically validated). |
+| **UNSUPPORTED** | Not implemented on that platform (unsupported / not implemented). Refused by the app with a reason. |
+
+The per-capability evidence search behind this page, with every physical run
+found and every capability that has none, is
+[`evidence-reconciliation-2026-09-28/`](evidence-reconciliation-2026-09-28/README.md).
 
 Most VALIDATED rows below are a run from 2026-09-05 or 2026-09-23 with the build of
 that date, on Linux. **No physical validation was run for the `76dde42`
@@ -35,8 +39,9 @@ recorded.
 | Linux, SATA/NVMe internal, Clear | NOT YET VALIDATED | refused on this host: internal disks hold the running system |
 | Linux, firmware Purge (ATA SANITIZE, SECURITY ERASE, NVMe sanitize/format, Opal) | NOT YET VALIDATED | selected and dispatched in code; no drive has executed it here |
 | Linux, HPA/DCO unlock on a drive that has one | NOT YET VALIDATED | probe exercised; no device with an HPA was available |
-| Windows, any | **UNSUPPORTED** | no engine in this build; refused with the reason |
-| macOS, any | **UNSUPPORTED** | no engine in this build; refused with the reason |
+| Windows, any | **UNSUPPORTED / NOT IMPLEMENTED** | no engine in this build; refused with the reason |
+| macOS, any | **UNSUPPORTED / NOT IMPLEMENTED** | no engine in this build; refused with the reason |
+| Any platform, backup restoration | **UNSUPPORTED / NOT IMPLEMENTED** | no restore in the app; `scripts/media_benchmark.py` prints a manual `dd` command, never run |
 
 ## Device discovery and protection
 
@@ -55,7 +60,8 @@ recorded.
 | Linux, ext4/xfs/tmpfs | **VALIDATED** | suite plus packaged smoke on the development host |
 | Windows, NTFS on the runner | **CI-VALIDATED** | `validation-Windows.json` |
 | Windows, real junction / reparse point | **CI-VALIDATED** | `tests/platform/test_windows_filesystem.py` creates a real junction on the runner |
-| Windows, real machine, NTFS via the installed package | **VALIDATED** (2026-09-27) | erase → read-back verify → certificate issue → certificate verify, real, in a scratch directory on the machine's own system disk; trace sweep confirmed real (searched this machine's actual Recycle Bin and Recent shortcuts); [`windows-hardware-2026-09-27-fixes/`](windows-hardware-2026-09-27-fixes/README.md) |
+| Windows, real machine, NTFS via the installed package | **VALIDATED** (2026-09-27) | erase → read-back verify → certificate issue → certificate verify, real, in a scratch directory on the machine's own system disk; trace sweep enumeration confirmed real (searched this machine's actual Recycle Bin and Recent shortcuts, found nothing to remove); [`windows-hardware-2026-09-27-fixes/`](windows-hardware-2026-09-27-fixes/README.md) |
+| Any platform, trace sweep removing a real desktop trace | NOT YET VALIDATED | only synthetic homes have had a trace removed; no Linux or macOS desktop run |
 | macOS, APFS on the runner | **CI-VALIDATED** | `validation-macOS.json` |
 | Any platform, SSD residual behaviour after erase | NOT YET VALIDATED | needs physical media and out-of-band reading |
 
@@ -74,7 +80,7 @@ recorded.
 
 | Target | State | Evidence |
 |---|---|---|
-| Windows, raw physical-device acquisition (`\\.\PhysicalDriveN`, a raw volume) | **NOT IMPLEMENTED** — not merely untested | `Path.exists()` and `open()` cannot address the Win32 device namespace; no code in `core/carve/acquire.py` / `core/carve/evidence.py` special-cases a Windows device path. Confirmed directly, 2026-09-27: [`windows-hardware-2026-09-27/`](windows-hardware-2026-09-27/README.md) §4 |
+| Windows, raw physical-device acquisition (`\\.\PhysicalDriveN`, a raw volume) | **UNSUPPORTED / NOT IMPLEMENTED** — not merely untested; since 2026-09-28 refused with that reason rather than "not found" | `Path.exists()` and `open()` cannot address the Win32 device namespace; no code in `core/carve/acquire.py` / `core/carve/evidence.py` special-cases a Windows device path. Confirmed directly, 2026-09-27: [`windows-hardware-2026-09-27/`](windows-hardware-2026-09-27/README.md) §4 |
 | Windows, M3 carving over a synthetic image, via `scripts/demo_fragmented.py` (dev venv, direct) | **SYNTHETIC, run on physical Windows hardware** (2026-09-27) | 6/6 ground-truth scenarios correct; [`windows-hardware-2026-09-27/`](windows-hardware-2026-09-27/README.md) §3 |
 | Windows, M3 acquire + carve + media map, through the *installed package's own API* (`/jobs/acquire`, `/jobs/carve`), synthetic image | **SYNTHETIC, run through the installed package on physical Windows hardware** (2026-09-27) | Failed before `437081e` — the packaged app could not find its own signature table (`testkit/signatures.yaml` excluded from every prior build); fixed, then 5/6 candidates recovered (1 correctly deduplicated), media map present; [`windows-hardware-2026-09-27-fixes/`](windows-hardware-2026-09-27-fixes/README.md) §4–§5 |
 

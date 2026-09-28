@@ -538,9 +538,19 @@ def acquire_image(
     source is a raw device the operator cannot open, and this route does not use
     it today.
     """
-    from core.carve.acquire import AcquireOptions, acquire
+    from core.carve.acquire import AcquireOptions, acquire, is_win32_device_path
     from core.ledger.chain import Ledger
 
+    if is_win32_device_path(body.source):
+        raise sanctum_error_response(
+            "EvidenceIntegrityError",
+            "raw physical-device acquisition is not implemented on Windows: "
+            f"{body.source} is in the Win32 device namespace, which this build "
+            "cannot open",
+            "Image the device with a hardware write blocker and a dedicated imager, "
+            "or boot Linux and acquire it there, then acquire the resulting image "
+            "file. Nothing was opened.",
+        )
     source = Path(body.source)
     if not source.exists():
         raise sanctum_error_response(

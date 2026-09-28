@@ -24,6 +24,7 @@ rule and changes none.
 Only after row 6 is filled in may `media_benchmark.py write` be run. If any
 row is filled in after the results are known, the report must say so.
 
-Backup restoration has never been validated. A completed gate 4 means a
-backup exists and covers the write region. It does not mean a restore has
-been tested.
+Backup restoration is not implemented in the app and has never been run. A
+completed gate 4 means a backup exists and covers the write region. It does
+not mean a restore has been tested; the harness only prints a manual `dd`
+restore command.

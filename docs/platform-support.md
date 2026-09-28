@@ -45,8 +45,8 @@ the `platform-smoke-*.json` and `package-smoke-*.json` artifacts of that run.
 | Document metadata cleanse | **VALIDATED** | **VALIDATED** (pure Python, run in the Windows suite) | **VALIDATED** |
 | Filesystem metadata (names, size) | **PARTIAL** - rename chain and stepped truncation; journal and index copies are reported, not removed | **PARTIAL** - as Linux, and no unprivileged directory flush exists on Windows | **PARTIAL** |
 | Free-space wipe | **PARTIAL** - FAT32, exFAT, ext4 only | **UNSUPPORTED** | **UNSUPPORTED** |
-| Whole-drive Clear (overwrite) | **VALIDATED** - `O_DIRECT` overwrite, physically run on one USB flash stick on 2026-09-05 with an earlier build (`validation/hardware.md`); not re-run for this release. HPA/DCO unlock is part of the path but **HARDWARE-UNVERIFIED**: no drive with a hidden area has been through it, and behind that stick's USB bridge the probe was skipped | **UNSUPPORTED** - refused with the reason; no engine exists here | **UNSUPPORTED** - refused with the reason |
-| Hardware Purge (ATA SANITIZE, SECURITY ERASE, NVMe sanitize/format, Opal) | **HARDWARE-UNVERIFIED** - selected from probed capability and dispatched; no drive has executed it in a recorded run. The Platform row and each device's Purge option read *Unverified*, and the Devices badge reads PURGE · UNVERIFIED, until a hardware PASS is recorded; the option is still offered, under that word | **UNSUPPORTED** | **UNSUPPORTED** - macOS purges internal storage through *Erase All Content and Settings*, which the app names and does not perform |
+| Whole-drive Clear (overwrite) | **VALIDATED** - `O_DIRECT` overwrite, physically run on one USB flash stick on 2026-09-05 with an earlier build (`validation/hardware.md`); not re-run for this release. HPA/DCO unlock is part of the path but **HARDWARE-UNVERIFIED**: no drive with a hidden area has been through it, and behind that stick's USB bridge the probe was skipped | **UNSUPPORTED / NOT IMPLEMENTED** - refused with the reason; no engine exists here | **UNSUPPORTED / NOT IMPLEMENTED** - refused with the reason |
+| Hardware Purge (ATA SANITIZE, SECURITY ERASE, NVMe sanitize/format, Opal) | **HARDWARE-UNVERIFIED** - selected from probed capability and dispatched; no drive has executed it in a recorded run. The Platform row and each device's Purge option read *Unverified*, and the Devices badge reads PURGE · UNVERIFIED, until a hardware PASS is recorded; the option is still offered, under that word | **UNSUPPORTED / NOT IMPLEMENTED** | **UNSUPPORTED / NOT IMPLEMENTED** - macOS purges internal storage through *Erase All Content and Settings*, which the app names and does not perform |
 | Whole-drive verification | **VALIDATED** for overwrite (full read to 64 GiB, seeded sampling above); **HARDWARE-UNVERIFIED** for drive attestation | **UNSUPPORTED** | **UNSUPPORTED** |
 | File-erase verification | **PARTIAL** - physical read-back of pre-captured extents; needs raw read access, impossible on tmpfs | **PARTIAL** - extents come from `FSCTL_GET_RETRIEVAL_POINTERS` (whole runs, fixed in this work); the read-back itself needs elevation, and unelevated it is reported *not verified* | **NOT VERIFIABLE on APFS** - copy-on-write; reported with its reason, never as a pass |
 | Resume | **PARTIAL** - overwrite from the last ledgered checkpoint; firmware methods restart | **UNSUPPORTED** | **UNSUPPORTED** |
@@ -60,9 +60,11 @@ package on a physical Windows 11 machine and ran it against a real USB stick:
 device discovery, the mounted-device refusal, and file/folder erase → verify
 → certificate all ran on real hardware
 ([`validation/windows-hardware-2026-09-27-fixes/`](validation/windows-hardware-2026-09-27-fixes/README.md)).
-Whole-drive/Purge remain **UNSUPPORTED** on Windows by design, raw
-physical-device acquisition is not implemented on Windows, and macOS still
-has no physical run. See
+Whole-drive/Purge remain **UNSUPPORTED / NOT IMPLEMENTED** on Windows by
+design, raw physical-device acquisition is **not implemented** on Windows (and
+refused with that reason), and macOS still has no recorded physical run. The
+per-capability evidence search is
+[`validation/evidence-reconciliation-2026-09-28/`](validation/evidence-reconciliation-2026-09-28/README.md). See
 [`validation/hardware-platform-matrix.md`](validation/hardware-platform-matrix.md)
 for the row-by-row breakdown.
 
