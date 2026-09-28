@@ -139,8 +139,9 @@ def test_protected_macos_locations_are_refused(path: str) -> None:
     if not Path(path).exists():  # pragma: no cover
         pytest.skip(f"{path} does not exist on this runner")
 
+    # Confirmed, and still refused before anything is opened, let alone written.
     with pytest.raises(SystemDiskRefused):
-        erase_one(Path(path), FileEraseOptions())
+        erase_one(Path(path), FileEraseOptions(confirm=True))
 
 
 def test_discovery_inside_the_suite_is_stopped_before_diskutil_starts() -> None:
