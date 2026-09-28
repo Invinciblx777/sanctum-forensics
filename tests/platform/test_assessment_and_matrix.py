@@ -466,7 +466,7 @@ def test_inside_a_container_whole_drive_is_refused_not_guessed(
     with pytest.raises(PlatformUnsupported, match="No operation was performed"):
         next(
             adapter.execute_drive_sanitization(
-                {"path": "/dev/nvme0n1", "dry_run": False, "typed_serial": "x"}
+                {"path": "/dev/nvme0n1", "typed_serial": "x"}
             )
         )
 

@@ -564,10 +564,9 @@ class MacOSAdapter(BaseAdapter):
     ) -> Generator[Any, None, Any]:
         from core.erase.blockclear import ClearRequest, clear
 
-        dry_run = params.get("dry_run", True) is not False
         device = self._revalidated(params)
         level = "CLEAR" if resume else str(params.get("level", "CLEAR"))
-        _, resolution = self._choose(device, level, dry_run=dry_run)
+        _, resolution = self._choose(device, level)
         sink = ledger_sink(params)
         job_id = str(params["job_id"])
         checkpoint = sink.last_checkpoint(job_id) if resume else None
@@ -591,7 +590,6 @@ class MacOSAdapter(BaseAdapter):
             mechanism=row.mechanism,
             device_class=resolution.device_class,
             flash=device.media_type != "hdd",
-            dry_run=dry_run,
             limitations=(
                 *row.limitations,
                 "macOS gives no ioctl that names a drive's serial: the serial was "
@@ -617,22 +615,21 @@ class MacOSAdapter(BaseAdapter):
     def prepare_device(self, params: dict[str, Any]) -> dict[str, Any]:
         """``diskutil unmountDisk`` for an external disk, as its own step.
 
-        Dry run by default; a real run needs the typed serial. Internal and
-        system disks are refused. Unmounting writes nothing to the medium.
+        Needs the typed serial of the device read here. Internal and system
+        disks are refused. Unmounting writes nothing to the medium.
         """
+        from core.device.guard import refuse_removed_mode_keys
+
+        refuse_removed_mode_keys(params)
         device = self.inspect_device(str(params["path"]))
-        dry_run = params.get("dry_run", True) is not False
         if device.system_device or device.internal is True:
             raise SystemDiskRefused(
                 f"Refusing to unmount {device.path}: it is internal Mac storage "
                 "or holds the running system."
             )
-        if (
-            not dry_run
-            and normalized_serial(str(params.get("typed_serial") or ""))
-            != normalized_serial(device.serial)
-            or (not dry_run and not normalized_serial(device.serial))
-        ):
+        if not normalized_serial(device.serial) or normalized_serial(
+            str(params.get("typed_serial") or "")
+        ) != normalized_serial(device.serial):
             raise ConfirmationMismatch(
                 f"The typed serial does not match {device.path}. Nothing changed."
             )
@@ -641,10 +638,7 @@ class MacOSAdapter(BaseAdapter):
             "serial": device.serial,
             "action": f"{DISKUTIL} unmountDisk {device.path}",
             "unmounts": device.mount_points,
-            "dry_run": dry_run,
         }
-        if dry_run:
-            return {**action, "performed": False}
         result = self._runner.run([DISKUTIL, "unmountDisk", device.path])
         if not result.ok:
             raise UnsupportedCapability(

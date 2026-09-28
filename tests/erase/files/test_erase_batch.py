@@ -223,9 +223,10 @@ def test_a_worker_never_writes_to_the_ledger() -> None:
     )
 
 
-def test_a_dry_run_batch_writes_nothing_and_says_so(
+def test_an_unconfirmed_batch_is_refused_before_anything_is_touched(
     real_fs_dir: Path, tmp_path: Path
 ) -> None:
+    from core.errors import ConfirmationMismatch
     from core.models import FileEraseOptions
 
     targets = []
@@ -234,16 +235,11 @@ def test_a_dry_run_batch_writes_nothing_and_says_so(
         target.write_bytes(b"intact")
         targets.append(target)
 
-    _, result = drain(
-        erase_paths(targets, FileEraseOptions(), job_id="dry", ledger=_sink(tmp_path))
-    )
+    sink = _sink(tmp_path)
+    with pytest.raises(ConfirmationMismatch):
+        drain(erase_paths(targets, FileEraseOptions(), job_id="no", ledger=sink))
 
-    assert result.dry_run is True
     assert all(target.read_bytes() == b"intact" for target in targets)
-    assert any("DRY RUN" in item for item in result.limitations)
-    assert all(record.findings for record in result.records), (
-        "a dry run still enumerates what would survive"
-    )
 
 
 # --------------------------------------------------------------------------
@@ -332,25 +328,23 @@ def test_a_directory_that_cannot_be_scanned_does_not_abort_the_walk(
     assert "hidden.bin" not in names
 
 
-def test_a_dry_run_leaves_a_directory_tree_standing(
+def test_an_unconfirmed_batch_leaves_a_directory_tree_standing(
     real_fs_dir: Path, tmp_path: Path
 ) -> None:
-    """The directory branch has its own dry-run gate; prove it holds."""
+    """Refused at the batch gate, so the directory branch is never reached."""
+    from core.errors import ConfirmationMismatch
     from core.models import FileEraseOptions
 
     root = real_fs_dir / "kept-tree"
     (root / "inner").mkdir(parents=True)
     (root / "inner" / "f.bin").write_bytes(b"intact")
 
-    _, result = drain(
-        erase_paths(
-            [root], FileEraseOptions(), job_id="dry-tree", ledger=_sink(tmp_path)
+    with pytest.raises(ConfirmationMismatch):
+        drain(
+            erase_paths(
+                [root], FileEraseOptions(), job_id="no-tree", ledger=_sink(tmp_path)
+            )
         )
-    )
 
     assert root.exists()
     assert (root / "inner" / "f.bin").read_bytes() == b"intact"
-    directories = [record for record in result.records if record.is_directory]
-    assert len(directories) == 2
-    assert all(record.rename_chain == [] for record in directories)
-    assert all(record.unlinked is False for record in directories)

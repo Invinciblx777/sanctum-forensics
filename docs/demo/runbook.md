@@ -17,6 +17,55 @@
 > implemented and not physically validated; see
 > [`capability-completion-2026-09-28/README.md`](../validation/capability-completion-2026-09-28/README.md).
 
+> **Real-device mode (2026-09-28).** The product has no dry-run or simulation
+> mode any more, and `scripts/demo_simulation.py` has been removed. Every erase
+> the UI starts is real. The procedure below is the only erase demonstration:
+> it runs on a disposable test device. Beats elsewhere in this file that
+> mention a dry run describe the earlier build.
+
+## Real-device demonstration on a disposable test device
+
+Use a USB stick you own, that holds nothing you need, and that you have imaged
+first. Never demonstrate on a laptop's internal disk: the system disk is refused
+anyway, and a mounted volume is refused until it is unmounted by hand.
+
+1. **Discovery.** Devices screen: the stick appears with its model, serial,
+   size, platform and capability badge. The system disk shows *BLOCKED FOR
+   SAFETY* and cannot be selected.
+2. **Select the real device.** Click the stick. The Sanitize screen opens with
+   the **REAL DEVICE** card: model, serial, size, platform, the method the
+   engine will run and how it will be verified.
+3. **Preflight.** The screen re-reads the device from the OS. A mounted volume
+   is `BLOCKED` with the mount point named; unmount it yourself (Linux) or use
+   *Prepare* (Windows, macOS: type the serial; it writes nothing to the medium).
+4. **Exact identity check.** The serial on the card must match the sticker on
+   the stick. The server binds the plan to serial, model and size.
+5. **Backup check.** Take an image of the stick into `<state dir>/evidence/`
+   (`POST /jobs/acquire`, read-only). *Erase this device* → name the image →
+   *Open workflow and verify backup*: the server hashes and sizes it.
+6. **Plan.** The workflow shows the plan digest, method, level, fill bytes and
+   estimate. Nothing has been written.
+7. **Approval.** Tick the acknowledgement, type the serial, *Approve erasure*.
+   The server records the approval and issues a one-use authorization.
+8. **Final revalidation.** Type the serial again and press *Erase*. The API
+   re-reads the device and re-derives the plan; the helper does it again at the
+   write seam, checks the backup is unchanged, and takes the single-use marker.
+   Any drift is `BLOCKED` with **WHY BLOCKED**; nothing is written.
+9. **Real execution.** The progress panel shows `PREFLIGHT` (write calibration),
+   `ERASE`, `VERIFY`, `REPORT`.
+10. **Verification.** The verification panel shows PASSED, FAILED, INCONCLUSIVE
+    or NOT APPLICABLE, with the strategy, bytes read back and probability.
+11. **Certificate.** *Get certificate* signs the report; the Audit screen
+    verifies it.
+
+**Say, and mean it:** this is one real erase of one stick. It is **not** a
+physical validation of any device class until the run is recorded with
+`scripts/record_physical_validation.py` under the procedure in
+[`physical-validation-procedure.md`](../validation/physical-validation-procedure.md).
+Until then the capability stays **IMPLEMENTED / UNVALIDATED**.
+
+---
+
 Read this as a script, not as notes. Every command is copy-pasteable, every
 expected output is what the tool actually printed on the validation host, and
 every beat has a fallback that needs no hardware.
@@ -304,15 +353,14 @@ hashes and sizes the image; that does not prove it is a copy of the stick.
    the filesystem back before the next rehearsal. If you staged `--usb-b`, this
    is stick B instead and the recovery volume survives.
 2. Method panel already shows `SINGLE_PASS_OVERWRITE` selected, everything else
-   greyed with its evidence string.
-3. Uncheck **Dry run**.
-4. Click **Erase this device**.
-5. Type the backup image's name and click **Open workflow and verify backup**.
+   greyed with its evidence string. The **REAL DEVICE** card names the stick.
+3. Click **Erase this device**.
+4. Type the backup image's name and click **Open workflow and verify backup**.
    The plan and the image's SHA-256 appear.
-6. Tick the acknowledgement and type the serial. Have it on a sticky note — do
+5. Tick the acknowledgement and type the serial. Have it on a sticky note — do
    not read it off the screen behind you, that looks worse than it is.
-7. Click **Approve erasure**. The server issues a one-use authorization id.
-8. Type the serial again and click **Erase**.
+6. Click **Approve erasure**. The server issues a one-use authorization id.
+7. Type the serial again and click **Erase**.
 
 **Expected, in this order, on the clock:**
 
@@ -356,8 +404,9 @@ CONTROLLER_WRITE_ELISION   severity HIGH   addressable false
 
 **Say — the calibration is the beat, and the honesty line is not optional:**
 
-> Two gates: dry run is the default, and the serial has to be typed. Neither is
-> skippable.
+> Two gates: a recorded approval that the server turns into a one-use
+> authorization, and the serial typed by hand. There is no rehearsal mode, so
+> neither is ever skipped.
 >
 > [as PREFLIGHT runs] It is writing 64 megabytes of `0xA5`, then 64 megabytes of
 > zeros, over the same region, and timing both.
@@ -757,9 +806,9 @@ beforehand. None touches a device. Recorded screenshots are in that directory if
 there is no time to run them.
 
 * **"Erasing the file leaves its thumbnail."** File & folder eraser, the seeded
-  `case-2149` folder, *Simulate*: seven traces, each with its evidence. Say:
-  *"A dry run removes nothing. A real run removes only what it can tie to the
-  file on evidence, and the report lists every place it did not search."*
+  `case-2149` folder (throwaway files), confirm and *Erase*: seven traces, each
+  with its evidence. Say: *"It removes only what it can tie to the file on
+  evidence, and the report lists every place it did not search."*
 * **"What is intelligent about the carving?"** Recovery, the seeded image: the
   media map draws before the carve. Say: *"Zeros, fill, text, high entropy, and
   where the JPEG headers sit. Statistics, not identification, and the map says
@@ -778,8 +827,8 @@ there is no time to run them.
   chain verdict at the top, then evidence, operations, reports and audit
   entries, each a tab with its count. Say: *"The counts come from the case
   index; the integrity verdict comes from the hash chain. If they ever
-  disagree, the chain is right."* A dry run carries its SIMULATION label here
-  too.
+  disagree, the chain is right."* A record an earlier build filed as a
+  rehearsal is marked HISTORICAL · NOTHING WRITTEN and is never counted.
 
 ---
 

@@ -116,7 +116,6 @@ def make_job(device: Device, **overrides: object) -> EraseJob:
         "job_id": "job-0001",
         "device": device,
         "level": SanitizationLevel.CLEAR,
-        "dry_run": True,
         "confirmed_serial": device.serial,
         "method": None,
     }

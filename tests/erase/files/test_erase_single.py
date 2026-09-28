@@ -215,35 +215,30 @@ def test_7_a_reparse_point_is_refused_and_its_target_untouched(
 
 
 # --------------------------------------------------------------------------
-# The two gates
+# The confirmation gate
 # --------------------------------------------------------------------------
 
 
-def test_dry_run_writes_nothing_but_produces_the_full_record(
-    real_fs_dir: Path,
-) -> None:
-    """A dry run is the whole report without the destruction."""
-    target = real_fs_dir / "f.bin"
-    target.write_bytes(b"intact")
-
-    record = erase_one(target, FileEraseOptions())  # dry_run defaults True
-
-    assert record.dry_run is True
-    assert record.bytes_overwritten == 0
-    assert record.rename_chain == []
-    assert record.unlinked is False
-    assert record.truncate_steps == []
-    assert target.read_bytes() == b"intact"
-    assert record.findings, "a dry run still enumerates what would survive"
-
-
-def test_confirm_is_a_second_independent_gate(real_fs_dir: Path) -> None:
-    """Turning off dry_run is not enough. Both gates, or nothing is written."""
+def test_an_unconfirmed_erase_writes_nothing(real_fs_dir: Path) -> None:
+    """The default options are closed: no confirm, no write, no record."""
     target = real_fs_dir / "f.bin"
     target.write_bytes(b"intact")
 
     with pytest.raises(ConfirmationMismatch):
-        erase_one(target, FileEraseOptions(dry_run=False, confirm=False))
+        erase_one(target, FileEraseOptions())
+
+    assert target.read_bytes() == b"intact"
+
+
+def test_there_is_no_rehearsal_switch_to_turn_off(real_fs_dir: Path) -> None:
+    """A removed ``dry_run`` key is refused, not silently dropped into a real run."""
+    from pydantic import ValidationError
+
+    target = real_fs_dir / "f.bin"
+    target.write_bytes(b"intact")
+
+    with pytest.raises(ValidationError):
+        FileEraseOptions.model_validate({"dry_run": True, "confirm": True})
 
     assert target.read_bytes() == b"intact"
 
@@ -482,7 +477,7 @@ def test_the_xattr_value_is_zeroed_before_the_attribute_is_removed(
 
     inspection = inspect_path(target)
     record = FileEraseRecord(
-        path=str(target), ok=True, dry_run=False, inspection=inspection
+        path=str(target), ok=True, inspection=inspection
     )
 
     original = os.removexattr
@@ -523,7 +518,7 @@ def test_kernel_owned_attributes_are_left_alone(real_fs_dir: Path) -> None:
         xattrs=["security.selinux", "system.posix_acl_access", "user.payload"],
     )
     record = FileEraseRecord(
-        path=str(target), ok=True, dry_run=False, inspection=inspection
+        path=str(target), ok=True, inspection=inspection
     )
 
     removed: list[str] = []
@@ -563,7 +558,7 @@ def test_an_unremovable_attribute_is_reported_rather_than_ignored(
         path=str(target), size_bytes=7, xattrs=["user.does-not-exist"]
     )
     record = FileEraseRecord(
-        path=str(target), ok=True, dry_run=False, inspection=inspection
+        path=str(target), ok=True, inspection=inspection
     )
 
     _erase_xattrs(target, record, inspection)

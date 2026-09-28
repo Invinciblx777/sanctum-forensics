@@ -172,7 +172,7 @@ export interface FlowState {
   confirming: boolean
   running: boolean
   finished: boolean
-  /** Read back and passed, or a dry run, which has nothing to read back. */
+  /** Read back and passed. */
   verified: boolean
   certified: boolean
   /** The server refused the erase at its gate: no job was created. */
@@ -187,14 +187,12 @@ export interface FlowState {
  * What a job's read-back says about the Verify step.
  *
  * A verification object existing is not a pass: only `passed === true`
- * verifies. `passed === false` on a real run is a failed read-back, and a
- * dry run has nothing to read back.
+ * verifies. `passed === false` is a failed read-back, and no verification at
+ * all verifies nothing.
  */
 export function readBack(
   verification: { passed: boolean | null } | null | undefined,
-  dryRun: boolean,
 ): { verified: boolean; verifyFailed: boolean } {
-  if (dryRun) return { verified: true, verifyFailed: false }
   return {
     verified: verification?.passed === true,
     verifyFailed: verification?.passed === false,

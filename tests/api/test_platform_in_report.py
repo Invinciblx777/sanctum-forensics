@@ -14,12 +14,18 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 
+def _confirmed(target: Path) -> dict[str, object]:
+    """A confirmed erase of one scratch file; every erase is real."""
+    return {"paths": [str(target)], "confirm": True, "sweep_traces": False}
+
+
+
 def test_a_file_erase_report_records_the_platform(
     client: TestClient, tmp_path: Path
 ) -> None:
     target = tmp_path / "f.bin"
     target.write_bytes(b"x" * 64)
-    job_id = client.post("/jobs/erase-files", json={"paths": [str(target)]}).json()[
+    job_id = client.post("/jobs/erase-files", json=_confirmed(target)).json()[
         "job_id"
     ]
     for _ in range(300):
@@ -60,7 +66,7 @@ def test_the_desktop_app_can_sign_with_a_typed_passphrase(
     mp.setattr("core.report.sign._prompt_passphrase", lambda path: "")
     target = tmp_path / "g.bin"
     target.write_bytes(b"y" * 64)
-    job_id = client.post("/jobs/erase-files", json={"paths": [str(target)]}).json()[
+    job_id = client.post("/jobs/erase-files", json=_confirmed(target)).json()[
         "job_id"
     ]
     for _ in range(300):

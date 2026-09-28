@@ -18,14 +18,13 @@ import time
 from typing import Any
 
 import pytest
-from api.authorization import SIMULATION_MARK
 from api.deps import AppServices
 from fastapi.testclient import TestClient
 
 from . import conftest
 from .conftest import RecordingHelper, approve_workflow, authorize, open_workflow
 
-REAL = {"path": "/dev/sdz", "dry_run": False, "typed_serial": "SYN-PURGE-1"}
+REAL = {"path": "/dev/sdz", "typed_serial": "SYN-PURGE-1"}
 
 
 def _writes(helper: RecordingHelper) -> list[str]:
@@ -49,7 +48,7 @@ def _assert_refused(
 def test_api_cannot_bypass_workflow_safety_gates(
     client: TestClient, helper: RecordingHelper, services: AppServices
 ) -> None:
-    """Case A: correct device, correct serial, dry_run=false, no workflow."""
+    """Case A: correct device, correct serial, no workflow."""
     answer = client.post("/jobs/erase-drive", json=REAL)
     detail = _assert_refused(answer, helper, services)
     assert any("approv" in reason for reason in detail["WHY BLOCKED"])
@@ -164,7 +163,7 @@ def test_all_gates_satisfied_reaches_the_execution_path_once(
 
     first = client.post("/jobs/erase-drive", json=body)
     assert first.status_code == 200, first.text
-    assert first.json()["dry_run"] is False
+    assert set(first.json()) == {"job_id", "kind", "state", "stream_url"}
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline and _writes(helper) == []:
         time.sleep(0.02)
@@ -193,7 +192,6 @@ def test_an_approval_is_bound_to_its_device(
             "/jobs/erase-drive",
             json={
                 "path": "/dev/sdy",
-                "dry_run": False,
                 "typed_serial": "SYN-CLEAR-2",
                 "authorization_id": auth_id,
             },
@@ -229,21 +227,28 @@ def test_a_real_resume_needs_the_gate_too(
     _checkpoint(services, "erase-drive-abc", 1024)
     answer = client.post(
         "/jobs/erase-drive-abc/resume",
-        json={"dry_run": False, "typed_serial": "SYN-PURGE-1"},
+        json={"typed_serial": "SYN-PURGE-1"},
     )
     _assert_refused(answer, helper, services)
 
 
-def test_simulation_needs_no_approval_and_is_marked(
-    client: TestClient, helper: RecordingHelper
+def test_there_is_no_approval_free_mode(
+    client: TestClient, helper: RecordingHelper, services: AppServices
 ) -> None:
-    """Case F."""
-    answer = client.post("/jobs/erase-drive", json={"path": "/dev/sdz"})
-    assert answer.status_code == 200
-    body = answer.json()
-    assert body["dry_run"] is True
-    assert body["notice"] == SIMULATION_MARK
-    assert SIMULATION_MARK == "SIMULATION / NO PHYSICAL DEVICE MODIFIED"
+    """Case F. Once a rehearsal ran without approval; now nothing does.
+
+    A bare body is a real erase with nothing authorized, and a body asking for
+    the removed rehearsal is rejected before anything else is looked at.
+    """
+    bare = client.post("/jobs/erase-drive", json={"path": "/dev/sdz"})
+    assert bare.status_code == 409
+    assert bare.json()["detail"]["verdict"] == "REFUSED"
+    rehearsal = client.post(
+        "/jobs/erase-drive", json={"path": "/dev/sdz", "dry_run": True}
+    )
+    assert rehearsal.status_code == 422
+    assert _writes(helper) == []
+    assert not list(services.reports_dir.glob("*"))
 
 
 def test_approve_helper_is_used_by_the_positive_path(

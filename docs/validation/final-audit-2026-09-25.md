@@ -1,5 +1,12 @@
 # Final audit of the Sanitize workflow, 2026-09-25
 
+> **Current state (2026-09-28).** Current product execution no longer exposes
+> a user-facing simulation/dry-run mode: every operation runs against the
+> selected real device once its gates pass, and a request that asks for a
+> rehearsal is refused. References below to a dry run or a simulation record
+> what the build of that date did; they are historical evidence and are kept as
+> run.
+
 Base: branch `docs/readme-redesign`, HEAD `5534214c60be1adab593527f7cdb3f7700f7ff99`,
 working tree dirty (uncommitted, not committed by this audit). Every result below was
 produced on this tree; nothing is carried over from an earlier run. Population labels:

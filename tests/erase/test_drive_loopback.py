@@ -105,30 +105,35 @@ def drain(generator: Any) -> tuple[Any, list[Any]]:
 
 
 # --------------------------------------------------------------------------
-# Spec test 3: dry-run writes nothing
+# Spec test 3: a refused run writes nothing, a real run states its plan first
 # --------------------------------------------------------------------------
 
 
-def test_dry_run_writes_zero_bytes(loop_device: str, tmp_path: Path) -> None:
+def test_a_refused_run_writes_zero_bytes(loop_device: str, tmp_path: Path) -> None:
+    from core.errors import ConfirmationMismatch
+
     backing = Path(loop_device)
     before = sha256_of(backing)
 
     device = make_device(path=loop_device, serial="SYN-0001", by_id_path=None)
-    job = make_job(device, dry_run=True)
-    result, _ = drain(
-        execute(job, make_caps(), io=probe_for(loop_device), ledger=make_sink(tmp_path))
-    )
+    job = make_job(device, confirmed_serial="WRONG")
+    with pytest.raises(ConfirmationMismatch):
+        drain(
+            execute(
+                job, make_caps(), io=probe_for(loop_device), ledger=make_sink(tmp_path)
+            )
+        )
 
-    assert result.dry_run is True
-    assert result.bytes_written == 0
     assert sha256_of(backing) == before
 
 
-def test_dry_run_still_emits_the_full_plan(loop_device: str, tmp_path: Path) -> None:
+def test_a_real_run_emits_the_full_plan_before_writing(
+    loop_device: str, tmp_path: Path
+) -> None:
     device = make_device(path=loop_device, serial="SYN-0001", by_id_path=None)
     result, progress = drain(
         execute(
-            make_job(device, dry_run=True),
+            make_job(device),
             make_caps(),
             io=probe_for(loop_device),
             ledger=make_sink(tmp_path),
@@ -136,7 +141,10 @@ def test_dry_run_still_emits_the_full_plan(loop_device: str, tmp_path: Path) -> 
     )
     assert result.plan.method == EraseMethod.SINGLE_PASS_OVERWRITE
     assert result.plan.justification
-    assert any("DRY RUN" in item.message for item in progress)
+    first_erase = next(
+        index for index, item in enumerate(progress) if item.phase == "ERASE"
+    )
+    assert any(item.message.startswith("plan:") for item in progress[:first_erase])
 
 
 # --------------------------------------------------------------------------
@@ -151,7 +159,7 @@ def test_real_wipe_zeroes_the_device_and_verifies(
     ledger = make_sink(tmp_path)
     result, _ = drain(
         execute(
-            make_job(device, dry_run=False),
+            make_job(device),
             make_caps(),
             io=probe_for(loop_device),
             ledger=ledger,
@@ -172,7 +180,7 @@ def test_ledger_records_every_phase_in_order(loop_device: str, tmp_path: Path) -
     ledger = make_sink(tmp_path)
     drain(
         execute(
-            make_job(device, dry_run=True),
+            make_job(device),
             make_caps(),
             io=probe_for(loop_device),
             ledger=ledger,
@@ -197,7 +205,7 @@ def test_progress_reports_every_phase_in_order(
     device = make_device(path=loop_device, serial="SYN-0001", by_id_path=None)
     _, progress = drain(
         execute(
-            make_job(device, dry_run=True),
+            make_job(device),
             make_caps(),
             io=probe_for(loop_device),
             ledger=make_sink(tmp_path),
@@ -225,7 +233,7 @@ def test_serial_swap_between_confirmation_and_execution_is_caught(
     with pytest.raises(DeviceVanished):
         drain(
             execute(
-                make_job(device, dry_run=True),
+                make_job(device),
                 make_caps(),
                 io=swapped,
                 ledger=make_sink(tmp_path),
@@ -237,7 +245,7 @@ def test_wrong_typed_serial_refuses(loop_device: str, tmp_path: Path) -> None:
     from core.errors import ConfirmationMismatch
 
     device = make_device(path=loop_device, serial="SYN-0001", by_id_path=None)
-    job = make_job(device, dry_run=True, confirmed_serial="WRONG")
+    job = make_job(device, confirmed_serial="WRONG")
     with pytest.raises(ConfirmationMismatch):
         drain(
             execute(
@@ -255,7 +263,7 @@ def test_mounted_device_refuses(loop_device: str, tmp_path: Path) -> None:
     with pytest.raises(MountedRefused):
         drain(
             execute(
-                make_job(device, dry_run=True),
+                make_job(device),
                 make_caps(),
                 io=probe_for(loop_device),
                 ledger=make_sink(tmp_path),
@@ -272,7 +280,7 @@ def test_system_disk_refuses(loop_device: str, tmp_path: Path) -> None:
     with pytest.raises(SystemDiskRefused):
         drain(
             execute(
-                make_job(device, dry_run=True),
+                make_job(device),
                 make_caps(),
                 io=probe_for(loop_device),
                 ledger=make_sink(tmp_path),
@@ -292,6 +300,6 @@ def test_purge_on_a_frozen_drive_raises_rather_than_downgrading(
         security_frozen=True,
         achievable_levels={SanitizationLevel.CLEAR},
     )
-    job = make_job(device, dry_run=True, level=SanitizationLevel.PURGE)
+    job = make_job(device, level=SanitizationLevel.PURGE)
     with pytest.raises(DeviceFrozen):
         drain(execute(job, caps, io=probe_for(loop_device), ledger=make_sink(tmp_path)))

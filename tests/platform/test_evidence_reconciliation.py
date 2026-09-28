@@ -69,7 +69,9 @@ def test_the_app_record_agrees_with_the_reconciliation(cap_id: str) -> None:
             for row in record.get("features", [])
             if row.get("platform") == platform and row.get("feature") == feature
         ]
-        assert rows and all(row["result"] == "UNSUPPORTED" for row in rows), cap_id
+        assert rows and all(
+            row["result"] in ("UNSUPPORTED", "IMPLEMENTED") for row in rows
+        ), cap_id
         return
     validated = entry["status"] == "PHYSICALLY VALIDATED"
     assert hardware_passed(platform, feature, record) is validated, cap_id

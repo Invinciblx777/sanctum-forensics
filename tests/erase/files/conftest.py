@@ -40,8 +40,8 @@ posix_only = pytest.mark.skipif(
 
 
 def real_erase(**overrides: Any) -> FileEraseOptions:
-    """Options with both destructive gates deliberately opened."""
-    base: dict[str, Any] = {"dry_run": False, "confirm": True}
+    """Options with the destructive gate deliberately opened."""
+    base: dict[str, Any] = {"confirm": True}
     base.update(overrides)
     return FileEraseOptions.model_validate(base)
 

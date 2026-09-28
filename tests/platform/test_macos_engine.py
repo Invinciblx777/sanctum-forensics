@@ -88,7 +88,6 @@ def _params(tmp_path: Path, **over: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
         "path": "disk4",
         "level": "CLEAR",
-        "dry_run": False,
         "typed_serial": "S5T7NS0R123456",
         "ledger_root": str(tmp_path / "ledger"),
         "job_id": "job-m1",
@@ -134,14 +133,18 @@ def test_a_real_clear_of_an_external_disk(tmp_path: Path) -> None:
     assert any("system_profiler" in text for text in result["limitations"])
 
 
-def test_a_dry_run_opens_nothing(tmp_path: Path) -> None:
+@pytest.mark.parametrize("key", ["dry_run", "simulation", "simulate"])
+def test_a_simulation_switch_is_refused_and_opens_nothing(
+    tmp_path: Path, key: str
+) -> None:
+    from core.errors import WorkflowGateRefused
+
     adapter, disk = _small_setup()
     before = bytes(disk.data)
-    result = _drain(adapter.execute_drive_sanitization(_params(tmp_path, dry_run=True)))
-    assert result["result"]["dry_run"] is True
+    with pytest.raises(WorkflowGateRefused, match=key):
+        _drain(adapter.execute_drive_sanitization(_params(tmp_path, **{key: True})))
     assert bytes(disk.data) == before
     assert disk.writes == 0
-
 
 def test_a_mounted_external_disk_is_refused(tmp_path: Path) -> None:
     adapter = _adapter(io=FakeMacIo([]))
@@ -186,15 +189,13 @@ def test_a_serial_that_changes_before_the_seam_is_refused(tmp_path: Path) -> Non
 
 def test_unmount_is_its_own_explicit_step() -> None:
     adapter = _adapter()
-    dry = adapter.prepare_device({"path": "disk4"})
-    assert dry["performed"] is False
-    assert dry["unmounts"] == ["/Volumes/BACKUP"]
     with pytest.raises(ConfirmationMismatch):
-        adapter.prepare_device({"path": "disk4", "dry_run": False})
+        adapter.prepare_device({"path": "disk4"})
     done = adapter.prepare_device(
-        {"path": "disk4", "dry_run": False, "typed_serial": "S5T7NS0R123456"}
+        {"path": "disk4", "typed_serial": "S5T7NS0R123456"}
     )
     assert done["performed"] is True
+    assert done["unmounts"] == ["/Volumes/BACKUP"]
     with pytest.raises(SystemDiskRefused):
         adapter.prepare_device({"path": "disk0"})
 

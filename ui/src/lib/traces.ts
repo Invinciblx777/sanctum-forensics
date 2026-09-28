@@ -36,32 +36,20 @@ export function traceKind(kind: string): string {
  * What became of one trace. The word carries the meaning; the tone separates
  * done, left for a person to judge, and failed.
  */
-export function traceOutcome(
-  trace: TraceRecord,
-  dryRun: boolean,
-): { word: string; tone: TraceTone } {
+export function traceOutcome(trace: TraceRecord): { word: string; tone: TraceTone } {
   if (trace.removed) return { word: trace.action || 'removed', tone: 'success' }
   if (!trace.exact) return { word: 'left for you to judge', tone: 'warning' }
   if (trace.report_only) return { word: 'reported, not edited', tone: 'warning' }
   if (trace.error) return { word: 'not removed', tone: 'destructive' }
-  if (dryRun) return { word: 'would be removed', tone: 'unknown' }
   return { word: 'not removed', tone: 'warning' }
 }
 
 /** One line for the whole sweep. */
-export function traceSummary(sweep: TraceSweep, dryRun: boolean): string {
+export function traceSummary(sweep: TraceSweep): string {
   const found = sweep.traces.length
   const places = sweep.searched.length
   if (!found) {
     return `Nothing found in the ${places} place${places === 1 ? '' : 's'} searched.`
-  }
-  const exact = sweep.traces.filter((trace) => trace.exact && !trace.report_only).length
-  const reportOnly = sweep.traces.filter((trace) => trace.report_only).length
-  if (dryRun) {
-    const reported = reportOnly
-      ? ` ${reportOnly} more ${reportOnly === 1 ? 'is' : 'are'} tied on evidence but only reported.`
-      : ''
-    return `${found} found. A real erase removes the ${exact} tied to these files on evidence; nothing was touched.${reported}`
   }
   const removed = sweep.traces.filter((trace) => trace.removed).length
   const left = found - removed

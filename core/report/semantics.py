@@ -114,7 +114,7 @@ def describe(
     check = verification or {}
     strategy = str(check.get("strategy") or "")
     if not check:
-        verified = "not verified (dry run or not recorded)"
+        verified = "not verified (no read-back recorded)"
     elif category == CRYPTO_ERASE:
         verified = (
             "sampled windows hashed before and after the command; every one "

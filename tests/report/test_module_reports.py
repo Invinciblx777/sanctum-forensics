@@ -52,7 +52,6 @@ def file_records() -> list[dict[str, Any]]:
         {
             "path": "/home/analyst/case-2149/notes.docx",
             "ok": True,
-            "dry_run": False,
             "bytes_overwritten": 41984,
             "unlinked": True,
             "streams_removed": [],
@@ -76,7 +75,6 @@ def file_records() -> list[dict[str, Any]]:
         {
             "path": "/var/log/journal/sanctum",
             "ok": False,
-            "dry_run": False,
             "bytes_overwritten": 0,
             "unlinked": False,
             "streams_removed": [],
@@ -157,7 +155,6 @@ def file_inputs(**overrides: Any) -> dict[str, Any]:
     base.update(
         {
             "records": file_records(),
-            "dry_run": False,
             "limitations": ["Directory fsync is not available on Windows."],
         }
     )
@@ -279,9 +276,16 @@ def test_the_file_report_claims_no_sanitization_method_for_a_file_overwrite() ->
     assert dpdp["instrument"].startswith("Digital Personal Data Protection Act")
 
 
-def test_the_file_report_records_the_dry_run_flag() -> None:
-    sections = build_file_erase_report(**file_inputs(dry_run=True))["sections"]
-    assert sections["scope"]["dry_run"] is True
+def test_a_new_file_report_carries_no_rehearsal_flag() -> None:
+    """Current code reports real erasures only: no dry-run scope or item flag."""
+    sections = build_file_erase_report(**file_inputs())["sections"]
+    assert "dry_run" not in sections["scope"]
+    assert all("dry_run" not in item for item in sections["results"]["items"])
+
+
+def test_the_file_report_builder_refuses_a_dry_run_argument() -> None:
+    with pytest.raises(TypeError):
+        build_file_erase_report(**file_inputs(dry_run=True))
 
 
 def test_a_file_report_with_no_records_still_produces_every_section() -> None:

@@ -22,7 +22,7 @@ pytestmark = pytest.mark.skipif(
 def _erase_options(**over: object) -> object:
     from core.models import FileEraseOptions
 
-    base: dict[str, object] = {"dry_run": False, "confirm": True}
+    base: dict[str, object] = {"confirm": True}
     base.update(over)
     return FileEraseOptions.model_validate(base)
 
@@ -113,9 +113,9 @@ def test_protected_windows_locations_are_refused_before_any_write(
     if not target.exists():  # pragma: no cover - unusual Windows install
         pytest.skip(f"{target} does not exist on this runner")
 
-    # Dry run: refused before anything is opened, let alone written.
+    # Confirmed, and still refused before anything is opened, let alone written.
     with pytest.raises(SystemDiskRefused):
-        erase_one(target, FileEraseOptions())
+        erase_one(target, FileEraseOptions(confirm=True))
 
 
 def test_a_traversing_path_lands_in_the_protected_tree_and_is_refused(

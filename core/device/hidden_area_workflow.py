@@ -18,9 +18,9 @@ What it does
   **Volatile is the default**: the drive forgets it at the next power cycle and
   returns to its original accessible maximum. A permanent change is made only
   when it was explicitly requested and approved.
-* **Executes** the plan behind two opt-ins (dry run by default, the device
-  serial typed by hand), after re-discovering the drive immediately before the
-  command and refusing if anything drifted from the plan. The drive is read
+* **Executes** the plan behind two opt-ins (a recorded human approval, and the
+  device serial typed by hand), after re-discovering the drive immediately
+  before the command and refusing if anything drifted from the plan. The drive is read
   again afterwards and the change is verified, not assumed.
 
 What it never does
@@ -188,8 +188,8 @@ _NEXT_ACTION: dict[HpaState, str] = {
         "device serial typed; this software cannot approve on anyone's behalf"
     ),
     _S.PLAN_READY: (
-        "run the change; dry run is the default, a real run needs the device "
-        "serial typed by hand"
+        "run the change on the real drive; it needs the device serial typed by "
+        "hand"
     ),
     _S.MODIFYING: "wait for SET MAX ADDRESS to return; do not disconnect the device",
     _S.VERIFYING: "wait for the drive to be read back",
@@ -554,8 +554,7 @@ class HpaResult(BaseModel):
 
     job_id: str
     plan_digest: str
-    dry_run: bool
-    outcome: Literal["SIMULATED", "COMPLETE", "FAILED"]
+    outcome: Literal["COMPLETE", "FAILED"]
     operation: str
     volatile: bool
     original_native_max_lba: int
@@ -564,8 +563,8 @@ class HpaResult(BaseModel):
     requested_accessible_max_lba: int
     #: The reading taken immediately before the command.
     pre_state: HiddenAreaState
-    #: The reading taken after it. ``None`` for a dry run, or when the drive
-    #: could not be read back.
+    #: The reading taken after it. ``None`` when the drive could not be read
+    #: back.
     post_state: HiddenAreaState | None
     #: True only when the re-read accessible maximum equals the requested one
     #: and the native maximum is unchanged.
@@ -1158,31 +1157,30 @@ def execute(
     backend: HiddenAreaBackend,
     *,
     device: Device,
-    dry_run: bool = True,
-    typed_serial: str = "",
+    typed_serial: str,
     ledger: HpaLedger,
     actor: str = "sanctum",
     job_id: str = "hpa",
     authorization_id: str = "",
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> Generator[dict[str, Any], None, HpaResult]:
-    """Run one approved HPA plan. Dry run by default; yields progress dicts.
+    """Run one approved HPA plan on the real drive; yields progress dicts.
 
     ``device`` is the caller's *fresh* read of the device (identity, system
     disk, mounts). Immediately before the command the drive's maxima are read
     again through ``backend`` and compared with the plan: any drift in
-    identity or in the original values refuses the plan as stale. A real run
-    also needs ``typed_serial`` equal to the device's serial. A dry run runs
-    every check, sends nothing, and says what it would have sent.
+    identity or in the original values refuses the plan as stale. Every run
+    needs ``typed_serial`` equal to the device's serial. There is no
+    non-writing mode: a run that passes the checks sends the command.
 
     Every step is ledgered: ``hpa.plan``, then ``hpa.blocked`` (a refusal),
-    ``hpa.dry_run``, or ``hpa.modify`` (written *before* the command, with the
+    or ``hpa.modify`` (written *before* the command, with the
     original values to restore to), ``hpa.verify``, and ``hpa.complete`` or
     ``hpa.failed``.
 
     Raises:
         SystemDiskRefused, MountedRefused: the device must not be touched.
-        ConfirmationMismatch: a real run without the exact serial typed.
+        ConfirmationMismatch: the exact serial was not typed.
         WorkflowGateRefused: the plan is blocked, stale, or for another platform.
         UnsupportedCapability: the drive could not be re-read before the change.
     """
@@ -1203,7 +1201,7 @@ def execute(
     def refuse(exc: SanctumError, reasons: list[str]) -> SanctumError:
         record(
             "hpa.blocked",
-            {"dry_run": dry_run},
+            {},
             {"verdict": "REFUSED", "why_blocked": reasons, "device_modified": "no"},
         )
         logger.warning("hpa_refused", path=plan.device.path, reasons=reasons)
@@ -1211,7 +1209,7 @@ def execute(
 
     record(
         "hpa.plan",
-        {"dry_run": dry_run, "plan": plan.model_dump(mode="json")},
+        {"plan": plan.model_dump(mode="json")},
         {"state": HpaState.PLAN_READY.value},
     )
     yield _progress(job_id, HpaState.PLAN_READY.value, 0, f"plan: {plan.operation}")
@@ -1228,21 +1226,20 @@ def execute(
         guard.assert_erasable(device)
     except SanctumError as exc:
         raise refuse(exc, [exc.message]) from None
-    if not dry_run:
-        typed = typed_serial.strip().casefold()
-        serial = device.serial.strip().casefold()
-        if not typed or not serial or typed != serial:
-            reasons = [
-                "a real HPA change needs the device serial typed by hand, and "
-                "the typed value does not match the serial read from the device"
-            ]
-            raise refuse(
-                ConfirmationMismatch(
-                    f"Typed value does not match the serial of {device.path}. "
-                    "Nothing was sent to the drive."
-                ),
-                reasons,
-            )
+    typed = typed_serial.strip().casefold()
+    serial = device.serial.strip().casefold()
+    if not typed or not serial or typed != serial:
+        reasons = [
+            "an HPA change needs the device serial typed by hand, and the "
+            "typed value does not match the serial read from the device"
+        ]
+        raise refuse(
+            ConfirmationMismatch(
+                f"Typed value does not match the serial of {device.path}. "
+                "Nothing was sent to the drive."
+            ),
+            reasons,
+        )
 
     # Re-read immediately before the command. A plan approved against values
     # the drive no longer reports is not the plan that was approved.
@@ -1256,39 +1253,6 @@ def execute(
         raise refuse(_gate(stale), stale)
 
     limitations = list(plan.limitations)
-    if dry_run:
-        message = (
-            f"DRY RUN: would send {plan.operation}. The accessible maximum would "
-            f"go from LBA {pre.accessible_max_lba} to LBA "
-            f"{plan.requested_accessible_max_lba}, exposing {pre.hidden_bytes} "
-            "bytes. Nothing was sent to the drive."
-        )
-        record(
-            "hpa.dry_run",
-            {**_values(plan), "pre_state": pre.model_dump(mode="json")},
-            {"device_modified": "no", "message": message},
-        )
-        yield _progress(job_id, HpaState.PLAN_READY.value, 10_000, message)
-        return HpaResult(
-            job_id=job_id,
-            plan_digest=plan.plan_digest,
-            dry_run=True,
-            outcome="SIMULATED",
-            operation=plan.operation,
-            volatile=plan.volatile,
-            original_native_max_lba=plan.original_native_max_lba,
-            original_accessible_max_lba=plan.original_accessible_max_lba,
-            original_dco_max_lba=plan.original_dco_max_lba,
-            requested_accessible_max_lba=plan.requested_accessible_max_lba,
-            pre_state=pre,
-            post_state=None,
-            verification_passed=False,
-            verification_notes=("Dry run: nothing was sent, so nothing was verified.",),
-            device_modified="no",
-            started_at=started,
-            finished_at=clock(),
-            limitations=tuple(limitations),
-        )
 
     # ---------------- MODIFYING ----------------
     yield _progress(job_id, HpaState.MODIFYING.value, 0, f"sending {plan.operation}")
@@ -1401,7 +1365,6 @@ def execute(
     return HpaResult(
         job_id=job_id,
         plan_digest=plan.plan_digest,
-        dry_run=False,
         outcome="COMPLETE",
         operation=plan.operation,
         volatile=plan.volatile,
@@ -1456,7 +1419,6 @@ def _failed(
     return HpaResult(
         job_id=job_id,
         plan_digest=plan.plan_digest,
-        dry_run=False,
         outcome="FAILED",
         operation=plan.operation,
         volatile=plan.volatile,

@@ -4,7 +4,6 @@ import assert from 'node:assert/strict'
 import type { DeviceAssessment, JobStatus, SafetyCheck } from '../src/lib/api.ts'
 import {
   REAL_ERASE_PATH,
-  SANITIZE_PATH,
   refusalFrom,
   sanitizeWorkflow,
   signedRecordWording,
@@ -42,7 +41,6 @@ function facts(overrides: Partial<SanitizeFacts> = {}): SanitizeFacts {
     offered: true,
     canRun: true,
     planRefusal: '',
-    dryRun: false,
     confirming: false,
     running: false,
     phase: null,
@@ -51,19 +49,38 @@ function facts(overrides: Partial<SanitizeFacts> = {}): SanitizeFacts {
   }
 }
 
-function job(state: string, dryRun: boolean, error: string | null = null): JobStatus {
-  return { state, params: { dry_run: dryRun }, error } as JobStatus
+function job(state: string, error: string | null = null): JobStatus {
+  return { state, params: {}, error } as JobStatus
 }
 
-test('the state names are the ones core/workflow.py defines', () => {
-  assert.deepEqual(SANITIZE_PATH, [
+test('the state names are the ones core/workflow.py defines, on one real path', () => {
+  assert.deepEqual(REAL_ERASE_PATH, [
     'DISCOVERED',
     'PREFLIGHT',
+    'BACKUP_VERIFIED',
     'HUMAN_APPROVAL_REQUIRED',
+    'PLAN_READY',
     'EXECUTING',
     'VERIFYING',
     'COMPLETE',
   ])
+})
+
+test('no state or headline names a rehearsal', () => {
+  const cases: Partial<SanitizeFacts>[] = [
+    {},
+    { confirming: true },
+    { running: true, phase: 'ERASE' },
+    { running: true, phase: 'VERIFY' },
+    { status: job('complete') },
+    { status: job('failed', 'device went away') },
+  ]
+  for (const overrides of cases) {
+    const flow = sanitizeWorkflow(facts(overrides))
+    assert.doesNotMatch(flow.headline, /DRY RUN|SIMULAT/i)
+    assert.doesNotMatch(flow.nextAction, /dry run|simulat/i)
+    assert.ok(!('simulation' in flow))
+  }
 })
 
 test('no assessment yet is DISCOVERED, not a pass', () => {
@@ -92,9 +109,9 @@ test('a mounted device is BLOCKED with the reason and the human remedy', () => {
   assert.deepEqual(flow.path, ['DISCOVERED', 'PREFLIGHT', 'BLOCKED'])
 })
 
-test('a blocked dry run is still blocked when the method is unreachable', () => {
+test('an unreachable method is BLOCKED with the engine refusal', () => {
   const flow = sanitizeWorkflow(
-    facts({ dryRun: true, canRun: false, planRefusal: 'Purge is not reachable.' }),
+    facts({ canRun: false, planRefusal: 'Purge is not reachable.' }),
   )
   assert.equal(flow.state, 'BLOCKED')
   assert.deepEqual(flow.whyBlocked, ['Purge is not reachable.'])
@@ -104,21 +121,13 @@ test('a real erase waits for HUMAN APPROVAL and shows no execution', () => {
   const flow = sanitizeWorkflow(facts())
   assert.equal(flow.state, 'HUMAN_APPROVAL_REQUIRED')
   assert.equal(flow.headline, 'HUMAN APPROVAL REQUIRED')
-  assert.equal(flow.simulation, false)
   const open = sanitizeWorkflow(facts({ confirming: true }))
   assert.equal(open.state, 'HUMAN_APPROVAL_REQUIRED')
   assert.match(open.nextAction, /serial/)
   assert.match(open.nextAction, /backup/)
 })
 
-test('a dry run before it starts is PREFLIGHT and labelled SIMULATION', () => {
-  const flow = sanitizeWorkflow(facts({ dryRun: true }))
-  assert.equal(flow.state, 'PREFLIGHT')
-  assert.equal(flow.simulation, true)
-  assert.match(flow.headline, /SIMULATION/)
-})
-
-test('NOT AUTHORIZED blocks a real erase but not a dry run', () => {
+test('NOT AUTHORIZED blocks the erase: there is no mode that needs no privilege', () => {
   const denied = assessment({
     headline: 'NOT AUTHORIZED',
     reason: 'This process does not have the privilege.',
@@ -126,31 +135,21 @@ test('NOT AUTHORIZED blocks a real erase but not a dry run', () => {
     safety_checks: [check('privilege', 'Privilege available', false, 'Not elevated.')],
   })
   assert.equal(sanitizeWorkflow(facts({ assessment: denied })).state, 'BLOCKED')
-  assert.equal(sanitizeWorkflow(facts({ assessment: denied, dryRun: true })).state, 'PREFLIGHT')
 })
 
 test('EXECUTING is only derived from a running job', () => {
   assert.notEqual(sanitizeWorkflow(facts({ confirming: true })).state, 'EXECUTING')
   const real = sanitizeWorkflow(facts({ running: true, phase: 'ERASE' }))
   assert.equal(real.state, 'EXECUTING')
-  assert.equal(real.simulation, false)
-  const dry = sanitizeWorkflow(facts({ running: true, dryRun: true }))
-  assert.equal(dry.headline, 'EXECUTING (SIMULATION)')
+  assert.equal(real.headline, 'EXECUTING')
 })
 
 test('the VERIFY phase is VERIFYING', () => {
   assert.equal(sanitizeWorkflow(facts({ running: true, phase: 'VERIFY' })).state, 'VERIFYING')
 })
 
-test('a completed dry run is COMPLETE (SIMULATION), read from the job not the toggle', () => {
-  const flow = sanitizeWorkflow(facts({ dryRun: false, status: job('complete', true) }))
-  assert.equal(flow.state, 'COMPLETE')
-  assert.equal(flow.simulation, true)
-  assert.match(flow.nextAction, /Nothing was written/)
-})
-
 test('a failed real erase is FAILED with the reason and an unknown device state', () => {
-  const flow = sanitizeWorkflow(facts({ status: job('failed', false, 'device went away') }))
+  const flow = sanitizeWorkflow(facts({ status: job('failed', 'device went away') }))
   assert.equal(flow.state, 'FAILED')
   assert.deepEqual(flow.whyBlocked, ['device went away'])
   assert.match(flow.nextAction, /unknown state/)
@@ -213,14 +212,8 @@ test('a refusal never says the device is untouched unless the server said so', (
   )
 })
 
-test('a dry run ignores any server record and never leaves SIMULATION', () => {
-  const flow = sanitizeWorkflow(facts({ dryRun: true, server: server('PLAN_READY') }))
-  assert.equal(flow.state, 'PREFLIGHT')
-  assert.equal(flow.simulation, true)
-})
-
 function realJob(verification: unknown): JobStatus {
-  return { state: 'complete', params: { dry_run: false }, result: { verification }, error: null } as unknown as JobStatus
+  return { state: 'complete', params: {}, result: { verification }, error: null } as unknown as JobStatus
 }
 
 test('a finished real job whose read-back FAILED is FAILED, never COMPLETE', () => {
@@ -243,17 +236,10 @@ test('COMPLETE on a real job only claims what verification supports', () => {
   }
 })
 
-test('a simulation is never shown as a physical completion', () => {
-  const flow = sanitizeWorkflow(facts({ status: job('complete', true) }))
-  assert.equal(flow.simulation, true)
-  assert.equal(flow.headline, 'COMPLETE (SIMULATION)')
-  assert.match(flow.nextAction, /Nothing was written/)
-})
-
 test('a helper refusal at the write seam is BLOCKED, not a failed erase', () => {
   const status = {
     state: 'failed',
-    params: { dry_run: false },
+    params: {},
     error: 'REFUSED at the write seam: model changed. Nothing was erased.',
     error_kind: 'WorkflowGateRefused',
   } as unknown as JobStatus
@@ -266,17 +252,17 @@ test('a helper refusal at the write seam is BLOCKED, not a failed erase', () => 
 })
 
 test('only a completed job is offered a certificate', () => {
-  assert.equal(signedRecordWording('complete', false).title, 'Certificate')
-  assert.match(signedRecordWording('complete', true).note, /nothing was written/)
+  assert.equal(signedRecordWording('complete').title, 'Certificate')
+  assert.doesNotMatch(signedRecordWording('complete').note, /dry run|nothing was written/)
   for (const state of ['failed', 'cancelled', '']) {
-    const wording = signedRecordWording(state, false)
+    const wording = signedRecordWording(state)
     assert.equal(wording.title, 'Signed record', state)
     assert.doesNotMatch(wording.action, /certificate/i)
     assert.match(wording.issued, /not a sanitization certificate/)
     assert.equal(wording.tone, 'warning')
   }
   // Ran to the end, read-back FAILED: a signed record, never a certificate.
-  const failedReadBack = signedRecordWording('complete', false, true)
+  const failedReadBack = signedRecordWording('complete', true)
   assert.equal(failedReadBack.title, 'Signed record')
   assert.match(failedReadBack.issued, /not a sanitization certificate/)
   assert.match(failedReadBack.note, /read-back verification FAILED/)

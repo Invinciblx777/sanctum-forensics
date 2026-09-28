@@ -341,7 +341,7 @@ complete would be a lie of exactly the kind this project exists not to tell.
 
 A report carries the ledger entries belonging to *its* job, plus genesis. On the
 validation run that was 37 entries out of 43, with a 6-entry gap at seq 1–6
-belonging to the dry-run job. The report declares that gap **under its own
+belonging to another job (a rehearsal job of that earlier build). The report declares that gap **under its own
 signature**, in a field called `excerpt_gaps`:
 
 ```json
@@ -729,13 +729,16 @@ not been run on a physical disk.
 Two gates in the tool, three more in the validation harness, and one of them has
 been exercised against a real device.
 
-In the tool: dry run is the default and writes nothing — verified by hashing the
-whole device before and after, not a sample, and the SHA-256 was identical. Then
-the operator must type the device serial, and it must match. Since 2026-09-25 a
-real erase also needs a one-use authorization the server issues after a backup
-image and an explicit approval, bound to the device's serial, model and size, the
-plan and the backup; the privileged helper re-checks all of it immediately before
-the engine starts. That part is SYNTHETICALLY VALIDATED only.
+In the tool: there is no rehearsal mode, so every gate runs on every erase. The
+operator must type the device serial, and it must match. Every erase also needs
+a one-use authorization the server issues after a backup image and an explicit
+approval, bound to the device's serial, model and size, the plan and the backup;
+the privileged helper re-checks all of it immediately before the engine starts,
+and refuses any request that still asks for the removed dry-run mode. That part
+is SYNTHETICALLY VALIDATED only. (On the 2026-09-05 validation run an earlier
+build's dry run was hashed around - the whole device, not a sample - and wrote
+nothing; that is historical evidence. The harness now hashes around a *refused*
+run instead: a wrong serial must write nothing.)
 
 Refusals, tested against real devices on the validation host:
 
@@ -757,7 +760,7 @@ could not be reached.
 A mounted device is refused, never auto-unmounted: if the operator did not know
 it was mounted, they do not yet know what is on it. On Windows and macOS the
 operator can take a disk offline or unmount it through a separate Prepare step
-(dry run by default, typed serial for a real run, system and internal disks
+(the volumes it affects shown first, typed serial, system and internal disks
 refused, ledgered); it is never part of an erase.
 
 The table above is the Linux host. On Windows the open `\\.\PhysicalDriveN`
@@ -1131,20 +1134,26 @@ bindings load, not that a disk was cleared.
 
 ---
 
-## 27 · What is simulation, and what is real hardware?
+## 27 · Is there a dry run, and what is real hardware?
 
-> **Say it out loud:** Every erase is a dry run until someone turns that off and
-> types the device serial. A dry run writes nothing, and every screen showing
-> one says *SIMULATION / NO PHYSICAL DEVICE MODIFIED*. Our measurements carry a
-> population label: synthetic images, the one physical USB stick, or CI virtual
-> disks. We never mix them. The physical recovery benchmark has not been run
-> yet, so no physical benchmark result exists.
+> **Say it out loud:** No. Every erase runs on the selected real device once its
+> gates pass: a backup, a recorded approval, a one-use server authorization,
+> the serial typed twice, and a final re-read of the device by the process that
+> writes. What would run is shown before approval by a read-only plan, which
+> writes nothing and is not a rehearsal. Our measurements carry a population
+> label: synthetic images, the one physical USB stick, or CI virtual disks. We
+> never mix them, and a fake device passing a test is never called physical
+> validation. The physical recovery benchmark has not been run yet, so no
+> physical benchmark result exists.
 
 **The full written answer, for the follow-up:**
 
-- `dry_run` defaults to true in every erase request model (`api/routes/models.py`).
-- The UI decides the banner from the flag the server recorded for the job, not
-  from the form toggle (`ui/src/lib/simulation.ts`).
+- No erase request model has a `dry_run` field, and every request model rejects
+  `dry_run`, `simulation` and `simulate` with 422 (`api/routes/models.py`); the
+  helper refuses them again at the write seam (`core/device/guard.py`).
+- Case records written by earlier builds that ran a rehearsal are shown as
+  HISTORICAL · NOTHING WRITTEN and never counted as an erasure
+  (`ui/src/lib/legacy.ts`).
 - The physical media recorded in `docs/validation/hardware.md` is one Toshiba
   TransMemory USB stick. The Windows record of 2026-09-27 adds a USB stick
   (discovery only) and the host disk (file erase). Recovery calibration and

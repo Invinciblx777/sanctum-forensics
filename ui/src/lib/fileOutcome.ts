@@ -1,9 +1,9 @@
 /**
  * What happened to one path in a file erase, in words.
  *
- * Four outcomes that must never be confused: the erase completed, it was
- * simulated, it started and failed partway, or it stopped before it began
- * (refused, or failed a check). The server's `attempted` flag separates the
+ * Three outcomes that must never be confused: the erase completed, it started
+ * and failed partway, or it stopped before it began (refused, or failed a
+ * check). The server's `attempted` flag separates the
  * last two; a record without it (an older server) is said to be unknown
  * rather than guessed at. A path the erase started on and did not finish is
  * in an unknown state, so it is never labelled "not attempted".
@@ -25,13 +25,9 @@ export interface FileOutcome {
 }
 
 export function fileOutcome(
-  record: Pick<FileEraseRecord, 'ok' | 'dry_run' | 'error_kind' | 'attempted'>,
+  record: Pick<FileEraseRecord, 'ok' | 'error_kind' | 'attempted'>,
 ): FileOutcome {
-  if (record.ok) {
-    return record.dry_run
-      ? { word: 'simulated', tone: 'unknown', residual: '', basis: '' }
-      : { word: 'erased', tone: 'success', residual: '', basis: '' }
-  }
+  if (record.ok) return { word: 'erased', tone: 'success', residual: '', basis: '' }
   const kind = record.error_kind ?? 'failed'
   if (record.attempted === true) {
     return {

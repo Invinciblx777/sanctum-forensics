@@ -173,7 +173,7 @@ def test_the_capability_limitations_reach_the_preview() -> None:
         if case[3] is not None and case[3] is not EraseMethod.SED_CRYPTO_ERASE
     ],
 )
-def test_a_dry_run_plans_the_method_the_preview_showed(
+def test_a_real_run_plans_the_method_the_preview_showed(
     device_over: dict[str, object],
     caps_over: dict[str, object],
     expected: EraseMethod,
@@ -202,7 +202,31 @@ def test_a_dry_run_plans_the_method_the_preview_showed(
         drive.hidden_areas, "detect_hidden_areas", lambda d, io=None: None
     )
 
-    job = make_job(device, level=SanitizationLevel.PURGE, dry_run=True)
+    # execute always dispatches; the write and the read-back are faked so the
+    # method it selects can be compared without touching a device.
+    def fake_dispatch(*_a: object, **_k: object) -> object:
+        yield from ()
+        return (0, 1, [], [], True)
+
+    def fake_verify(*_a: object, **_k: object) -> object:
+        return drive.VerificationResult(
+            passed=True,
+            strategy="hw_attested",
+            bytes_checked=0,
+            sample_count=0,
+            confidence_bp=10_000,
+            failed_offsets=[],
+            hw_attested=True,
+        )
+
+    def no_calibration(*_a: object, **_k: object) -> object:
+        raise AssertionError("a firmware method must not calibrate")
+
+    monkeypatch.setattr(drive, "_dispatch", fake_dispatch)
+    monkeypatch.setattr(drive.verify_mod, "verify", fake_verify)
+    monkeypatch.setattr(drive.calibrate_mod, "calibrate_write", no_calibration)
+
+    job = make_job(device, level=SanitizationLevel.PURGE)
     generator = drive.execute(job, caps, ledger=_Sink())
     while True:
         try:

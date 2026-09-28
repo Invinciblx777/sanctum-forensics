@@ -24,7 +24,6 @@ def _record(inspection: FileInspection, **overrides: object) -> FileEraseRecord:
     base: dict[str, object] = {
         "path": inspection.path,
         "ok": True,
-        "dry_run": False,
         "inspection": inspection,
     }
     base.update(overrides)

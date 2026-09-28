@@ -54,7 +54,6 @@ def _request(**over: Any) -> blockclear.ClearRequest:
         "mechanism": "WriteFile to \\\\.\\PhysicalDriveN",
         "device_class": "usb-flash",
         "flash": True,
-        "dry_run": False,
         "buffer_bytes": 256 * 1024,
         "checkpoint_bytes": 512 * 1024,
     }
@@ -106,20 +105,10 @@ def test_a_real_clear_overwrites_every_byte_and_verifies(tmp_path: Path) -> None
     assert "erase.verify.result" in ops
 
 
-def test_a_dry_run_opens_nothing_and_writes_nothing(tmp_path: Path) -> None:
-    api = FakeWindowsApi([FakeDisk(number=2, size_bytes=SIZE, serial="SER1")])
-    before = bytes(api.disks[2].data)
-
-    def refuse() -> WindowsDisk:
-        raise AssertionError("a dry run must not open the device")
-
-    _, result = _drain(
-        blockclear.clear(_request(dry_run=True), refuse, ledger=_sink(tmp_path))
-    )
-    assert result.dry_run and result.bytes_written == 0
-    assert result.verification is None and result.achieved_level is None
-    assert bytes(api.disks[2].data) == before
-    assert api.disks[2].opened_for_write == 0
+def test_the_clear_request_has_no_rehearsal_mode() -> None:
+    """``clear`` always opens, writes and verifies; it cannot be told not to."""
+    with pytest.raises(TypeError):
+        _request(dry_run=True)
 
 
 def test_a_swapped_disk_is_refused_before_the_first_write(tmp_path: Path) -> None:

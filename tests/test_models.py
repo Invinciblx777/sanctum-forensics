@@ -28,8 +28,10 @@ def test_device_round_trip(sample_device: Device) -> None:
     assert Device.model_validate_json(sample_device.model_dump_json()) == sample_device
 
 
-def test_erase_job_defaults_to_dry_run(sample_erase_job: EraseJob) -> None:
-    assert sample_erase_job.dry_run is True
+def test_an_erase_job_has_no_dry_run_and_needs_its_serial(
+    sample_erase_job: EraseJob,
+) -> None:
+    assert "dry_run" not in EraseJob.model_fields
     assert sample_erase_job.confirmed_serial is None
 
 

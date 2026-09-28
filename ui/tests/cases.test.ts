@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import {
   caseFacts,
   caseRequestFailed,
-  isSimulation,
+  isHistoricalRehearsalOp,
   operationStatus,
   operationType,
   reportsByOperation,
@@ -106,8 +106,8 @@ test('the overview line counts a refusal as blocked, not failed', () => {
   const facts = caseFacts(
     detail({
       operations: [
-        op({ operation_id: 'a', type: 'erase-drive', status: 'failed', error_kind: 'WorkflowGateRefused', params: { dry_run: false } }),
-        op({ operation_id: 'b', type: 'erase-drive', status: 'failed', error_kind: 'OverwriteIncomplete', params: { dry_run: false } }),
+        op({ operation_id: 'a', type: 'erase-drive', status: 'failed', error_kind: 'WorkflowGateRefused' }),
+        op({ operation_id: 'b', type: 'erase-drive', status: 'failed', error_kind: 'OverwriteIncomplete' }),
       ],
     }),
   )
@@ -121,11 +121,13 @@ test('a case that cannot be read says REQUEST FAILED, not BLOCKED', () => {
   assert.doesNotMatch(words, /BLOCKED|refus/i)
 })
 
-test('only an explicit dry run is a simulation', () => {
-  assert.equal(isSimulation(op({ params: { dry_run: true } })), true)
-  assert.equal(isSimulation(op({ params: { dry_run: false } })), false)
-  assert.equal(isSimulation(op({ params: {} })), false)
-  assert.equal(isSimulation(op({ params: { dry_run: 'true' } })), false)
+test('only a record an earlier build filed as a rehearsal is historical', () => {
+  // Historical evidence: case files written before real-device mode.
+  assert.equal(isHistoricalRehearsalOp(op({ params: { dry_run: true } })), true)
+  assert.equal(isHistoricalRehearsalOp(op({ params: { dry_run: false } })), false)
+  assert.equal(isHistoricalRehearsalOp(op({ params: { dry_run: 'true' } })), false)
+  // What this build files: no flag at all, which is a real operation.
+  assert.equal(isHistoricalRehearsalOp(op({ params: {} })), false)
 })
 
 test('the latest report stands for its operation', () => {
@@ -155,11 +157,11 @@ test('the overview lines count what the case holds and say so when empty', () =>
       reports: [report({}), report({ operation_id: 'e', signed: false })],
     }),
   )
-  assert.equal(full.operations, '2 complete · 1 failed — 1 of 3 simulated')
+  assert.equal(full.operations, '2 complete · 1 failed — 1 of 3 historical records that wrote nothing')
   assert.equal(full.reports, '1 signed · 1 unsigned')
 
   const rehearsal = caseFacts(
     detail({ operations: [op({ params: { dry_run: true } })] }),
   )
-  assert.equal(rehearsal.operations, '1 complete — all simulated')
+  assert.equal(rehearsal.operations, '1 complete — all historical records that wrote nothing')
 })

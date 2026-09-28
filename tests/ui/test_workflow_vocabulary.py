@@ -34,8 +34,14 @@ def _path(name: str) -> list[str]:
 
 def test_every_drawn_path_uses_only_state_machine_names() -> None:
     known = {state.value for state in WorkflowState}
-    for name in ("SANITIZE_PATH", "REAL_ERASE_PATH"):
-        assert set(_path(name)) <= known, name
+    assert set(_path("REAL_ERASE_PATH")) <= known
+
+
+def test_the_ui_draws_one_path_and_it_is_real() -> None:
+    """The rehearsal path (SANITIZE_PATH, no backup and no approval) is gone."""
+    text = SOURCE.read_text(encoding="utf-8")
+    assert "SANITIZE_PATH" not in text
+    assert not re.search(r"DRY RUN|dryRun|simulation", text)
 
 
 def test_the_real_erase_path_is_a_walk_of_the_state_machine_edges() -> None:

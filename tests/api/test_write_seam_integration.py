@@ -41,7 +41,7 @@ pytestmark = pytest.mark.skipif(
     sys.platform != "linux", reason="the whole-drive write seam exists only on Linux"
 )
 
-REAL = {"path": "/dev/sdz", "dry_run": False, "typed_serial": "SYN-PURGE-1"}
+REAL = {"path": "/dev/sdz", "typed_serial": "SYN-PURGE-1"}
 
 
 class World:
@@ -89,7 +89,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> World:
     )
 
     def engine(self: Any, params: dict[str, Any]) -> Any:
-        state.engine_entries.append(params.get("dry_run"))
+        state.engine_entries.append(params.get("path"))
         yield from ()
         return {"result": {}}
 
@@ -138,7 +138,7 @@ def test_the_whole_chain_reaches_the_engine_through_the_real_helper(
     assert accepted.status_code == 200, accepted.text
     status = _finish(seam_client, accepted.json()["job_id"])
     assert status["state"] == "complete", status
-    assert world.engine_entries == [False]
+    assert world.engine_entries == ["/dev/sdz"]
     # The binding is for the helper; a client reading the job never sees it.
     assert status["params"]["authorization"] == "<redacted>"
     assert status["params"]["authorization_dir"] == "<redacted>"
@@ -233,7 +233,7 @@ def test_a_failed_read_back_reaches_the_case_as_a_failed_verification(
     """A job that completes with a FAILED read-back is not a completed erasure."""
 
     def engine(self: Any, params: dict[str, Any]) -> Any:
-        world.engine_entries.append(params.get("dry_run"))
+        world.engine_entries.append(params.get("path"))
         yield from ()
         return {"result": {"verification": {"passed": False, "failed_offsets": [4096]}}}
 
@@ -287,14 +287,27 @@ def test_a_backup_changed_after_the_api_gate_is_refused_by_the_helper(
     assert world.engine_entries == []
 
 
-def test_a_simulation_through_the_real_helper_carries_no_authorization(
-    seam_client: TestClient, seam_services: AppServices, world: World
+@pytest.mark.parametrize("key", ["dry_run", "simulation", "simulate"])
+def test_the_real_helper_refuses_a_simulation_switch_at_the_write_seam(
+    seam_services: AppServices, world: World, key: str
 ) -> None:
-    accepted = seam_client.post("/jobs/erase-drive", json={"path": "/dev/sdz"})
-    status = _finish(seam_client, accepted.json()["job_id"])
-    assert status["state"] == "complete", status
-    assert "authorization" not in status["params"]
-    assert world.engine_entries == [True]
+    """Even a caller that bypasses the API cannot ask the helper to rehearse.
+
+    Handed straight to the in-process helper with an otherwise well-formed
+    request, a removed simulation switch is refused before the adapter's
+    engine is entered - it is neither run nor dropped.
+    """
+    from helper.rpc import RpcError
+
+    stream = seam_services.helper.call_stream(
+        "run_erase",
+        {**REAL, key: True, "job_id": "erase-drive-x", "ledger_root": "/nonexistent"},
+    )
+    with pytest.raises(RpcError) as refused:
+        next(stream)
+    assert refused.value.kind == "WorkflowGateRefused"
+    assert key in str(refused.value)
+    assert world.engine_entries == []
 
 
 def test_a_record_requested_after_a_refusal_claims_nothing_was_sanitized(

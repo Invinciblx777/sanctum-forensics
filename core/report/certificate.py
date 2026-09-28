@@ -9,10 +9,15 @@ nothing is computed that the report does not already state, except the SHA-256
 of the report's own canonical bytes, which is how the paper is matched to the
 file.
 
-The headline is derived conservatively. A dry run is a simulation, not a
-sanitization. A job that did not complete, a read-back that failed, or a run
-with no verification recorded is said to be exactly that, in the band where a
-reader looks first - never softened into a pass.
+The headline is derived conservatively. A job that did not complete, a
+read-back that failed, or a run with no verification recorded is said to be
+exactly that, in the band where a reader looks first - never softened into a
+pass.
+
+Current code only produces reports of real operations. Reports signed by
+earlier builds may record a rehearsal (a "SIMULATION" or "DRY RUN" limitation,
+or a ``dry_run`` scope flag). Those are historical evidence: they still render,
+and still render as "nothing was sanitized", never as a pass.
 
 The remaining pages print every section of the report, in the report's own
 order, so nothing the JSON says is missing from the paper.
@@ -26,6 +31,14 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 __all__ = ["render_certificate_pdf"]
+
+#: Limitation prefixes that earlier builds wrote on a rehearsal against a host
+#: file. Read so historical reports keep rendering as "nothing was sanitized";
+#: never written by current code.
+_LEGACY_REHEARSAL_MARKS = (
+    "DRY RUN / NO PHYSICAL DEVICE MODIFIED",
+    "SIMULATION / NO PHYSICAL DEVICE MODIFIED",
+)
 
 # Print colours: dark ink on white, one violet for what the signature attests.
 _INK = (0.07, 0.08, 0.09)
@@ -110,18 +123,18 @@ def _verdict(kind: str, sections: dict[str, Any]) -> tuple[str, str, str]:
             "destructive",
         )
     limitations = (sections.get("limitations") or {}).get("items") or []
-    simulated = any(
-        str(item).startswith("SIMULATION / NO PHYSICAL DEVICE MODIFIED")
-        for item in limitations
+    # Historical reports only; no current code path writes these markers.
+    legacy_rehearsal = any(
+        str(item).startswith(_LEGACY_REHEARSAL_MARKS) for item in limitations
     )
     if kind == "drive":
         method = sections.get("method") or {}
         check = sections.get("verification") or {}
         achieved = str(method.get("level_achieved") or "")
         requested = _text(method.get("level_requested"))
-        if simulated:
+        if legacy_rehearsal:
             return (
-                "Simulation: no device was sanitized",
+                "Rehearsal record: no device was sanitized",
                 f"{_text(method.get('method'))} ran against a host file standing in "
                 f"for a device, and read it back by {_text(check.get('strategy'))}. "
                 "It shows the procedure, not a sanitized medium.",
@@ -129,9 +142,9 @@ def _verdict(kind: str, sections: dict[str, Any]) -> tuple[str, str, str]:
             )
         if achieved.startswith("NONE (dry run"):
             return (
-                "Simulation: nothing was written",
-                f"A dry run of {_text(method.get('method'))} for {requested}. "
-                "No level was achieved and nothing was verified.",
+                "Rehearsal record: nothing was written",
+                f"A historical rehearsal of {_text(method.get('method'))} for "
+                f"{requested}. No level was achieved and nothing was verified.",
                 "neutral",
             )
         if int(check.get("bytes_checked") or 0) == 0 and not check.get("hw_attested"):
@@ -175,7 +188,7 @@ def _verdict(kind: str, sections: dict[str, Any]) -> tuple[str, str, str]:
             f"{int(checks.get('files_not_verifiable') or 0)} not verifiable here."
         )
         if scope.get("dry_run"):
-            return ("Simulation: nothing was written", basis, "neutral")
+            return ("Rehearsal record: nothing was written", basis, "neutral")
         if failed:
             return (
                 f"{erased} of {paths} erased, {failed} failed",
@@ -323,7 +336,11 @@ def _facts(
                         str(int(scope.get("paths_requested") or 0)),
                         False,
                     ),
-                    ("Dry run", _text(scope.get("dry_run")), False),
+                    *(
+                        [("Rehearsal (historical)", _text(scope["dry_run"]), False)]
+                        if "dry_run" in scope
+                        else []
+                    ),
                     (
                         "Bytes overwritten",
                         f"{int(results.get('bytes_overwritten') or 0):,}",

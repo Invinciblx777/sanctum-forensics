@@ -571,20 +571,17 @@ class WindowsAdapter(BaseAdapter):
     ) -> Generator[dict[str, Any], None, dict[str, Any]]:
         from core.device.win.disk import parse_disk_number
 
-        dry_run = params.get("dry_run", True) is not False
         level = str(params.get("level", "CLEAR"))
         device = self._revalidated(params)
-        capability, resolution = self._choose(device, level, dry_run=dry_run)
+        capability, resolution = self._choose(device, level)
         number = parse_disk_number(device.id)
         sink = ledger_sink(params)
         job_id = str(params["job_id"])
         if capability is Capability.WHOLE_DRIVE_CLEAR:
-            generator: Any = self._clear(
-                device, number, resolution, job_id, dry_run, sink
-            )
+            generator: Any = self._clear(device, number, resolution, job_id, sink)
         else:
             generator = self._sanitize(
-                device, number, capability, resolution, job_id, dry_run, sink
+                device, number, capability, resolution, job_id, sink
             )
         return (yield from json_records(generator))
 
@@ -593,9 +590,8 @@ class WindowsAdapter(BaseAdapter):
     ) -> Generator[dict[str, Any], None, dict[str, Any]]:
         from core.device.win.disk import parse_disk_number
 
-        dry_run = params.get("dry_run", True) is not False
         device = self._revalidated(params)
-        _, resolution = self._choose(device, "CLEAR", dry_run=dry_run)
+        _, resolution = self._choose(device, "CLEAR")
         sink = ledger_sink(params)
         job_id = str(params["job_id"])
         checkpoint = sink.last_checkpoint(job_id)
@@ -610,7 +606,6 @@ class WindowsAdapter(BaseAdapter):
             parse_disk_number(device.id),
             resolution,
             job_id,
-            dry_run,
             sink,
             resume_from=checkpoint,
         )
@@ -648,7 +643,6 @@ class WindowsAdapter(BaseAdapter):
         number: int,
         resolution: Any,
         job_id: str,
-        dry_run: bool,
         sink: Any,
         *,
         resume_from: Any = None,
@@ -670,7 +664,6 @@ class WindowsAdapter(BaseAdapter):
             mechanism=row.mechanism,
             device_class=resolution.device_class,
             flash=device.media_type != "hdd",
-            dry_run=dry_run,
             limitations=tuple(row.limitations),
             resume_from=resume_from,
         )
@@ -687,7 +680,6 @@ class WindowsAdapter(BaseAdapter):
         capability: Capability,
         resolution: Any,
         job_id: str,
-        dry_run: bool,
         sink: Any,
     ) -> Any:
         from core.device.win import ata, ioctl, nvme
@@ -718,7 +710,6 @@ class WindowsAdapter(BaseAdapter):
             protocol="NVMe" if nvme_bus else "ATA",
             mechanism=row.mechanism,
             device_class=resolution.device_class,
-            dry_run=dry_run,
             limitations=tuple(row.limitations),
         )
         build = self.os_build()
@@ -779,20 +770,21 @@ class WindowsAdapter(BaseAdapter):
     def prepare_device(self, params: dict[str, Any]) -> dict[str, Any]:
         """Take a disk offline (non-persistently), as its own explicit step.
 
-        Dry run by default. A real run needs the typed serial, refuses the
-        system disk, and binds the handle before the attribute is changed.
+        Needs the typed serial, refuses the system disk, and binds the handle
+        before the attribute is changed.
         Taking a disk offline dismounts its volumes; it writes nothing to the
         medium, and the disk returns online at the next replug or reboot.
         """
+        from core.device.guard import refuse_removed_mode_keys
         from core.device.win.disk import WindowsDisk, parse_disk_number
 
+        refuse_removed_mode_keys(params)
         device = self.inspect_device(str(params["path"]))
-        dry_run = params.get("dry_run", True) is not False
         if device.system_device:
             raise SystemDiskRefused(
                 f"Refusing to take {device.path} offline: it is the system disk."
             )
-        if not dry_run and normalized_serial(
+        if not normalized_serial(device.serial) or normalized_serial(
             str(params.get("typed_serial") or "")
         ) != normalized_serial(device.serial):
             raise ConfirmationMismatch(
@@ -803,10 +795,7 @@ class WindowsAdapter(BaseAdapter):
             "serial": device.serial,
             "action": "IOCTL_DISK_SET_DISK_ATTRIBUTES offline, not persistent",
             "unmounts": device.mount_points,
-            "dry_run": dry_run,
         }
-        if dry_run:
-            return {**action, "performed": False}
         disk = WindowsDisk(self.native(), parse_disk_number(device.id), write=True)
         disk.open()
         try:

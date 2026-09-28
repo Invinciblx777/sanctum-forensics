@@ -29,9 +29,9 @@ def test_unknown_capabilities_are_none_not_false() -> None:
     assert inspection.limitations == []
 
 
-def test_dry_run_and_confirm_are_two_independent_gates() -> None:
+def test_the_confirmation_gate_defaults_closed_and_there_is_no_dry_run() -> None:
     options = FileEraseOptions()
-    assert options.dry_run is True
+    assert "dry_run" not in FileEraseOptions.model_fields
     assert options.confirm is False
     assert options.break_hardlinks is False
     assert options.rename_rounds == 8
@@ -80,7 +80,6 @@ def test_highest_severity_is_the_worst_not_the_first() -> None:
     record = FileEraseRecord(
         path="x",
         ok=True,
-        dry_run=False,
         inspection=FileInspection(path="x", size_bytes=1),
         findings=[
             ResidualFinding(

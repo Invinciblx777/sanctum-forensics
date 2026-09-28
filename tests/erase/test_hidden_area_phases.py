@@ -66,16 +66,58 @@ def hidden_report(hidden_bytes: int) -> HiddenAreaReport:
     )
 
 
+def _fake_dispatch(
+    _device: Any, _caps: Any, geo: Geometry, _method: Any, **kw: Any
+) -> Any:
+    """Stands in for the write: reports the whole geometry written, touches nothing."""
+    yield drive._progress(kw["job_id"], ErasePhase.ERASE, 10_000, "faked write")
+    return (geo.size_bytes, 1, [], [], False)
+
+
+def _fake_verify(*_a: Any, **_kw: Any) -> Any:
+    return drive.VerificationResult(
+        passed=True,
+        strategy="full_read",
+        bytes_checked=DEVICE_BYTES,
+        sample_count=0,
+        failed_offsets=[],
+        confidence_bp=10_000,
+        probability_note="test",
+        hw_attested=False,
+    )
+
+
+def _no_device_io(geometry: Geometry, hidden: HiddenAreaReport) -> Any:
+    """Every seam that would touch a device, faked. The engine runs for real.
+
+    There is no non-writing mode to lean on: ``execute`` always dispatches, so
+    the write, the read-back and the calibration are replaced here instead.
+    """
+    from contextlib import ExitStack
+
+    stack = ExitStack()
+    for target, name, kwargs in (
+        (drive, "device_geometry", {"return_value": geometry}),
+        (drive.hidden_areas, "detect_hidden_areas", {"return_value": hidden}),
+        (drive.guard, "assert_erasable", {}),
+        (drive, "_reread_serial", {}),
+        (drive, "_dispatch", {"new": _fake_dispatch}),
+        (drive.verify_mod, "verify", {"new": _fake_verify}),
+        (drive.calibrate_mod, "calibrate_write", {"return_value": honest()}),
+    ):
+        stack.enter_context(mock.patch.object(target, name, **kwargs))
+    return stack
+
+
 def run_execute(
     tmp_path: Path,
     *,
     hidden_bytes: int,
-    dry_run: bool = True,
     **job_overrides: Any,
 ) -> tuple[Ledger, list[Any]]:
     """Drive ``execute`` with a faked hidden-area probe. Returns (ledger, progress)."""
     device = make_device(path="/dev/loop-fake", serial="SYN-0001", by_id_path=None)
-    job = make_job(device, dry_run=dry_run, **job_overrides)
+    job = make_job(device, **job_overrides)
     chain = Ledger(
         tmp_path / "ledger", tool_version="0.0.0-test", pubkey_fingerprint="AA:BB"
     )
@@ -85,16 +127,7 @@ def run_execute(
     )
 
     progress: list[Any] = []
-    with (
-        mock.patch.object(drive, "device_geometry", return_value=geometry),
-        mock.patch.object(
-            drive.hidden_areas,
-            "detect_hidden_areas",
-            return_value=hidden_report(hidden_bytes),
-        ),
-        mock.patch.object(drive.guard, "assert_erasable"),
-        mock.patch.object(drive, "_reread_serial"),
-    ):
+    with _no_device_io(geometry, hidden_report(hidden_bytes)):
         generator = execute(job, make_caps(), io=None, ledger=sink)
         try:
             while True:
@@ -257,7 +290,6 @@ def test_a_firmware_method_records_that_it_covers_the_hidden_area(
     device = make_device(path="/dev/loop-fake", serial="SYN-0001", by_id_path=None)
     job = make_job(
         device,
-        dry_run=True,
         level=SanitizationLevel.PURGE,
         method=None,
     )
@@ -272,16 +304,7 @@ def test_a_firmware_method_records_that_it_covers_the_hidden_area(
         size_bytes=DEVICE_BYTES, logical_block_size=SECTOR, physical_block_size=SECTOR
     )
 
-    with (
-        mock.patch.object(drive, "device_geometry", return_value=geometry),
-        mock.patch.object(
-            drive.hidden_areas,
-            "detect_hidden_areas",
-            return_value=hidden_report(8 * MIB),
-        ),
-        mock.patch.object(drive.guard, "assert_erasable"),
-        mock.patch.object(drive, "_reread_serial"),
-    ):
+    with _no_device_io(geometry, hidden_report(8 * MIB)):
         generator = execute(job, capabilities, io=None, ledger=ChainLedgerSink(chain))
         try:
             while True:
@@ -351,7 +374,7 @@ def erase_geometry_for(
         path="/dev/loop-fake", serial="SYN-0001", by_id_path=None, transport=transport
     )
     device = device.model_copy(update={"size_bytes": DEVICE_BYTES})
-    job = make_job(device, dry_run=False)
+    job = make_job(device)
     sink = ChainLedgerSink(
         Ledger(tmp_path / "ledger", tool_version="0.0.0-test", pubkey_fingerprint="A")
     )
@@ -504,12 +527,11 @@ def run_with_calibration(
     tmp_path: Path,
     *,
     calibration: Any,
-    dry_run: bool = False,
 ) -> tuple[Any, list[Any], Ledger, list[Geometry], list[tuple[int, ...] | None]]:
     """Drive ``execute`` with a faked calibration, capturing what it chose."""
     device = make_device(path="/dev/loop-fake", serial="SYN-0001", by_id_path=None)
     device = device.model_copy(update={"size_bytes": DEVICE_BYTES})
-    job = make_job(device, dry_run=dry_run)
+    job = make_job(device)
     chain = Ledger(
         tmp_path / "ledger", tool_version="0.0.0-test", pubkey_fingerprint="A"
     )
@@ -664,11 +686,49 @@ def test_the_elision_finding_reaches_the_result(tmp_path: Path) -> None:
     assert "host-side read can establish" in result.residual_risk.notes
 
 
-def test_a_dry_run_never_calibrates(tmp_path: Path) -> None:
-    """The calibration writes 128 MiB. A dry run writes nothing, by definition."""
-    _, _, chain, _, _ = run_with_calibration(
-        tmp_path, calibration=elided(), dry_run=True
+def test_a_resume_never_calibrates(tmp_path: Path) -> None:
+    """The calibration writes over the first 64 MiB twice. A resume must not.
+
+    A resumed job would leave the calibration's own bytes at offset 0, in a
+    region the erase has already covered.
+    """
+    from core.models import EraseCheckpoint
+
+    device = make_device(path="/dev/loop-fake", serial="SYN-0001", by_id_path=None)
+    device = device.model_copy(update={"size_bytes": DEVICE_BYTES})
+    chain = Ledger(
+        tmp_path / "ledger", tool_version="0.0.0-test", pubkey_fingerprint="A"
     )
+    geometry = Geometry(
+        size_bytes=DEVICE_BYTES, logical_block_size=SECTOR, physical_block_size=SECTOR
+    )
+    checkpoint = EraseCheckpoint(
+        job_id="job-0001",
+        pass_index=0,
+        offset=MIB,
+        bytes_written=MIB,
+        ts_utc=drive.datetime.now(drive.UTC),
+    )
+
+    def tripwire(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("a resume calibrated")
+
+    with (
+        _no_device_io(geometry, hidden_report(0)),
+        mock.patch.object(drive.calibrate_mod, "calibrate_write", tripwire),
+    ):
+        generator = execute(
+            make_job(device),
+            make_caps(),
+            io=None,
+            ledger=ChainLedgerSink(chain),
+            resume_from=checkpoint,
+        )
+        try:
+            while True:
+                next(generator)
+        except StopIteration:
+            pass
 
     operations = [item.operation for item in chain.entries()]
     assert "erase.preflight.write_calibration" not in operations

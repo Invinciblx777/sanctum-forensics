@@ -59,14 +59,10 @@ export type VerificationWord =
  *
  * NOT APPLICABLE is separated from INCONCLUSIVE by whether any bytes were
  * read: a verification that checked nothing did not attempt the measurement,
- * and one that checked bytes and could not conclude did. A dry run is always
- * NOT APPLICABLE, because nothing was written and there was nothing to verify.
+ * and one that checked bytes and could not conclude did.
  */
-export function verificationWord(
-  verification: EraseVerification | null,
-  dryRun: boolean,
-): VerificationWord {
-  if (dryRun || !verification) return 'NOT APPLICABLE'
+export function verificationWord(verification: EraseVerification | null): VerificationWord {
+  if (!verification) return 'NOT APPLICABLE'
   if (verification.passed === true) return 'PASSED'
   if (verification.passed === false) return 'FAILED'
   if (verification.bytes_checked === 0) return 'NOT APPLICABLE'

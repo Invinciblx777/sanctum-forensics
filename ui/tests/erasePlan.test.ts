@@ -11,6 +11,7 @@ import {
   flashOf,
   methodLabel,
   planFor,
+  plannedVerification,
   runnable,
 } from '../src/lib/erasePlan.ts'
 import type { DeviceRow, PlannedErase } from '../src/lib/api.ts'
@@ -84,21 +85,27 @@ test('F5: with no determination sent, flash is unknown, never inferred', () => {
 })
 
 test('F6: the request body carries a level and never a method', () => {
-  const body = eraseBody('/dev/sdq', 'CLEAR', false, 'STICK-1', 'auth-0123456789abcdef')
+  const body = eraseBody('/dev/sdq', 'CLEAR', 'STICK-1', 'auth-0123456789abcdef')
   assert.deepEqual(Object.keys(body).sort(), [
     'authorization_id',
-    'dry_run',
     'level',
     'path',
     'typed_serial',
   ])
   assert.equal(body.authorization_id, 'auth-0123456789abcdef')
-  // A simulation carries no serial and no authorization to spend.
-  assert.deepEqual(
-    Object.keys(eraseBody('/dev/sdq', 'CLEAR', true, 'STICK-1', 'auth-x')).sort(),
-    ['dry_run', 'level', 'path', 'typed_serial'],
-  )
-  assert.equal(eraseBody('/dev/sdq', 'CLEAR', true, 'STICK-1').typed_serial, '')
+  assert.equal(body.typed_serial, 'STICK-1')
+})
+
+test('the request body never carries a simulation switch', () => {
+  const body = eraseBody('/dev/sdq', 'CLEAR', 'STICK-1', 'auth-x') as unknown as Record<string, unknown>
+  for (const key of ['dry_run', 'simulation', 'simulate']) assert.ok(!(key in body), key)
+})
+
+test('the planned verification is named before the run', () => {
+  assert.match(plannedVerification('SINGLE_PASS_OVERWRITE'), /Read-back/)
+  assert.match(plannedVerification('NVME_SANITIZE_BLOCK'), /completion status/)
+  assert.match(plannedVerification('SED_CRYPTO_ERASE'), /must change/)
+  assert.match(plannedVerification(null), /not planned/)
 })
 
 test('the shown plan is the engine plan for the chosen level', () => {

@@ -6,6 +6,7 @@
 import type { CaseDetail, CaseReportRecord, OperationRecord } from './api'
 import type { Tone } from '../components/widgets'
 import { isSafetyRefusal } from './refusal.ts'
+import { isHistoricalRehearsal } from './legacy.ts'
 
 /** The job kinds api/routes/jobs.py files against a case, in words. */
 const OPERATION_TYPES: Record<string, string> = {
@@ -64,14 +65,13 @@ export function caseRequestFailed(message: string): string {
 }
 
 /**
- * True only when the job was submitted as a dry run.
+ * True only for an operation an earlier build filed as a rehearsal.
  *
- * Read from the parameters the job was filed with. A missing flag is not a
- * simulation: a carve has no dry run, and a real erase must never be drawn as
- * a rehearsal.
+ * Read from the parameters the job was filed with. Current jobs never carry
+ * the flag: every operation this build runs is real. See lib/legacy.ts.
  */
-export function isSimulation(operation: OperationRecord): boolean {
-  return operation.params?.dry_run === true
+export function isHistoricalRehearsalOp(operation: OperationRecord): boolean {
+  return isHistoricalRehearsal(operation.params)
 }
 
 /** The report generated for each operation, keyed by operation id. */
@@ -106,16 +106,16 @@ export function caseFacts(detail: CaseDetail): CaseFacts {
     const word = operationStatus(op).word.toLowerCase()
     counts.set(word, (counts.get(word) ?? 0) + 1)
   }
-  const simulated = detail.operations.filter(isSimulation).length
+  const historical = detail.operations.filter(isHistoricalRehearsalOp).length
   const states = [...counts.entries()].map(([word, n]) => `${n} ${word}`)
-  // Said as part of the total, never beside it: "2 complete · 1 simulation"
+  // Said as part of the total, never beside it: "2 complete · 1 historical"
   // reads as three operations.
   const total = detail.operations.length
-  const simulations = !simulated
+  const rehearsals = !historical
     ? ''
-    : simulated === total
-      ? ' — all simulated'
-      : ` — ${simulated} of ${total} simulated`
+    : historical === total
+      ? ' — all historical records that wrote nothing'
+      : ` — ${historical} of ${total} historical records that wrote nothing`
 
   const hashed = detail.evidence.filter((item) => item.source_hash).length
   const signed = detail.reports.filter((item) => item.signed).length
@@ -125,7 +125,7 @@ export function caseFacts(detail: CaseDetail): CaseFacts {
     evidence: detail.evidence.length
       ? `${hashed} with a recorded hash`
       : 'none registered',
-    operations: states.length ? states.join(' · ') + simulations : 'none run',
+    operations: states.length ? states.join(' · ') + rehearsals : 'none run',
     reports: detail.reports.length
       ? [signed && `${signed} signed`, unsigned && `${unsigned} unsigned`]
           .filter(Boolean)

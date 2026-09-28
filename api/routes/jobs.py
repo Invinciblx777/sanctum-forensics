@@ -5,12 +5,13 @@ thread. No handler here waits for a wipe, an acquisition or a carve to finish -
 a 4 TB overwrite is hours long and an HTTP request that lived that long would
 be dead well before the work was.
 
-**Both destructive endpoints default to a dry run.** The request models default
-``dry_run=True``, and the value that reaches the helper is the one from the
-model, so a body that omits the key simulates. The serial check is not
-performed here either: it is re-checked inside the helper against the serial
-that process reads from the host, so a stale browser cannot authorise a wipe of
-a device that was swapped since the page loaded.
+**Every destructive endpoint runs the real operation.** There is no dry-run or
+simulation switch, and a body that still sends one is refused with 422 (see
+:mod:`api.routes.models`). What stands between a request and the device is the
+set of gates: a typed serial or identifier, and for a device a server-issued,
+human-approved, single-use authorization. The serial is re-checked inside the
+helper against the serial that process reads from the host, so a stale browser
+cannot authorise a wipe of a device that was swapped since the page loaded.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from typing import Any, cast
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from api.authorization import SIMULATION_MARK, GateRefused, authorize_execution
+from api.authorization import GateRefused, authorize_execution
 from api.deps import AppServices
 from api.identity import resolve as resolve_identity
 from api.identity import sanitise_label
@@ -39,6 +40,7 @@ from api.routes.models import (
     EraseDriveRequest,
     EraseFilesRequest,
     JobAccepted,
+    PlanFreeSpaceRequest,
     ResumeEraseRequest,
     WipeFreeSpaceRequest,
 )
@@ -64,14 +66,12 @@ def _signing_fingerprint(services: AppServices) -> str:
     )
 
 
-def _accepted(job_id: str, kind: str, dry_run: bool) -> JobAccepted:
+def _accepted(job_id: str, kind: str) -> JobAccepted:
     return JobAccepted(
         job_id=job_id,
         kind=kind,
         state="running",
-        dry_run=dry_run,
         stream_url=f"/jobs/{job_id}/stream",
-        notice=SIMULATION_MARK if dry_run and kind.startswith("erase-drive") else "",
     )
 
 
@@ -177,19 +177,20 @@ def erase_drive(
     body: EraseDriveRequest,
     services: AppServices = Depends(get_services),
 ) -> JobAccepted:
-    """Start a drive sanitization. Simulates unless ``dry_run`` is false.
+    """Start a real drive sanitization of the selected device.
 
-    The typed serial is validated by the helper against the device it re-reads,
-    and a mismatch comes back as 409 with the core's own remediation text.
-    Validating it here as well would duplicate the check in the layer that
-    cannot be trusted to hold it.
+    Refused before anything is submitted unless the typed serial matches a
+    fresh probe and the authorization passes the workflow gate. The helper
+    then re-checks both against the device it re-reads itself, so a mismatch
+    there comes back with the core's own remediation text.
     """
     from helper.rpc import RpcError
 
-    if not body.dry_run and not body.typed_serial:
+    if not body.typed_serial:
         raise _refuse_confirmation(
-            f"Refusing to erase {body.path}: dry_run is off but no serial was "
-            "typed. Destructive erasure is opt-in twice.",
+            f"Refusing to erase {body.path}: no serial was typed. Destructive "
+            "erasure is opt-in twice: an approved authorization and the typed "
+            "serial.",
             "Re-read the device serial from the capability report and type it "
             "exactly.",
         )
@@ -197,7 +198,6 @@ def erase_drive(
     params: dict[str, Any] = {
         "path": body.path,
         "level": body.level,
-        "dry_run": body.dry_run,
         "typed_serial": body.typed_serial,
         "ledger_root": str(services.ledger_root),
         "tool_version": services.tool_version,
@@ -219,7 +219,7 @@ def erase_drive(
         ) from exc
 
     serial = str(probe.get("device", {}).get("serial", ""))
-    if not body.dry_run and body.typed_serial != serial:
+    if body.typed_serial != serial:
         raise _refuse_confirmation(
             f"The typed serial {body.typed_serial!r} does not match "
             f"{body.path}, whose serial is {serial!r}. Nothing was erased.",
@@ -230,18 +230,16 @@ def erase_drive(
     # The workflow gate. The typed serial above is a confirmation token, not an
     # approval; a real erase also needs the recorded approval and verified
     # backup, re-derived from a fresh read of the device.
-    if not body.dry_run:
-        binding = _gate_real_erase(
-            services,
-            authorization_id=body.authorization_id,
-            path=body.path,
-            level=body.level,
-            probe=probe,
-        )
-        # The helper re-checks this against the host at the write seam. Never
-        # sent on a dry run: a simulation has nothing to authorize.
-        params["authorization"] = binding
-        params["authorization_dir"] = str(services.state_dir / "authorizations")
+    binding = _gate_real_erase(
+        services,
+        authorization_id=body.authorization_id,
+        path=body.path,
+        level=body.level,
+        probe=probe,
+    )
+    # The helper re-checks this against the host at the write seam.
+    params["authorization"] = binding
+    params["authorization_dir"] = str(services.state_dir / "authorizations")
 
     # Minted here rather than by the registry, for the same reason the carve
     # route mints its own: the ledger entries this run writes are keyed by the
@@ -259,7 +257,7 @@ def erase_drive(
         services, "erase-drive", params, factory,
         job_id=job_id, label=body.operator, case_id=body.case_id,
     )
-    return _accepted(job_id, "erase-drive", body.dry_run)
+    return _accepted(job_id, "erase-drive")
 
 
 def _helper_job(
@@ -314,7 +312,7 @@ def erase_files(
     body: EraseFilesRequest,
     services: AppServices = Depends(get_services),
 ) -> JobAccepted:
-    """Start a file or folder erase. Simulates unless ``dry_run`` is false.
+    """Start a real file or folder erase. Refused unless ``confirm`` is true.
 
     File erasure is unprivileged - it writes through ordinary file handles - so
     it runs in this process rather than through the helper. There is nothing
@@ -326,17 +324,15 @@ def erase_files(
     from core.ledger.chain import Ledger
     from core.models import FileEraseOptions
 
-    if not body.dry_run and not body.confirm:
+    if not body.confirm:
         raise sanctum_error_response(
             "ConfirmationMismatch",
-            "Refusing to erase: dry_run is off but confirm was not set. "
-            "Destructive file erasure is opt-in twice.",
-            "Set confirm=true to proceed, or leave dry_run=true to see what "
-            "would survive without writing anything.",
+            "Refusing to erase: confirm was not set. Destructive file erasure "
+            "needs an explicit confirmation. Nothing was touched.",
+            "Review the selected paths, then send confirm=true to erase them.",
         )
 
     options = FileEraseOptions(
-        dry_run=body.dry_run,
         confirm=body.confirm,
         cleanse_metadata=body.cleanse_metadata,
         break_hardlinks=body.break_hardlinks,
@@ -345,7 +341,6 @@ def erase_files(
     )
     params = {
         "paths": body.paths,
-        "dry_run": body.dry_run,
         "confirm": body.confirm,
         "break_hardlinks": body.break_hardlinks,
         "sweep_traces": body.sweep_traces,
@@ -377,7 +372,7 @@ def erase_files(
         services, "erase-files", params, factory,
         job_id=job_id, label=body.operator, case_id=body.case_id,
     )
-    return _accepted(job_id, "erase-files", body.dry_run)
+    return _accepted(job_id, "erase-files")
 
 
 # --------------------------------------------------------------------------
@@ -422,7 +417,6 @@ def record_destroy(
         "serial": record.serial,
         "technique": record.technique.value,
         "media_type": record.media_type,
-        "dry_run": False,
         "observed_by_tool": False,
     }
 
@@ -435,7 +429,40 @@ def record_destroy(
         services, "destroy-record", params, factory,
         job_id=job_id, label=body.operator, case_id=body.case_id,
     )
-    return _accepted(job_id, "destroy-record", dry_run=False)
+    return _accepted(job_id, "destroy-record")
+
+
+def _protected_paths(services: AppServices) -> list[Path]:
+    """This deployment's own state: a volume holding any of it is never filled."""
+    return [
+        services.state_dir,
+        services.ledger_root,
+        services.reports_dir,
+        services.key_dir or (services.state_dir / "keys"),
+    ]
+
+
+@router.post("/workflow/wipe-free-space")
+def plan_free_space_wipe(
+    body: PlanFreeSpaceRequest,
+    services: AppServices = Depends(get_services),
+) -> dict[str, Any]:
+    """Resolve a volume for a free-space wipe and report it. Writes nothing.
+
+    The plan step: the filesystem, the identifier the operator must type to
+    confirm, the free space the fill will cover and what it cannot reach. Every
+    refusal the wipe applies runs here too, so a refused volume is refused
+    before anyone is asked to confirm it. No job is created.
+    """
+    from core.erase.freespace import plan_volume
+    from core.errors import SanctumError
+
+    try:
+        return plan_volume(body.mount_point, protected=_protected_paths(services))
+    except SanctumError as exc:
+        raise sanctum_error_response(
+            type(exc).__name__, exc.message, exc.remediation
+        ) from exc
 
 
 @router.post("/jobs/wipe-free-space", response_model=JobAccepted)
@@ -443,13 +470,14 @@ def wipe_free_space(
     body: WipeFreeSpaceRequest,
     services: AppServices = Depends(get_services),
 ) -> JobAccepted:
-    """Fill a mounted volume's free space and release it. Simulates by default.
+    """Fill a mounted volume's free space and release it. Always a real fill.
 
     Unprivileged, like file erasure, so it runs in this process. Every gate runs
     here, before a job exists: the volume must be a supported filesystem at
     exactly its mount point, must not be the system volume or hold this
-    deployment's state, and a real run needs the identifier a dry run reports.
-    A refusal is an HTTP error, not a failed job.
+    deployment's state, and the typed identifier must be the one
+    ``POST /workflow/wipe-free-space`` reports. A refusal is an HTTP error, not
+    a failed job.
     """
     from core.device import guard
     from core.erase.freespace import resolve_volume
@@ -458,25 +486,17 @@ def wipe_free_space(
     from core.ledger.chain import Ledger
     from core.models import FreeSpaceWipeOptions
 
-    protected = [
-        services.state_dir,
-        services.ledger_root,
-        services.reports_dir,
-        services.key_dir or (services.state_dir / "keys"),
-    ]
+    protected = _protected_paths(services)
     try:
         volume = resolve_volume(body.mount_point)
         guard.assert_volume_wipeable(volume, protected=protected)
-        if not body.dry_run:
-            guard.assert_volume_confirmed(volume, body.typed_identifier)
+        guard.assert_volume_confirmed(volume, body.typed_identifier)
     except SanctumError as exc:
         raise sanctum_error_response(
             type(exc).__name__, exc.message, exc.remediation
         ) from exc
 
-    options = FreeSpaceWipeOptions(
-        dry_run=body.dry_run, typed_identifier=body.typed_identifier
-    )
+    options = FreeSpaceWipeOptions(typed_identifier=body.typed_identifier)
     job_id = f"wipe-free-space-{uuid.uuid4().hex[:12]}"
     ledger = Ledger(
         services.ledger_root,
@@ -499,13 +519,12 @@ def wipe_free_space(
         "mount_point": volume.mount_point,
         "identifier": volume.identifier,
         "fs_type": volume.fs_type,
-        "dry_run": body.dry_run,
     }
     _submit(
         services, "wipe-free-space", params, factory,
         job_id=job_id, label=body.operator,
     )
-    return _accepted(job_id, "wipe-free-space", body.dry_run)
+    return _accepted(job_id, "wipe-free-space")
 
 
 # --------------------------------------------------------------------------
@@ -518,7 +537,7 @@ def acquire_image(
     body: AcquireRequest,
     services: AppServices = Depends(get_services),
 ) -> JobAccepted:
-    """Image a device or file read-only. No dry-run gate: nothing is destroyed.
+    """Image a device or file read-only. Nothing is destroyed.
 
     The source is opened ``O_RDONLY`` and, on Linux against a block device, set
     read-only at the block layer first. See :mod:`core.carve.acquire`.
@@ -629,7 +648,7 @@ def acquire_image(
         services, "acquire", params, factory,
         job_id=job_id, label=body.operator, case_id=body.case_id,
     )
-    return _accepted(job_id, "acquire", dry_run=False)
+    return _accepted(job_id, "acquire")
 
 
 # --------------------------------------------------------------------------
@@ -710,7 +729,7 @@ def carve_image(
         services, "carve", params, factory,
         job_id=job_id, label=body.operator, case_id=body.case_id,
     )
-    return _accepted(job_id, "carve", dry_run=False)
+    return _accepted(job_id, "carve")
 
 
 # --------------------------------------------------------------------------
@@ -853,11 +872,10 @@ def resume_erase(
 ) -> JobAccepted:
     """Continue an interrupted overwrite from its last recorded checkpoint.
 
-    A resume writes to the medium, so it keeps **both** gates of the run it
-    continues: ``dry_run`` defaults closed here as everywhere, and a real
-    resume needs the typed serial, which the helper re-checks against the
-    device it reads itself. A resume is not a lesser operation than the erase
-    it finishes and is not confirmed like one.
+    A resume writes to the medium, so it keeps **every** gate of the run it
+    continues: the typed serial, which the helper re-checks against the device
+    it reads itself, and an approved, unspent authorization. A resume is not a
+    lesser operation than the erase it finishes and is not confirmed like one.
     """
     from helper.rpc import RpcError
 
@@ -868,12 +886,12 @@ def resume_erase(
             "Start the erase again from the Sanitize screen. Nothing was "
             "written.",
         )
-    if not body.dry_run and not body.typed_serial:
+    if not body.typed_serial:
         raise sanctum_error_response(
             "ConfirmationMismatch",
-            f"Refusing to resume the erase of {state['path']}: dry_run is off "
-            "but no serial was typed. A resume writes to the medium and is "
-            "opt-in twice, like the run it continues.",
+            f"Refusing to resume the erase of {state['path']}: no serial was "
+            "typed. A resume writes to the medium and is opt-in twice, like "
+            "the run it continues.",
             "Re-read the device serial from the capability report and type it "
             "exactly.",
         )
@@ -881,7 +899,6 @@ def resume_erase(
     params: dict[str, Any] = {
         "path": state["path"],
         "level": state["level"] or "CLEAR",
-        "dry_run": body.dry_run,
         "typed_serial": body.typed_serial,
         "ledger_root": str(services.ledger_root),
         "tool_version": services.tool_version,
@@ -899,23 +916,22 @@ def resume_erase(
             "Start the helper daemon and set SANCTUM_HELPER_SOCKET.",
         ) from exc
 
-    if not body.dry_run:
-        if body.typed_serial != str(probe.get("device", {}).get("serial", "")):
-            raise sanctum_error_response(
-                "ConfirmationMismatch",
-                f"The typed serial does not match {state['path']}. Nothing was "
-                "erased.",
-                "Re-read the device serial from the capability report and type "
-                "it exactly.",
-            )
-        params["authorization"] = _gate_real_erase(
-            services,
-            authorization_id=body.authorization_id,
-            path=state["path"],
-            level=params["level"],
-            probe=probe,
+    if body.typed_serial != str(probe.get("device", {}).get("serial", "")):
+        raise sanctum_error_response(
+            "ConfirmationMismatch",
+            f"The typed serial does not match {state['path']}. Nothing was "
+            "erased.",
+            "Re-read the device serial from the capability report and type "
+            "it exactly.",
         )
-        params["authorization_dir"] = str(services.state_dir / "authorizations")
+    params["authorization"] = _gate_real_erase(
+        services,
+        authorization_id=body.authorization_id,
+        path=state["path"],
+        level=params["level"],
+        probe=probe,
+    )
+    params["authorization_dir"] = str(services.state_dir / "authorizations")
 
     # The *same* job id, deliberately. A resume continues one erasure, and
     # giving it a new id would split one device's account of itself across two
@@ -932,7 +948,7 @@ def resume_erase(
         actor=resolve_identity(services).labelled_actor(body.operator),
         actor_basis=resolve_identity(services).basis,
     )
-    return _accepted(f"resume-{job_id}", "erase-drive-resume", body.dry_run)
+    return _accepted(f"resume-{job_id}", "erase-drive-resume")
 
 
 # --------------------------------------------------------------------------

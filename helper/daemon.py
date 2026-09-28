@@ -24,9 +24,11 @@ The trust rules are deliberately narrow:
   traceback: a traceback from a root process tells an unprivileged caller about
   the filesystem layout and the code path it took to fail.
 
-Destructive operations keep both of their gates on this side of the boundary.
-``run_erase`` refuses unless ``dry_run`` is explicitly false *and* the typed
-serial matches the device the helper itself re-reads. The API cannot talk the
+Destructive operations keep their gates on this side of the boundary. There is
+no non-writing mode: ``run_erase`` refuses unless its authorization holds up
+against a fresh read of the device *and* the typed serial matches the device the
+helper itself re-reads, and a request that still carries a ``dry_run`` or
+``simulation`` switch is refused rather than executed. The API cannot talk the
 helper out of either check, which is the point of putting them here rather than
 in the request handler. ``run_restore`` keeps the same two gates, plus its own
 write-seam revalidation of a ``restore``-kind authorization
@@ -352,9 +354,9 @@ def _op_detect_hidden_areas(params: dict[str, Any]) -> dict[str, Any]:
 def _op_prepare_device(params: dict[str, Any]) -> dict[str, Any]:
     """Take a disk offline (Windows) or unmount it (macOS), as its own step.
 
-    Dry run unless ``dry_run`` is explicitly false; a real run needs the typed
-    serial of the device this process re-reads. Never part of an erase, and it
-    writes nothing to the medium. The action and its outcome are ledgered.
+    Needs the typed serial of the device this process re-reads. Never part of
+    an erase, and it writes nothing to the medium. The action and its outcome
+    are ledgered.
     """
     from core.ledger.chain import Ledger
 
@@ -370,7 +372,7 @@ def _op_prepare_device(params: dict[str, Any]) -> dict[str, Any]:
             actor=str(params.get("actor") or "sanctum"),
             operation="device.prepare",
             params={key: answer[key] for key in ("device", "serial", "action")},
-            result={"performed": answer.get("performed"), "dry_run": answer["dry_run"]},
+            result={"performed": answer.get("performed")},
         )
     return answer
 
@@ -412,8 +414,8 @@ def _drain(
 def _revalidate(params: dict[str, Any]) -> None:
     """The write seam's own authorization check. See :mod:`helper.authorization`.
 
-    A real erase or resume (``dry_run`` explicitly false) is refused here unless
-    its authorization holds up against a fresh read of the device and backup.
+    Every erase or resume is refused here unless its authorization holds up
+    against a fresh read of the device and backup.
     Runs before the platform adapter is touched, so a refusal opens nothing.
     """
     from helper.authorization import revalidate_execution
@@ -433,9 +435,10 @@ def _stream_run_erase(
 ) -> Generator[dict[str, Any], None, dict[str, Any]]:
     """Execute a sanitization job through this host's platform adapter.
 
-    ``dry_run`` defaults to True when the key is absent. An API that forgot to
-    forward the flag therefore simulates rather than wipes, which is the
-    failure direction that costs nothing.
+    There is no non-writing mode. What stands between a request and the device
+    is the write-seam authorization (:func:`_revalidate`), which refuses a
+    request with no approved, unspent authorization - or one that still carries
+    a simulation switch - before the adapter is touched.
 
     Both gates are enforced on this side of the boundary, by the adapter: the
     device is re-read from the host and the typed confirmation is checked by
@@ -570,13 +573,11 @@ def _stream_run_restore(
 ) -> Generator[dict[str, Any], None, dict[str, Any]]:
     """Write a verified backup image onto a target device, then read it back.
 
-    ``dry_run`` defaults to True when absent, as for an erase. Every request -
-    dry or real - must carry a restore authorization, which
+    Every request must carry a restore authorization, which
     :func:`helper.authorization.revalidate_restore` re-checks against a fresh
     read of the target and the image in *this* process before anything is
-    opened. A real restore also needs the typed serial of the device this
-    process re-reads and takes the single-use ``.executed`` marker. A dry run
-    never opens the target.
+    opened, including the typed serial of the device this process re-reads. It
+    takes the single-use ``.executed`` marker. There is no non-writing mode.
 
     Closing this generator stops the engine at its next yield; the engine
     ledgers the byte range written before the exception propagates.
@@ -601,9 +602,7 @@ def _stream_run_restore(
     )
     job_id = str(params.get("job_id", "restore"))
     actor = str(params.get("actor") or "sanctum")
-    target = (
-        None if authorized.dry_run else _open_restore_target(authorized.plan.target)
-    )
+    target = _open_restore_target(authorized.plan.target)
     try:
         generator = execute_restore(
             authorized.record,
@@ -612,7 +611,6 @@ def _stream_run_restore(
             job_id=job_id,
             actor=actor,
             ledger=ledger,
-            dry_run=authorized.dry_run,
         )
         try:
             while True:
@@ -624,8 +622,7 @@ def _stream_run_restore(
         finally:
             generator.close()
     finally:
-        if target is not None:
-            target.close()
+        target.close()
 
 
 def _hpa_backend() -> Any:
@@ -685,12 +682,12 @@ def _stream_run_hpa_change(
 ) -> Generator[dict[str, Any], None, dict[str, Any]]:
     """Set a drive's accessible maximum to its native maximum, then read it back.
 
-    ``dry_run`` defaults to True when absent. Every request must carry an
-    ``hpa`` authorization, which :func:`helper.authorization.revalidate_hpa`
-    re-checks against a fresh read of the device in *this* process; a real
-    change also needs the typed serial and takes the single-use ``.executed``
-    marker. The engine re-discovers the drive immediately before the command
-    and refuses a stale plan. A macOS host is refused before any record is
+    Every request must carry an ``hpa`` authorization, which
+    :func:`helper.authorization.revalidate_hpa` re-checks against a fresh read
+    of the device in *this* process, including the typed serial; it takes the
+    single-use ``.executed`` marker. There is no non-writing mode. The engine
+    re-discovers the drive immediately before the command and refuses a stale
+    plan. A macOS host is refused before any record is
     read: it has no ATA pass-through.
     """
     from core.device.hidden_area_workflow import execute
@@ -718,7 +715,6 @@ def _stream_run_hpa_change(
         authorized.plan,
         backend,
         device=authorized.device,
-        dry_run=authorized.dry_run,
         typed_serial=str(params.get("typed_serial") or ""),
         ledger=ledger,
         actor=str(params.get("actor") or "sanctum"),

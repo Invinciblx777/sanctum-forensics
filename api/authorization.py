@@ -2,8 +2,8 @@
 
 The problem
 -----------
-``POST /jobs/erase-drive`` used to accept ``dry_run=false`` plus a typed serial
-and start writing. The destructive-workflow state machine in
+``POST /jobs/erase-drive`` used to accept a typed serial alone and start
+writing. The destructive-workflow state machine in
 :mod:`core.workflow` existed, but only the UI and the benchmark script consulted
 it, so a direct API request skipped every gate the workflow names: no recorded
 approval, no verified backup, no plan. The typed serial was the only check, and
@@ -73,16 +73,12 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance only
 __all__ = [
     "AuthorizationStore",
     "GateRefused",
-    "SIMULATION_MARK",
     "authorize_execution",
     "execution_binding",
     "facts_for",
 ]
 
 logger = structlog.get_logger(__name__)
-
-#: Printed on every dry-run answer so a simulation cannot be mistaken for a wipe.
-SIMULATION_MARK = "SIMULATION / NO PHYSICAL DEVICE MODIFIED"
 
 _ID = AUTH_ID
 _CHUNK = 4 * 1024 * 1024

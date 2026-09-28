@@ -65,8 +65,11 @@ overwrite is never labelled a Purge.
 **Destructive-operation safety.** Identity binding (serial and
 `/dev/disk/by-id` on Linux; disk number, serial and length read from the open
 `\\.\PhysicalDriveN` handle on Windows; size and a fresh `system_profiler`
-serial on macOS), a typed-serial confirmation, refusal of mounted and system
-disks, dry run by default, and no automatic `sudo`, elevation or unmount. See
+serial on macOS), a typed-serial confirmation, a server-issued one-use
+authorization after a recorded human approval, refusal of mounted and system
+disks, and no automatic `sudo`, elevation or unmount. There is no dry-run or
+simulation mode: every operation runs against the selected real device once
+its gates pass, and a request that asks for a rehearsal is refused. See
 [The safety model](#the-safety-model).
 
 **Residual traces, not only residual data.** Erasing a file leaves what the
@@ -106,8 +109,9 @@ committed [capability matrix](docs/validation/capability-completion-2026-09-28/c
 is generated from the resolver, and a test fails if it goes stale.
 
 **Explicit uncertainty.** Every result carries its population: physical,
-synthetic, simulation, CI, documented or hardware-unverified. They are never
-merged.
+synthetic, CI, documented or hardware-unverified. They are never merged. Test
+doubles (fake devices, recording helpers) keep CI safe and are never counted as
+physical validation.
 
 ## The safety model
 
@@ -122,7 +126,7 @@ PREFLIGHT ─────────────→ BLOCKED   device absent, mo
    ↓                               serial sources disagree …
 BACKUP REQUIRED → BACKUP VERIFIED   an image the server hashed and sized
    ↓
-HUMAN APPROVAL REQUIRED   dry run off; acknowledge and type the serial
+HUMAN APPROVAL REQUIRED   acknowledge and type the serial
    ↓
 PLAN READY                approval recorded; a one-use authorization issued
    ↓
@@ -135,8 +139,8 @@ COMPLETE / FAILED
 
 - **Mounted and system disks are refused**, with the mount point named. No
   erase unmounts anything. On Linux a human unmounts. On Windows and macOS an
-  explicit **Prepare** step (`POST /devices/prepare`: dry run first, typed
-  serial, ledgered, system and internal disks refused) takes a disk offline
+  explicit **Prepare** step (`POST /devices/prepare`: the volumes it affects
+  shown first, typed serial, ledgered, system and internal disks refused) takes a disk offline
   (Windows, not persistent) or runs `diskutil unmountDisk` (macOS); it is never
   part of an erase.
 - **Identity is the serial, not the kernel name.** The operator types the
@@ -151,12 +155,14 @@ COMPLETE / FAILED
   ([security review](docs/security-review-cross-platform.md)).
 - **Nothing is substituted.** A missing or stale device path is a structured
   refusal; no other device is tried.
-- **Dry run is the default.** A real erase needs a backup image the server has
-  hashed and sized, an approval with the acknowledgement and the typed serial,
-  and the one-use authorization the server returns. The helper re-checks device,
-  plan and backup before its first write. SYNTHETIC VALIDATION only; the backup
-  is not proven to be a copy of the device, and the API does not authenticate
-  who approved.
+- **Every run is real, so every gate runs every time.** There is no dry-run or
+  simulation mode, and a request carrying `dry_run`, `simulation` or `simulate`
+  is rejected (422) rather than honoured or ignored. An erase needs a backup
+  image the server has hashed and sized, an approval with the acknowledgement
+  and the typed serial, and the one-use authorization the server returns. The
+  helper re-checks device, plan and backup before its first write. SYNTHETIC
+  VALIDATION only; the backup is not proven to be a copy of the device, and the
+  API does not authenticate who approved.
 - **Privilege is explicit.** On Linux the UI and API run unprivileged, and
   raw device work goes through one helper that a human starts with `sudo`, over
   a static allowlist of typed operations
@@ -419,7 +425,7 @@ never issued.
 | Fragmented PNG recovery | 120/120 layouts, 0/800 wrong joins accepted | **SYNTHETIC VALIDATION** |
 | Recovery benchmark and calibration | 40 images, 8 pooled seeds | **SYNTHETIC VALIDATION** |
 | Tamper-evident report and ledger | `tests/report/`, `tests/ledger/`, live tamper demo | **SYNTHETIC VALIDATION**; verifier also run on the physical-run report |
-| Discovery-to-certificate journey | `scripts/demo_simulation.py` on host files, real engine | **SIMULATION** |
+| Discovery-to-certificate journey on a real device | the real-device procedure in [`docs/demo/runbook.md`](docs/demo/runbook.md) on a disposable test stick; engine path covered by loopback and adapter-double tests | **IMPLEMENTED / UNVALIDATED** until a physical run is recorded |
 | NIST SP 800-88 Rev. 2, IEEE 2883, ISO/IEC 27040 | section-by-section mapping | **DOCUMENTED** (mapped, not certified) |
 | Firmware device sanitize (ATA SANITIZE, ATA SECURITY ERASE UNIT, NVMe Sanitize, NVMe Format, crypto erase; a TCG Opal drive is recognised but not reverted, no PSID input) | selected and dispatched in fixture and adapter-double tests only (all on Linux; ATA SANITIZE, NVMe Sanitize and crypto erase also on Windows); offered only when the controller reports it | **IMPLEMENTED / UNVALIDATED**, DEVICE-DEPENDENT |
 | Guarded HPA change (DCO read only) | state machine, plan, typed serial and read-back tested against faked probes on Linux and Windows; never run on a drive | **IMPLEMENTED / UNVALIDATED**, DEVICE-DEPENDENT; PLATFORM-LIMITED on macOS |
@@ -437,21 +443,24 @@ Per platform and capability: [`capability-matrix.md`](docs/validation/capability
 
 ## The 4½-minute demo
 
-Nothing is erased on stage. The Sanitize beat stops at the approval gate.
-Every step maps to a screen, a command, a test and a recorded artifact in the
+The only device erased on stage is a disposable test stick the presenter owns
+and has backed up (step 3); it is a real erase, and it is not recorded as a
+physical validation of any device class unless the run is recorded with
+`scripts/record_physical_validation.py`. The Sanitize beat on any other device
+stops at the approval gate. Every step maps to a screen, a command, a test and a recorded artifact in the
 [demo evidence index](docs/validation/demo-evidence-index.md).
 
 | # | Step | Shown with | Population |
 |---|---|---|---|
 | 1 | Overview: four workflows and the six-part executive summary, including what is not physically validated | Overview screen | live host |
 | 2 | Device identity and refusal: serial, capability badge, `BLOCKED · WHY BLOCKED`; a missing device path refused, exit 2 | Devices; `scripts/media_benchmark.py plan` | live host |
-| 3 | Simulation from discovery to certificate, labelled `SIMULATION / NO PHYSICAL DEVICE MODIFIED` | `scripts/demo_simulation.py` | SIMULATION |
+| 3 | Real device from discovery to certificate on a disposable, backed-up test stick: preflight, backup, approval, final revalidation, erase, read-back, certificate | Sanitize, [real-device procedure](docs/demo/runbook.md) | REAL DEVICE (one stick; not a device-class validation until recorded) |
 | 4 | Fragmented recovery: split PNG and JPEG rebuilt, checked against ground truth | `scripts/demo_fragmented.py`; Recovery | SYNTHETIC |
 | 5 | Evidence explanation: the six components and the reassembly hold | Recovery score breakdown | SYNTHETIC |
 | 6 | Signed report generated for the job | Audit | SYNTHETIC |
-| 7 | Tamper verification: one byte changed, chain `BROKEN` | Audit, *Simulate tampering* | SYNTHETIC |
+| 7 | Tamper verification: one byte changed, chain `BROKEN` | Audit, *Tamper a scratch copy* | SYNTHETIC |
 | 8 | Certificate: case, report SHA-256, key fingerprint, signed JSON and PDF | Audit report panel | SYNTHETIC |
-| 9 | Sanitization workflow: probe, selected method, approval gate. **Erase is not pressed** | Sanitize | live host, no write |
+| 9 | Sanitization workflow on a device that is not the test stick: probe, selected method, approval gate. **Erase is not pressed** | Sanitize | live host, no write |
 | 10 | Benchmark evidence, with its population said aloud | [`benchmark.md`](docs/performance/benchmark.md) | SYNTHETIC |
 
 Every beat ran in a technical rehearsal on 2026-09-24. The spoken script has
@@ -537,8 +546,9 @@ All 37 questions, with evidence and a status for each:
   the window from that check to the first write is not proven race-free.
 - The API does not authenticate a human. Approval is a deliberate second call
   with the typed serial, not proof of who approved.
-- A simulation opens the device read-only (`O_RDONLY`, for its size and
-  metadata). It never opens it for writing.
+- There is no rehearsal mode. Every erase that passes the gates writes to the
+  real device; what would run is shown beforehand by the read-only plan
+  (`core.erase.drive.preview`), which opens nothing for writing.
 - An overwrite does not reach remapped or over-provisioned flash blocks.
 - Fragmented-file reconstruction is not general: baseline JPEG and PNG,
   exactly two runs, nothing else.
@@ -633,12 +643,15 @@ The control surface binds `127.0.0.1` only, serves its own bundled assets, and
 makes no network call. It mints a session token per run and refuses any
 request without it, or addressed to a non-loopback host name.
 
-Run the two terminal demos without any device:
+Run the terminal demo that needs no device:
 
 ```bash
-python scripts/demo_simulation.py     # SIMULATION: discovery to certificate
 python scripts/demo_fragmented.py     # SYNTHETIC: split PNG and JPEG rebuilt
 ```
+
+There is no device-free erase demo: every erase is real. Demonstrate one on a
+disposable test stick with the procedure in
+[`docs/demo/runbook.md`](docs/demo/runbook.md).
 
 Whole-device operations need privilege: on Linux, the helper started with
 `sudo`; on macOS, the Sanctum process itself started with `sudo` (the Linux

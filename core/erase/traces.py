@@ -55,8 +55,8 @@ erase refuses a link by name.
 
 Every place inspected is returned with its outcome (searched, absent,
 unreadable, permission-denied), and every place this platform keeps traces in
-that the sweep does not search is named. A dry run searches and reports
-everything and removes nothing.
+that the sweep does not search is named. :func:`find_traces` is the read-only
+search; :func:`sweep` searches and removes the exact traces.
 """
 
 from __future__ import annotations
@@ -1105,7 +1105,7 @@ class _Index:
                 size_bytes=record.inspection.size_bytes,
             )
             for record in records
-            if record.ok and (record.dry_run or record.unlinked)
+            if record.ok and record.unlinked
         ]
         self._exact = {item.key: item for item in self.erased}
         #: Longest first, so the innermost erased folder claims a path.
@@ -2093,8 +2093,8 @@ def find_traces(
 ) -> TraceSweepResult:
     """Every trace of the erased records, found and left untouched.
 
-    Only records that were erased - or, in a dry run, would be - are looked
-    for: a path the erase refused keeps its traces, because it keeps its file.
+    Only records that were erased are looked for: a path the erase refused
+    keeps its traces, because it keeps its file.
     """
     where = locations if locations is not None else default_locations()
     plan = _find(records, where)
@@ -2112,7 +2112,6 @@ def _erase_trace(location: Path, settings: FileEraseOptions) -> tuple[bool, int,
     from core.erase.files import erase_one, expand_targets
 
     options = FileEraseOptions(
-        dry_run=False,
         confirm=True,
         cleanse_metadata=False,
         break_hardlinks=settings.break_hardlinks,
@@ -2262,7 +2261,7 @@ def sweep(
     traces: list[TraceRecord] = []
     for found in plan.found:
         trace = _as_record(found)
-        if not settings.dry_run and found.exact and found.how != "report":
+        if found.exact and found.how != "report":
             if found.pair is not None and found.pair in kept:
                 trace.error = (
                     "Kept, because the copy it describes could not be removed; "
@@ -2295,8 +2294,7 @@ def sweep(
                     kept.add(found.location)
         ledger.record_file(
             "trace",
-            {"job_id": job_id, "dry_run": settings.dry_run}
-            | trace.model_dump(mode="json"),
+            {"job_id": job_id} | trace.model_dump(mode="json"),
         )
         traces.append(trace)
         yield _progress(job_id, f"{trace.kind} {trace.location}")
@@ -2306,7 +2304,6 @@ def sweep(
         "traces",
         {
             "job_id": job_id,
-            "dry_run": settings.dry_run,
             "searched": result.searched,
             "inspected": [entry.model_dump(mode="json") for entry in result.inspected],
             "not_searched": result.not_searched,
@@ -2320,7 +2317,6 @@ def sweep(
     logger.info(
         "trace_sweep_complete",
         job_id=job_id,
-        dry_run=settings.dry_run,
         found=len(traces),
         removed=sum(1 for trace in traces if trace.removed),
     )

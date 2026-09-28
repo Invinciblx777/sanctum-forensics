@@ -207,7 +207,6 @@ def test_a_real_job_with_a_mistyped_serial_opens_nothing(
             adapter.execute_drive_sanitization(
                 {
                     "path": "PhysicalDrive2",
-                    "dry_run": False,
                     "typed_serial": "X",
                     "ledger_root": "unused",
                     "job_id": "j",

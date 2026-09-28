@@ -92,7 +92,7 @@ export const api = {
       `/devices?include_virtual=${includeVirtual}`,
     ),
 
-  /** Unmount (macOS) or take offline (Windows) as its own step; dry run by default. */
+  /** Unmount (macOS) or take offline (Windows) as its own step. Needs the typed serial. */
   prepareDevice: (body: PrepareDeviceBody) =>
     request<PrepareDeviceResult>('/devices/prepare', {
       method: 'POST',
@@ -128,6 +128,13 @@ export const api = {
     request<JobAccepted>('/jobs/erase-files', {
       method: 'POST',
       body: JSON.stringify(body),
+    }),
+
+  /** Resolve a volume and report the identifier to type. Writes nothing. */
+  planFreeSpace: (mountPoint: string) =>
+    request<FreeSpacePlan>('/workflow/wipe-free-space', {
+      method: 'POST',
+      body: JSON.stringify({ mount_point: mountPoint }),
     }),
 
   wipeFreeSpace: (body: WipeFreeSpaceBody) =>
@@ -596,8 +603,7 @@ export interface DeviceAssessment {
 
 export interface PrepareDeviceBody {
   path: string
-  dry_run: boolean
-  typed_serial?: string
+  typed_serial: string
 }
 
 export interface PrepareDeviceResult {
@@ -605,7 +611,6 @@ export interface PrepareDeviceResult {
   serial?: string
   action: string
   unmounts?: string[]
-  dry_run: boolean
   performed: boolean
 }
 
@@ -628,10 +633,7 @@ export interface JobAccepted {
   job_id: string
   kind: string
   state: string
-  dry_run: boolean
   stream_url: string
-  /** SIMULATION / NO PHYSICAL DEVICE MODIFIED on a dry run, else empty. */
-  notice?: string
 }
 
 export interface JobStatus {
@@ -808,7 +810,6 @@ export interface ResidualFinding {
 export interface FileEraseRecord {
   path: string
   ok: boolean
-  dry_run: boolean
   bytes_overwritten: number
   streams_removed: string[]
   xattrs_removed: string[]
@@ -831,10 +832,9 @@ export interface FileEraseRecord {
 export interface EraseDriveBody {
   path: string
   level: string
-  dry_run: boolean
   typed_serial: string
-  /** Real erase only: the id the server returned from /workflow/erase-drive. */
-  authorization_id?: string
+  /** The one-use id the server returned from /workflow/erase-drive, approved. */
+  authorization_id: string
   case_id?: string
   operator?: string
 }
@@ -891,7 +891,6 @@ export interface EraseVerification {
 
 export interface EraseFilesBody {
   paths: string[]
-  dry_run: boolean
   confirm: boolean
   cleanse_metadata: boolean
   break_hardlinks: boolean
@@ -976,13 +975,24 @@ export interface DestroyRecordBody {
 
 export interface WipeFreeSpaceBody {
   mount_point: string
-  dry_run: boolean
   typed_identifier: string
+}
+
+/** POST /workflow/wipe-free-space: the volume resolved and checked, nothing written. */
+export interface FreeSpacePlan {
+  volume: FreeSpaceWipeResult['volume']
+  filesystem: string
+  /** What the operator types to confirm the wipe. */
+  identifier: string
+  fill_byte: number
+  free_bytes: number
+  free_blocks_bytes: number
+  not_reached: string[]
+  limitations: string[]
 }
 
 export interface FreeSpaceWipeResult {
   job_id: string
-  dry_run: boolean
   volume: {
     mount_point: string
     fs_type: string
@@ -1221,6 +1231,7 @@ export interface ResumeState {
 }
 
 export interface ResumeBody {
-  dry_run: boolean
   typed_serial: string
+  /** An approved, unspent erase authorization for the same device. */
+  authorization_id: string
 }

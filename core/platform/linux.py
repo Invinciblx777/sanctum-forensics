@@ -759,17 +759,16 @@ class LinuxAdapter(BaseAdapter):
         from core.ledger.chain import Ledger
         from core.models import EraseJob, SanitizationLevel
 
+        guard.refuse_removed_mode_keys(params)
         refusal = _container_refusal()
-        if refusal and not bool(params.get("dry_run", True)):
+        if refusal:
             raise PlatformUnsupported(
                 refusal + " No operation was performed on the device.",
                 remediation=self.whole_drive_recommended_action(),
             )
         device = get_device(str(params["path"]))
-        dry_run = bool(params.get("dry_run", True))
         typed_serial = str(params.get("typed_serial") or "")
-        if not dry_run:
-            guard.assert_serial_confirmed(device, typed_serial)
+        guard.assert_serial_confirmed(device, typed_serial)
 
         owner = params.get("owner_uid")
         ledger = Ledger(
@@ -782,8 +781,7 @@ class LinuxAdapter(BaseAdapter):
             job_id=str(params["job_id"]),
             device=device,
             level=SanitizationLevel(str(params.get("level", "CLEAR"))),
-            dry_run=dry_run,
-            confirmed_serial=typed_serial or device.serial,
+            confirmed_serial=typed_serial,
             method=None,
         )
         return job, capabilities.probe(device), ledger

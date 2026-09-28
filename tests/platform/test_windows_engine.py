@@ -137,7 +137,6 @@ def _params(tmp_path: Path, **over: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
         "path": "PhysicalDrive2",
         "level": "CLEAR",
-        "dry_run": False,
         "typed_serial": "STICK01",
         "ledger_root": str(tmp_path / "ledger"),
         "job_id": "job-w1",
@@ -253,16 +252,19 @@ def test_a_real_clear_writes_every_byte_through_the_bound_handle(
     assert result["level"] == "CLEAR"
 
 
-def test_a_dry_run_writes_nothing(tmp_path: Path) -> None:
+@pytest.mark.parametrize("key", ["dry_run", "simulation", "simulate"])
+def test_a_simulation_switch_is_refused_and_writes_nothing(
+    tmp_path: Path, key: str
+) -> None:
+    """Neither honoured nor ignored: refused before the disk is opened."""
+    from core.errors import WorkflowGateRefused
+
     adapter, api = _usb_setup()
     before = bytes(api.disks[2].data)
-    answer = _drain(adapter.execute_drive_sanitization(_params(tmp_path, dry_run=True)))
-    assert answer["result"]["dry_run"] is True
+    with pytest.raises(WorkflowGateRefused, match=key):
+        _drain(adapter.execute_drive_sanitization(_params(tmp_path, **{key: True})))
     assert bytes(api.disks[2].data) == before
-    # The only write-capable handle opened is the IDENTIFY probe's: Windows
-    # requires read-write access for IOCTL_ATA_PASS_THROUGH. It writes nothing.
     assert api.disks[2].writes == 0
-
 
 def test_a_mistyped_serial_writes_nothing(tmp_path: Path) -> None:
     adapter, api = _usb_setup()
@@ -308,7 +310,7 @@ def test_a_letterless_volume_still_blocks_until_the_disk_is_offline(
         _drain(adapter.execute_drive_sanitization(_params(tmp_path)))
     assert api.disks[2].writes == 0
     adapter.prepare_device(
-        {"path": "PhysicalDrive2", "dry_run": False, "typed_serial": "STICK01"}
+        {"path": "PhysicalDrive2", "typed_serial": "STICK01"}
     )
     result = _drain(adapter.execute_drive_sanitization(_params(tmp_path)))["result"]
     assert result["verification"]["passed"] is True
@@ -415,12 +417,11 @@ def test_resume_without_a_checkpoint_is_refused(tmp_path: Path) -> None:
 def test_taking_a_disk_offline_is_explicit_and_bound() -> None:
     api = FakeWindowsApi([_stick(volumes={"\\\\?\\Volume{v}\\": ["E:\\"]})])
     adapter = _adapter(_inventory([_disk_row(2, "STICK01", "USB")], {}, {2: "E"}), api)
-    dry = adapter.prepare_device({"path": "PhysicalDrive2"})
-    assert dry["performed"] is False and api.disks[2].offline is False
     with pytest.raises(ConfirmationMismatch):
-        adapter.prepare_device({"path": "PhysicalDrive2", "dry_run": False})
+        adapter.prepare_device({"path": "PhysicalDrive2"})
+    assert api.disks[2].offline is False
     done = adapter.prepare_device(
-        {"path": "PhysicalDrive2", "dry_run": False, "typed_serial": "STICK01"}
+        {"path": "PhysicalDrive2", "typed_serial": "STICK01"}
     )
     assert done["performed"] is True and api.disks[2].offline is True
     assert api.disks[2].writes == 0

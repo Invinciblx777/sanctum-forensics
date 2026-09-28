@@ -13,11 +13,16 @@ from fastapi.testclient import TestClient
 
 VERDICTS = {"VERIFIED", "VERIFIED_WITH_LIMITATIONS", "PARTIAL", "FAILED_VERIFICATION"}
 
+def _confirmed(target: Path) -> dict[str, object]:
+    """A confirmed erase of one scratch file; every erase is real."""
+    return {"paths": [str(target)], "confirm": True, "sweep_traces": False}
+
+
 
 def _finished_erase(client: TestClient, tmp_path: Path) -> str:
     target = tmp_path / "f.bin"
     target.write_bytes(b"x" * 64)
-    job_id = client.post("/jobs/erase-files", json={"paths": [str(target)]}).json()[
+    job_id = client.post("/jobs/erase-files", json=_confirmed(target)).json()[
         "job_id"
     ]
     for _ in range(300):

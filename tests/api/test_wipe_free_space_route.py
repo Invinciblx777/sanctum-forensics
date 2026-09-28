@@ -2,15 +2,15 @@
 
 Nothing here fills a volume. The fill is exercised on udisks loop volumes in
 ``tests/erase/files/test_free_space_wipe_carve.py``; this file checks that the
-route refuses what it must with the right status and remediation, and that a
-defaulted request simulates.
+route refuses what it must with the right status and remediation, and that the
+read-only plan (``POST /workflow/wipe-free-space``) reports the identifier to
+type without creating a job or writing anything.
 """
 
 from __future__ import annotations
 
 import os
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -89,7 +89,7 @@ def test_a_real_run_without_the_identifier_is_refused(
 
     answer = client.post(
         "/jobs/wipe-free-space",
-        json={"mount_point": str(point), "dry_run": False, "typed_identifier": ""},
+        json={"mount_point": str(point), "typed_identifier": ""},
     )
 
     assert answer.status_code == 409
@@ -99,30 +99,53 @@ def test_a_real_run_without_the_identifier_is_refused(
     assert list(point.iterdir()) == []
 
 
-def test_a_defaulted_request_simulates_and_writes_nothing(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_the_plan_reports_the_identifier_and_writes_nothing(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    services: object,
 ) -> None:
     point = tmp_path / "volume"
     point.mkdir()
     _patch_volume(monkeypatch, _fake_volume(point, -1))
 
-    answer = client.post("/jobs/wipe-free-space", json={"mount_point": str(point)})
+    answer = client.post("/workflow/wipe-free-space", json={"mount_point": str(point)})
 
-    assert answer.status_code == 200
+    assert answer.status_code == 200, answer.text
     body = answer.json()
-    assert body["dry_run"] is True
-    assert body["kind"] == "wipe-free-space"
+    assert body["identifier"] == "7BF9-380B"
+    assert body["volume"]["mount_point"] == str(point)
+    assert body["not_reached"]
+    assert "job_id" not in body
+    assert services.registry.ids() == []  # type: ignore[attr-defined]
+    assert list(point.iterdir()) == []
 
-    state: dict[str, object] = {}
-    for _ in range(200):
-        state = client.get(f"/jobs/{body['job_id']}").json()
-        if state.get("state") not in {"pending", "running"}:
-            break
-        time.sleep(0.02)
-    assert state.get("state") == "complete", state
-    result = state["result"]
-    assert isinstance(result, dict)
-    assert result["dry_run"] is True
-    assert result["bytes_written"] == 0
-    assert result["verified"] is None
+
+def test_the_plan_refuses_what_the_wipe_refuses(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_volume(monkeypatch, _fake_volume(tmp_path, os.stat("/").st_dev))
+
+    answer = client.post(
+        "/workflow/wipe-free-space", json={"mount_point": str(tmp_path)}
+    )
+
+    assert answer.status_code == 409
+    assert answer.json()["detail"]["kind"] == "SystemDiskRefused"
+
+
+@pytest.mark.parametrize("key", ["dry_run", "simulation", "simulate"])
+def test_a_wipe_with_a_simulation_switch_is_rejected(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, key: str
+) -> None:
+    point = tmp_path / "volume"
+    point.mkdir()
+    _patch_volume(monkeypatch, _fake_volume(point, -1))
+
+    answer = client.post(
+        "/jobs/wipe-free-space",
+        json={"mount_point": str(point), "typed_identifier": "7BF9-380B", key: True},
+    )
+
+    assert answer.status_code == 422, answer.text
     assert list(point.iterdir()) == []

@@ -86,7 +86,6 @@ def test_run_erase_on_a_platform_without_an_engine_never_reaches_it(
                 "run_erase",
                 {
                     "path": "disk9",
-                    "dry_run": False,
                     "typed_serial": "X",
                     "ledger_root": "l",
                     "job_id": "j",
@@ -119,7 +118,6 @@ def test_a_real_windows_erase_without_authorization_opens_nothing(
                 "run_erase",
                 {
                     "path": "PhysicalDrive2",
-                    "dry_run": False,
                     "typed_serial": "E0D55EA574E2F4B1",
                     "ledger_root": "l",
                     "job_id": "j",

@@ -34,7 +34,7 @@ from fastapi.testclient import TestClient
 
 from tests._loopback import LOOPBACK_BASE_URL
 
-from .conftest import FAKE_DEVICES
+from .conftest import FAKE_DEVICES, approve_workflow, open_workflow
 
 PHASES = ("PREFLIGHT", "HIDDEN_AREA_UNLOCK", "ERASE", "VERIFY", "REPORT")
 
@@ -79,7 +79,7 @@ class SlowHelper:
                     "eta_seconds": 1,
                     "message": f"record {index}",
                 }
-            return {"result": {"job_id": job_id, "dry_run": True}}
+            return {"result": {"job_id": job_id}}
         except GeneratorExit:
             self.closed.set()
             raise
@@ -91,9 +91,7 @@ def slow_helper() -> SlowHelper:
 
 
 @pytest.fixture
-def slow_client(
-    slow_helper: SlowHelper, tmp_path: Path
-) -> Iterator[TestClient]:
+def slow_services(slow_helper: SlowHelper, tmp_path: Path) -> AppServices:
     services = AppServices(
         registry=JobRegistry(),
         helper=slow_helper,
@@ -101,16 +99,33 @@ def slow_client(
         key_dir=tmp_path / "keys",
     )
     services.prepare()
+    return services
+
+
+@pytest.fixture
+def slow_client(slow_services: AppServices) -> Iterator[TestClient]:
     with TestClient(
-        create_app(services=services, serve_ui=False), base_url=LOOPBACK_BASE_URL
+        create_app(services=slow_services, serve_ui=False),
+        base_url=LOOPBACK_BASE_URL,
     ) as client:
+        # Every erase is real and gated, so each test's client carries the
+        # services it needs to open and approve one.
+        client.sanctum_services = slow_services  # type: ignore[attr-defined]
         yield client
 
 
 def start_erase(client: TestClient) -> str:
+    services: AppServices = client.sanctum_services  # type: ignore[attr-defined]
+    auth_id = open_workflow(client, services)
+    approve_workflow(client, auth_id)
+    device = FAKE_DEVICES[0]["device"]
     accepted = client.post(
         "/jobs/erase-drive",
-        json={"path": FAKE_DEVICES[0]["device"]["path"], "dry_run": True},
+        json={
+            "path": device["path"],
+            "typed_serial": device["serial"],
+            "authorization_id": auth_id,
+        },
     )
     assert accepted.status_code == 200, accepted.text
     job_id: str = accepted.json()["job_id"]

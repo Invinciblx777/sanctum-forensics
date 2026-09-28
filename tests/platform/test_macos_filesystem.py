@@ -21,7 +21,7 @@ pytestmark = pytest.mark.skipif(
 def _erase_options(**over: object) -> object:
     from core.models import FileEraseOptions
 
-    base: dict[str, object] = {"dry_run": False, "confirm": True}
+    base: dict[str, object] = {"confirm": True}
     base.update(over)
     return FileEraseOptions.model_validate(base)
 
@@ -190,6 +190,6 @@ def test_whole_drive_inside_the_suite_is_stopped_before_diskutil_starts() -> Non
         launch_barrier(),
         pytest.raises(PlatformUnsupported, match="diskutil"),
     ):
-        next(adapter.execute_drive_sanitization({"path": "disk0", "dry_run": False}))
+        next(adapter.execute_drive_sanitization({"path": "disk0"}))
 
     assert all("diskutil" in refusal for refusal in refusals), refusals

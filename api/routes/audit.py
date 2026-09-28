@@ -160,7 +160,7 @@ def tamper_demo(
             f"{'y' if len(entries) == 1 else 'ies'}. A tamper demonstration "
             "needs at least two, because the point of it is that entries "
             "*before* the alteration remain verifiable.",
-            "Run an operation - a dry-run erase or a recovery - and try again. "
+            "Run an operation - an acquisition or a recovery - and try again. "
             "Nothing was modified.",
         )
 
@@ -439,12 +439,8 @@ def generate_report(
     builder: Callable[..., dict[str, Any]]
     if kind == "erase-files":
         builder = build_file_erase_report
-        # dry_run lives in the job's echoed params, not at the top of the
-        # status: the registry records what the job was asked to do.
-        params = status.get("params") or {}
         fields = common | {
             "records": list(result.get("records") or []),
-            "dry_run": bool(params.get("dry_run", False)),
             "trace_sweep": result.get("trace_sweep") or None,
         }
     elif kind == "destroy-record":

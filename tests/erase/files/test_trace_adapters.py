@@ -13,7 +13,7 @@ The rules each adapter is held to:
 * a same-name file with no such record, or a record naming another path, is
   never removed;
 * no link is followed;
-* a dry run removes nothing;
+* the read-only search (``find_traces``) removes nothing;
 * a trace inside a file another process owns is reported, with the reason,
   and the file is left byte for byte as it was.
 """
@@ -68,7 +68,6 @@ def erased(path: str, *, size: int = 11, directory: bool = False) -> FileEraseRe
     return FileEraseRecord(
         path=path,
         ok=True,
-        dry_run=False,
         unlinked=True,
         is_directory=directory,
         inspection=FileInspection(path=path, size_bytes=size),
@@ -79,13 +78,11 @@ def run_sweep(
     records: list[FileEraseRecord],
     locations: traces.TraceLocations,
     *,
-    dry_run: bool = False,
+    find_only: bool = False,
 ) -> TraceSweepResult:
-    settings = (
-        real_erase(workers=1)
-        if not dry_run
-        else real_erase(workers=1, dry_run=True, confirm=False)
-    )
+    if find_only:
+        return traces.find_traces(records, locations)
+    settings = real_erase(workers=1)
     _, result = drain(
         traces.sweep(
             records, settings, job_id="adapters", ledger=Recorder(), locations=locations
@@ -377,7 +374,7 @@ def test_a_trash_that_is_a_link_is_not_searched(
 
 
 @posix_only
-def test_a_dry_run_on_a_mac_profile_removes_nothing(
+def test_the_read_only_search_on_a_mac_profile_removes_nothing(
     tmp_path: Path, photo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     profile = mac_profile(tmp_path / "mac")
@@ -386,7 +383,7 @@ def test_a_dry_run_on_a_mac_profile_removes_nothing(
     listing.write_bytes(shared_file_list([bookmark(str(photo))]))
     monkeypatch.setattr(traces, "default_locations", lambda: profile.locations)
 
-    sweep = erase([photo], dry_run=True)
+    sweep = erase([photo], find_only=True)
 
     kinds = {trace.kind for trace in sweep.traces}
     assert kinds == {"TRASH_COPY", "TRASH_RECORD", "RECENT_ENTRY"}
@@ -683,12 +680,14 @@ def test_a_jump_list_naming_another_path_is_not_a_trace(tmp_path: Path) -> None:
     assert sweep.traces == [] and jump.exists()
 
 
-def test_a_dry_run_leaves_a_whole_file_jump_list_in_place(tmp_path: Path) -> None:
+def test_the_read_only_search_leaves_a_whole_file_jump_list_in_place(
+    tmp_path: Path,
+) -> None:
     profile = windows_profile(tmp_path / "win")
     jump = profile.automatic / "b.automaticDestinations-ms"
     jump.write_bytes(automatic_destinations([shell_link(SALARY)]))
 
-    sweep = run_sweep([erased(SALARY)], profile.locations, dry_run=True)
+    sweep = run_sweep([erased(SALARY)], profile.locations, find_only=True)
 
     (trace,) = sweep.traces
     assert trace.exact and not trace.removed and trace.action == ""
@@ -733,7 +732,7 @@ def test_the_windows_profile_is_searched_in_every_place(tmp_path: Path) -> None:
     )
     (profile.recycle_bin / "$RABC123.docx").write_bytes(b"old content")
 
-    sweep = run_sweep([erased(SALARY)], profile.locations, dry_run=True)
+    sweep = run_sweep([erased(SALARY)], profile.locations, find_only=True)
 
     assert {trace.kind for trace in sweep.traces} == {
         "RECENT_SHORTCUT",

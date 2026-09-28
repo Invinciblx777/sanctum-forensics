@@ -23,8 +23,9 @@ rather than report a medium it did not cover. A medium error localises to the
 sector and is recorded; a device that disappears stops the run, which ledgers
 how far it got.
 
-Dry run is the default of every caller. A dry run opens nothing, writes
-nothing and verifies nothing; its result says so.
+There is no non-writing mode. :func:`clear` is only reached past the
+adapter's revalidation and the helper's write-seam authorization, and every
+call opens, binds, writes and verifies the device.
 """
 
 from __future__ import annotations
@@ -138,7 +139,6 @@ class ClearRequest:
     mechanism: str
     device_class: str
     flash: bool
-    dry_run: bool = True
     method: EraseMethod = EraseMethod.SINGLE_PASS_OVERWRITE
     fills: tuple[int, ...] | None = None
     fill_reason: str = ""
@@ -409,7 +409,7 @@ def _residual(
             "their old contents."
         )
     if verification is None:
-        factors.append("Not verified: this was a dry run or verification did not run.")
+        factors.append("Not verified: verification did not run.")
     elif not verification.passed:
         factors.append("Read-back verification failed.")
     elif verification.strategy == "sampled":
@@ -439,9 +439,8 @@ def clear(
 ) -> Generator[Progress, None, EraseResult]:
     """Overwrite and verify the whole addressable device, yielding progress.
 
-    ``open_target`` is called once, after the plan is ledgered and only on a
-    real run; it must open **and bind** the device, raising on any identity
-    difference.
+    ``open_target`` is called once, after the plan is ledgered; it must open
+    **and bind** the device, raising on any identity difference.
     """
     started = datetime.now(UTC)
     device = request.device
@@ -479,7 +478,6 @@ def clear(
             "mechanism": request.mechanism,
             "device_class": request.device_class,
             "identity": request.identity,
-            "dry_run": request.dry_run,
             "plan": plan.model_dump(mode="json"),
             "resume_from": (
                 request.resume_from.model_dump(mode="json")
@@ -489,33 +487,6 @@ def clear(
         },
     )
     yield _progress(request.job_id, ErasePhase.PREFLIGHT, 1, 1, "plan recorded")
-
-    if request.dry_run:
-        ledger.record(
-            ErasePhase.ERASE,
-            "dry_run",
-            {"job_id": request.job_id, "bytes_that_would_be_written": total},
-        )
-        yield _progress(
-            request.job_id, ErasePhase.ERASE, 0, total, "dry run: nothing written"
-        )
-        return EraseResult(
-            job_id=request.job_id,
-            method=request.method,
-            level=SanitizationLevel.CLEAR,
-            dry_run=True,
-            started_at=started,
-            finished_at=datetime.now(UTC),
-            bytes_written=0,
-            passes=passes,
-            plan=plan,
-            residual_risk=_residual(request, None, []),
-            limitations=[
-                *limitations,
-                "Dry run: the device was not opened for writing.",
-            ],
-            device=device,
-        )
 
     target = open_target()
     unwritable: list[UnwritableRange] = []
@@ -666,7 +637,6 @@ def clear(
         job_id=request.job_id,
         method=request.method,
         level=SanitizationLevel.CLEAR,
-        dry_run=False,
         started_at=started,
         finished_at=datetime.now(UTC),
         bytes_written=written_total,

@@ -168,7 +168,7 @@ def test_the_write_time_check_still_refuses_a_host_overwrite_purge() -> None:
             "probability_note": "",
         }
     )
-    job = make_job(make_device(), level=SanitizationLevel.PURGE, dry_run=False)
+    job = make_job(make_device(), level=SanitizationLevel.PURGE)
     caps = make_caps(ata_sanitize_ops=["BLOCK_ERASE_EXT"])
     achieved = _achieved_level(
         job, EraseMethod.SINGLE_PASS_OVERWRITE, caps, verification

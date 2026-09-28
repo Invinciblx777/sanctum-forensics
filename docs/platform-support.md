@@ -136,8 +136,9 @@ Row-by-row physical breakdown:
 | Resume | from the last ledgered checkpoint; firmware methods restart | checkpoints and resume in the engine | checkpoints and resume in the engine |
 | Physical validation | usb-flash only (2026-09-05) | none recorded | none recorded |
 
-The preparation step is never part of an erase: it is its own call, dry run by
-default, and a real run needs the serial typed by hand.
+The preparation step is never part of an erase: it is its own call on the real
+disk, it shows the volumes it affects first, and it needs the serial typed by
+hand. There is no dry-run mode anywhere in the product.
 
 The app's *Filesystems* table (`core/platform/filesystems.py`) gives one
 platform-wide word for whole-drive clear: SUPPORTED on Linux, UNVERIFIED on

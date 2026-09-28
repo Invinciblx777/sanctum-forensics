@@ -317,8 +317,8 @@ run_photorec() {
 }
 
 hash_device() {
-    # The whole device, so "the dry run wrote nothing" is a claim about every
-    # byte rather than about a sample.
+    # The whole device, so "the refused run wrote nothing" is a claim about
+    # every byte rather than about a sample.
     dd if="$DEVICE" bs=4M status=none 2>/dev/null | sha256sum | cut -d' ' -f1
 }
 
@@ -441,26 +441,35 @@ PLANT
     say "PHASE A.3 - PhotoRec BEFORE (the number without which 'after' proves nothing)"
     run_photorec before
 
-    say "PHASE A.4 - dry run, then the real wipe"
+    say "PHASE A.4 - a refused run first, then the real wipe"
     local before_hash; before_hash="$(hash_device)"
-    note "device sha256 before dry run: $before_hash"
+    note "device sha256 before the refused run: $before_hash"
 
-    harness_step "A.4 dry run" "$RUN_DIR/a4-dryrun.json" "$RUN_DIR/a4-dryrun.err" \
+    # A wrong confirmation must be refused before a byte is written. There is
+    # no rehearsal mode to test instead: every run that passes the gates writes.
+    # The step exits 0 and records the refusal in its JSON, read back below.
+    harness_step "A.4 refused run" "$RUN_DIR/a4-refused.json" "$RUN_DIR/a4-refused.err" \
         "$PY" "$REPO/scripts/hardware_validation.py" erase --device "$DEVICE" \
-        --job-id "hwval-dry" --ledger-root "$LEDGER" --key-dir "$KEYS" \
-        --dry-run
+        --job-id "hwval-refused" --ledger-root "$LEDGER" --key-dir "$KEYS" \
+        --typed-serial "NOT-THE-SERIAL-OF-THIS-DEVICE"
+    local refused_kind
+    refused_kind="$(harness_json_field "$RUN_DIR/a4-refused.json" error_kind)"
+    note "refused run answered: ${refused_kind:-no refusal recorded}"
 
-    local after_dry_hash; after_dry_hash="$(hash_device)"
-    note "device sha256 after dry run:  $after_dry_hash"
+    local after_refused_hash; after_refused_hash="$(hash_device)"
+    note "device sha256 after the refused run:  $after_refused_hash"
     {
-        printf '{"before": "%s", "after_dry_run": "%s", "unchanged": %s}\n' \
-            "$before_hash" "$after_dry_hash" \
-            "$([[ "$before_hash" == "$after_dry_hash" ]] && echo true || echo false)"
-    } > "$RUN_DIR/a4-dryrun-hashes.json"
-    if [[ "$before_hash" == "$after_dry_hash" ]]; then
-        note "dry run wrote zero bytes: CONFIRMED"
+        printf '{"before": "%s", "after_refused_run": "%s", "unchanged": %s, "refusal": "%s"}\n' \
+            "$before_hash" "$after_refused_hash" \
+            "$([[ "$before_hash" == "$after_refused_hash" ]] && echo true || echo false)" \
+            "$refused_kind"
+    } > "$RUN_DIR/a4-refused-hashes.json"
+    if [[ "$refused_kind" != "ConfirmationMismatch" ]]; then
+        harness_fail "A.4 refusal" "a wrong typed serial was not refused"
+    elif [[ "$before_hash" == "$after_refused_hash" ]]; then
+        note "refused run wrote zero bytes: CONFIRMED"
     else
-        harness_fail "A.4 dry run" "the dry run modified the device"
+        harness_fail "A.4 refusal" "the refused run modified the device"
     fi
 
     local start; start="$(now)"

@@ -3,13 +3,12 @@ import assert from 'node:assert/strict'
 
 import { fileOutcome } from '../src/lib/fileOutcome.ts'
 
-test('a completed erase and a simulation keep their own words', () => {
-  assert.equal(fileOutcome({ ok: true, dry_run: false, error_kind: null }).word, 'erased')
-  assert.equal(fileOutcome({ ok: true, dry_run: true, error_kind: null }).word, 'simulated')
+test('a completed erase is erased: there is no simulated outcome', () => {
+  assert.equal(fileOutcome({ ok: true, error_kind: null }).word, 'erased')
 })
 
 test('an erase that started and failed partway is never "not attempted"', () => {
-  const outcome = fileOutcome({ ok: false, dry_run: false, error_kind: 'EIO', attempted: true })
+  const outcome = fileOutcome({ ok: false, error_kind: 'EIO', attempted: true })
   assert.match(outcome.word, /failed partway/)
   assert.match(outcome.word, /EIO/)
   assert.equal(outcome.tone, 'destructive')
@@ -21,7 +20,7 @@ test('an erase that started and failed partway is never "not attempted"', () => 
 test('a path refused before any step ran says so', () => {
   const outcome = fileOutcome({
     ok: false,
-    dry_run: false,
+   
     error_kind: 'REPARSE_POINT_REFUSED',
     attempted: false,
   })
@@ -31,7 +30,7 @@ test('a path refused before any step ran says so', () => {
 })
 
 test('a failure from a server that does not record the attempt is unknown, not "not attempted"', () => {
-  const outcome = fileOutcome({ ok: false, dry_run: false, error_kind: 'EACCES' })
+  const outcome = fileOutcome({ ok: false, error_kind: 'EACCES' })
   assert.equal(outcome.residual, 'UNKNOWN')
   assert.doesNotMatch(outcome.basis, /not attempted/)
 })

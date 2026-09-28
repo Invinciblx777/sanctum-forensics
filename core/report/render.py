@@ -288,9 +288,9 @@ def drive_report_inputs(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
     One function, so the API, the demo and the validation harness cannot
     drift. The plan carries only ``level``; the level requested and the level
     achieved are named here, because a certificate that leaves the achieved
-    level blank has left out the one line it exists to state. A dry run
-    achieved nothing and says so. A result recorded before the engine carried
-    these fields yields empty sections, which the report prints as recorded.
+    level blank has left out the one line it exists to state. A result
+    recorded before the engine carried these fields yields empty sections,
+    which the report prints as recorded.
     """
     if not result:
         return {
@@ -308,11 +308,7 @@ def drive_report_inputs(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
     hidden = dict(result.get("hidden_areas") or {})
     if hidden:
         hidden["covered"] = bool(result.get("hidden_covered"))
-    achieved = result.get("achieved_level")
-    if result.get("dry_run", False):
-        achieved_text = "NONE (dry run: nothing was written)"
-    else:
-        achieved_text = str(achieved or "")
+    achieved_text = str(result.get("achieved_level") or "")
     return {
         "device": device,
         "method": {
@@ -647,7 +643,6 @@ def build_file_erase_report(
     generated_at: datetime,
     tool_version: str,
     records: list[dict[str, Any]],
-    dry_run: bool,
     limitations: list[str],
     ledger_excerpt: list[dict[str, Any]],
     chain_verification: ChainVerification,
@@ -704,7 +699,6 @@ def build_file_erase_report(
         ),
         "scope": {
             "paths_requested": len(records),
-            "dry_run": dry_run,
             "paths": _or_none_recorded([str(item.get("path", "")) for item in records]),
             "standards": file_erasure_standards(),
             "regulatory_references": [dpdp_erasure_reference()],
@@ -717,7 +711,6 @@ def build_file_erase_report(
                 {
                     "path": str(record.get("path", "")),
                     "ok": bool(record.get("ok")),
-                    "dry_run": bool(record.get("dry_run")),
                     "bytes_overwritten": int(record.get("bytes_overwritten") or 0),
                     "unlinked": bool(record.get("unlinked")),
                     "streams_removed": list(record.get("streams_removed") or []),
@@ -1098,7 +1091,6 @@ def build_restore_report(
         ),
         "restore_method": {
             "method": "image restore (sector-aligned write of a recorded backup)",
-            "dry_run": bool(result.get("dry_run", True)),
             "result": str(result.get("result", NONE_RECORDED)),
             "note": "A restore writes data; it is not a NIST SP 800-88 "
             "Clear, Purge or Destroy outcome.",

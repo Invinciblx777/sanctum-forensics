@@ -52,6 +52,7 @@ from core.authorization import (
     plan_drift,
 )
 from core.backup import BackupRecord, check_record_digest
+from core.device.guard import refuse_removed_mode_keys
 from core.device.hidden_area_workflow import HpaPlan
 from core.device.hidden_area_workflow import plan_digest_of as hpa_plan_digest_of
 from core.errors import EvidenceIntegrityError, WorkflowGateRefused
@@ -104,17 +105,15 @@ def revalidate_execution(
     *,
     probe: Callable[[str], dict[str, Any]] | None = None,
 ) -> None:
-    """Refuse a real erase unless its authorization holds up, or return.
+    """Refuse an erase unless its authorization holds up, or return.
 
-    Applies only to a request whose ``dry_run`` is explicitly ``False``: the
-    same rule the rest of the helper uses, so a missing flag simulates. Raises
-    :class:`~core.errors.WorkflowGateRefused` and does nothing else on refusal.
-    On success it has taken the ``.executed`` marker, so a second call with the
-    same authorization refuses.
+    Applies to every erase and resume request: there is no non-writing mode to
+    exempt, and a request that still carries a simulation switch is refused
+    outright. Raises :class:`~core.errors.WorkflowGateRefused` and does nothing
+    else on refusal. On success it has taken the ``.executed`` marker, so a
+    second call with the same authorization refuses.
     """
-    if params.get("dry_run", True) is not False:
-        return
-
+    refuse_removed_mode_keys(params)
     binding = params.get("authorization")
     root_raw = params.get("authorization_dir")
     if not isinstance(binding, dict) or not root_raw:
@@ -254,7 +253,6 @@ class RestoreAuthorized:
     """
 
     auth_id: str
-    dry_run: bool
     record: BackupRecord
     plan: RestorePlan
     fresh: RestorePlan
@@ -267,18 +265,16 @@ def revalidate_restore(
 ) -> RestoreAuthorized:
     """Refuse a restore unless its authorization holds up here, now.
 
-    The restore mirror of :func:`revalidate_execution`. A dry run (``dry_run``
-    absent or not exactly ``False``) still needs an opened record of kind
-    ``restore`` and a target that re-plans without drift - a simulation of a
-    plan that would be refused is not a simulation - but needs no approval,
-    typed serial or marker. A real restore also needs a recorded approval, the
-    API's ``.spent`` marker, a typed serial equal to the one this process just
-    read, and takes the ``.executed`` marker last.
+    The restore mirror of :func:`revalidate_execution`. Every restore needs an
+    opened record of kind ``restore``, a target that re-plans without drift, a
+    recorded approval, the API's ``.spent`` marker, and a typed serial equal to
+    the one this process just read; it takes the ``.executed`` marker last. A
+    request that still carries a simulation switch is refused outright.
 
     Every fact about the target and the image is read from the host here. The
     request's binding is compared with the stored record, never trusted.
     """
-    dry_run = params.get("dry_run", True) is not False
+    refuse_removed_mode_keys(params)
     binding = params.get("authorization")
     root_raw = params.get("authorization_dir")
     if not isinstance(binding, dict) or not root_raw:
@@ -298,11 +294,10 @@ def revalidate_restore(
         raise _refuse_restore(kind_reasons)
 
     reasons: list[str] = []
-    if not dry_run:
-        if not record.get("approved_by"):
-            reasons.append("no person has approved this restore")
-        if not (root / f"{auth_id}.spent").exists():
-            reasons.append("the authorization was not consumed by the API gate")
+    if not record.get("approved_by"):
+        reasons.append("no person has approved this restore")
+    if not (root / f"{auth_id}.spent").exists():
+        reasons.append("the authorization was not consumed by the API gate")
     path = str(params.get("path", ""))
     if path != record.get("path"):
         reasons.append(
@@ -342,25 +337,20 @@ def revalidate_restore(
     reasons.extend(identity_drift(record["device"], device_identity(fresh_probe)))
     reasons.extend(restore_plan_drift(approved, fresh))
     reasons.extend(image_drift(record["backup"]))
-    if not dry_run:
-        typed = str(params.get("typed_serial") or "").strip()
-        token = confirmation_token(fresh.target).strip()
-        if not typed:
-            reasons.append("no serial was typed; a real restore is opt-in twice")
-        elif typed.casefold() != token.casefold():
-            reasons.append(
-                "the typed serial does not match the target re-read at the "
-                "write seam"
-            )
+    typed = str(params.get("typed_serial") or "").strip()
+    token = confirmation_token(fresh.target).strip()
+    if not typed:
+        reasons.append("no serial was typed; a restore is opt-in twice")
+    elif typed.casefold() != token.casefold():
+        reasons.append(
+            "the typed serial does not match the target re-read at the write seam"
+        )
     if reasons:
         # De-duplicated, order kept: identity and plan drift can name one change.
         raise _refuse_restore(list(dict.fromkeys(reasons)))
 
-    if not dry_run:
-        _take_marker(root, auth_id, _refuse_restore)
-    return RestoreAuthorized(
-        auth_id=auth_id, dry_run=dry_run, record=backup, plan=approved, fresh=fresh
-    )
+    _take_marker(root, auth_id, _refuse_restore)
+    return RestoreAuthorized(auth_id=auth_id, record=backup, plan=approved, fresh=fresh)
 
 
 # --------------------------------------------------------------------------
@@ -396,7 +386,6 @@ class HpaAuthorized:
     """What passed the HPA write seam: the approved plan and a fresh device read."""
 
     auth_id: str
-    dry_run: bool
     plan: HpaPlan
     device: Device
 
@@ -410,18 +399,18 @@ def revalidate_hpa(
 
     Only a record of kind ``hpa`` is accepted: an erase or restore approval is
     never spendable as a change to the drive's configuration, nor an HPA one as
-    either of those. A dry run needs an opened record whose plan still matches
-    the device, but no approval, typed serial or marker. A real change also
-    needs a recorded approval, the API's ``.spent`` marker, a backup image
-    unchanged since the approval, a typed serial equal to the one this process
-    just read, and takes the single-use ``.executed`` marker last.
+    either of those. Every change needs an opened record whose plan still
+    matches the device, a recorded approval, the API's ``.spent`` marker, a
+    backup image unchanged since the approval, and a typed serial equal to the
+    one this process just read; it takes the single-use ``.executed`` marker
+    last. A request that still carries a simulation switch is refused outright.
 
     The drive's maxima are *not* re-read here: the engine
     (:func:`core.device.hidden_area_workflow.execute`) re-discovers them through
     the platform backend immediately before the command and refuses a stale
     plan.
     """
-    dry_run = params.get("dry_run", True) is not False
+    refuse_removed_mode_keys(params)
     binding = params.get("authorization")
     root_raw = params.get("authorization_dir")
     if not isinstance(binding, dict) or not root_raw:
@@ -442,13 +431,12 @@ def revalidate_hpa(
 
     reasons: list[str] = []
     backup = record.get("backup") or {}
-    if not dry_run:
-        if not record.get("approved_by"):
-            reasons.append("no person has approved this HPA change")
-        if not (root / f"{auth_id}.spent").exists():
-            reasons.append("the authorization was not consumed by the API gate")
-        if not backup.get("backup_id"):
-            reasons.append("no verified backup is bound to this authorization")
+    if not record.get("approved_by"):
+        reasons.append("no person has approved this HPA change")
+    if not (root / f"{auth_id}.spent").exists():
+        reasons.append("the authorization was not consumed by the API gate")
+    if not backup.get("backup_id"):
+        reasons.append("no verified backup is bound to this authorization")
     path = str(params.get("path", ""))
     if path != record.get("path"):
         reasons.append(
@@ -487,21 +475,18 @@ def revalidate_hpa(
         reasons.append(
             "the device has mounted filesystems: " + ", ".join(device.mounted_at)
         )
-    if not dry_run:
-        if backup.get("backup_id"):
-            reasons.extend(image_drift(backup))
-        typed = str(params.get("typed_serial") or "").strip()
-        serial = device.serial.strip()
-        if not typed:
-            reasons.append("no serial was typed; a real HPA change is opt-in twice")
-        elif not serial or typed.casefold() != serial.casefold():
-            reasons.append(
-                "the typed serial does not match the device re-read at the "
-                "write seam"
-            )
+    if backup.get("backup_id"):
+        reasons.extend(image_drift(backup))
+    typed = str(params.get("typed_serial") or "").strip()
+    serial = device.serial.strip()
+    if not typed:
+        reasons.append("no serial was typed; an HPA change is opt-in twice")
+    elif not serial or typed.casefold() != serial.casefold():
+        reasons.append(
+            "the typed serial does not match the device re-read at the write seam"
+        )
     if reasons:
         raise _refuse_hpa(list(dict.fromkeys(reasons)))
 
-    if not dry_run:
-        _take_marker(root, auth_id, _refuse_hpa)
-    return HpaAuthorized(auth_id=auth_id, dry_run=dry_run, plan=plan, device=device)
+    _take_marker(root, auth_id, _refuse_hpa)
+    return HpaAuthorized(auth_id=auth_id, plan=plan, device=device)

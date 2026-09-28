@@ -1,4 +1,4 @@
-"""Secure file and folder erasure (M2). Destructive. Dry-run is the default.
+"""Secure file and folder erasure (M2). Destructive: every call erases.
 
 The honest claim this module makes: **overwriting a file through the filesystem
 does not reliably destroy it.** Journals, copy-on-write, resident data, slack,
@@ -16,10 +16,9 @@ deliberate - a whole-device wipe that guessed at ``O_DIRECT`` alignment would
 destroy the wrong bytes, while a file erase that cannot enumerate alternate
 data streams can still erase the file and say what it could not check.
 
-**Two gates, both closed by default.** ``dry_run`` is True and ``confirm`` is
-False, and turning off the first without setting the second raises. A dry run
-runs inspection and the residual scan in full, so it produces the complete
-picture of what would survive without writing a byte.
+**The gate is closed by default.** ``confirm`` is False, and an erase without
+it raises before any path is inspected. There is no non-writing mode: every
+confirmed call overwrites, renames and unlinks, then runs the residual scan.
 """
 
 from __future__ import annotations
@@ -192,10 +191,10 @@ def erase_one(  # noqa: C901 - eleven ordered steps, read top to bottom
     """
     target = Path(path)
 
-    if not options.dry_run and not options.confirm:
+    if not options.confirm:
         raise ConfirmationMismatch(
-            f"Refusing to erase {target}: dry_run is off but confirm was not "
-            "set. Destructive file erasure is opt-in twice."
+            f"Refusing to erase {target}: confirm was not set. Destructive "
+            "file erasure needs an explicit confirmation."
         )
     _refuse_protected(target)
 
@@ -203,7 +202,6 @@ def erase_one(  # noqa: C901 - eleven ordered steps, read top to bottom
     record = FileEraseRecord(
         path=str(target),
         ok=True,
-        dry_run=options.dry_run,
         inspection=inspection,
         is_directory=target.is_dir() and not inspection.is_reparse_point,
     )
@@ -223,7 +221,7 @@ def erase_one(  # noqa: C901 - eleven ordered steps, read top to bottom
     host = backend()
     record.attempted = True
     try:
-        if inspection.is_immutable is True and not options.dry_run:
+        if inspection.is_immutable is True:
             cleared, why = host.clear_immutable(target)
             record.limitations.append(
                 f"The immutable attribute on {target} was cleared before "
@@ -247,7 +245,7 @@ def erase_one(  # noqa: C901 - eleven ordered steps, read top to bottom
             kind=record.error_kind,
         )
 
-    if not options.dry_run and record.unlinked:
+    if record.unlinked:
         record.verification = verify_file_erase(inspection)
 
     record.findings = residual_mod.scan(inspection, record)
@@ -262,9 +260,6 @@ def _erase_file(
     host: PlatformBackend,
 ) -> None:
     """Steps 4-10 for a regular file. Raises OSError; the caller records it."""
-    if options.dry_run:
-        return
-
     if options.cleanse_metadata:
         record.cleanse = cleanse_only(target)
 
@@ -413,8 +408,6 @@ def _erase_directory(
     directory name is often as telling as a filename - so it goes through the
     same rename chain before ``rmdir``.
     """
-    if options.dry_run:
-        return
     if any(target.iterdir()):
         # Checked before the rename chain: renaming a directory that then
         # cannot be removed would leave its contents under a name nobody chose.
@@ -528,7 +521,6 @@ def _worker(job: tuple[int, str, FileEraseOptions]) -> tuple[int, FileEraseRecor
         return index, FileEraseRecord(
             path=path,
             ok=False,
-            dry_run=options.dry_run,
             inspection=FileInspection(path=path, size_bytes=0),
             error=str(exc),
             error_kind=type(exc).__name__,
@@ -661,6 +653,13 @@ def erase_paths(
     silent about which ones. See :func:`_record_cancelled_batch`.
     """
     settings = options or FileEraseOptions()
+    if not settings.confirm:
+        # Refused before a single path is expanded or inspected: an erase with
+        # no confirmation is a caller error, not a batch of failed files.
+        raise ConfirmationMismatch(
+            "Refusing to erase: confirm was not set. Destructive file erasure "
+            "needs an explicit confirmation."
+        )
     targets = expand_targets(paths, recursive=settings.recursive)
     state = _BatchState(targets=targets)
     try:
@@ -709,7 +708,6 @@ def _erase_batch(
         {
             "job_id": job_id,
             "targets": len(targets),
-            "dry_run": settings.dry_run,
             "break_hardlinks": settings.break_hardlinks,
             "cleanse_metadata": settings.cleanse_metadata,
             "rename_rounds": settings.rename_rounds,
@@ -765,11 +763,6 @@ def _erase_batch(
 
     finished_at = datetime.now(UTC)
     limitations: list[str] = []
-    if settings.dry_run:
-        limitations.append(
-            "DRY RUN: nothing was written, renamed or unlinked. The findings "
-            "below describe what would survive an erase of these paths."
-        )
 
     yield Progress(
         job_id=job_id,
@@ -786,7 +779,6 @@ def _erase_batch(
         job_id=job_id,
         started_at=started_at,
         finished_at=finished_at,
-        dry_run=settings.dry_run,
         records=ordered,
         limitations=limitations,
         trace_sweep=trace_sweep,
@@ -870,7 +862,6 @@ def _record_cancelled_batch(
         "cancelled",
         {
             "job_id": job_id,
-            "dry_run": settings.dry_run,
             "targets": total,
             "processed": processed,
             "not_processed": not_processed,
@@ -883,7 +874,6 @@ def _record_cancelled_batch(
                 + ledgered
                 + "No batch verdict is recorded: this is not evidence that any "
                 "file was erased beyond what is listed here."
-                + (" DRY RUN: nothing was written." if settings.dry_run else "")
             ),
         },
     )

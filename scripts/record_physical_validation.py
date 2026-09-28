@@ -1,6 +1,6 @@
 """Record one physical-hardware validation run in the app's validation record.
 
-    python scripts/record_physical_validation.py evidence.json [--dry-run]
+    python scripts/record_physical_validation.py evidence.json [--check]
 
 ``evidence.json`` describes exactly one run on real hardware. The run is
 appended to ``physical_validations`` in ``core/platform/validation_record.json``,
@@ -95,7 +95,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("evidence", type=Path)
     parser.add_argument("--record", type=Path, default=RECORD)
-    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Validate the evidence and report problems; do not write the record.",
+    )
     args = parser.parse_args(argv)
 
     entry = json.loads(args.evidence.read_text(encoding="utf-8"))
@@ -117,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     if failed:
         return 1
-    if not args.dry_run:
+    if not args.check:
         args.record.write_text(
             json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )

@@ -59,7 +59,6 @@ def test_result_defaults_to_no_hardware_attestation() -> None:
         job_id="j1",
         method=EraseMethod.SINGLE_PASS_OVERWRITE,
         level=SanitizationLevel.CLEAR,
-        dry_run=True,
         started_at=datetime(2026, 1, 1, tzinfo=UTC),
         finished_at=datetime(2026, 1, 1, tzinfo=UTC),
         bytes_written=0,

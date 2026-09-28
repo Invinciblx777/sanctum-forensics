@@ -1120,6 +1120,13 @@ details.tech > .tech-body { display: flex; flex-direction: column; gap: var(--sp
 .summary-title { font-family: var(--font-display); font-size: var(--type-lg);
                  letter-spacing: 0.02em; line-height: 1.1; }
 
+.operation-mode {
+  font-family: var(--font-display);
+  font-size: var(--type-sm);
+  letter-spacing: 0.08em;
+  border: var(--border) solid var(--black);
+  padding: 2px var(--space-2);
+}
 /* A dry run is labelled wherever it appears: striped lime and white, so it
    cannot be read as a notice or a warning, and the words say what it is. */
 .simulation-banner {
@@ -1137,6 +1144,25 @@ details.tech > .tech-body { display: flex; flex-direction: column; gap: var(--sp
   );
   box-shadow: 3px 3px 0 var(--black);
 }
+.operation-mode.is-real { background: var(--red); color: var(--white); }
+
+/* The physical target of a destructive operation, named before any confirm. */
+.real-target {
+  border: var(--border) solid var(--black);
+  box-shadow: 3px 3px 0 var(--black);
+  background: var(--bg-panel);
+  padding: var(--space-3) var(--space-4);
+  display: flex; flex-direction: column; gap: var(--space-2);
+}
+.real-target-head { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.real-target-operation { font-family: var(--font-display); font-size: var(--type-md);
+                         letter-spacing: 0.06em; }
+.real-target-name { font-family: var(--font-display); font-size: var(--type-lg); line-height: 1.1;
+                    overflow-wrap: anywhere; }
+.real-target-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+                     gap: var(--space-2) var(--space-4); margin: 0; }
+.real-target-facts dt { font-size: var(--type-sm); color: var(--text-secondary); }
+.real-target-facts dd { margin: 0; overflow-wrap: anywhere; }
 
 /* The destructive-workflow state, named with core/workflow.py's words. */
 .workflow-state {

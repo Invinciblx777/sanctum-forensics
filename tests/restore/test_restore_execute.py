@@ -92,20 +92,20 @@ def _run(
     return result
 
 
-def test_dry_run_is_the_default_and_writes_nothing(
+def test_the_engine_has_no_non_writing_mode(
     record: BackupRecord, plan: RestorePlan, target_path: Path, ledger: Ledger
 ) -> None:
+    """A rehearsal flag is not a parameter any more; it cannot be passed."""
     target = Recording(target_path)
-    progress, result = drain(
-        execute_restore(record, plan, target, job_id="r1", ledger=ledger)
-    )
+    with pytest.raises(TypeError):
+        drain(
+            execute_restore(  # type: ignore[call-arg]
+                record, plan, target, job_id="r1", ledger=ledger, dry_run=True
+            )
+        )
     target.close()
-    assert result.dry_run and result.result == "DRY_RUN"
-    assert result.bytes_written == 0
-    assert target.writes == [] and target.flushes == 0
-    assert target_path.read_bytes() == FILL * TARGET_SIZE
-    assert "SIMULATION" in progress[0].message
-    assert operations(ledger)[-1] == "restore.dry_run"
+    assert target.writes == []
+    assert "restore.dry_run" not in operations(ledger)
 
 
 def test_a_real_restore_writes_the_image_and_verifies_it(
@@ -115,7 +115,7 @@ def test_a_real_restore_writes_the_image_and_verifies_it(
     progress, result = drain(
         execute_restore(
             record, plan, target, job_id="r1", ledger=ledger,
-            dry_run=False, checkpoint_bytes=CHUNK,
+            checkpoint_bytes=CHUNK,
         )
     )
     target.close()
@@ -141,7 +141,7 @@ def test_short_writes_are_continued_to_an_exact_total(
     record: BackupRecord, plan: RestorePlan, target_path: Path
 ) -> None:
     target = Recording(target_path, max_write=1000)
-    result = _run(record, plan, target, dry_run=False)
+    result = _run(record, plan, target)
     target.close()
     assert result.result == "RESTORED_VERIFIED"  # type: ignore[attr-defined]
     assert target_path.read_bytes()[:IMAGE_SIZE] == image_bytes()
@@ -152,7 +152,7 @@ def test_unwritable_sectors_are_accounted_and_the_result_is_incomplete(
 ) -> None:
     bad = CHUNK + 4096
     target = Recording(target_path, bad_sector=bad)
-    result = _run(record, plan, target, ledger, dry_run=False)
+    result = _run(record, plan, target, ledger)
     target.close()
     assert result.result == "INCOMPLETE"  # type: ignore[attr-defined]
     spans = result.unwritable  # type: ignore[attr-defined]
@@ -168,7 +168,7 @@ def test_a_write_that_makes_no_progress_raises_and_is_ledgered(
 ) -> None:
     target = Recording(target_path, zero_at=CHUNK)
     with pytest.raises(OverwriteIncomplete):
-        _run(record, plan, target, ledger, dry_run=False)
+        _run(record, plan, target, ledger)
     target.close()
     aborted = params_for(ledger, "restore.aborted")
     assert aborted and aborted[0]["range_written"] == [0, CHUNK]
@@ -179,7 +179,7 @@ def test_cancellation_ledgers_the_byte_range_written(
 ) -> None:
     target = Recording(target_path)
     generator = execute_restore(
-        record, plan, target, job_id="r1", ledger=ledger, dry_run=False
+        record, plan, target, job_id="r1", ledger=ledger
     )
     next(generator)  # the start record
     next(generator)  # chunk 0 written
@@ -207,7 +207,7 @@ def test_an_image_changed_after_recording_stops_before_the_bad_chunk(
     image.write_bytes(bytes(data))
     target = Recording(target_path)
     with pytest.raises(EvidenceIntegrityError, match="chunk 1"):
-        _run(record, plan, target, ledger, dry_run=False)
+        _run(record, plan, target, ledger)
     target.close()
     after = target_path.read_bytes()
     assert after[:CHUNK] == image_bytes()[:CHUNK]
@@ -220,23 +220,23 @@ def test_a_target_whose_size_differs_from_the_plan_is_refused(
 ) -> None:
     other = FileBlockTarget.create(tmp_path / "other.img", TARGET_SIZE + 4096)
     with pytest.raises(WorkflowGateRefused, match="Nothing was written"):
-        _run(record, plan, other, dry_run=False)
+        _run(record, plan, other)
     other.close()
     assert (tmp_path / "other.img").read_bytes() == b"\0" * (TARGET_SIZE + 4096)
 
 
-def test_a_real_run_without_a_target_is_refused(
+def test_a_run_without_a_target_is_refused(
     record: BackupRecord, plan: RestorePlan
 ) -> None:
     with pytest.raises(WorkflowGateRefused):
-        _run(record, plan, None, dry_run=False)
+        _run(record, plan, None)
 
 
 def test_post_restore_verification_fails_on_a_lying_target(
     record: BackupRecord, plan: RestorePlan, target_path: Path, ledger: Ledger
 ) -> None:
     target = Recording(target_path, lie_on_read=True)
-    result = _run(record, plan, target, ledger, dry_run=False)
+    result = _run(record, plan, target, ledger)
     target.close()
     assert result.result == "RESTORED_VERIFY_FAILED"  # type: ignore[attr-defined]
     verification = result.verification  # type: ignore[attr-defined]
@@ -249,7 +249,7 @@ def test_post_restore_verification_names_a_later_corruption(
     record: BackupRecord, plan: RestorePlan, target_path: Path
 ) -> None:
     target = FileBlockTarget(target_path)
-    _run(record, plan, target, dry_run=False)
+    _run(record, plan, target)
     target.write_at(3 * CHUNK + 1, b"\x00")
     _, verification = drain(verify_restored(record, plan, target))
     target.close()
@@ -263,7 +263,7 @@ def test_post_restore_verification_passes_on_an_exact_copy(
     record: BackupRecord, plan: RestorePlan, target_path: Path
 ) -> None:
     target = FileBlockTarget(target_path)
-    _run(record, plan, target, dry_run=False, verify=False)
+    _run(record, plan, target, verify=False)
     _, verification = drain(verify_restored(record, plan, target))
     target.close()
     assert verification.passed

@@ -18,10 +18,10 @@ calls no request can collapse into one:
    estimate) and opens a ``restore`` authorization. Nothing is written.
 2. ``POST /workflow/restore/{id}/approve`` records a human approval, with the
    target serial typed by hand and an explicit acknowledgement.
-3. ``POST /workflow/restore/{id}/execute`` simulates by default. With
-   ``dry_run=false`` and the typed serial it passes the API gate, spends the
-   authorization, and hands the helper a ``run_restore``; the helper re-checks
-   everything at the write seam (:func:`helper.authorization.revalidate_restore`).
+3. ``POST /workflow/restore/{id}/execute`` runs the real restore. With the
+   typed serial it passes the API gate, spends the authorization, and hands the
+   helper a ``run_restore``; the helper re-checks everything at the write seam
+   (:func:`helper.authorization.revalidate_restore`). There is no dry-run mode.
 4. ``GET /workflow/restore/{id}`` reports the state from a fresh read.
 
 An erase authorization can never be spent as a restore, nor a restore one as an
@@ -65,7 +65,6 @@ from core.workflow import WorkflowState
 from fastapi import APIRouter, Depends, HTTPException
 
 from api.authorization import (
-    SIMULATION_MARK,
     AuthorizationStore,
     GateRefused,
     _now,
@@ -227,7 +226,7 @@ def create_backup(
         job_id=job_id, label=body.operator, case_id=body.case_id,
     )
     return JobAccepted(
-        job_id=job_id, kind="backup-record", state="running", dry_run=False,
+        job_id=job_id, kind="backup-record", state="running",
         stream_url=f"/jobs/{job_id}/stream",
     )
 
@@ -262,7 +261,7 @@ def verify_backup_job(
 
     _submit(services, "backup-verify", {"backup_id": backup_id}, factory, job_id=job_id)
     return JobAccepted(
-        job_id=job_id, kind="backup-verify", state="running", dry_run=False,
+        job_id=job_id, kind="backup-verify", state="running",
         stream_url=f"/jobs/{job_id}/stream",
     )
 
@@ -368,7 +367,7 @@ def _view(services: AppServices, record: _Record) -> dict[str, Any]:
         )
     else:
         state = WorkflowState.PLAN_READY
-        next_action = "execute; dry_run defaults to true"
+        next_action = "execute on the real target, typing its serial again"
     plan = record.plan
     return {
         "authorization_id": record.auth_id,
@@ -601,7 +600,7 @@ def execute_restore_job(
     body: ExecuteRestoreRequest,
     services: AppServices = Depends(get_services),
 ) -> JobAccepted:
-    """Run the restore through the helper. Simulates unless ``dry_run`` is false."""
+    """Run the real restore through the helper. Refused without the typed serial."""
     store = _store(services)
     actor = resolve_identity(services).actor
     record = store.load(auth_id)
@@ -615,25 +614,19 @@ def execute_restore_job(
                 else [f"authorization {auth_id!r} does not exist"]
             ),
         )
-    if not body.dry_run and not body.typed_serial:
+    if not body.typed_serial:
         raise _refusal(
             services, actor=actor, path=record.path,
             state=WorkflowState.HUMAN_APPROVAL_REQUIRED,
-            reasons=[
-                "dry_run is off but no serial was typed; a restore is opt-in twice"
-            ],
+            reasons=["no serial was typed; a restore is opt-in twice"],
         )
     probe = _probe(services, record.path)
-    if body.dry_run:
-        binding = _binding(record)
-    else:
-        binding = authorize_restore(
-            services, auth_id=auth_id, probe=probe,
-            typed_serial=body.typed_serial, actor=actor,
-        )
+    binding = authorize_restore(
+        services, auth_id=auth_id, probe=probe,
+        typed_serial=body.typed_serial, actor=actor,
+    )
     params: dict[str, Any] = {
         "path": record.path,
-        "dry_run": body.dry_run,
         "typed_serial": body.typed_serial,
         "authorization": binding,
         "authorization_dir": str(store.root),
@@ -651,7 +644,6 @@ def execute_restore_job(
         job_id=job_id, label=body.operator, case_id=body.case_id,
     )
     return JobAccepted(
-        job_id=job_id, kind="restore", state="running", dry_run=body.dry_run,
+        job_id=job_id, kind="restore", state="running",
         stream_url=f"/jobs/{job_id}/stream",
-        notice=SIMULATION_MARK if body.dry_run else "",
     )
