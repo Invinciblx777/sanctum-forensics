@@ -36,6 +36,7 @@ import structlog
 from core.ledger.canon import CANON_VERSION, canonical_bytes
 from core.ledger.chain import ChainVerification
 from core.models import Signature
+from core.report.semantics import describe as describe_semantics
 
 __all__ = [
     "SECTION_ORDER",
@@ -377,6 +378,15 @@ def build_report(
             "level_achieved": method.get("level_achieved", ""),
             "justification": method.get("justification", ""),
             "capability_evidence": method.get("capability_evidence", {}),
+            # What this method may be called, and what it may not claim:
+            # FILE ERASE, ADDRESSABLE WHOLE-DRIVE CLEAR, DEVICE SANITIZE or
+            # CRYPTO ERASE, never an undifferentiated "secure erase".
+            "semantics": describe_semantics(
+                str(method.get("method", "")),
+                verification=verification,
+                limitations=list(limitations),
+                transport=str(device.get("transport", "")),
+            ),
             "standards": sanitization_standards(),
             "regulatory_references": [dpdp_erasure_reference()],
         },

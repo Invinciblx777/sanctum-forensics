@@ -252,6 +252,21 @@ def _facts(
             )
         )
         hidden_bytes = int(hidden.get("hidden_bytes") or 0)
+        words = method.get("semantics") or {}
+        if words:
+            groups.append(
+                (
+                    "What was done",
+                    [
+                        ("Category", _text(words.get("category")), False),
+                        ("Command", _text(words.get("method")), True),
+                        ("Protocol", _text(words.get("protocol")), False),
+                        ("Scope", _text(words.get("scope")), False),
+                        ("Verification", _text(words.get("verification")), False),
+                        ("Assurance", _text(words.get("assurance")), False),
+                    ],
+                )
+            )
         groups.append(
             (
                 "Sanitization",
