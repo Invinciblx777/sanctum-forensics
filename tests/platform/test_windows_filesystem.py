@@ -131,8 +131,9 @@ def test_a_traversing_path_lands_in_the_protected_tree_and_is_refused(
     if not candidate.resolve().exists():  # pragma: no cover
         pytest.skip("the traversal did not land in the Windows directory")
 
+    # Confirmed, and still refused before anything is opened, let alone written.
     with pytest.raises(SystemDiskRefused):
-        erase_one(candidate, FileEraseOptions())
+        erase_one(candidate, FileEraseOptions(confirm=True))
 
 
 def test_an_alternate_data_stream_is_seen_and_erased(tmp_path: Path) -> None:
