@@ -24,7 +24,10 @@ rule and changes none.
 Only after row 6 is filled in may `media_benchmark.py write` be run. If any
 row is filled in after the results are known, the report must say so.
 
-Backup restoration is not implemented in the app and has never been run. A
-completed gate 4 means a backup exists and covers the write region. It does
-not mean a restore has been tested; the harness only prints a manual `dd`
-restore command.
+Backup restoration is now implemented in the app (`core/restore.py`,
+`/workflow/restore`, the helper's `run_restore`: pre-write chunk verification
+and post-restore read-back hash verification), but it has never been run on a
+physical device. A completed gate 4 means a backup exists and covers the write
+region. It does not mean a restore has been tested. The benchmark harness
+(`scripts/media_benchmark.py`) still prints a manual `dd` restore command,
+which has never been run either.

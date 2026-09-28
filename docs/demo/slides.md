@@ -8,6 +8,17 @@
 > It performs **no** physical write: the Sanitize beat stops at the approval
 > gate and erase is not pressed. The numbers on these slides are sourced; the demo
 > slide (7) and its timings are not the final order.
+>
+> **Capability state (2026-09-28).** These slides predate the Windows and macOS
+> native backends. Any statement about what runs on which platform comes from the
+> generated
+> [`capability-matrix.md`](../validation/capability-completion-2026-09-28/capability-matrix.md),
+> not from this outline. Physically validated, by device class, is only: Linux
+> discovery, whole-drive clear and raw acquisition on one USB stick (`usb-flash`,
+> 2026-09-05), Windows discovery on a USB stick (`usb-flash`, 2026-09-27) and
+> Windows file erase on the host disk (2026-09-27). Firmware Purge, HPA changes,
+> restore, and Windows/macOS whole-drive clear and raw acquisition are
+> implemented and not physically validated.
 
 Outline only. Each slide carries **one number nobody else in the room has**,
 large, with its source underneath. Everything else on the slide is support for

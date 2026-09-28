@@ -141,3 +141,34 @@ Two details worth knowing before editing the builders:
 `Dockerfile` uses `python:3.11-slim` and Debian package names
 (`libtsk-dev`, `libewf-dev`). Those are correct for that image and wrong for a
 Fedora host; the notes above are for building on the host directly.
+
+## The Windows and macOS device layers are tested through doubles
+
+Whole-drive clear, raw acquisition, device sanitize, restore and the HPA/DCO
+workflow on Windows and macOS go through two narrow seams, and the suite never
+crosses either of them against a real device:
+
+- **Windows:** `core/device/win/native.py` is the only module that calls
+  `kernel32` (through `ctypes`). Everything above it talks to the `NativeApi`
+  protocol, and every IOCTL structure is packed and parsed by pure functions in
+  `core/device/win/ioctl.py`, `ata.py` and `nvme.py`. The tests drive it with
+  `testkit/fake_windows.py`, which answers the same calls from a byte buffer and
+  parses the same packed structures.
+- **macOS:** `core/device/mac/rawdisk.py` opens `/dev/rdiskN` through the
+  `MacIo` protocol; `testkit/fake_macos.py` stands in for it.
+
+Unbuffered I/O on Windows (`FILE_FLAG_NO_BUFFERING`) needs the buffer address,
+offset and length to be sector multiples; the raw macOS device needs offset and
+length to be block multiples. Both layers widen reads to the sector or block and
+slice back, which is what the acquisition's 512-byte salvage path needs on a 4Kn
+disk.
+
+The only run against a real OS is `scripts/native_smoke.py` in `platform-ci`
+(Windows runner, and the macOS runner under `sudo`): one read-only handle, the
+identity ioctls and one sector. It opens nothing for writing and issues no
+destructive command, so it proves the bindings work, not any destructive
+operation. None of this is physical validation; what is and is not physically
+validated, by device class, is in the generated
+[capability matrix](validation/capability-completion-2026-09-28/capability-matrix.md)
+(`python scripts/capability_matrix.py` regenerates it; a test fails when the
+committed copy is stale).

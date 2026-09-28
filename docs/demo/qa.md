@@ -7,7 +7,12 @@ rehearsing hardest.
 
 Sources: `docs/validation/hardware.md` (hardware run, 2026-09-05),
 `docs/performance/calibration.md` (confidence weights),
-`docs/limitations.md` (everything the tool cannot do).
+`docs/limitations.md` (everything the tool cannot do), and, for what runs on
+which platform and what is physically validated on which device class, the
+generated
+[`capability-matrix.md`](../validation/capability-completion-2026-09-28/capability-matrix.md)
+(2026-09-28). Where an answer below and the matrix disagree about a platform,
+the matrix is right.
 
 ---
 
@@ -542,6 +547,13 @@ hardware run is.
 Every one of the nine defects now has a regression test that fails without its
 fix.
 
+**Everything else, as of 2026-09-28.** The only other physical record is
+Windows, 2026-09-27: discovery on a USB stick and file erase on the host disk
+(`docs/validation/windows-hardware-2026-09-27-fixes/`). Each run validates its
+own platform and device class only. Firmware Purge, HPA changes, restore,
+Windows and macOS whole-drive clear and raw acquisition are implemented and
+have never run on a physical device; no macOS device has been tested at all.
+
 ---
 
 ## 10 · What is your biggest weakness?
@@ -657,6 +669,12 @@ necessary; `SIGINT`/`SIGTERM` handlers and an `atexit` hook both attempt
 SECURITY DISABLE PASSWORD; and the command refuses to start on a frozen drive.
 Manual recovery is one documented `hdparm` line.
 
+This is the Linux path. On Windows, ATA SECURITY ERASE UNIT is **NOT
+IMPLEMENTED** for exactly this reason: no recovery path for a drive left
+locked has been built and tested there, so ATA SANITIZE is offered instead
+where the drive supports it. macOS exposes no ATA pass-through at all
+(PLATFORM-LIMITED).
+
 ---
 
 ## 13 · Your write block "works". Prove it.
@@ -698,6 +716,12 @@ write is a qualification run against scratch media, behind
 **For evidence that will be presented: use a hardware write blocker.** We say
 that in `docs/limitations.md`.
 
+**On Windows and macOS there is no software write block at all.** Raw
+acquisition there opens the disk read-only (`GENERIC_READ` on
+`\\.\PhysicalDriveN`, `O_RDONLY` on `/dev/rdiskN`), and the acquisition
+report states that no software write block exists. It is implemented and has
+not been run on a physical disk.
+
 ---
 
 ## 14 · What stops this tool wiping the wrong drive?
@@ -731,7 +755,19 @@ fixed disk survives the root-filesystem gate, so the removable and size gates
 could not be reached.
 
 A mounted device is refused, never auto-unmounted: if the operator did not know
-it was mounted, they do not yet know what is on it.
+it was mounted, they do not yet know what is on it. On Windows and macOS the
+operator can take a disk offline or unmount it through a separate Prepare step
+(dry run by default, typed serial for a real run, system and internal disks
+refused, ledgered); it is never part of an erase.
+
+The table above is the Linux host. On Windows the open `\\.\PhysicalDriveN`
+handle is itself asked its disk number, serial and length, and any difference
+from the plan refuses before a byte is read or written; a drive letter is never
+accepted as a disk. On macOS no ioctl returns a serial, so the serial is re-read
+from `system_profiler` immediately before `/dev/rdiskN` is opened and the handle
+is bound by size and block size; the window between that re-read and the open
+is stated in the report, not closed. Both are tested against adapter doubles
+only.
 
 ---
 
@@ -803,6 +839,16 @@ forensic workstation should be in.
 For development there is an in-process helper that runs the **same** allowlist
 through the **same** dispatcher, so an operation reachable one way is reachable
 the other and the two cannot diverge. It grants no privilege of its own.
+
+The table is Linux, where a human starts the helper with `sudo`. **Windows and
+macOS are different, and we say so:** the socket helper is Linux-only (its peer
+check uses `SO_PEERCRED`), so there is no separate helper. Raw disk work runs in
+the Sanctum process itself, which must be elevated: on Windows the operator
+closes Sanctum and starts it again with *Run as administrator*; on macOS the
+Sanctum process is started with `sudo`. Until then those capabilities read
+REQUIRES PRIVILEGE. Elevating the whole process is a wider privileged surface
+than the Linux split, and the security review records it. Sanctum never
+requests elevation itself.
 
 ---
 
@@ -960,7 +1006,9 @@ would not assume it.
   `INCOMPLETE_TAIL`, distinct from `BROKEN`, and the entries before it verify.
 - **Overwrite resumes from a ledgered checkpoint.** `GET/POST /jobs/{id}/resume`
   restarts the overwrite at the last checkpoint the chain holds
-  (`tests/api/test_resume.py`). This is Linux only.
+  (`tests/api/test_resume.py`). The recorded resume tests use the Linux
+  engine; the Windows and macOS clear engine (`core/erase/blockclear.py`)
+  checkpoints the same way and is tested only synthetically.
 - **Firmware methods restart.** ATA SANITIZE, SECURITY ERASE and NVMe
   sanitize/format are re-issued from the beginning. The tool does not rely on
   a drive resuming its own operation after power returns.
@@ -985,8 +1033,14 @@ would not assume it.
 **The full written answer, for the follow-up:**
 
 - **HPA and DCO.** `core/device/hidden_areas.py` reads `hdparm -N` and
-  `hdparm --dco-identify`, both read-only. It compares accessible with native
-  max sectors, and the report's `hidden_areas` section records the difference.
+  `hdparm --dco-identify`, both read-only (on Windows, the same readings
+  through ATA pass-through). It compares accessible with native max sectors,
+  and the report's `hidden_areas` section records the difference. An ordinary
+  erase never changes the HPA: it erases the accessible range and names the
+  hidden bytes as a limitation. Changing the HPA is a separate guarded
+  workflow (volatile SET MAX by default, typed serial, read-back); DCO is
+  never modified. Neither has run on a drive with a hidden area. On macOS
+  HPA/DCO is PLATFORM-LIMITED.
 - **A bridge that answers nonsense is caught.** A USB bridge answered
   `max sectors = 0/1, HPA setting seems invalid` and exited 0. That once
   produced a 512-byte "erase" of a 7.76 GB stick. The tool now discards that
@@ -1041,21 +1095,39 @@ would not assume it.
   ran. The answer is the field `sufficient_for_restoring_the_modified_region`.
 - A backup that has never been restored is not a proven restore, and the tool
   says so: `restoration: "backup captured; restoration not validated"`.
+- Restore itself is implemented (`core/restore.py`, `/workflow/restore`): the
+  backup is re-verified chunk by chunk before any write, the target is re-read
+  and bound, a human authorizes with the typed serial, and the restored range
+  is hashed again afterwards. It has been tested on synthetic targets only and
+  **has never been run on a physical device.**
 
 ---
 
 ## 26 · What platforms are actually supported?
 
-> **Say it out loud:** Whole-drive sanitization runs on Linux only, and is
-> refused on Windows and macOS with the reason. File and folder erase is
-> validated in CI on all three. Firmware Purge has been selected and dispatched,
-> but never executed on a real drive in a recorded run. The packages are
-> unsigned and not notarized.
+> **Say it out loud:** Whole-drive clear, raw acquisition and restore are
+> implemented on Linux, Windows and macOS. Physically validated is narrower:
+> Linux whole-drive clear, discovery and raw acquisition on one USB stick, and
+> on Windows discovery on a USB stick and file erase on the host disk. The
+> Windows and macOS disk paths have only been tested against adapter doubles.
+> Firmware Purge has been selected and dispatched, but never executed on a
+> real drive in a recorded run. The packages are unsigned and not notarized.
 
-**The full written answer, for the follow-up:** `docs/platform-support.md` has
-the matrix. Its legend keeps VALIDATED, PARTIAL, UNVERIFIED, UNSUPPORTED and
-HARDWARE-UNVERIFIED apart. **CI-validated is not hardware-validated.** CI
-runners have virtual disks and no removable device.
+**The full written answer, for the follow-up:** the generated
+[`capability-matrix.md`](../validation/capability-completion-2026-09-28/capability-matrix.md)
+has every capability on every platform, with its implementation, its runtime
+state, the device classes it is physically validated on, and its limit. Its
+states are SUPPORTED (a physical run on that device class is recorded),
+IMPLEMENTED / UNVALIDATED, DEVICE-DEPENDENT, PLATFORM-LIMITED, REQUIRES
+PRIVILEGE, BLOCKED FOR SAFETY and NOT IMPLEMENTED, and they never merge. The
+genuine limits: Windows ATA SECURITY ERASE UNIT is NOT IMPLEMENTED and NVMe
+Format is PLATFORM-LIMITED; macOS has no device sanitize or HPA/DCO path
+(PLATFORM-LIMITED) and never raw-writes or images internal Apple storage
+(Erase All Content and Settings is recommended instead); free-space wipe is
+NOT IMPLEMENTED on Windows and macOS. **CI-validated is not
+hardware-validated.** CI runners have virtual disks and no removable device;
+the read-only native smoke on the Windows and macOS runners proves the
+bindings load, not that a disk was cleared.
 
 ---
 
@@ -1074,10 +1146,12 @@ runners have virtual disks and no removable device.
 - The UI decides the banner from the flag the server recorded for the job, not
   from the form toggle (`ui/src/lib/simulation.ts`).
 - The physical media recorded in `docs/validation/hardware.md` is one Toshiba
-  TransMemory USB stick. Recovery calibration and benchmarks are synthetic.
+  TransMemory USB stick. The Windows record of 2026-09-27 adds a USB stick
+  (discovery only) and the host disk (file erase). Recovery calibration and
+  benchmarks are synthetic.
 - The physical benchmark (`scripts/media_benchmark.py`) is at preflight. It is
-  blocked on the experiment owner's methodology decision and on a mounted
-  device.
+  BLOCKED at gate 1, the experiment owner's methodology decision
+  (`docs/validation/physical-benchmark-checklist.md`).
 
 ---
 

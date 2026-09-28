@@ -1,3 +1,5 @@
+Superseded for current capability state by ../capability-completion-2026-09-28/README.md; kept unchanged below as the record of 2026-09-28.
+
 # Evidence reconciliation, 2026-09-28
 
 **Question.** Several capabilities are described as hardware-unverified. The
