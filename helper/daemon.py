@@ -502,12 +502,21 @@ def _open_restore_target(target: Any) -> Any:
     planned size. Each implements :class:`core.restore.BlockTarget`.
     """
     if sys.platform == "win32":
-        from core.device.win.disk import WindowsDisk, parse_disk_number
+        from core.device.win.disk import WindowsDisk, parse_disk_number, volumes_on_disk
         from core.device.win.native import default_api
+        from core.errors import MountedRefused
 
+        api = default_api()
         number = parse_disk_number(str(target.path))
-        disk = WindowsDisk(default_api(), number, write=True).open()
+        disk = WindowsDisk(api, number, write=True).open()
         disk.bind(serial=str(target.serial), size_bytes=int(target.size_bytes))
+        if volumes_on_disk(api, number):
+            disk.close()
+            raise MountedRefused(
+                f"{disk.path} still exposes a volume at the write seam. Nothing "
+                "was written.",
+                remediation="Take the disk offline first, then retry the restore.",
+            )
         return disk
     if sys.platform == "darwin":
         from core.device.mac.rawdisk import MacRawDisk
@@ -912,9 +921,7 @@ class HelperDaemon:
         if not chunk:
             return True
         return any(
-            rpc.is_cancel_frame(part)
-            for part in chunk.split(b"\n")
-            if part.strip()
+            rpc.is_cancel_frame(part) for part in chunk.split(b"\n") if part.strip()
         )
 
     @staticmethod
@@ -1039,7 +1046,7 @@ class HelperDaemon:
         check that makes this a boundary rather than a string-prefix test.
         """
         requested = Path(candidate)
-        target = (base / requested if not requested.is_absolute() else requested)
+        target = base / requested if not requested.is_absolute() else requested
         resolved = target.resolve()
         if resolved != base and base not in resolved.parents:
             raise PermissionError(
