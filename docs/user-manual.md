@@ -68,14 +68,45 @@ The full list of guarantees the tool declines to make is
 [`limitations.md`](limitations.md). Read it before you rely on a result. §11
 points at the parts you are most likely to need.
 
+### Implemented is not the same as physically validated
+
+Every capability on every platform has one state, computed by the capability
+resolver (`core/platform/capability.py`) and shown on the **Platform**,
+**Devices** and **Sanitize** screens with its reason:
+
+| State | Meaning |
+|---|---|
+| **SUPPORTED** | Runnable here, and a PASS run on a physical device *of this device class* is recorded. One class never validates another. |
+| **IMPLEMENTED / UNVALIDATED** | Runnable here; tested with synthetic media and adapter doubles only. No physical run is recorded. |
+| **DEVICE-DEPENDENT** | Implemented; whether it runs depends on what this device (or the USB bridge in front of it) reports. |
+| **REQUIRES PRIVILEGE** | Implemented; this process lacks the OS privilege it needs. |
+| **PLATFORM-LIMITED** | The operating system offers applications no path to the mechanism. |
+| **BLOCKED FOR SAFETY** | Implemented, and refused for this device by a safety rule (system disk, mounted, internal Apple storage, virtual disk). |
+| **NOT IMPLEMENTED** | The OS could do it; this build has no code for it. |
+
+The physical runs on record are few: on Linux, discovery, whole-drive clear
+and raw acquisition of one USB flash stick (`usb-flash`, 2026-09-05); on
+Windows, discovery of a USB stick (`usb-flash`) and file erase on the host
+system disk (device class not recorded), both 2026-09-27. Nothing else — no
+firmware Purge, no HPA/DCO change, no Windows or macOS whole-drive clear or raw
+acquisition, no restore, no macOS device — has been run on physical hardware.
+The generated matrix is
+[`validation/capability-completion-2026-09-28/capability-matrix.md`](validation/capability-completion-2026-09-28/capability-matrix.md),
+the summary is
+[`validation/capability-completion-2026-09-28/README.md`](validation/capability-completion-2026-09-28/README.md),
+and how a row moves to SUPPORTED is
+[`validation/physical-validation-procedure.md`](validation/physical-validation-procedure.md).
+
 ---
 
 ## 2. Installation
 
-The deployment target is Linux. Whole-device sanitization needs Linux block-device
-semantics (`O_DIRECT`, `BLKGETSIZE64`, sysfs queue attributes, ATA/NVMe
-pass-through) and refuses to run anywhere else; file and folder erasure (M2) still
-works on other platforms.
+Linux is the primary platform and the only one with physical whole-drive
+evidence. Whole-drive clear and raw acquisition are also implemented on Windows
+(`\\.\PhysicalDriveN`, elevated process) and for external disks on macOS
+(`/dev/rdiskN`, root), and are IMPLEMENTED / UNVALIDATED there (§1). Per-platform
+installation, including *Run as administrator* on Windows and root on macOS, is
+in [`INSTALL.md`](../INSTALL.md). The commands below are the Linux source install.
 
 **Python 3.11 is required and your host `python3` is probably not it.** Fedora 44
 ships CPython 3.14, which fails the pin and has no `libewf-python` wheel.
@@ -131,6 +162,11 @@ UI, carving and recovery, and reporting.
 ## 3. Starting it
 
 **Two processes. Exactly one of them is root.** Start them in this order.
+This section is the Linux arrangement. The socket helper is Linux-only (it
+authenticates its peer with `SO_PEERCRED`) and refuses to start elsewhere. On
+Windows the privileged work runs in the Sanctum process itself, which must be
+started with *Run as administrator*; on macOS it likewise runs in the Sanctum
+process, which needs root for `/dev/rdiskN`. See [`INSTALL.md`](../INSTALL.md).
 
 ### Terminal 0 — the privileged helper
 
@@ -381,7 +417,15 @@ certificate.
 
 Before any gate matters, the tool refuses outright to touch a device that holds
 the running system (root, `/boot` or active swap) or that has any mounted
-filesystem. Unmount first; there is no override.
+filesystem. Unmount first; there is no override. On Windows a disk that still
+exposes any volume is refused, and on macOS a disk with any mounted volume.
+**No erase unmounts or takes a disk offline by itself.** On Windows and macOS
+the **Devices** screen offers a separate **Prepare** step for a mounted,
+non-system disk (`POST /devices/prepare`, body `path`, `dry_run`,
+`typed_serial`): a dry run first, reporting what would be taken offline
+(Windows) or unmounted (macOS), then the real step with the serial typed by
+hand. The Windows offline state is not persistent. System and internal disks
+are refused, and every call is ledgered. On Linux you unmount yourself.
 
 ### The 0xA5 write calibration
 
@@ -417,6 +461,104 @@ the medium back: exhaustively at or below 64 GiB, and above that the first and l
 1 GiB in full plus 4096 seeded random 1 MiB windows, with the report carrying the
 detection-probability formula and the seed rather than a bare percentage — so a
 third party can redraw the same sample.
+
+### On Windows and macOS
+
+The same workflow — backup, approval, typed serial, one-use authorization,
+write-seam re-check — runs on all three platforms. What differs is the engine
+and what has been proven:
+
+* **Addressable whole-drive clear** on Windows and macOS is
+  `core/erase/blockclear.py`: an aligned sequential overwrite with exact byte
+  accounting, checkpoints and resume, and a full or sampled read-back. On
+  Windows it writes `\\.\PhysicalDriveN` through a handle bound, before the
+  first write, to the planned disk number, serial and length read from the
+  handle itself; a drive letter is never a target. On macOS it writes the
+  external disk's `/dev/rdiskN`; macOS has no ioctl that returns a serial, so
+  the serial is re-read from `system_profiler` immediately before the device is
+  opened and the handle is checked against the planned size and block size.
+  Internal Apple storage is never raw-written (BLOCKED FOR SAFETY); use
+  *Erase All Content and Settings*. **Both are IMPLEMENTED / UNVALIDATED:
+  never run on a physical disk.**
+* **Device sanitize on Windows**: ATA SANITIZE (block erase, crypto scramble)
+  through `IOCTL_ATA_PASS_THROUGH`, and NVMe Sanitize (block, crypto) through
+  `IOCTL_STORAGE_REINITIALIZE_MEDIA`. Each is offered only when the
+  controller's own IDENTIFY answer reports it, and never downgraded to an
+  overwrite; the storage driver may still refuse the pass-through, and the
+  refusal is reported. Windows reports no sanitize progress. ATA SECURITY
+  ERASE is **NOT IMPLEMENTED** on Windows (a failed or interrupted run would
+  leave the drive locked with no tested recovery path), and NVMe Format is
+  **PLATFORM-LIMITED** (the in-box driver does not pass it through). Device
+  sanitize is **DEVICE-DEPENDENT** and has never run on a physical drive.
+* **Device sanitize on macOS** is **PLATFORM-LIMITED**: macOS exposes no
+  public ATA or NVMe pass-through to applications.
+
+### Hidden areas: the separate HPA/DCO workflow
+
+An ordinary erase **never changes an HPA or a DCO**. If the drive hides sectors
+behind a Host Protected Area, the erase covers the accessible range, records
+`hidden_covered=False`, names the hidden byte count in its limitations, and
+points here. Exposing them is its own workflow, authorized like an erase:
+
+1. `POST /workflow/hidden-area` (`path`, `backup_id`, `volatile`) reads the
+   native and accessible maxima read-only, rejects an implausible reading, and
+   plans one change: SET MAX ADDRESS to the native maximum. **Volatile is the
+   default**: the drive returns to its original maximum at the next power
+   cycle. Nothing is sent to the drive.
+2. `POST /workflow/hidden-area/{id}/approve` needs the typed serial and
+   `acknowledge_configuration_change`, plus `acknowledge_permanent` for a
+   permanent change, and a recorded, verified backup of at least the
+   accessible range.
+3. `POST /workflow/hidden-area/{id}/execute` simulates by default. With
+   `dry_run=false` and the typed serial, the drive is re-read just before the
+   command, a stale plan is refused, and the change is verified by reading the
+   maxima back.
+
+The DCO is discovered and reported only: DCO RESTORE and DCO SET are never
+issued, and sectors a DCO hides stay hidden, which the result says. Backends:
+`hdparm` on Linux, ATA pass-through on Windows; on macOS HPA/DCO is
+PLATFORM-LIMITED, and behind a USB or card-reader bridge it is refused. **The
+workflow has never changed an HPA on a physical drive.**
+
+### Backups and restore
+
+`POST /workflow/backup` (`backup_image`, `source_path`, optionally the
+`acquisition_job_id` whose hashes it reuses) records an image under the
+evidence directory as a backup of a device whose identity the helper re-reads,
+with the image's SHA-256 and per-chunk hashes. `POST
+/workflow/backup/{id}/verify` re-hashes it and names the first chunk that no
+longer matches. Neither writes anything. The record states what it cannot
+prove, including that the image is a faithful copy of the device.
+
+A restore overwrites its target, so it is authorized exactly like an erase:
+
+1. `POST /workflow/restore` (`backup_id`, `target_path`) re-reads the target,
+   refuses a system, mounted or too-small one, and plans the exact byte range.
+   Nothing is written.
+2. `POST /workflow/restore/{id}/approve` needs the typed serial and
+   `acknowledge_data_overwrite: true`.
+3. `POST /workflow/restore/{id}/execute` simulates by default. A real run
+   verifies each backup chunk before writing it, accounts for every byte, and
+   finishes with a read-back of the restored range against the backup hashes.
+
+An erase authorization can never be spent as a restore, or the reverse. On
+Windows the restore target also refuses a disk that still exposes a volume.
+**Restore is IMPLEMENTED / UNVALIDATED on all three platforms: it has never
+been run against a physical device.**
+
+### What the certificate calls it
+
+Every drive or file report names one category, from
+`core/report/semantics.py`, with the command, protocol, scope, verification
+and assurance it prints:
+
+| Category | What was done |
+|---|---|
+| **FILE ERASE** | A file's current blocks overwritten through the filesystem. Not a sanitization of the medium. |
+| **ADDRESSABLE WHOLE-DRIVE CLEAR** | Every LBA the operating system exposes overwritten by the host. On flash, remapped and over-provisioned blocks are not reached. Never called a Purge. |
+| **DEVICE SANITIZE** | The drive's own firmware command (ATA SANITIZE, NVMe Sanitize, ...). |
+| **CRYPTO ERASE** | The media encryption key replaced. The ciphertext remains on the medium. |
+| **PHYSICAL DESTRUCTION ATTESTATION** | A person's signed statement about a physical destruction; the tool observed nothing. |
 
 ### Destroy: recording a physical destruction
 
@@ -644,9 +786,12 @@ because there is nothing to destroy.
 
 ### Acquire
 
-**There is no acquisition control in the UI in this build** — the Recovery screen
-carves an image you already have. Acquire with `POST /jobs/acquire`, passing
-`source`, `dest` and `fmt` (`raw` or `e01`):
+The **Recovery** screen has an acquisition panel: pick a device from the
+Devices data (the source path and serial are taken from it, never typed), a
+destination and a format. The button follows the resolver's raw-acquisition
+state for that device, shown beside it with its reason. The same through the
+API is `POST /jobs/acquire`, passing `source`, `dest` and `fmt` (`raw` or `e01`),
+and for a raw device on Windows or macOS `expected_serial`:
 
 ```bash
 curl -s -X POST http://127.0.0.1:8787/jobs/acquire \
@@ -671,6 +816,18 @@ blocked. `scripts/probe-write-block.py`, gated behind
 a write against **scratch media**; a record produced that way says
 `write_block_verified_by: attempted_write`. **For evidence that will be presented,
 use a hardware write blocker.**
+
+**On Windows and macOS there is no software write block, and the record says
+so.** On Windows the source is `\\.\PhysicalDriveN` (or a volume), opened
+`GENERIC_READ` only and unbuffered; the handle is bound to the disk number,
+serial and length before the first read, medium errors are salvaged, and a
+vanished disk aborts the job. On macOS the source is an external disk's
+`/dev/rdiskN`; internal Apple storage is never imaged, because a raw image of
+it is Secure Enclave ciphertext. Both need an elevated process (§3). Both are
+**IMPLEMENTED / UNVALIDATED**: no Windows or macOS raw acquisition has been run
+on a physical device. On Linux, raw acquisition is SUPPORTED for `usb-flash`
+only (one stick, 2026-09-05). **For evidence that will be presented, use a
+hardware write blocker on every platform.**
 
 `dest` is confined to `<state-dir>/evidence/`. A relative path is taken as relative
 to it, so `case-001/source.dd` is the ordinary form and no absolute path is needed.
@@ -1221,7 +1378,8 @@ Purge; the tool records it as an attestation and performs nothing.
 Capability probing needs raw device access and did not have it. **This is not a
 statement that the device lacks the feature.**
 *Do:* Run the privileged helper as root and retry — see §3 — and do not treat this
-as an unsupported device.
+as an unsupported device. On Windows the equivalent state is **REQUIRES
+PRIVILEGE**: restart Sanctum with *Run as administrator*.
 
 **`No block device matches {path!r}.`** / **`No device identifier was supplied.`** — HTTP 410, `DeviceVanished`
 *Do:* Re-enumerate devices and confirm the target is still connected before retry.
@@ -1240,12 +1398,17 @@ this tool must never produce.
 same offset again, the device is failing writes without reporting an error and
 should be physically destroyed rather than reused.
 
-**`Run this on Linux.`** — HTTP 501, `PlatformUnsupported`
-Whole-device sanitization needs Linux block-device semantics.
-*Do:* On Windows use WSL2 and attach the target disk with usbipd-win
-(`usbipd bind --busid <id>` then `usbipd attach --wsl`), or a Linux VM with the
-controller passed through. File and folder erasure remains available on this
-platform.
+**`PlatformUnsupported`** — HTTP 501
+The platform offers no path for this operation on this target. Windows and
+macOS now have a whole-drive clear engine, so for those the message and its
+remediation come from the adapter: on Windows *"Run Sanctum as Administrator.
+Take the disk offline first ..."*, on macOS *"External disks: unmount every
+volume (Devices > Prepare, or diskutil unmountDisk) and run the helper with
+sudo. Internal Mac storage: use ... Erase All Content and Settings"*. The
+generic remediation *"Run this on Linux. On Windows use WSL2 ..."* is only the
+fallback for a code path that supplies none.
+*Do:* Follow the remediation shown. File and folder erasure remains available
+on every platform.
 
 ### Evidence, paths and the helper
 
@@ -1493,21 +1656,25 @@ the API with `SANCTUM_STATE_DIR=~/sanctum-demo`.
 ## 10b. The desktop app, and what each platform can do
 
 **Installing.** Linux: run the AppImage, or `sudo apt install ./sanctum_<ver>_amd64.deb`.
-Windows: run `SanctumSetup.exe` (no administrator needed). macOS: open
-`Sanctum.dmg` and drag Sanctum to Applications. None of them needs Python or
+Windows: run `SanctumSetup.exe` (no administrator needed to install; whole-drive
+and raw device work needs Sanctum started with *Run as administrator*). macOS:
+open `Sanctum.dmg` and drag Sanctum to Applications. None of them needs Python or
 Node on the machine. Details, including signing status: `docs/packaging.md`.
 
 **Opening.** The app starts its own server on a private loopback port and
 opens a window. Only that window can talk to it. Press *Quit Sanctum* in the
 sidebar to stop it.
 
-**The Platform screen** answers "what can this computer do?". Every row has a
-status - *Supported*, *Supported with limits*, *Needs privilege*, *Runs, not
-verifiable*, *Unverified*, *Inconclusive*, *Unsupported* - and, underneath,
-the probe or code that decided it. *Unverified* means the code exists but its
-tests have not been recorded as passing on this operating system for this
-build, or, for hardware Purge, that no firmware sanitize has been recorded on a
-physical drive; treat it as not yet proven. The screen also names this build's
+**The Platform screen** answers "what can this computer do?". It leads with the
+resolver matrix: every capability with its state (§1: SUPPORTED, IMPLEMENTED /
+UNVALIDATED, DEVICE-DEPENDENT, REQUIRES PRIVILEGE, PLATFORM-LIMITED, BLOCKED
+FOR SAFETY, NOT IMPLEMENTED), its reason and its mechanism, with SUPPORTED
+scoped to the device classes a physical run is recorded for. The older status
+words (*Supported*, *Needs privilege*, *Unverified*, *Unsupported*, ...) are
+still explained under *How to read the older status words*, for payloads that
+carry no state. IMPLEMENTED / UNVALIDATED and *Unverified* both mean the code
+exists and nothing on record says it works on real hardware of that kind;
+treat them as not yet proven. The screen also names this build's
 commit, says how many storage devices it detects now (detecting is not
 supporting), explains every status word under *How to read a status*, and lists
 the safety restrictions and what is *Not yet proven on hardware*. A status says
@@ -1536,11 +1703,12 @@ the Sanitize screen reads *Unverified* for the same reason. It is still offered;
 it is never presented as a hardware-validated result.
 
 **"Sanitization not available"** is a result, not an error. It names the
-reason (for example: this is the system disk; a volume is in use; this
-platform has no whole-drive engine) and what to do instead, and it says that
-nothing was done to the device. On Windows and macOS every device shows this
-for whole-drive work in this release: use the Linux build for that, and use
-the File eraser for files and folders.
+reason (for example: this is the system disk; a volume is in use; this is
+internal Apple storage; this process is not elevated) and what to do instead,
+and it says that nothing was done to the device. On Windows and macOS an
+external or secondary disk can now be cleared once the process is elevated and
+the disk is prepared (§4, *On Windows and macOS*); that path reads IMPLEMENTED /
+UNVALIDATED, because it has never been run on a physical disk.
 
 **Getting the certificate.** After a run, press *Get certificate*. The first
 time, the app asks for a passphrase for the signing key (12 characters or
@@ -1562,6 +1730,12 @@ here. The entries an operator hits most often:
 * **Verification above 64 GiB is sampled**, with the detection probability and the
   seed in the report rather than a bare percentage.
 * **A software write block is a claim about a flag, not about a refusal** — §6.
+  On Windows and macOS there is no software write block at all.
+* **Implemented is not validated.** Windows and macOS whole-drive clear, raw
+  acquisition, Windows device sanitize, the HPA/DCO workflow and restore have
+  run against synthetic media and adapter doubles only — §1.
+* **An ordinary erase does not reach an HPA** — it reports the hidden bytes;
+  the separate HPA/DCO workflow (§4) exposes them, and a DCO is never modified.
 * **Undelete recovers a different amount on every filesystem**, and **ext4 recovers
   essentially nothing by design**, because `ext4_ext_remove_space` zeroes the extent
   tree on unlink. That is measured, not assumed. FAT recovery is a *reconstruction*

@@ -1,5 +1,16 @@
 # Module validation matrix — campaign of 2026-09-24
 
+> This page is the record of one campaign and its rows are kept as run. For
+> the current state of every capability on every platform, with physical
+> validation scoped to device class, see the generated
+> [`capability-completion-2026-09-28/capability-matrix.md`](capability-completion-2026-09-28/capability-matrix.md)
+> and [`capability-completion-2026-09-28/README.md`](capability-completion-2026-09-28/README.md).
+> Since this campaign, backup restore has been implemented in the app
+> (IMPLEMENTED / UNVALIDATED, never run on a physical device), and Windows and
+> macOS whole-drive clear and raw acquisition have been implemented
+> (IMPLEMENTED / UNVALIDATED). Nothing in this campaign's physical rows
+> changes.
+
 **Software under test:** `ec73747` on `docs/readme-redesign` plus the four fixes
 listed under "Defects found and fixed" (uncommitted at the time of writing).
 **Host:** Fedora 44, Linux 6.19.10, Python 3.11.16 (`.venv`).
@@ -36,7 +47,7 @@ Population labels: `PHYSICAL`, `SYNTHETIC`, `SIMULATION`, `CI`, `DOCUMENTATION`,
 | M1 | M1-E permission path: `acquire`, `backup` as an unprivileged user | PHYSICAL | Structured refusal, no traceback, "not written" | `acquire`: `{"kind": "io", "errno": 13, ..., "device_state": "not written by this command"}`, rc 3. `backup`: refused earlier by the mount check. Capability probe: `UnsupportedCapability`, "do not treat this as an unsupported device" | PASS | `m1/E-*.out`; probe output in session | The write-open `EACCES` path was **not** exercised on the stick (would need a non-dry run). CI covers it: `test_a_permission_denied_write_is_a_privilege_refusal`. |
 | M1 | M1-F capability selection | HARDWARE-UNVERIFIED | Methods considered/rejected with reasons | Probe cannot run unprivileged. Prior privileged run (2026-09-05, same serial): `CLEAR` only, no ATA security, HPA/DCO not probed behind the usb bridge | INCONCLUSIVE | `docs/validation/hardware.md` (DOCUMENTATION) | Needs a privileged probe of this device now. Firmware erase was not attempted. |
 | M1 | M1-G read-only plan for the real device | PHYSICAL | Identity, serial, extent, backup state, approval state | State `BLOCKED`, `WHY BLOCKED`, two independent serial sources agree (`lsblk` udev, sysfs usb serial), `APPROVED: false`, `VERDICT: REVIEW ONLY`, privilege `INSUFFICIENT` | PASS | `m1/H-plan-nobackup.out` | Write extent is unknown because no corpus image was built. |
-| M1 | M1-H backup gate: none / short / wrong disk / changed hash / wrong serial | CI (+ PHYSICAL for "none") | Every unsafe state fails closed | "none": `sufficient_for_restoring_the_modified_region: false`, three blocking reasons, on the real device. The rest: 268 script tests pass, including one added for defect D1 | PASS | `m1/H-verify-nobackup.out`; `tests/scripts/test_media_benchmark_boundary.py` | Backup restoration is not implemented in the app (checklist gate 4 note). |
+| M1 | M1-H backup gate: none / short / wrong disk / changed hash / wrong serial | CI (+ PHYSICAL for "none") | Every unsafe state fails closed | "none": `sufficient_for_restoring_the_modified_region: false`, three blocking reasons, on the real device. The rest: 268 script tests pass, including one added for defect D1 | PASS | `m1/H-verify-nobackup.out`; `tests/scripts/test_media_benchmark_boundary.py` | Backup restoration was not implemented in the app at the time (checklist gate 4 note). It has since been implemented (`core/restore.py`) and has never been run on a physical device. |
 | M1 | M1-I controlled physical Clear, M1-J verification | — | Needs human authorisation | **Not run** | NOT RUN | — | Prerequisites 1–8 in the brief are not satisfied. A previous run is in `hardware.md`. |
 | M2 | M2-A file/folder erase on a disposable corpus (18 cases) | SYNTHETIC | Correct erase, per-file errors, audit trail | 18/18 PASS: dry-run default, gate 2, single, batch, Unicode and space names, empty, 24 MiB, recursive 4 levels, missing, already deleted, hardlink, symlink refusal, permission denial, interrupted batch (cancel entry), chain VALID over 314 entries | PASS | `campaign-2026-09-24/m2-synthetic.json`, `scripts/validation_m2_synthetic.py` | Host ext4 disk, not FAT32/NTFS. A read-only (0444) file is **not** erased: the record is `EACCES`, honest but unhelpful. |
 | M2 | M2-B metadata: EXIF/GPS, OOXML, PDF Info+XMP, PNG text, OLE | SYNTHETIC | Fields removed; OLE reported, not removed | EXIF, OOXML, PDF, PNG removed and files still open. OLE (real `.doc` made by LibreOffice): `removed=False` for both SummaryInformation streams, limitation printed | PASS | same JSON | OOXML fixture is hand-built, not Word-authored. |
@@ -90,6 +101,9 @@ itself was never targeted with a real erase.
   SYNTHETIC-VALIDATED only; neither was exercised on the physical stick.
 - **L3.** `/health` reports the build record (`930ee2c`, branch
   `release/cross-platform-validation`, built 2026-09-21), not the running `HEAD`.
+- **Status update 2026-09-28 (docs only):** backup restore now exists in the app
+  with post-restore hash verification, SYNTHETIC-VALIDATED only. No row above
+  changes: nothing in this campaign exercised it.
 - **L4.** The serial-mismatch gate and the write-open permission gate were not reached on
   the physical stick, because the mounted-device gate fires first (correctly).
 

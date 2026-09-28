@@ -8,6 +8,14 @@
 > It performs **no** physical write: the Sanitize beat stops at the approval
 > gate and erase is not pressed. Keep this file for its measured numbers and
 > fallback commands. Do not rehearse from its timings.
+>
+> **Capability state (2026-09-28).** This runbook is Linux-only because the
+> demo it scripts was. It does not describe what other platforms can do: the
+> generated
+> [`capability-matrix.md`](../validation/capability-completion-2026-09-28/capability-matrix.md)
+> does. Windows and macOS whole-drive clear, raw acquisition and restore are
+> implemented and not physically validated; see
+> [`capability-completion-2026-09-28/README.md`](../validation/capability-completion-2026-09-28/README.md).
 
 Read this as a script, not as notes. Every command is copy-pasteable, every
 expected output is what the tool actually printed on the validation host, and
@@ -759,11 +767,13 @@ there is no time to run them.
 * **"Where is Destroy?"** Devices, *Record a physical destruction*. Say: *"No
   software shreds a drive or can watch one shredded. This records what the
   people who did it attest, signed, and the record says we observed nothing."*
-* **"What can it actually do on this machine?"** Platform. Point at hardware
-  Purge reading *Unverified* and at *Not yet proven on hardware*. Say: *"Every
-  status comes from a probe or a recorded test run, with its source one click
-  away. Firmware Purge is dispatched from the drive's own capability, and it
-  says Unverified because no drive has run it in a recorded test."*
+* **"What can it actually do on this machine?"** Platform. Point at device
+  sanitize reading *DEVICE-DEPENDENT* and at *Not proven on hardware, or not
+  available*. Say: *"Every state comes from a probe or a recorded test run,
+  with its reason and mechanism shown. SUPPORTED means a recorded physical run
+  on that kind of device. Firmware Purge is dispatched from the drive's own
+  capability, and it is not SUPPORTED because no drive has run it in a
+  recorded test."*
 * **"Show me everything for one investigation."** Cases, the open case: the
   chain verdict at the top, then evidence, operations, reports and audit
   entries, each a tab with its count. Say: *"The counts come from the case

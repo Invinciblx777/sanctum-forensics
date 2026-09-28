@@ -1,13 +1,16 @@
 # Demo evidence index
 
-**Date:** 2026-09-24, updated after the release-quality wave; *What must not be said* extended 2026-09-26 with the release-hold remediation. This is the
+**Date:** 2026-09-24, updated after the release-quality wave; *What must not be said* extended 2026-09-26 with the release-hold remediation, and reconciled 2026-09-28 with the capability resolver ([`capability-matrix.md`](capability-completion-2026-09-28/capability-matrix.md), [`capability-completion-2026-09-28/README.md`](capability-completion-2026-09-28/README.md)). This is the
 source of truth for the presentation. Every claim a presenter makes maps to
 real software output: a screen, a command, a test that pins it, and the
 recorded artifact behind it. A claim with no row here does not get said.
 
 Population labels, never mixed: **SYNTHETIC** (generated on host storage),
 **SIMULATION** (host files standing in for a device, run through the real
-engine), **PHYSICAL** (the one Toshiba TransMemory stick in `hardware.md`),
+engine), **PHYSICAL** (the one Toshiba TransMemory stick in `hardware.md`, and
+the Windows discovery and file-erase runs of 2026-09-27, each scoped to its
+device class), **ADAPTER DOUBLE** (Windows and macOS native paths driven by
+`testkit/fake_windows.py` and `testkit/fake_macos.py`, never a device),
 **CI** (virtual disks on hosted runners), **FALLBACK** (the committed signed
 report and ledger under `docs/demo/fallback/`, which are not a physical-device
 result).
@@ -77,7 +80,7 @@ touches the live tree.
 | A mounted device is refused, with no sudo and no unmount | Devices (WHY BLOCKED) | `media_benchmark.py preflight` | `tests/scripts/test_media_benchmark_preflight.py` | `docs/demo/qa.md` §24 | refusal on the stick, 2026-09-23 | YES |
 | A missing or stale device path is refused and never substituted | none | `media_benchmark.py plan` on a nonexistent path | `tests/scripts/test_media_benchmark_absent_device.py` | none | `scripts/media_benchmark.py:_require_present` | YES |
 | The write re-verifies the backup itself | none | `media_benchmark.py write` (never run in a demo) | `tests/scripts/test_media_benchmark_boundary.py` | `docs/demo/qa.md` §25 | `scripts/media_benchmark.py:write_image` | DOCUMENTATION ONLY |
-| Backup restoration works | none | none | none | none | none | NOT IMPLEMENTED (no restore in the app; the benchmark prints a manual `dd` command, never run) |
+| Backup restoration works on a device | none | `/workflow/restore` (never run in a demo) | `tests/restore/` (synthetic file targets) | restore report section | `core/restore.py` | PHYSICAL VALIDATION REQUIRED (implemented with authorization and post-restore hash verification; never run on a physical device) |
 | Workflow state and WHY BLOCKED are named with one vocabulary | Sanitize, Devices | `media_benchmark.py plan` | `tests/test_workflow.py`, `ui/tests/workflowState.test.ts`, `tests/ui/test_workflow_vocabulary.py` | none | `core/workflow.py`, `ui/src/lib/workflowState.ts` | YES |
 | One simulation walks discovery to certificate on the real engine | none (terminal) | `scripts/demo_simulation.py` | `tests/scripts/test_demo_simulation.py` | the journey's own signed report | `scripts/demo_simulation.py` | SIMULATION ONLY |
 | Split PNG and JPEG are rebuilt only when their bytes prove the join | Recovery | `scripts/demo_fragmented.py` | `tests/carve/signature/test_png_fragmentation.py`, `tests/carve/signature/test_fragmentation.py` | `docs/validation/png-reassembly.md` | `core/carve/fragmentation.py` | YES |
@@ -92,8 +95,10 @@ touches the live tree.
 | Overwrite Clear was run on a real USB flash stick | none | none | none | `docs/validation/hardware.md` | three Phase A runs; the third, 2026-09-05, clean | DOCUMENTATION ONLY |
 | Recovery was run on a real USB flash stick | none | none | none | `docs/validation/hardware.md` | three Phase B passes, 2026-09-05; not the registered benchmark | DOCUMENTATION ONLY |
 | Recovery benchmark under the registered methodology on real media | none | none | none | none | none | PHYSICAL VALIDATION REQUIRED |
-| Firmware Purge (ATA SANITIZE, SECURITY ERASE, NVMe sanitize/format, crypto erase) on a drive | none | none | fixture tests in `tests/erase/` | none | none | PHYSICAL VALIDATION REQUIRED |
-| HPA/DCO unlock on a drive | none | none | `tests/device/` | none | none | PHYSICAL VALIDATION REQUIRED |
+| Firmware Purge (ATA SANITIZE, SECURITY ERASE UNIT, NVMe Sanitize/Format, crypto erase) on a drive | none | none | fixture and adapter-double tests in `tests/erase/`, `tests/device/` | none | none | PHYSICAL VALIDATION REQUIRED |
+| HPA change on a drive (guarded workflow, Linux and Windows) | none | none | `tests/device/` | none | `core/device/hidden_area_workflow.py` | PHYSICAL VALIDATION REQUIRED |
+| Windows or macOS whole-drive clear, or raw acquisition, on a device | Platform (state IMPLEMENTED / UNVALIDATED) | none | adapter-double tests | none | `core/erase/blockclear.py`, `core/carve/win_source.py`, `core/carve/mac_source.py` | PHYSICAL VALIDATION REQUIRED |
+| Each capability's state on each platform, scoped to validated device classes | Platform | `python scripts/capability_matrix.py --check` | `tests/platform/test_capability_matrix_doc.py` | none | [`capability-matrix.md`](capability-completion-2026-09-28/capability-matrix.md) | YES |
 
 ## Captures still required from the live rehearsal
 
@@ -122,10 +127,21 @@ not need that capture, and none should be made for it during the freeze.
 - That the fallback report, or anything from `demo_simulation.py`, is a
   physical-device result.
 - That any certificate is government-signed or PKI-backed.
-- That firmware Purge (ATA SANITIZE, SECURITY ERASE, NVMe sanitize/format) has
-  run on a drive. It has been selected and dispatched only.
-- That a backup has been restored, or that the app can restore one. Restoration
-  is not implemented in the app.
+- That firmware Purge (ATA SANITIZE, SECURITY ERASE UNIT, NVMe Sanitize/Format)
+  has run on a drive, on any platform. It has been selected and dispatched in
+  fixture and adapter-double tests only.
+- That a backup has been restored on a device. Authorized restore with
+  post-restore hash verification is implemented and has never been run on a
+  physical device.
+- That Windows or macOS whole-drive clear or raw acquisition has run on a disk.
+  Both are implemented (IMPLEMENTED / UNVALIDATED) and tested against adapter
+  doubles only. Equally, do not say they are "not implemented": that was true
+  before 2026-09-28 and is not now.
+- That a validation on one device class covers another. The USB stick runs
+  validate `usb-flash` only.
+- That macOS can sanitize a device or change an HPA (PLATFORM-LIMITED), or that
+  Sanctum erases internal Apple storage. It never raw-writes it and recommends
+  Erase All Content and Settings.
 - That general fragmented-file reconstruction is solved. Two runs, two formats.
 - That the evidence score is a probability or a confidence percentage.
 - Compliance with DoD 5220.22-M, or with NIST SP 800-88 beyond using its
@@ -140,7 +156,7 @@ not need that capture, and none should be made for it during the freeze.
   validated packaged install, device discovery, the mounted-device refusal
   and file erase — none of that is part of this demo's beats, and it must not
   be presented as such.
-- That HPA/DCO unlock has run on a drive, or that the trace sweep has removed a
+- That an HPA change has run on a drive, that DCO is ever modified, or that the trace sweep has removed a
   trace from a live desktop. It searched a real Windows 11 desktop on 2026-09-27
   and found nothing to remove.
 - That a Record of Destruction proves a destruction. It is attested, not
