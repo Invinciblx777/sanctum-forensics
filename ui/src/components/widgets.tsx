@@ -341,7 +341,7 @@ export function ErrorNotice({
         {error.kind && <span className="chip high">{error.kind}</span>}
       </div>
       {error.remediation && (
-        <p style={{ margin: 'var(--space-2) 0 0', color: '#f0c9c5' }}>
+        <p className="notice-remedy">
           {error.remediation}
         </p>
       )}

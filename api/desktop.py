@@ -121,7 +121,12 @@ def _open_window(url: str, stop: threading.Event) -> None:
             webview.create_window(
                 TITLE, url, width=1280, height=860, min_size=(960, 640)
             )
-            webview.start()
+            # The window's own icon, for the title bar and the task switcher
+            # where the platform takes it from the window (Qt and GTK). A
+            # packaged Windows or macOS build carries its icon in the
+            # executable instead (packaging/make_icons.py).
+            icon = _window_icon()
+            webview.start(icon=str(icon) if icon else None)
             stop.set()
             return
         except Exception as exc:  # noqa: BLE001 - any webview failure falls back
@@ -140,6 +145,12 @@ def _open_window(url: str, stop: threading.Event) -> None:
             pass
     except KeyboardInterrupt:
         stop.set()
+
+
+def _window_icon() -> Path | None:
+    """The app icon the UI bundle ships (``ui/public/icon.png``), if built."""
+    icon = Path(__file__).resolve().parents[1] / "ui" / "dist" / "icon.png"
+    return icon if icon.is_file() else None
 
 
 def _ensure_logging_has_somewhere_to_write(state_dir: Path) -> None:

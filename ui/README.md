@@ -26,6 +26,17 @@ The pieces a screen reaches for, all exported from `src/components/widgets.tsx`:
 | `FilePath` | A path in a fixed-width cell: the directory elides, the filename never does. |
 | `.itable` | The one table. `.irow` is 52px and two-line, `.irow.is-compact` is 30px, and neither height depends on content. |
 
+The look is neo-brutal in the Sanctum Forensics brand: a black navigation
+rail with the logo, ink borders, hard offset shadows, pink `#f65ba2` /
+`#f72191` for actions and "where you are", lime `#cdf546` and white on black.
+Brick Sans is the display face (titles and figures only: it has capitals and
+digits and no punctuation), Croogla 4F is the reading face, and Atkinson
+Hyperlegible Mono stays for serials, hashes and paths, because the confirm step
+has an operator type a device serial and the two brand faces draw 0/O and 1/l/I
+alike. All three are bundled from `src/assets/fonts/`. Light is the default;
+dark is one toggle away in the page foot and follows the system when nothing
+has been chosen.
+
 A colour never carries meaning on its own. Every state has a word beside it, so
 the interface reads in greyscale and survives a projector that has crushed the
 reds into the background.
@@ -41,7 +52,8 @@ entry: `vite build` takes `index.html` as its single input, so nothing under
 ```
 npm run dev
 # then, per screen:
-#   http://127.0.0.1:5173/preview.html?screen=devices
+#   http://127.0.0.1:5173/preview.html?screen=home        (also home-case, cases)
+#   http://127.0.0.1:5173/preview.html?screen=devices     (add &theme=dark for dark)
 #   http://127.0.0.1:5173/preview.html?screen=sanitize
 #   http://127.0.0.1:5173/preview.html?screen=files
 #   http://127.0.0.1:5173/preview.html?screen=recovery
