@@ -201,6 +201,12 @@ export const api = {
   case: (caseId: string) =>
     request<CaseDetail>(`/cases/${encodeURIComponent(caseId)}`),
 
+  closeCase: (caseId: string) =>
+    request<{ case: CaseSummary; ledger_warning?: string }>(
+      `/cases/${encodeURIComponent(caseId)}/close`,
+      { method: 'POST' },
+    ),
+
   registerEvidence: (caseId: string, body: EvidenceBody) =>
     request<{ evidence: EvidenceRecord }>(
       `/cases/${encodeURIComponent(caseId)}/evidence`,
@@ -1078,6 +1084,8 @@ export interface CaseSummary {
   title: string
   description: string
   status: string
+  closed_at?: string
+  closed_by?: string
   created_at: string
   created_by: string
   updated_at: string

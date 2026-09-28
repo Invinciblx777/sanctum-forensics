@@ -174,8 +174,16 @@ export default function Devices({
                     // The same words as the workflow state machine: BLOCKED,
                     // then WHY. The remedy is a human act; nothing here
                     // unmounts or reboots on the operator's behalf.
+                    const mounts = row.device.mounted_at
+                    const systemWhy = mounts.includes('/')
+                      ? 'hosts the running root filesystem'
+                      : mounts.some((m) => m === '/boot' || m.startsWith('/boot/'))
+                        ? `holds the boot partition (${mounts
+                            .filter((m) => m === '/boot' || m.startsWith('/boot/'))
+                            .join(', ')})`
+                        : 'backs active swap or another volume the running system needs'
                     const reason = row.device.is_system_disk
-                      ? 'This device hosts the running root filesystem. ' +
+                      ? `This device ${systemWhy}. ` +
                         'Boot from separate media and run the erase against it as ' +
                         'a non-system disk.'
                       : `Filesystem is mounted at ${row.device.mounted_at.join(', ')}. ` +

@@ -218,3 +218,37 @@ def test_the_case_screen_reports_the_chains_integrity_and_not_the_documents(
 
     assert detail["case"]["integrity"] == detail["audit"]["chain_status"]
     assert detail["audit"]["chain_status"] in {"VALID", "EMPTY", "INCOMPLETE_TAIL"}
+
+
+# --------------------------------------------------------------------------
+# Closing
+# --------------------------------------------------------------------------
+
+
+def test_a_case_is_closed_chained_and_then_refuses_new_evidence(
+    client: TestClient,
+) -> None:
+    _open_case(client, "CASE-CLOSE-1")
+    closed = client.post("/cases/CASE-CLOSE-1/close")
+    assert closed.status_code == 200, closed.text
+    summary = closed.json()["case"]
+    assert summary["status"] == "closed"
+    assert summary["closed_at"]
+
+    events = client.get("/cases/CASE-CLOSE-1").json()["audit"]["events"]
+    assert any(item["event"] == "case.closed" for item in events)
+
+    late = client.post(
+        "/cases/CASE-CLOSE-1/evidence",
+        json={"evidence_id": "EV-1", "source": "/dev/sdx", "media_type": "usb"},
+    )
+    assert late.status_code >= 400
+
+
+def test_closing_twice_and_closing_a_missing_case_are_refused(
+    client: TestClient,
+) -> None:
+    _open_case(client, "CASE-CLOSE-2")
+    assert client.post("/cases/CASE-CLOSE-2/close").status_code == 200
+    assert client.post("/cases/CASE-CLOSE-2/close").status_code >= 400
+    assert client.post("/cases/NO-SUCH-CASE/close").status_code == 404

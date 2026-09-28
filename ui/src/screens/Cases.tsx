@@ -756,6 +756,27 @@ export default function Cases() {
     else setDetail(null)
   }, [openCase?.case_id])
 
+  async function closeOpenCase(caseId: string) {
+    const sure = window.confirm(
+      `Close case ${caseId}? It keeps everything recorded against it, stops ` +
+        'taking new evidence, and the closing is written to the audit chain.',
+    )
+    if (!sure) return
+    setError(null)
+    try {
+      await api.closeCase(caseId)
+      await refresh()
+      select(null)
+    } catch (exc) {
+      const failure = exc as RequestFailed
+      setError({
+        message: caseRequestFailed(failure.message),
+        kind: failure.kind,
+        remediation: failure.remediation,
+      })
+    }
+  }
+
   // The open case comes first: it is what a first-time reader is looking
   // for. The list and the form to open another follow it.
   const shown = openCase && detail?.case.case_id === openCase.case_id ? detail : null
@@ -795,6 +816,17 @@ export default function Cases() {
                   <span className={`state-mark is-${integrity}`}>
                     Chain {shown.audit.chain_status}
                   </span>
+                  <button className="btn" onClick={() => select(null)}>
+                    Deselect
+                  </button>
+                  {shown.case.status !== 'closed' && (
+                    <button
+                      className="btn"
+                      onClick={() => void closeOpenCase(shown.case.case_id)}
+                    >
+                      Close case
+                    </button>
+                  )}
                 </span>
               }
             >
@@ -826,7 +858,7 @@ export default function Cases() {
               </div>
             </Panel>
 
-            {tab === 'evidence' && (
+            {tab === 'evidence' && shown.case.status !== 'closed' && (
               <RegisterEvidence
                 caseId={shown.case.case_id}
                 onRegistered={() => void load(shown.case.case_id)}
