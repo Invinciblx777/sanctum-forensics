@@ -8,6 +8,7 @@ Nothing opens a real device, and nothing here writes to a source.
 from __future__ import annotations
 
 import hashlib
+import sys
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
@@ -139,7 +140,10 @@ def test_a_win32_path_on_windows_goes_to_the_createfile_reader(
 
 
 def test_a_win32_path_off_windows_is_refused_by_name(tmp_path: Path) -> None:
-    with pytest.raises(EvidenceIntegrityError, match="not Windows"):
+    # On Windows the same path is a real device path; without the selected
+    # disk's serial and size the handle cannot be bound, and nothing is opened.
+    expected = "needs the serial and size" if sys.platform == "win32" else "not Windows"
+    with pytest.raises(EvidenceIntegrityError, match=expected):
         _run(acquire("\\\\.\\PhysicalDrive3", tmp_path / "d.raw"))
 
 

@@ -394,6 +394,11 @@ def test_a_dry_run_on_a_mac_profile_removes_nothing(
     assert copy.exists() and photo.exists()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a macOS volume path is POSIX; a Windows temporary directory cannot "
+    "stand in for one under /Volumes",
+)
 def test_a_trash_on_another_volume_is_read_relative_to_that_volume(
     tmp_path: Path,
 ) -> None:

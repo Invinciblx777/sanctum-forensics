@@ -131,14 +131,13 @@ def test_a_passing_record_for_that_platform_is_what_lifts_it(
     rows = {
         r.operation: r for r in _windows(windows_inventory).operation_capabilities()
     }
+    # The record names the Windows run as the source on every host.
+    assert "windows PASS" in rows[Operation.FILE_ERASE].source
     if sys.platform == "win32":
-        assert rows[Operation.FILE_ERASE].status is (
-            CapabilityStatus.SUPPORTED_WITH_LIMITATIONS
-        )
-    else:
-        # Off Windows the file backend is this host's, not Windows's; the
-        # record still names the Windows run as the source.
-        assert "windows PASS" in rows[Operation.FILE_ERASE].source
+        # A CI suite pass is not physical evidence: without a
+        # ``physical_validations`` entry the resolver keeps file erase at
+        # IMPLEMENTED / UNVALIDATED, which the legacy status reads as UNVERIFIED.
+        assert rows[Operation.FILE_ERASE].status is CapabilityStatus.UNVERIFIED
 
 
 def test_windows_and_macos_offer_whole_drive_through_the_resolver(

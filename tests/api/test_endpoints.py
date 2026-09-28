@@ -15,6 +15,7 @@ them:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -239,6 +240,11 @@ def test_acquire_rejects_a_missing_source(client: TestClient) -> None:
     assert answer.json()["detail"]["kind"] == "EvidenceIntegrityError"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="about a host that is not Windows; on Windows the path is a real device "
+    "path, covered by tests/carve/test_platform_sources.py",
+)
 def test_acquire_of_a_win32_device_off_windows_says_why(
     client: TestClient,
 ) -> None:
