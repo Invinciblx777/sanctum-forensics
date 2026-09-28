@@ -29,7 +29,7 @@ from core.platform.model import (
     PrivilegeState,
 )
 
-from .conftest import FakeRunner, ok
+from .conftest import FakeRunner, ok, windows_api_for
 
 
 def _record(
@@ -44,7 +44,8 @@ def _windows(windows_inventory: dict[str, Any]) -> BaseAdapter:
     from core.platform.windows import WindowsAdapter
 
     return WindowsAdapter(
-        runner=FakeRunner(lambda a: ok(a, json.dumps(windows_inventory)))
+        runner=FakeRunner(lambda a: ok(a, json.dumps(windows_inventory))),
+        native=windows_api_for(windows_inventory),
     )
 
 

@@ -24,7 +24,7 @@ from core.platform.windows import (
     parse_inventory,
 )
 
-from .conftest import FakeRunner, ok
+from .conftest import FakeRunner, ok, windows_api_for
 
 
 def _by_id(inventory: dict[str, Any]) -> dict[str, Any]:
@@ -33,7 +33,7 @@ def _by_id(inventory: dict[str, Any]) -> dict[str, Any]:
 
 def _adapter(inventory: dict[str, Any]) -> tuple[WindowsAdapter, FakeRunner]:
     runner = FakeRunner(lambda argv: ok(argv, json.dumps(inventory)))
-    return WindowsAdapter(runner=runner), runner
+    return WindowsAdapter(runner=runner, native=windows_api_for(inventory)), runner
 
 
 def test_the_boot_disk_is_protected_for_every_reason_windows_gives(

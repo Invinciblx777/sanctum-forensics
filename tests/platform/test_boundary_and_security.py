@@ -27,7 +27,7 @@ from helper.rpc import RpcError
 
 from tests._loopback import LOOPBACK_BASE_URL
 
-from .conftest import FakeRunner, ok
+from .conftest import FakeRunner, ok, windows_api_for
 
 # --------------------------------------------------------------------------
 # Helper boundary
@@ -105,10 +105,9 @@ def test_a_real_windows_erase_without_authorization_opens_nothing(
 ) -> None:
     """Windows has an engine now; the write seam's authorization still comes first."""
     from core.platform.windows import WindowsAdapter
-    from testkit.fake_windows import FakeWindowsApi
 
     runner = FakeRunner(lambda argv: ok(argv, json.dumps(windows_inventory)))
-    api = FakeWindowsApi([])
+    api = windows_api_for(windows_inventory)
     monkeypatch.setattr(
         "core.platform.current_adapter",
         lambda **kw: WindowsAdapter(runner=runner, native=api, **kw),
@@ -141,9 +140,10 @@ def test_assess_device_rereads_the_device_now(
     from core.platform.windows import WindowsAdapter
 
     runner = FakeRunner(lambda argv: ok(argv, json.dumps(windows_inventory)))
+    api = windows_api_for(windows_inventory)
     monkeypatch.setattr(
         "core.platform.current_adapter",
-        lambda **kw: WindowsAdapter(runner=runner, **kw),
+        lambda **kw: WindowsAdapter(runner=runner, native=api, **kw),
     )
     helper = InProcessHelper()
 
