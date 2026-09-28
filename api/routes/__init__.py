@@ -19,6 +19,7 @@ def all_routers() -> list[APIRouter]:
         audit,
         cases,
         devices,
+        hidden_area,
         jobs,
         platform,
         restore,
@@ -34,4 +35,5 @@ def all_routers() -> list[APIRouter]:
         audit.router,
         workflow.router,
         restore.router,
+        hidden_area.router,
     ]

@@ -1,9 +1,10 @@
-"""The write seam's own check of an erase or restore authorization.
+"""The write seam's own check of an erase, restore or HPA authorization.
 
 Each authorization has a ``kind``. :func:`revalidate_execution` accepts only an
 erase authorization (a record with no kind was written before kinds existed and
-is an erase one); :func:`revalidate_restore` accepts only a restore one. An
-approval of one is never spendable as the other.
+is an erase one); :func:`revalidate_restore` accepts only a restore one;
+:func:`revalidate_hpa` only an ``hpa`` one. An approval of one kind is never
+spendable as another.
 
 The API opens, approves and spends an authorization, then hands the helper a
 real erase. The helper is the process that would write, so it does not take the
@@ -51,7 +52,10 @@ from core.authorization import (
     plan_drift,
 )
 from core.backup import BackupRecord, check_record_digest
+from core.device.hidden_area_workflow import HpaPlan
+from core.device.hidden_area_workflow import plan_digest_of as hpa_plan_digest_of
 from core.errors import EvidenceIntegrityError, WorkflowGateRefused
+from core.models import Device
 from core.restore import (
     RestorePlan,
     confirmation_token,
@@ -61,7 +65,13 @@ from core.restore import (
     target_identity_from_probe,
 )
 
-__all__ = ["RestoreAuthorized", "revalidate_execution", "revalidate_restore"]
+__all__ = [
+    "HpaAuthorized",
+    "RestoreAuthorized",
+    "revalidate_execution",
+    "revalidate_hpa",
+    "revalidate_restore",
+]
 
 _HINT = (
     "Open a workflow (POST /workflow/erase-drive), approve it, and execute with "
@@ -351,3 +361,147 @@ def revalidate_restore(
     return RestoreAuthorized(
         auth_id=auth_id, dry_run=dry_run, record=backup, plan=approved, fresh=fresh
     )
+
+
+# --------------------------------------------------------------------------
+# HPA change
+# --------------------------------------------------------------------------
+
+_HPA_HINT = (
+    "Open an HPA/DCO workflow (POST /workflow/hidden-area), approve it, and "
+    "execute with the authorization it returns. Nothing was sent to the drive."
+)
+
+
+def _refuse_hpa(reasons: list[str]) -> WorkflowGateRefused:
+    return WorkflowGateRefused(
+        "REFUSED at the HPA write seam: "
+        + "; ".join(reasons)
+        + ". Nothing was sent to the drive.",
+        why_blocked=reasons,
+        remediation=_HPA_HINT,
+    )
+
+
+def _fresh_hpa_probe(path: str) -> dict[str, Any]:
+    """Re-read the device's identity, system-disk and mount state, now."""
+    from core.platform import current_adapter
+
+    probe = current_adapter().authorization_probe(path)
+    return {"device": probe["device"]}
+
+
+@dataclass(frozen=True)
+class HpaAuthorized:
+    """What passed the HPA write seam: the approved plan and a fresh device read."""
+
+    auth_id: str
+    dry_run: bool
+    plan: HpaPlan
+    device: Device
+
+
+def revalidate_hpa(
+    params: dict[str, Any],
+    *,
+    probe: Callable[[str], dict[str, Any]] | None = None,
+) -> HpaAuthorized:
+    """Refuse an HPA change unless its authorization holds up here, now.
+
+    Only a record of kind ``hpa`` is accepted: an erase or restore approval is
+    never spendable as a change to the drive's configuration, nor an HPA one as
+    either of those. A dry run needs an opened record whose plan still matches
+    the device, but no approval, typed serial or marker. A real change also
+    needs a recorded approval, the API's ``.spent`` marker, a backup image
+    unchanged since the approval, a typed serial equal to the one this process
+    just read, and takes the single-use ``.executed`` marker last.
+
+    The drive's maxima are *not* re-read here: the engine
+    (:func:`core.device.hidden_area_workflow.execute`) re-discovers them through
+    the platform backend immediately before the command and refuses a stale
+    plan.
+    """
+    dry_run = params.get("dry_run", True) is not False
+    binding = params.get("authorization")
+    root_raw = params.get("authorization_dir")
+    if not isinstance(binding, dict) or not root_raw:
+        raise _refuse_hpa(["the request carries no HPA authorization"])
+    auth_id = str(binding.get("auth_id", ""))
+    if not AUTH_ID.match(auth_id):
+        raise _refuse_hpa(["the authorization id is malformed"])
+    root = Path(str(root_raw))
+    try:
+        record = json.loads((root / f"{auth_id}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise _refuse_hpa([f"authorization {auth_id} does not exist"]) from None
+    if not isinstance(record, dict):
+        raise _refuse_hpa([f"authorization {auth_id} is unreadable"])
+    kind_reasons = kind_mismatch({**record, "auth_id": auth_id}, "hpa")
+    if kind_reasons:
+        raise _refuse_hpa(kind_reasons)
+
+    reasons: list[str] = []
+    backup = record.get("backup") or {}
+    if not dry_run:
+        if not record.get("approved_by"):
+            reasons.append("no person has approved this HPA change")
+        if not (root / f"{auth_id}.spent").exists():
+            reasons.append("the authorization was not consumed by the API gate")
+        if not backup.get("backup_id"):
+            reasons.append("no verified backup is bound to this authorization")
+    path = str(params.get("path", ""))
+    if path != record.get("path"):
+        reasons.append(
+            f"the request's device {path!r} is not the approved "
+            f"{record.get('path')!r}"
+        )
+    for key in ("device", "backup", "plan"):
+        if binding.get(key) != record.get(key):
+            reasons.append(f"the request's {key} does not match the recorded approval")
+    if reasons:
+        raise _refuse_hpa(reasons)
+
+    try:
+        plan = HpaPlan.model_validate(record["plan"])
+    except (KeyError, TypeError, ValueError):
+        raise _refuse_hpa(["the recorded HPA plan is unreadable"]) from None
+    if plan.plan_digest != hpa_plan_digest_of(plan):
+        reasons.append("the approved HPA plan was altered after it was made")
+    reasons.extend(plan.blocking)
+
+    # From here every fact is read from the host, not from either party.
+    try:
+        fresh = (probe or _fresh_hpa_probe)(path)
+        device = Device.model_validate(fresh["device"])
+    except Exception as exc:  # noqa: BLE001 - any failure to re-read is a refusal
+        raise _refuse_hpa(
+            [
+                "the device could not be re-read at the write seam "
+                f"({type(exc).__name__})"
+            ]
+        ) from None
+    reasons.extend(identity_drift(record["device"], device_identity(fresh)))
+    if device.is_system_disk:
+        reasons.append("the device hosts the running system")
+    if device.mounted_at:
+        reasons.append(
+            "the device has mounted filesystems: " + ", ".join(device.mounted_at)
+        )
+    if not dry_run:
+        if backup.get("backup_id"):
+            reasons.extend(image_drift(backup))
+        typed = str(params.get("typed_serial") or "").strip()
+        serial = device.serial.strip()
+        if not typed:
+            reasons.append("no serial was typed; a real HPA change is opt-in twice")
+        elif not serial or typed.casefold() != serial.casefold():
+            reasons.append(
+                "the typed serial does not match the device re-read at the "
+                "write seam"
+            )
+    if reasons:
+        raise _refuse_hpa(list(dict.fromkeys(reasons)))
+
+    if not dry_run:
+        _take_marker(root, auth_id, _refuse_hpa)
+    return HpaAuthorized(auth_id=auth_id, dry_run=dry_run, plan=plan, device=device)

@@ -281,33 +281,47 @@ level to high.
 
 ## HPA and DCO
 
-Hidden areas are detected read-only. For overwrite, the native max is unlocked
-before the wipe and restored afterwards, and the original accessible sector count
-is written to the ledger first so an interrupted job leaves a record of what to
-restore to. If the unlock fails, the hidden region is **not** erased and the
-report says so. Firmware sanitize covers the full media by design, so no unlock
-is attempted there.
+Hidden areas are detected read-only. **An ordinary erase never unlocks or
+modifies an HPA or a DCO.** When the probe finds hidden bytes, an overwrite
+erases the accessible range only, the result records `hidden_covered=False`,
+the limitations name the hidden byte count and tell the operator to run the
+HPA/DCO workflow first, and the residual risk is high ("part of the medium was
+not erased"). Firmware sanitize covers the full media by design, so nothing is
+reported missing there.
 
-The `HIDDEN_AREA_UNLOCK` phase is ledgered on **every** run, including when the
-drive reports no hidden area at all — as `not_required`, carrying the probed
-sector counts. A chain that simply omitted the phase would be indistinguishable
-from one where the tool never probed, and those two support opposite conclusions
-about whether the sectors beyond the accessible max were ever considered. The
-same is true of `HIDDEN_AREA_RESTORE`, which has always recorded its own
-negative case.
+The `HIDDEN_AREA_UNLOCK` phase is ledgered on **every** run: `not_required`
+when the drive reports no hidden area, carrying the probed sector counts;
+`not_authorized` when it reports one that this erase deliberately left alone;
+`skipped` for a firmware method. A chain that simply omitted the phase would be
+indistinguishable from one where the tool never probed. `HIDDEN_AREA_RESTORE`
+always records `not_required`, because the erase never changed anything.
 
-No loopback device reports an HPA or a DCO — they are ATA features of real
-media — so the branch where sectors genuinely are hidden cannot be reached by
-pointing the erase engine at one. It is covered against a faked hidden-area
-report in `tests/erase/test_hidden_area_phases.py`, which fakes the *probe* and
-leaves the unlock decision, the geometry widening, the ledger entries and the
-restore running unaltered.
+Exposing the hidden sectors is the separate, guarded HPA/DCO workflow
+(`core/device/hidden_area_workflow.py`, `POST /workflow/hidden-area`): a
+plausibility-checked reading of the native and accessible maxima, a verified
+backup of at least the accessible range, a human approval with the serial typed,
+a dry run by default, a re-read of the drive immediately before the command
+(a drifted plan is refused as stale), and a read-back afterwards. The change is
+**volatile by default** (lost at the next power cycle); a permanent change is
+made only when explicitly requested and acknowledged. Only SET MAX ADDRESS is
+ever sent: **DCO RESTORE and DCO SET are never issued**, so sectors a DCO hides
+beyond the native maximum stay hidden and the workflow says so. The workflow
+erases nothing; the exposed sectors are sanitized by a later ordinary erase. On
+Linux the kernel keeps the size it read at attach time, so the device must be
+rescanned or re-attached before that erase sees the new size. macOS has no ATA
+pass-through and refuses the workflow.
 
-**HPA/DCO unlock is HARDWARE-UNVERIFIED.** No drive with a hidden area has been
-through it. On the one physical stick the project has run (2026-09-05), the probe
-was skipped behind the USB bridge, which is the bridge-discard behaviour working,
-not an unlock. The Platform screen's Clear row carries this as a limitation until
-the validation record's hardware section records a PASS.
+No loopback device reports an HPA or a DCO - they are ATA features of real
+media. The erase branch is covered against a faked hidden-area report in
+`tests/erase/test_hidden_area_phases.py`; the workflow against a fake hdparm
+runner and the Windows ATA pass-through double (`testkit/fake_windows.py`) in
+`tests/device/test_hidden_area_workflow.py` and
+`tests/api/test_hidden_area_workflow.py`.
+
+**The HPA/DCO workflow is HARDWARE-UNVERIFIED.** No drive with a hidden area has
+been through it on Linux or Windows. On the one physical stick the project has
+run (2026-09-05), the probe was skipped behind the USB bridge, which is the
+bridge-discard behaviour working.
 
 ## NVMe scope
 

@@ -66,6 +66,46 @@ def test_every_capability_has_an_entry_on_every_platform(platform: str) -> None:
             assert len(entry.reason) > 40
 
 
+def _implemented_modules() -> list[str]:
+    return sorted({entry.module for entry in IMPLEMENTATIONS.values() if entry.module})
+
+
+@pytest.mark.parametrize("module", _implemented_modules())
+def test_every_module_the_resolver_names_imports(module: str) -> None:
+    """A table entry naming code that does not exist is a claim, not a capability.
+
+    ``core.erase.drive`` refuses to import off Linux by design; that refusal is
+    the platform saying so, not a missing module.
+    """
+    import importlib
+    import sys
+
+    from core.errors import PlatformUnsupported
+
+    try:
+        importlib.import_module(module)
+    except PlatformUnsupported:
+        if sys.platform.startswith("linux"):
+            raise
+        pytest.skip(f"{module} is Linux-only by design")
+
+
+def test_the_hpa_modify_entries_name_the_guarded_workflow() -> None:
+    for platform in ("linux", "windows"):
+        entry = IMPLEMENTATIONS[(platform, Capability.HPA_DCO_MODIFY)]  # type: ignore[index]
+        assert entry.module == "core.device.hidden_area_workflow"
+        assert "volatile" in entry.mechanism
+        assert "DCO RESTORE and DCO SET are never issued" in entry.mechanism
+        assert "Never done implicitly by an erase" in entry.assurance
+    linux = IMPLEMENTATIONS[("linux", Capability.HPA_DCO_MODIFY)]
+    assert "hdparm -N <native>" in linux.mechanism
+    assert "hdparm -N p<native>" in linux.mechanism
+    windows = IMPLEMENTATIONS[("windows", Capability.HPA_DCO_MODIFY)]
+    assert "VV=1" in windows.mechanism and "27h" in windows.mechanism
+    macos = IMPLEMENTATIONS[("macos", Capability.HPA_DCO_MODIFY)]
+    assert macos.state is S.UNSUPPORTED_BY_PLATFORM
+
+
 def test_every_state_has_a_label_and_the_labels_are_the_interface_words() -> None:
     assert set(STATE_LABELS) == set(S)
     assert set(STATE_LABELS.values()) == {

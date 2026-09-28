@@ -615,14 +615,17 @@ class LinuxAdapter(BaseAdapter):
             if not hardware_passed("linux", "hidden_area_unlock"):
                 clear_limits.append(
                     "HPA/DCO unlock has not been run on a physical drive: no "
-                    "hardware result is recorded for it, and the branch where "
-                    "sectors really are hidden is tested against a faked probe."
+                    "hardware result is recorded for the HPA/DCO workflow, and "
+                    "the case where sectors really are hidden is tested against "
+                    "a faked probe and a fake hdparm."
                 )
             clear = row(
                 Operation.WHOLE_DRIVE_CLEAR,
                 CapabilityStatus.SUPPORTED_WITH_LIMITATIONS,
-                "Every addressable block is overwritten with O_DIRECT writes; "
-                "hidden HPA/DCO areas are unlocked first where the drive allows.",
+                "Every addressable block is overwritten with O_DIRECT writes. "
+                "An HPA/DCO hidden area is reported as not covered and never "
+                "unlocked by the erase; exposing it is the separate, approved "
+                "HPA/DCO workflow.",
                 source,
                 verification="Full read-back up to 64 GiB, seeded "
                 "sampling above it with a stated detection probability.",

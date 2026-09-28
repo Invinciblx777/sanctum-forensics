@@ -30,7 +30,10 @@ serial matches the device the helper itself re-reads. The API cannot talk the
 helper out of either check, which is the point of putting them here rather than
 in the request handler. ``run_restore`` keeps the same two gates, plus its own
 write-seam revalidation of a ``restore``-kind authorization
-(:func:`helper.authorization.revalidate_restore`).
+(:func:`helper.authorization.revalidate_restore`). ``run_hpa_change`` - the only
+operation that changes a drive's Host Protected Area - keeps them too, with an
+``hpa``-kind authorization (:func:`helper.authorization.revalidate_hpa`); an
+ordinary erase never changes the HPA.
 
 Streaming, and liveness
 -----------------------
@@ -625,6 +628,114 @@ def _stream_run_restore(
             target.close()
 
 
+def _hpa_backend() -> Any:
+    """The HPA backend for this host: Linux (hdparm) or Windows (ATA pass-through).
+
+    macOS and anything else raise ``PlatformUnsupported`` with the capability
+    resolver's own reason, before any device is read.
+    """
+    from core.device.hidden_area_workflow import platform_backend
+    from core.platform.host import family
+
+    return platform_backend(family())
+
+
+def _hpa_device(path: str) -> Any:
+    """A fresh read of the device through this host's platform adapter."""
+    from core.models import Device
+    from core.platform import current_adapter
+
+    return Device.model_validate(current_adapter().authorization_probe(path)["device"])
+
+
+def _op_discover_hidden_area(params: dict[str, Any]) -> dict[str, Any]:
+    """Read one drive's native and accessible maxima. Read-only.
+
+    A drive that cannot be asked - behind a bridge, NVMe, no privilege - is
+    reported as ``unavailable`` with the reason, never as "no hidden area".
+    """
+    from core.errors import UnsupportedCapability
+
+    backend = _hpa_backend()
+    device = _hpa_device(str(params["path"]))
+    try:
+        state = backend.discover(device)
+    except UnsupportedCapability as exc:
+        return {
+            "platform": backend.platform,
+            "device": device.model_dump(mode="json"),
+            "state": None,
+            "unavailable": exc.message,
+        }
+    return {
+        "platform": backend.platform,
+        "device": device.model_dump(mode="json"),
+        "state": state.model_dump(mode="json"),
+        "unavailable": "",
+    }
+
+
+def _op_run_hpa_change(params: dict[str, Any]) -> dict[str, Any]:
+    """Run an approved HPA change, returning its progress in one batch."""
+    return _drain(_stream_run_hpa_change(params))
+
+
+def _stream_run_hpa_change(
+    params: dict[str, Any],
+) -> Generator[dict[str, Any], None, dict[str, Any]]:
+    """Set a drive's accessible maximum to its native maximum, then read it back.
+
+    ``dry_run`` defaults to True when absent. Every request must carry an
+    ``hpa`` authorization, which :func:`helper.authorization.revalidate_hpa`
+    re-checks against a fresh read of the device in *this* process; a real
+    change also needs the typed serial and takes the single-use ``.executed``
+    marker. The engine re-discovers the drive immediately before the command
+    and refuses a stale plan. A macOS host is refused before any record is
+    read: it has no ATA pass-through.
+    """
+    from core.device.hidden_area_workflow import execute
+    from core.errors import WorkflowGateRefused
+    from core.ledger.chain import Ledger
+
+    from helper.authorization import revalidate_hpa
+
+    backend = _hpa_backend()
+    authorized = revalidate_hpa(params)
+    ledger_root = params.get("ledger_root")
+    if not ledger_root:
+        raise WorkflowGateRefused(
+            "REFUSED: an HPA change must be recorded in the hash-chained ledger "
+            "and the request names none. Nothing was sent to the drive.",
+            why_blocked=["the request carries no ledger_root"],
+        )
+    ledger = Ledger(
+        Path(str(ledger_root)),
+        tool_version=str(params.get("tool_version", "sanctum-forensics/0.0.0")),
+        pubkey_fingerprint=str(params.get("pubkey_fingerprint", "")),
+        owner_uid=_owner_uid(params),
+    )
+    generator = execute(
+        authorized.plan,
+        backend,
+        device=authorized.device,
+        dry_run=authorized.dry_run,
+        typed_serial=str(params.get("typed_serial") or ""),
+        ledger=ledger,
+        actor=str(params.get("actor") or "sanctum"),
+        job_id=str(params.get("job_id", "hpa")),
+        authorization_id=authorized.auth_id,
+    )
+    try:
+        while True:
+            try:
+                record = next(generator)
+            except StopIteration as stop:
+                return {"result": stop.value.model_dump(mode="json")}
+            yield record
+    finally:
+        generator.close()
+
+
 #: Static allowlist. The only operations the daemon will ever perform.
 OPERATIONS: dict[str, Handler] = {
     "whoami": _op_whoami,
@@ -638,6 +749,8 @@ OPERATIONS: dict[str, Handler] = {
     "acquire_image": _op_acquire_image,
     "run_restore": _op_run_restore,
     "prepare_device": _op_prepare_device,
+    "discover_hidden_area": _op_discover_hidden_area,
+    "run_hpa_change": _op_run_hpa_change,
 }
 
 #: The subset of :data:`OPERATIONS` served incrementally. A name here must also
@@ -648,6 +761,7 @@ STREAMING_OPERATIONS: dict[str, StreamHandler] = {
     "resume_erase": _stream_resume_erase,
     "acquire_image": _stream_acquire_image,
     "run_restore": _stream_run_restore,
+    "run_hpa_change": _stream_run_hpa_change,
 }
 
 

@@ -1229,6 +1229,12 @@ def execute(
     VERIFY, REPORT. Each phase emits at least one :class:`Progress` and records
     a ledger entry.
 
+    The two hidden-area phases only *record*: an ordinary erase never unlocks
+    or modifies an HPA or a DCO. Hidden bytes found by the probe are left
+    alone, the erase covers the accessible range, and the result says the
+    hidden region was not covered. Exposing it is the separate, approved
+    workflow in :mod:`core.device.hidden_area_workflow`.
+
     When ``job.dry_run`` is set - the default - every check runs, the full plan
     is emitted, and the generator returns without writing a byte. It is the same
     code path, not a parallel one: the only difference is that the ERASE phase
@@ -1377,16 +1383,20 @@ def execute(
     )
 
     # ---------------- HIDDEN_AREA_UNLOCK ----------------
+    # An ordinary erase NEVER changes the HPA or the DCO. Widening the
+    # accessible maximum is a configuration change to the drive, and it goes
+    # through the guarded HPA/DCO workflow (core.device.hidden_area_workflow):
+    # a verified backup, a human approval and a typed serial of its own. What
+    # this phase does is record what was found, so a chain reader can tell
+    # "probed and found none" from "found and deliberately not unlocked".
     firmware = method in _FIRMWARE_METHODS
     hidden_covered = True
-    restore_to = hidden.accessible_sectors if hidden else 0
-    # A probe that did not work reports no hidden bytes and knows nothing. Its
-    # sector counts are the kernel's own, so unlocking to them would be a no-op
-    # at best; the limitation it carries is what the operator needs instead.
+    # A probe that did not work reports no hidden bytes and knows nothing; the
+    # limitation it carries is what the operator needs instead.
     probe_failed = bool(hidden and hidden.probe_failed)
     if hidden is not None and hidden.limitations:
         limitations.extend(hidden.limitations)
-    unlock_needed = bool(
+    hidden_found = bool(
         hidden and hidden.hidden_bytes > 0 and not firmware and not probe_failed
     )
 
@@ -1402,65 +1412,39 @@ def execute(
             {"job_id": job.job_id, "reason": reason},
         )
         yield _progress(job.job_id, ErasePhase.HIDDEN_AREA_UNLOCK, 10_000, reason)
-    elif unlock_needed and hidden is not None:
+    elif hidden_found and hidden is not None:
+        hidden_covered = False
+        reason = (
+            f"{hidden.hidden_bytes} bytes are hidden by an HPA/DCO: the drive "
+            f"reports an accessible maximum of {hidden.accessible_sectors} "
+            f"sectors and a native maximum of {hidden.native_max_sectors}. An "
+            "ordinary erase never changes the HPA or the DCO, so only the "
+            "accessible range was erased and the hidden region was NOT "
+            "sanitized and may still hold data. To cover it, run the HPA/DCO "
+            "workflow first (verified backup, human approval, typed serial) "
+            "and then erase again."
+        )
+        limitations.append(reason)
         sink.record(
             ErasePhase.HIDDEN_AREA_UNLOCK,
-            "before",
+            "not_authorized",
             {
                 "job_id": job.job_id,
+                "hidden_bytes": hidden.hidden_bytes,
                 "accessible_sectors": hidden.accessible_sectors,
                 "native_max_sectors": hidden.native_max_sectors,
-                "hidden_bytes": hidden.hidden_bytes,
-                "note": "restore to accessible_sectors if this job is interrupted",
+                "hpa_present": hidden.hpa_present,
+                "dco_present": hidden.dco_present,
+                "hidden_covered": False,
+                "reason": reason,
             },
         )
-        if not job.dry_run:
-            unlocked = io.run(
-                "hdparm", "-N", f"p{hidden.native_max_sectors}", device.path
-            )
-            hidden_covered = unlocked.ok
-            if not unlocked.ok:
-                limitations.append(
-                    f"Could not unlock {hidden.hidden_bytes} bytes hidden by "
-                    "HPA/DCO; that region was not erased."
-                )
-            else:
-                # Widen only. BLKGETSIZE64 is what the kernel will let us write;
-                # an HPA can only mean the medium is *larger* than that, never
-                # smaller. A native max at or below it is a bridge's invention,
-                # and acting on it once turned a 7.76 GB wipe into 512 bytes.
-                widened = hidden.native_max_sectors * geometry.logical_block_size
-                if widened > geometry.size_bytes:
-                    geometry = Geometry(
-                        size_bytes=widened,
-                        logical_block_size=geometry.logical_block_size,
-                        physical_block_size=geometry.physical_block_size,
-                    )
-                else:
-                    reason = (
-                        f"HPA unlock reported a native max of "
-                        f"{hidden.native_max_sectors} sectors "
-                        f"({widened} bytes), which does not exceed the "
-                        f"{geometry.size_bytes} bytes the kernel reports; the "
-                        "kernel geometry was kept and the erase still covers "
-                        "the whole addressable medium."
-                    )
-                    limitations.append(reason)
-                    sink.record(
-                        ErasePhase.HIDDEN_AREA_UNLOCK,
-                        "geometry_unchanged",
-                        {
-                            "job_id": job.job_id,
-                            "kernel_size_bytes": geometry.size_bytes,
-                            "reported_native_bytes": widened,
-                            "reason": reason,
-                        },
-                    )
         yield _progress(
             job.job_id,
             ErasePhase.HIDDEN_AREA_UNLOCK,
             10_000,
-            f"unlocked {hidden.hidden_bytes} hidden bytes",
+            f"{hidden.hidden_bytes} hidden bytes found and NOT unlocked; "
+            "use the HPA/DCO workflow",
         )
     else:
         # Ledgered even though there is nothing to unlock, and this is not
@@ -1491,8 +1475,8 @@ def execute(
 
     # ---------------- ERASE ----------------
     if geometry.size_bytes < kernel_size_bytes:
-        # Unreachable by design: only the unlock branch touches geometry and it
-        # widens or leaves it alone. Checked anyway, because the failure this
+        # Unreachable by design: nothing between the kernel read and here
+        # touches the geometry. Checked anyway, because the failure this
         # guards against is silent - a wipe that covers a fraction of a device
         # and still ends in a report saying the medium was sanitized.
         raise GeometryRefused(
@@ -1589,28 +1573,20 @@ def execute(
         )
 
     # ---------------- HIDDEN_AREA_RESTORE ----------------
-    if unlock_needed and not job.dry_run and hidden_covered and restore_to:
-        io.run("hdparm", "-N", f"p{restore_to}", device.path)
-        sink.record(
-            ErasePhase.HIDDEN_AREA_RESTORE,
-            "restored",
-            {"job_id": job.job_id, "accessible_sectors": restore_to},
-        )
-        yield _progress(
-            job.job_id,
-            ErasePhase.HIDDEN_AREA_RESTORE,
-            10_000,
-            f"restored accessible max to {restore_to} sectors",
-        )
-    else:
-        sink.record(
-            ErasePhase.HIDDEN_AREA_RESTORE,
-            "not_required",
-            {"job_id": job.job_id},
-        )
-        yield _progress(
-            job.job_id, ErasePhase.HIDDEN_AREA_RESTORE, 10_000, "nothing to restore"
-        )
+    # Nothing to restore, ever: this erase did not change the HPA. The entry
+    # stays so the six-phase shape of the chain is the same for every job.
+    sink.record(
+        ErasePhase.HIDDEN_AREA_RESTORE,
+        "not_required",
+        {
+            "job_id": job.job_id,
+            "reason": "An ordinary erase does not change the HPA or the DCO, "
+            "so there is no accessible maximum to restore.",
+        },
+    )
+    yield _progress(
+        job.job_id, ErasePhase.HIDDEN_AREA_RESTORE, 10_000, "nothing to restore"
+    )
 
     # ---------------- VERIFY ----------------
     verify_seconds = 0.0

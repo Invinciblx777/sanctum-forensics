@@ -4,11 +4,17 @@ No loopback device will ever report an HPA or a DCO - they are ATA features of
 real spinning and SATA flash media - so the branch that matters most cannot be
 reached by pointing the erase engine at one. These tests fake the hidden-area
 report instead, which is the only way to cover the case where sectors really are
-hidden and really do have to be unlocked before the wipe reaches them.
+hidden.
+
+An ordinary erase never unlocks them. Changing the HPA is a configuration change
+to the drive and belongs to the guarded HPA/DCO workflow
+(``core.device.hidden_area_workflow``). What the erase must do is record that it
+found hidden bytes, erase the accessible range, and say plainly that the hidden
+region was not sanitized.
 
 Faking the *probe* rather than the device is deliberate. Everything downstream
-of ``detect_hidden_areas`` - the unlock decision, the geometry widening, the
-ledger entries, the restore - is the code under test and runs unaltered.
+of ``detect_hidden_areas`` - the decision, the geometry, the ledger entries,
+the report - is the code under test and runs unaltered.
 
 Needs no root: ``device_geometry`` is stubbed because ``BLKGETSIZE64`` only
 answers for a block device, and creating one needs privileges these tests
@@ -146,15 +152,14 @@ def test_a_drive_with_no_hidden_area_still_ledgers_the_unlock_phase(
     assert entry == "erase.hidden_area_unlock.not_required"
 
 
-def test_a_drive_with_a_hidden_area_ledgers_the_unlock_before_erasing(
+def test_a_drive_with_a_hidden_area_is_not_unlocked_and_says_so(
     tmp_path: Path,
 ) -> None:
-    """The case no loop device can reach, and the one that matters.
+    """Found but not unlocked must be distinguishable from probed and found none.
 
-    The entry has to be written *before* the unlock is attempted, so an
-    interrupted job leaves a record of the accessible sector count to restore
-    to. Without it a crash mid-unlock leaves a drive reporting its native max
-    with nothing on disk saying what it used to report.
+    The entry names what was found and why nothing was done about it, so a
+    chain reader can see that the sectors beyond the accessible maximum were
+    considered and deliberately left alone.
     """
     chain, _ = run_execute(tmp_path, hidden_bytes=8 * MIB)
 
@@ -164,19 +169,31 @@ def test_a_drive_with_a_hidden_area_ledgers_the_unlock_before_erasing(
         for item in operations(chain)
         if item.startswith("erase.hidden_area_unlock.")
     )
-    assert unlock == "erase.hidden_area_unlock.before"
+    assert unlock == "erase.hidden_area_unlock.not_authorized"
 
     params = next(
         chain.params_of(entry)
         for entry in chain.entries()
-        if entry.operation == "erase.hidden_area_unlock.before"
+        if entry.operation == "erase.hidden_area_unlock.not_authorized"
     )
     assert params["hidden_bytes"] == 8 * MIB
     assert params["accessible_sectors"] == DEVICE_BYTES // SECTOR
     assert params["native_max_sectors"] > params["accessible_sectors"]
-    assert "restore" in params["note"], (
-        "the entry must say what to restore to, or it is not a recovery record"
-    )
+    assert params["hidden_covered"] is False
+    assert "HPA/DCO workflow" in params["reason"]
+
+
+def test_the_restore_phase_is_not_required_when_nothing_was_changed(
+    tmp_path: Path,
+) -> None:
+    chain, _ = run_execute(tmp_path, hidden_bytes=8 * MIB)
+
+    restore = [
+        item
+        for item in operations(chain)
+        if item.startswith("erase.hidden_area_restore.")
+    ]
+    assert restore == ["erase.hidden_area_restore.not_required"]
 
 
 def test_the_not_required_entry_records_what_was_probed(tmp_path: Path) -> None:
@@ -318,7 +335,7 @@ HDPARM_N_INVALID = (
 
 def erase_geometry_for(
     tmp_path: Path, *, transport: str, hdparm_n: str
-) -> tuple[Geometry, list[str]]:
+) -> tuple[Geometry, list[str], list[tuple[str, ...]], Any]:
     """Run ``execute`` for real up to ERASE and capture the geometry it dispatches.
 
     The hidden-area probe is *not* faked here - it is the code under test. Only
@@ -341,17 +358,16 @@ def erase_geometry_for(
     geometry = Geometry(
         size_bytes=DEVICE_BYTES, logical_block_size=SECTOR, physical_block_size=SECTOR
     )
-    probe = SystemProbe(
-        runner=FakeRunner(  # type: ignore[arg-type]
-            {
-                # A two-element prefix, so the same fake answers both the
-                # read (``hdparm -N <dev>``) and the unlock that follows it
-                # (``hdparm -N p<native> <dev>``).
-                ("hdparm", "-N"): ok(hdparm_n),
-                ("hdparm", "--dco-identify", "/dev/loop-fake"): ok(""),
-            }
-        )
+    runner = FakeRunner(
+        {
+            # A two-element prefix, so the same fake would answer an unlock
+            # (``hdparm -N p<native> <dev>``) too - which is how the tests
+            # below prove none is ever sent.
+            ("hdparm", "-N"): ok(hdparm_n),
+            ("hdparm", "--dco-identify", "/dev/loop-fake"): ok(""),
+        }
     )
+    probe = SystemProbe(runner=runner)  # type: ignore[arg-type]
     seen: list[Geometry] = []
 
     def fake_dispatch(
@@ -390,7 +406,7 @@ def erase_geometry_for(
             result = stop.value
 
     assert seen, "the erase never dispatched"
-    return seen[0], list(result.limitations if result else [])
+    return seen[0], list(result.limitations if result else []), runner.calls, result
 
 
 def test_a_bogus_native_max_does_not_shrink_the_erase(tmp_path: Path) -> None:
@@ -401,7 +417,7 @@ def test_a_bogus_native_max_does_not_shrink_the_erase(tmp_path: Path) -> None:
     a device the kernel reported as 7.76 GB. The wipe "succeeded" and PhotoRec
     recovered every planted file afterwards.
     """
-    dispatched, _ = erase_geometry_for(
+    dispatched, _, _, _ = erase_geometry_for(
         tmp_path, transport="sata", hdparm_n=HDPARM_N_INVALID
     )
 
@@ -409,7 +425,7 @@ def test_a_bogus_native_max_does_not_shrink_the_erase(tmp_path: Path) -> None:
 
 
 def test_a_bridged_device_erases_the_whole_kernel_size(tmp_path: Path) -> None:
-    dispatched, limitations = erase_geometry_for(
+    dispatched, limitations, _, _ = erase_geometry_for(
         tmp_path, transport="usb", hdparm_n=HDPARM_N_INVALID
     )
 
@@ -419,19 +435,64 @@ def test_a_bridged_device_erases_the_whole_kernel_size(tmp_path: Path) -> None:
     )
 
 
-def test_a_real_hidden_area_still_widens_the_erase(tmp_path: Path) -> None:
-    """The widening path is the point of the unlock; it must survive the fix."""
+def _real_hidden_area(tmp_path: Path) -> tuple[Geometry, list[str], Any, Any]:
     native = DEVICE_BYTES // SECTOR + 2048
     accessible = DEVICE_BYTES // SECTOR
     hdparm_n = (
         f"/dev/loop-fake:\n max sectors   = {accessible}/{native}, "
         "HPA is enabled\n"
     )
+    return erase_geometry_for(tmp_path, transport="sata", hdparm_n=hdparm_n)
 
-    dispatched, _ = erase_geometry_for(tmp_path, transport="sata", hdparm_n=hdparm_n)
 
-    assert dispatched.size_bytes == native * SECTOR
-    assert dispatched.size_bytes > DEVICE_BYTES
+def test_a_real_hidden_area_is_never_unlocked_by_an_ordinary_erase(
+    tmp_path: Path,
+) -> None:
+    """The spec: never unlock or modify HPA/DCO implicitly during an erase.
+
+    The only ``hdparm -N`` the erase may send is the read (``hdparm -N <dev>``).
+    Any argument between ``-N`` and the device - ``p<n>`` or ``<n>`` - is a
+    SET MAX ADDRESS, and must never appear.
+    """
+    _, _, calls, _ = _real_hidden_area(tmp_path)
+
+    set_max = [
+        call for call in calls if call[:2] == ("hdparm", "-N") and len(call) != 3
+    ]
+    assert set_max == []
+    assert ("hdparm", "-N", "/dev/loop-fake") in calls
+
+
+def test_a_real_hidden_area_erases_the_accessible_range_only(tmp_path: Path) -> None:
+    dispatched, _, _, _ = _real_hidden_area(tmp_path)
+
+    assert dispatched.size_bytes == DEVICE_BYTES
+
+
+def test_a_real_hidden_area_is_reported_not_covered(tmp_path: Path) -> None:
+    """Neither the result nor the residual risk may claim the hidden region."""
+    _, limitations, _, result = _real_hidden_area(tmp_path)
+
+    assert result is not None
+    hidden_bytes = 2048 * SECTOR
+    assert result.hidden_covered is False
+    assert any(
+        str(hidden_bytes) in item and "HPA/DCO workflow" in item
+        for item in limitations
+    )
+    risk = result.residual_risk
+    assert risk.level == "high"
+    assert any("NOT covered" in factor for factor in risk.factors)
+    assert not any("unlocked and covered" in factor for factor in risk.factors)
+
+
+def test_the_report_says_the_hidden_region_was_not_covered(tmp_path: Path) -> None:
+    from core.report.render import drive_report_inputs
+
+    _, _, _, result = _real_hidden_area(tmp_path)
+
+    sections = drive_report_inputs(result.model_dump(mode="json"))
+    assert sections["hidden_areas"]["covered"] is False
 
 
 # --------------------------------------------------------------------------

@@ -439,8 +439,9 @@ not random, and why that is not a security-relevant difference.
 * A free-space wipe is not a clear of the volume. It reads nothing back, and every
   result lists the residue it does not reach. It has run only on loop volumes, never
   on real media.
-* Hidden-area coverage depends on an unlock that can fail; when it fails the
-  region is not erased and the report says so.
+* An ordinary erase never unlocks an HPA/DCO. A hidden region is not erased
+  unless the separate, approved HPA/DCO workflow exposed it first, and the report
+  says so. DCO RESTORE is never issued.
 * ATA enhanced SECURITY ERASE is counted as purge on magnetic media only, on the
   withdrawn r1 Table A-5; r2 does not name it. On flash it is a Clear. Neither
   case has been run on real media.
