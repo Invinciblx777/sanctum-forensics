@@ -6,8 +6,10 @@ M1 Secure Drive Eraser, M2 Secure File & Folder Eraser, M3 Advanced File Carving
 - NIST SP 800-88 Rev. 2 vocabulary everywhere (Rev. 1 was withdrawn on 2025-09-26):
   Clear / Purge / Destroy. Never claim "military-grade" or Gutmann-for-SSD. Erase
   method is selected from probed device capability, never from user preference alone.
-- Destructive ops are opt-in twice: dry-run is the default, and the user types the device
-  serial to confirm. Refuse any device with a mounted filesystem or the root filesystem.
+- Destructive ops are opt-in twice: a server-issued, human-approved, single-use
+  authorization, and the user types the device serial to confirm. There is no dry-run or
+  simulation mode; a request carrying `dry_run`/`simulation`/`simulate` is refused, never
+  honoured or ignored. Refuse any device with a mounted filesystem or the root filesystem.
 - The evidence path is read-only. Carving code never opens a device or image O_RDWR.
 - Every operation appends a hash-chained ledger entry. Entry N contains SHA-256 of N-1.
 - If a guarantee cannot be made, the report says so. Honest limits over marketing claims.

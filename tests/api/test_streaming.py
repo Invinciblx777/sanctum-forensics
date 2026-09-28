@@ -20,6 +20,12 @@ from fastapi.testclient import TestClient
 from helper.rpc import RpcError
 
 
+def _confirmed(target: Path) -> dict[str, object]:
+    """A confirmed erase of one scratch file; every erase is real."""
+    return {"paths": [str(target)], "confirm": True, "sweep_traces": False}
+
+
+
 def parse_events(payload: str) -> list[tuple[str, dict[str, Any]]]:
     """Parse an SSE body into ``(event, data)`` pairs."""
     events: list[tuple[str, dict[str, Any]]] = []
@@ -235,7 +241,7 @@ def test_the_stream_yields_progress_and_terminates_with_a_state_event(
 ) -> None:
     target = tmp_path / "f.bin"
     target.write_bytes(b"x" * 4096)
-    accepted = client.post("/jobs/erase-files", json={"paths": [str(target)]}).json()
+    accepted = client.post("/jobs/erase-files", json=_confirmed(target)).json()
 
     with client.stream("GET", f"/jobs/{accepted['job_id']}/stream") as response:
         assert response.status_code == 200
@@ -258,7 +264,7 @@ def test_reconnecting_after_a_disconnect_replays_the_whole_run(
     """The page-reload case, simulated by closing the stream and reopening it."""
     target = tmp_path / "f.bin"
     target.write_bytes(b"y" * 8192)
-    accepted = client.post("/jobs/erase-files", json={"paths": [str(target)]}).json()
+    accepted = client.post("/jobs/erase-files", json=_confirmed(target)).json()
     job_id = accepted["job_id"]
 
     # First connection: read one chunk, then abandon it mid-stream.

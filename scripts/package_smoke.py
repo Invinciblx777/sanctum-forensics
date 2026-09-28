@@ -423,7 +423,6 @@ def run(
             method="POST",
             body={
                 "paths": [str(victim)],
-                "dry_run": False,
                 "confirm": True,
                 "recursive": True,
             },

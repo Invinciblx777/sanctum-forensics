@@ -106,7 +106,7 @@ function summarise(verification: ReportVerification): {
 /**
  * The tamper demonstration, rendered from the real verifier's two verdicts.
  *
- * Nothing here is animated and nothing is simulated. The server copies this
+ * Nothing here is animated or staged. The server copies this
  * host's chain to a scratch directory, changes one field of one entry in the
  * copy, hands the copy to `Ledger.verify` - the same call that guards the live
  * chain - and deletes the copy. Both verdicts below came back from that call.
@@ -320,7 +320,7 @@ export default function Audit() {
     if (openCase) setCaseId(openCase.case_id)
   }, [openCase?.case_id])
 
-  async function simulateTamper() {
+  async function tamperScratchCopy() {
     setError(null)
     try {
       const parsed = Number.parseInt(demoSeq, 10)
@@ -473,7 +473,7 @@ export default function Audit() {
         </Panel>
 
         <Panel
-          title="Tamper simulation"
+          title="Tamper demonstration"
           subtitle="Runs the real verifier against a scratch copy. The live chain is never opened for writing."
           actions={
             <div className="row" style={{ gap: 'var(--space-2)' }}>
@@ -488,9 +488,9 @@ export default function Audit() {
               <button
                 className="btn"
                 disabled={!chain || chain.entry_count < 2}
-                onClick={() => void simulateTamper()}
+                onClick={() => void tamperScratchCopy()}
               >
-                Simulate tampering
+                Tamper a scratch copy
               </button>
             </div>
           }
@@ -499,7 +499,7 @@ export default function Audit() {
             <TamperPanel demo={demo} entries={chain?.entries ?? []} />
           ) : (
             <Empty>
-              Press <strong>Simulate tampering</strong>. The server copies this
+              Press <strong>Tamper a scratch copy</strong>. The server copies this
               chain to a scratch directory, changes one field of one entry in
               the copy, and hands the copy to the same verification call that
               guards the live chain. The copy is deleted before the answer comes

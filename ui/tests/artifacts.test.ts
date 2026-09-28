@@ -160,12 +160,12 @@ test('download=true is the only query the helper emits', () => {
 // ---------------------------------------------------------------------------
 
 test('a passing read-back is PASSED', () => {
-  assert.equal(verificationWord(verification(), false), 'PASSED')
+  assert.equal(verificationWord(verification()), 'PASSED')
 })
 
 test('a failing read-back is FAILED', () => {
   assert.equal(
-    verificationWord(verification({ passed: false, failed_offsets: [0] }), false),
+    verificationWord(verification({ passed: false, failed_offsets: [0] })),
     'FAILED',
   )
 })
@@ -173,24 +173,18 @@ test('a failing read-back is FAILED', () => {
 test('an unsettled read-back is INCONCLUSIVE and never PASSED', () => {
   // This is the one that matters. `passed: null` is not a quiet yes.
   assert.equal(
-    verificationWord(verification({ passed: null }), false),
+    verificationWord(verification({ passed: null })),
     'INCONCLUSIVE',
   )
 })
 
 test('a verification that read nothing is NOT APPLICABLE', () => {
   assert.equal(
-    verificationWord(verification({ passed: null, bytes_checked: 0 }), false),
+    verificationWord(verification({ passed: null, bytes_checked: 0 })),
     'NOT APPLICABLE',
   )
 })
 
-test('a dry run is always NOT APPLICABLE, whatever the result says', () => {
-  // Nothing was written, so there was nothing to verify. A dry run must never
-  // display a pass.
-  assert.equal(verificationWord(verification({ passed: true }), true), 'NOT APPLICABLE')
-})
-
 test('a missing verification is NOT APPLICABLE', () => {
-  assert.equal(verificationWord(null, false), 'NOT APPLICABLE')
+  assert.equal(verificationWord(null), 'NOT APPLICABLE')
 })

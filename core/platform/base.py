@@ -416,9 +416,11 @@ class BaseAdapter:
 
     def _revalidated(self, params: dict[str, Any]) -> NormalizedDevice:
         """Re-read the device now and apply every refusal before anything opens."""
+        from core.device.guard import refuse_removed_mode_keys
+
+        refuse_removed_mode_keys(params)
         wanted = str(params["path"])
         device = self.inspect_device(wanted)
-        dry_run = params.get("dry_run", True) is not False
         if device.system_device:
             raise SystemDiskRefused(
                 f"Refusing {device.path}: it is the system or boot disk. "
@@ -450,22 +452,17 @@ class BaseAdapter:
                 f"{device.serial!r}; the identity is ambiguous. Nothing was written.",
                 remediation="Detach the other device, rescan and try again.",
             )
-        if not dry_run:
-            typed = normalized_serial(str(params.get("typed_serial") or ""))
-            if typed != serial:
-                raise ConfirmationMismatch(
-                    f"The typed serial does not match {device.path}, whose serial "
-                    f"is {device.serial!r}. Nothing was written."
-                )
+        typed = normalized_serial(str(params.get("typed_serial") or ""))
+        if typed != serial:
+            raise ConfirmationMismatch(
+                f"The typed serial does not match {device.path}, whose serial "
+                f"is {device.serial!r}. Nothing was written."
+            )
         return device
 
-    def _choose(
-        self, device: NormalizedDevice, level: str, *, dry_run: bool
-    ) -> tuple[Capability, Any]:
+    def _choose(self, device: NormalizedDevice, level: str) -> tuple[Capability, Any]:
         resolution = self.device_resolution(device)
         allowed = set(RUNNABLE_STATES)
-        if dry_run:
-            allowed.add(CapabilityState.AVAILABLE_BUT_REQUIRES_PRIVILEGE)
         if level == "CLEAR":
             row = resolution.get(Capability.WHOLE_DRIVE_CLEAR)
             if row.state not in allowed:
@@ -775,8 +772,8 @@ class BaseAdapter:
                 headline="NOT AUTHORIZED",
                 reason=(
                     "The method is available but this process does not have the "
-                    "privilege the OS requires for raw device access. A dry run "
-                    "is still possible; a real erase is refused by the OS."
+                    "privilege the OS requires for raw device access. The erase "
+                    "is refused until the helper runs with that privilege."
                 ),
                 recommended_action=self._elevation_advice(),
                 recommended=recommended,

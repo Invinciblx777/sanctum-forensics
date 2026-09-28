@@ -2,6 +2,7 @@ import { Fragment, useEffect, useRef, useState } from 'react'
 import { api, RequestFailed, streamJob } from '../lib/api'
 import type {
   FileEraseRecord,
+  FreeSpacePlan,
   FreeSpaceWipeResult,
   JobStatus,
   Progress,
@@ -18,13 +19,13 @@ import {
   Panel,
   ProgressView,
   Railed,
-  DryRunBanner,
   OperationModeBadge,
+  RealTargetCard,
   Verdict,
 } from '../components/widgets'
 import type { Tone } from '../components/widgets'
-import { isDryRun } from '../lib/simulation'
 import { fileOutcome } from '../lib/fileOutcome'
+import { fileEraseState } from '../lib/fileEraseState'
 
 function worstSeverity(findings: ResidualFinding[]): string | null {
   const order = ['HIGH', 'MEDIUM', 'LOW']
@@ -51,7 +52,6 @@ export default function FileEraser() {
   const [paths, setPaths] = useState<string[]>([])
   const [entry, setEntry] = useState('')
   const [over, setOver] = useState(false)
-  const [dryRun, setDryRun] = useState(true)
   const [confirm, setConfirm] = useState(false)
   const [cleanse, setCleanse] = useState(true)
   const [breakLinks, setBreakLinks] = useState(false)
@@ -81,8 +81,7 @@ export default function FileEraser() {
     try {
       const accepted = await api.eraseFiles({
         paths,
-        dry_run: dryRun,
-        confirm: dryRun ? false : confirm,
+        confirm,
         cleanse_metadata: cleanse,
         break_hardlinks: breakLinks,
         recursive: true,
@@ -108,13 +107,20 @@ export default function FileEraser() {
 
   const records = (status?.result?.records ?? []) as FileEraseRecord[]
   const traces = (status?.result?.trace_sweep ?? null) as TraceSweep | null
-  const simulated = records.length > 0 && records.every((record) => record.dry_run)
+  const flow = fileEraseState({
+    queued: paths.length,
+    confirmed: confirm,
+    started: Boolean(jobId),
+    phase: progress?.phase ?? null,
+    status: status && status.state !== 'running' ? status : null,
+    refusal: !jobId && error ? error.message : null,
+  })
 
   return (
     <>
       <div className="screen-head">
         <h1>File eraser</h1>
-        <OperationModeBadge dryRun={dryRun} />
+        <OperationModeBadge />
         <p>
           Best-effort destruction, plus an enumeration of everything it could not
           guarantee.
@@ -122,6 +128,26 @@ export default function FileEraser() {
       </div>
 
       <div className="screen-body">
+        <RealTargetCard
+          operation="FILE AND FOLDER ERASE"
+          target={
+            paths.length === 1 ? paths[0] : `${paths.length} path(s) on this computer`
+          }
+          facts={[
+            { label: 'Method', value: 'Overwrite, rename, truncate and unlink' },
+            {
+              label: 'Verification',
+              value: 'Physical extent read where the filesystem allows it',
+            },
+            { label: 'Traces', value: sweep ? 'Tied desktop traces removed' : 'Not swept' },
+          ]}
+        />
+        {flow && (
+          <div className="workflow-state" data-testid="file-erase-state">
+            <span className="state-mark is-unknown">{flow.state}</span>
+            <span className="note">{flow.detail}</span>
+          </div>
+        )}
         <ErrorNotice error={error} />
 
         <Notice tone="info">
@@ -382,12 +408,11 @@ export default function FileEraser() {
               </Panel>
             )}
 
-            {traces && <TracePanel sweep={traces} dryRun={simulated} />}
+            {traces && <TracePanel sweep={traces} />}
 
-            {jobId && isDryRun(status) && <DryRunBanner />}
             {jobId && records.length === 0 && (
               <Panel title="Progress">
-                <ProgressView progress={progress} destructive={!dryRun} />
+                <ProgressView progress={progress} destructive />
               </Panel>
             )}
           </div>
@@ -397,19 +422,12 @@ export default function FileEraser() {
               <label className="inline">
                 <input
                   type="checkbox"
-                  checked={dryRun}
-                  onChange={(event) => setDryRun(event.target.checked)}
-                />
-                <span>Dry run — enumerate what would survive, write nothing</span>
-              </label>
-              <label className="inline">
-                <input
-                  type="checkbox"
                   checked={confirm}
-                  disabled={dryRun}
                   onChange={(event) => setConfirm(event.target.checked)}
                 />
-                <span>Confirm — the second gate, required when dry run is off</span>
+                <span>
+                  Confirm — I want these paths permanently erased on this computer
+                </span>
               </label>
               <label className="inline">
                 <input
@@ -442,24 +460,20 @@ export default function FileEraser() {
                 </span>
               </label>
 
-              {!dryRun && (
-                <Notice tone="danger">
-                  Files will be overwritten, renamed eight times and unlinked
-                  {sweep
-                    ? ', and so will the thumbnails and Trash copies tied to them'
-                    : ''}
-                  . There is no undo.
-                </Notice>
-              )}
+              <Notice tone="danger">
+                Files will be overwritten, renamed eight times and unlinked
+                {sweep
+                  ? ', and so will the thumbnails and Trash copies tied to them'
+                  : ''}
+                . This is the real erase. There is no undo.
+              </Notice>
 
               <button
-                className={dryRun ? 'btn primary' : 'btn destructive'}
-                disabled={paths.length === 0 || (!dryRun && !confirm)}
+                className="btn destructive"
+                disabled={paths.length === 0 || !confirm || Boolean(jobId && !status)}
                 onClick={() => void start()}
               >
-                {dryRun
-                  ? `Dry run ${paths.length} path(s)`
-                  : `Erase ${paths.length} path(s)`}
+                {`Erase ${paths.length} path(s)`}
               </button>
 
               {paths.length === 0 && <Empty>Queue is empty.</Empty>}
@@ -481,11 +495,11 @@ export default function FileEraser() {
  * what that something was. The places searched, and the ones this platform
  * keeps traces in that were not, sit under the table.
  */
-function TracePanel({ sweep, dryRun }: { sweep: TraceSweep; dryRun: boolean }) {
+function TracePanel({ sweep }: { sweep: TraceSweep }) {
   return (
     <Panel
       title={`Desktop traces (${sweep.traces.length})`}
-      subtitle={traceSummary(sweep, dryRun)}
+      subtitle={traceSummary(sweep)}
       tight={sweep.traces.length > 0}
     >
       {sweep.traces.length > 0 && (
@@ -506,7 +520,7 @@ function TracePanel({ sweep, dryRun }: { sweep: TraceSweep; dryRun: boolean }) {
           </thead>
           <tbody>
             {sweep.traces.map((trace) => {
-              const outcome = traceOutcome(trace, dryRun)
+              const outcome = traceOutcome(trace)
               return (
                 <tr key={`${trace.location}|${trace.kind}`} className="irow">
                   <td className={`rail is-${outcome.tone}`} aria-hidden>
@@ -577,12 +591,14 @@ function TracePanel({ sweep, dryRun }: { sweep: TraceSweep; dryRun: boolean }) {
  * Wipe a volume's free space.
  *
  * A separate job from the file erase: it names a mount point, not files, and
- * its second gate is the volume identifier a dry run prints rather than a
- * checkbox, because it writes every free block of a whole volume.
+ * its confirmation is the volume identifier the read-only plan reports rather
+ * than a checkbox, because it writes every free block of a whole volume. The
+ * plan resolves the volume and applies every refusal; it writes nothing and is
+ * not a rehearsal of the wipe.
  */
 function FreeSpacePanel() {
   const [mountPoint, setMountPoint] = useState('')
-  const [dryRun, setDryRun] = useState(true)
+  const [plan, setPlan] = useState<FreeSpacePlan | null>(null)
   const [typed, setTyped] = useState('')
   const [progress, setProgress] = useState<Progress | null>(null)
   const [status, setStatus] = useState<JobStatus | null>(null)
@@ -595,13 +611,29 @@ function FreeSpacePanel() {
 
   useEffect(() => () => detach.current?.(), [])
 
+  async function planWipe() {
+    setError(null)
+    setPlan(null)
+    setTyped('')
+    try {
+      setPlan(await api.planFreeSpace(mountPoint.trim()))
+    } catch (exc) {
+      const failure = exc as RequestFailed
+      setError({
+        message: failure.message,
+        kind: failure.kind,
+        remediation: failure.remediation,
+      })
+    }
+  }
+
   async function start() {
+    if (!plan) return
     setError(null)
     try {
       const accepted = await api.wipeFreeSpace({
-        mount_point: mountPoint.trim(),
-        dry_run: dryRun,
-        typed_identifier: dryRun ? '' : typed.trim(),
+        mount_point: plan.volume.mount_point,
+        typed_identifier: typed.trim(),
       })
       setProgress(null)
       setStatus(null)
@@ -643,22 +675,46 @@ function FreeSpacePanel() {
             placeholder="/run/media/you/VOLUME (the mount point itself)"
             value={mountPoint}
             spellCheck={false}
-            onChange={(event) => setMountPoint(event.target.value)}
+            onChange={(event) => {
+              setMountPoint(event.target.value)
+              setPlan(null)
+            }}
           />
+          <button
+            className="btn"
+            disabled={!mountPoint.trim()}
+            onClick={() => void planWipe()}
+          >
+            Plan
+          </button>
         </div>
-        <label className="inline">
-          <input
-            type="checkbox"
-            checked={dryRun}
-            onChange={(event) => setDryRun(event.target.checked)}
-          />
-          <span>Dry run — identify the volume and report free space, write nothing</span>
-        </label>
-        {!dryRun && (
+        {plan && (
           <>
+            <RealTargetCard
+              operation="FREE-SPACE WIPE"
+              target={plan.volume.mount_point}
+              facts={[
+                { label: 'Filesystem', value: plan.filesystem },
+                { label: 'Identifier', value: plan.identifier },
+                { label: 'Source', value: plan.volume.source },
+                { label: 'Free', value: bytes(plan.free_bytes) },
+                {
+                  label: 'Method',
+                  value: `Fill with 0x${plan.fill_byte.toString(16).toUpperCase()} to ENOSPC, then release`,
+                },
+                { label: 'Verification', value: 'None: nothing is read back' },
+              ]}
+            />
+            {plan.limitations.length > 0 && (
+              <ul className="limitations">
+                {plan.limitations.map((item, index) => (
+                  <li key={index}>{item}</li>
+                ))}
+              </ul>
+            )}
             <input
               type="text"
-              placeholder="Type the volume identifier the dry run reported"
+              placeholder={`Type the volume identifier ${plan.identifier} to confirm`}
               value={typed}
               spellCheck={false}
               onChange={(event) => setTyped(event.target.value)}
@@ -667,35 +723,30 @@ function FreeSpacePanel() {
               The volume will be filled to zero free space. Anything writing to it
               meanwhile will fail with "no space left".
             </Notice>
+            <button
+              className="btn destructive"
+              disabled={!typed.trim()}
+              onClick={() => void start()}
+            >
+              Wipe free space
+            </button>
           </>
         )}
-        <button
-          className={dryRun ? 'btn primary' : 'btn destructive'}
-          disabled={!mountPoint.trim() || (!dryRun && !typed.trim())}
-          onClick={() => void start()}
-        >
-          {dryRun ? 'Dry run free-space wipe' : 'Wipe free space'}
-        </button>
 
-        {isDryRun(status) && <DryRunBanner />}
-        {progress && !result && (
-          <ProgressView progress={progress} destructive={!dryRun} />
-        )}
+        {progress && !result && <ProgressView progress={progress} destructive />}
 
         {result && (
           <div className="col">
-            <Notice tone={result.dry_run ? 'info' : 'warn'}>
+            <Notice tone="warn">
               {result.volume.fs_type} at{' '}
               <span className="mono">{result.volume.mount_point}</span>, identifier{' '}
               <strong className="mono">{result.volume.identifier}</strong>.{' '}
-              {result.dry_run
-                ? `${bytes(result.free_bytes_before)} free. Nothing was written.`
-                : `Wrote ${bytes(result.bytes_written)} of 0x${result.fill_byte
-                    .toString(16)
-                    .toUpperCase()} (stopped by ${result.stopped_by}); ` +
-                  `${bytes(result.free_bytes_before)} was free before, ` +
-                  `${bytes(result.free_blocks_bytes_at_full)} of blocks was still free ` +
-                  `when the volume was full. Nothing was read back, so no pass is claimed.`}
+              {`Wrote ${bytes(result.bytes_written)} of 0x${result.fill_byte
+                .toString(16)
+                .toUpperCase()} (stopped by ${result.stopped_by}); ` +
+                `${bytes(result.free_bytes_before)} was free before, ` +
+                `${bytes(result.free_blocks_bytes_at_full)} of blocks was still free ` +
+                `when the volume was full. Nothing was read back, so no pass is claimed.`}
             </Notice>
             <strong>Not reached</strong>
             <ul className="limitations">

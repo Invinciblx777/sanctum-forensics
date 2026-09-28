@@ -31,6 +31,8 @@ export interface EraseApprovalProps {
   onApprove: () => void
   onExecute: () => void
   onCancel: () => void
+  /** The execute button's words; a resume says it is a resume. */
+  executeLabel?: string
 }
 
 export function EraseApproval(props: EraseApprovalProps) {
@@ -229,7 +231,7 @@ export function EraseApproval(props: EraseApprovalProps) {
               disabled={!canExecute}
               onClick={props.onExecute}
             >
-              Erase {device.path}
+              {props.executeLabel ?? `Erase ${device.path}`}
             </button>
           )}
         </div>

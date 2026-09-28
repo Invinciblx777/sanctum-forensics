@@ -2,9 +2,9 @@
 
 A restore writes a verified backup image onto a target block device. It is a
 destructive operation on the target - every byte in the planned range is
-replaced - and is gated exactly like an erase: dry-run by default, a recorded
-human approval, the target serial typed by hand and re-checked by the process
-that writes, a single-use authorization. Those gates live in
+replaced - and is gated exactly like an erase: a recorded human approval,
+the target serial typed by hand and re-checked by the process that writes, a
+single-use authorization. Those gates live in
 :mod:`api.authorization` and :mod:`helper.authorization`; this module is the
 engine they guard, and it refuses on its own too.
 
@@ -581,10 +581,7 @@ class RestoreResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     job_id: str
-    dry_run: bool
-    result: Literal[
-        "DRY_RUN", "RESTORED_VERIFIED", "RESTORED_VERIFY_FAILED", "INCOMPLETE"
-    ]
+    result: Literal["RESTORED_VERIFIED", "RESTORED_VERIFY_FAILED", "INCOMPLETE"]
     backup_id: str
     backup_record_digest: str
     backup_image_path: str
@@ -695,20 +692,19 @@ def _write_fully(
 def execute_restore(
     record: BackupRecord,
     plan: RestorePlan,
-    target: BlockTarget | None,
+    target: BlockTarget,
     *,
     job_id: str,
     actor: str = "sanctum",
     ledger: Ledger | None = None,
-    dry_run: bool = True,
     verify: bool = True,
     checkpoint_bytes: int = CHECKPOINT_BYTES,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> Generator[Progress, None, RestoreResult]:
     """Write the backup image onto ``target`` as planned, then read it back.
 
-    ``dry_run`` defaults to True, and a dry run never touches ``target`` - it
-    may be ``None``. The caller owns ``target`` and closes it.
+    Every call writes: there is no non-writing mode. The caller owns
+    ``target`` and closes it.
     """
     check_record_digest(record)
     require_executable(plan)
@@ -728,25 +724,9 @@ def execute_restore(
         "write_length": plan.write_length,
     }
 
-    if dry_run:
-        _append(ledger, actor, "restore.dry_run", {**common, "dry_run": True})
-        yield _progress(
-            job_id,
-            "PLAN",
-            0,
-            plan.write_length,
-            0,
-            f"DRY RUN: would write bytes {plan.write_offset}-"
-            f"{plan.write_end - 1} of {plan.target.path}; nothing was written",
-        )
-        return _result(
-            record, plan, job_id, "DRY_RUN", _Tally(plan.write_offset), None,
-            started_at, clock(), dry_run=True,
-        )
-
-    if target is None:
+    if target is None:  # a caller outside the type checker; fail closed
         raise WorkflowGateRefused(
-            "REFUSED: a real restore needs an opened target. Nothing was written.",
+            "REFUSED: a restore needs an opened target. Nothing was written.",
             why_blocked=["no target was opened"],
         )
     reasons: list[str] = []
@@ -774,7 +754,7 @@ def execute_restore(
             why_blocked=reasons,
         )
 
-    _append(ledger, actor, "restore.start", {**common, "dry_run": False})
+    _append(ledger, actor, "restore.start", common)
     tally = _Tally(plan.write_offset)
     whole = hashlib.sha256()
     begun = time.monotonic()
@@ -888,15 +868,14 @@ def execute_restore(
 
     if tally.unwritable:
         outcome: Literal[
-            "DRY_RUN", "RESTORED_VERIFIED", "RESTORED_VERIFY_FAILED", "INCOMPLETE"
+            "RESTORED_VERIFIED", "RESTORED_VERIFY_FAILED", "INCOMPLETE"
         ] = "INCOMPLETE"
     elif verification is not None and verification.passed:
         outcome = "RESTORED_VERIFIED"
     else:
         outcome = "RESTORED_VERIFY_FAILED"
     return _result(
-        record, plan, job_id, outcome, tally, verification, started_at, clock(),
-        dry_run=False,
+        record, plan, job_id, outcome, tally, verification, started_at, clock()
     )
 
 
@@ -1023,24 +1002,17 @@ def _result(
     record: BackupRecord,
     plan: RestorePlan,
     job_id: str,
-    outcome: Literal[
-        "DRY_RUN", "RESTORED_VERIFIED", "RESTORED_VERIFY_FAILED", "INCOMPLETE"
-    ],
+    outcome: Literal["RESTORED_VERIFIED", "RESTORED_VERIFY_FAILED", "INCOMPLETE"],
     tally: _Tally,
     verification: RestoreVerification | None,
     started_at: datetime,
     finished_at: datetime,
-    *,
-    dry_run: bool,
 ) -> RestoreResult:
     limitations = list(plan.limitations)
-    if dry_run:
-        limitations.insert(0, "DRY RUN: nothing was written to the target.")
-    elif verification is None:
+    if verification is None:
         limitations.insert(0, "UNVERIFIED: the written range was not read back.")
     return RestoreResult(
         job_id=job_id,
-        dry_run=dry_run,
         result=outcome,
         backup_id=record.backup_id,
         backup_record_digest=record.record_digest,

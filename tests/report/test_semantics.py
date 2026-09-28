@@ -59,7 +59,7 @@ def test_crypto_erase_says_the_ciphertext_remains() -> None:
     assert "changed" in words["verification"]
 
 
-def test_a_dry_run_is_not_verified() -> None:
+def test_a_run_with_no_read_back_is_not_verified() -> None:
     assert describe("SINGLE_PASS_OVERWRITE")["verification"].startswith("not verified")
 
 

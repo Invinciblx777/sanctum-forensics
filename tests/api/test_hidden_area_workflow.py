@@ -310,20 +310,26 @@ def test_a_permanent_plan_needs_a_second_acknowledgement(
 # -- execute ------------------------------------------------------------------
 
 
-def test_execute_simulates_by_default_and_changes_nothing(
+def test_execute_without_a_typed_serial_is_refused_and_changes_nothing(
     client: TestClient, services: AppServices, drive: Drive
 ) -> None:
+    """Execute is always the real change; without the serial it is refused."""
     auth_id = ready(client, services)
     answer = execute(client, auth_id)
-    assert answer.status_code == 200, answer.text
-    assert answer.json()["dry_run"] is True
-    assert answer.json()["notice"]
-    status = _finish(client, services, answer.json()["job_id"])
-    assert status["state"] == "complete", status
-    assert status["result"]["outcome"] == "DRY_RUN"
-    assert status["result"]["device_modified"] == "no"
+    assert answer.status_code == 409, answer.text
     assert drive.sets == []
     assert drive.accessible == ACCESSIBLE_SECTORS
+    assert client.get(f"/workflow/hidden-area/{auth_id}").json()["spent"] is False
+
+
+@pytest.mark.parametrize("key", ["dry_run", "simulation", "simulate"])
+def test_execute_rejects_a_simulation_switch(
+    client: TestClient, services: AppServices, drive: Drive, key: str
+) -> None:
+    auth_id = ready(client, services)
+    answer = execute(client, auth_id, typed_serial=SERIAL, **{key: True})
+    assert answer.status_code == 422, answer.text
+    assert drive.sets == []
     assert client.get(f"/workflow/hidden-area/{auth_id}").json()["spent"] is False
 
 
@@ -331,7 +337,7 @@ def test_a_real_change_is_volatile_verified_and_single_use(
     client: TestClient, services: AppServices, drive: Drive
 ) -> None:
     auth_id = ready(client, services)
-    answer = execute(client, auth_id, dry_run=False, typed_serial=SERIAL)
+    answer = execute(client, auth_id, typed_serial=SERIAL)
     assert answer.status_code == 200, answer.text
     status = _finish(client, services, answer.json()["job_id"])
     assert status["state"] == "complete", status
@@ -347,7 +353,7 @@ def test_a_real_change_is_volatile_verified_and_single_use(
     assert services.ledger().verify().status.value == "VALID"
     view = client.get(f"/workflow/hidden-area/{auth_id}").json()
     assert view["workflow"]["state"] == "COMPLETE"
-    again = execute(client, auth_id, dry_run=False, typed_serial=SERIAL)
+    again = execute(client, auth_id, typed_serial=SERIAL)
     assert again.status_code == 409
     assert "already used" in " ".join(again.json()["detail"]["WHY BLOCKED"])
     assert len(drive.sets) == 1
@@ -357,8 +363,8 @@ def test_a_real_change_needs_the_typed_serial(
     client: TestClient, services: AppServices, drive: Drive
 ) -> None:
     auth_id = ready(client, services)
-    assert execute(client, auth_id, dry_run=False).status_code == 409
-    wrong = execute(client, auth_id, dry_run=False, typed_serial="WRONG")
+    assert execute(client, auth_id).status_code == 409
+    wrong = execute(client, auth_id, typed_serial="WRONG")
     assert wrong.status_code == 409
     assert drive.sets == []
     assert client.get(f"/workflow/hidden-area/{auth_id}").json()["spent"] is False
@@ -369,7 +375,7 @@ def test_an_unapproved_workflow_cannot_execute(
 ) -> None:
     backup_id = record_backup(client, services)
     auth_id = open_hpa(client, backup_id).json()["authorization_id"]
-    answer = execute(client, auth_id, dry_run=False, typed_serial=SERIAL)
+    answer = execute(client, auth_id, typed_serial=SERIAL)
     assert answer.status_code == 409
     assert answer.json()["detail"]["workflow_state"] == "APPROVAL_REQUIRED"
     assert drive.sets == []
@@ -380,7 +386,7 @@ def test_a_stale_plan_is_refused_at_the_api_gate(
 ) -> None:
     auth_id = ready(client, services)
     drive.native += 2048  # the drive's native max changed after approval
-    answer = execute(client, auth_id, dry_run=False, typed_serial=SERIAL)
+    answer = execute(client, auth_id, typed_serial=SERIAL)
     assert answer.status_code == 409
     assert "native max LBA" in " ".join(answer.json()["detail"]["WHY BLOCKED"])
     assert drive.sets == []
@@ -404,7 +410,7 @@ def test_a_stale_plan_is_refused_by_the_engine_too(
         return (yield from original(self, method, params))
 
     monkeypatch.setattr(HpaHelper, "call_stream", late_change)
-    answer = execute(client, auth_id, dry_run=False, typed_serial=SERIAL)
+    answer = execute(client, auth_id, typed_serial=SERIAL)
     status = _finish(client, services, answer.json()["job_id"])
     assert status["state"] == "failed", status
     assert "stale" in status["error"]
@@ -422,7 +428,7 @@ def test_an_hpa_authorization_cannot_be_spent_as_an_erase(
     answer = client.post(
         "/jobs/erase-drive",
         json={
-            "path": PATH, "dry_run": False, "typed_serial": SERIAL,
+            "path": PATH, "typed_serial": SERIAL,
             "authorization_id": auth_id,
         },
     )
@@ -440,7 +446,7 @@ def test_an_hpa_authorization_cannot_be_spent_as_a_restore(
     auth_id = ready(client, services)
     answer = client.post(
         f"/workflow/restore/{auth_id}/execute",
-        json={"dry_run": False, "typed_serial": SERIAL},
+        json={"typed_serial": SERIAL},
     )
     assert answer.status_code == 409
     assert "cannot authorize a restore" in " ".join(
@@ -452,7 +458,7 @@ def test_an_erase_authorization_cannot_be_spent_as_an_hpa_change(
     client: TestClient, services: AppServices, drive: Drive
 ) -> None:
     erase_id = authorize(client, services)
-    answer = execute(client, erase_id, dry_run=False, typed_serial=SERIAL)
+    answer = execute(client, erase_id, typed_serial=SERIAL)
     assert answer.status_code == 409
     assert "cannot authorize an HPA change" in " ".join(
         answer.json()["detail"]["WHY BLOCKED"]
@@ -474,7 +480,7 @@ def test_the_write_seams_keep_the_kinds_apart(
     with pytest.raises(WorkflowGateRefused, match="cannot authorize an erase"):
         revalidate_execution(
             {
-                "dry_run": False, "path": PATH, "level": "HPA",
+                "path": PATH, "level": "HPA",
                 "authorization": {"auth_id": hpa_id, **hpa_record},
                 "authorization_dir": str(root),
             }
@@ -482,7 +488,7 @@ def test_the_write_seams_keep_the_kinds_apart(
     with pytest.raises(WorkflowGateRefused, match="cannot authorize an HPA change"):
         revalidate_hpa(
             {
-                "dry_run": False, "path": PATH, "typed_serial": SERIAL,
+                "path": PATH, "typed_serial": SERIAL,
                 "authorization": {"auth_id": erase_id, **erase_record},
                 "authorization_dir": str(root),
             }
@@ -499,7 +505,7 @@ def test_the_write_seam_refuses_a_real_change_the_api_did_not_spend(
     with pytest.raises(WorkflowGateRefused, match="not consumed by the API gate"):
         revalidate_hpa(
             {
-                "dry_run": False, "path": PATH, "typed_serial": SERIAL,
+                "path": PATH, "typed_serial": SERIAL,
                 "authorization": {"auth_id": auth_id, "kind": "hpa", **binding},
                 "authorization_dir": str(root),
             }
@@ -517,10 +523,12 @@ def test_the_write_seam_refuses_a_tampered_plan(
     record["plan"]["volatile"] = False
     path.write_text(json.dumps(record))
     binding = {key: record[key] for key in ("path", "device", "backup", "plan")}
+    # As if the API gate had spent it, so the plan check is what refuses.
+    (root / f"{auth_id}.spent").touch()
     with pytest.raises(WorkflowGateRefused, match="altered"):
         revalidate_hpa(
             {
-                "dry_run": True, "path": PATH,
+                "path": PATH, "typed_serial": SERIAL,
                 "authorization": {"auth_id": auth_id, "kind": "hpa", **binding},
                 "authorization_dir": str(root),
             }
@@ -531,7 +539,7 @@ def test_macos_is_refused_before_any_record_is_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("core.platform.host.family", lambda *a: "macos")
-    generator = STREAMING_OPERATIONS["run_hpa_change"]({"dry_run": True})
+    generator = STREAMING_OPERATIONS["run_hpa_change"]({"path": PATH})
     with pytest.raises(PlatformUnsupported, match="macOS"):
         next(generator)
     with pytest.raises(PlatformUnsupported):

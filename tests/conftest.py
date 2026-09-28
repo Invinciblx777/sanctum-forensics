@@ -74,7 +74,6 @@ def sample_erase_job(sample_device: Device) -> EraseJob:
         device=sample_device,
         method=EraseMethod.SINGLE_PASS_OVERWRITE,
         level=SanitizationLevel.CLEAR,
-        dry_run=True,
         confirmed_serial=None,
     )
 

@@ -5,8 +5,8 @@ checks before it touches a device:
 
 * :func:`assert_erasable` - refuse the system disk, refuse anything mounted.
 * :func:`assert_serial_confirmed` - the operator must type the device's own
-  serial. This is the second of the two opt-ins; dry-run being the default is
-  the first.
+  serial. The recorded human approval, bound to the plan and spent once at the
+  API gate and again at the helper's write seam, is the other opt-in.
 
 Both raise on refusal and return ``None`` on success, so a caller cannot
 accidentally proceed by ignoring a boolean.
@@ -15,20 +15,28 @@ accidentally proceed by ignoring a boolean.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 import structlog
 
-from core.errors import ConfirmationMismatch, MountedRefused, SystemDiskRefused
+from core.errors import (
+    ConfirmationMismatch,
+    MountedRefused,
+    SystemDiskRefused,
+    WorkflowGateRefused,
+)
 from core.models import Device, VolumeInfo
 
 __all__ = [
+    "REMOVED_MODE_KEYS",
     "SYSTEM_PATHS",
     "assert_erasable",
     "assert_serial_confirmed",
     "assert_volume_confirmed",
     "assert_volume_wipeable",
+    "refuse_removed_mode_keys",
 ]
 
 #: Directories the running host needs. A volume holding any of them is the
@@ -48,6 +56,40 @@ SYSTEM_PATHS = (
 )
 
 logger = structlog.get_logger(__name__)
+
+#: Request keys that once switched a destructive operation into a non-writing
+#: simulation. That mode no longer exists. A request that still carries one is
+#: from a client that believes it can ask for a rehearsal, and running it for
+#: real on that belief would be the worst possible reading, so it is refused.
+REMOVED_MODE_KEYS = ("dry_run", "simulation", "simulate")
+
+
+def refuse_removed_mode_keys(params: Mapping[str, Any]) -> None:
+    """Raise if ``params`` carries a simulation or dry-run switch.
+
+    Never ignored and never honoured: there is no non-writing execution path to
+    route such a request to, and dropping the key silently would execute a
+    request whose sender expected nothing to be written.
+
+    Raises:
+        WorkflowGateRefused: One of :data:`REMOVED_MODE_KEYS` is present.
+    """
+    present = [key for key in REMOVED_MODE_KEYS if key in params]
+    if not present:
+        return
+    reasons = [
+        f"the request carries {key!r}, a simulation switch that no longer "
+        "exists; every destructive operation now runs against the real device"
+        for key in present
+    ]
+    raise WorkflowGateRefused(
+        "REFUSED: " + "; ".join(reasons) + ". Nothing was written.",
+        why_blocked=reasons,
+        remediation=(
+            "Remove the field and send the request only when the operation is "
+            "meant to run on the real device."
+        ),
+    )
 
 
 def assert_erasable(device: Device) -> None:
@@ -179,7 +221,7 @@ def assert_volume_confirmed(volume: VolumeInfo, typed_identifier: str) -> None:
     """Raise unless ``typed_identifier`` is the volume's own identifier.
 
     The identifier is the filesystem UUID when one is known and the mount point
-    otherwise, exactly as the dry run reports it.
+    otherwise, exactly as the read-only plan reports it.
 
     Raises:
         ConfirmationMismatch: Nothing was typed, or it does not match.
@@ -195,7 +237,7 @@ def assert_volume_confirmed(volume: VolumeInfo, typed_identifier: str) -> None:
             else f"Typed value does not identify the volume at {volume.mount_point}."
         ),
         remediation=(
-            f"Run a dry run and type the volume identifier it reports "
+            f"Plan the wipe and type the volume identifier it reports "
             f"({volume.identifier}) exactly. Nothing has been written."
         ),
     )

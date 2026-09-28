@@ -210,7 +210,7 @@ def test_an_acquisition_of_something_else_is_not_recorded_as_this_device(
 # -- restore ----------------------------------------------------------------
 
 
-def test_the_full_restore_flow_dry_run_first_then_real(
+def test_the_full_restore_flow_writes_the_real_target(
     client: TestClient, services: AppServices, seam: dict[str, Any]
 ) -> None:
     backup_id = record_backup(client, services)
@@ -222,16 +222,22 @@ def test_the_full_restore_flow_dry_run_first_then_real(
     approved = approve(client, auth_id).json()
     assert approved["workflow"]["state"] == "PLAN_READY"
 
-    dry = client.post(f"/workflow/restore/{auth_id}/execute", json={})
-    assert dry.status_code == 200 and dry.json()["dry_run"] is True
-    assert dry.json()["notice"]
-    status = _finish(client, services, dry.json()["job_id"])
-    assert status["result"]["result"] == "DRY_RUN"
+    # No serial: refused, nothing opened, nothing spent.
+    bare = client.post(f"/workflow/restore/{auth_id}/execute", json={})
+    assert bare.status_code == 409, bare.text
     assert seam["opened"] == [] and _untouched(seam)
+    # A removed rehearsal switch: rejected, nothing opened, nothing spent.
+    rehearsal = client.post(
+        f"/workflow/restore/{auth_id}/execute",
+        json={"dry_run": True, "typed_serial": SERIAL},
+    )
+    assert rehearsal.status_code == 422, rehearsal.text
+    assert seam["opened"] == [] and _untouched(seam)
+    assert client.get(f"/workflow/restore/{auth_id}").json()["spent"] is False
 
     real = client.post(
         f"/workflow/restore/{auth_id}/execute",
-        json={"dry_run": False, "typed_serial": SERIAL},
+        json={"typed_serial": SERIAL},
     )
     assert real.status_code == 200, real.text
     status = _finish(client, services, real.json()["job_id"])
@@ -245,7 +251,6 @@ def test_the_full_restore_flow_dry_run_first_then_real(
     for op in (
         "restore.plan",
         "restore.authorize",
-        "restore.dry_run",
         "restore.start",
         "restore.complete",
         "restore.verify",
@@ -259,7 +264,7 @@ def test_an_authorization_executes_once(
     client: TestClient, services: AppServices, seam: dict[str, Any]
 ) -> None:
     auth_id = planned(client, services)
-    body = {"dry_run": False, "typed_serial": SERIAL}
+    body = {"typed_serial": SERIAL}
     first = client.post(f"/workflow/restore/{auth_id}/execute", json=body)
     _finish(client, services, first.json()["job_id"])
     again = client.post(f"/workflow/restore/{auth_id}/execute", json=body)
@@ -274,7 +279,7 @@ def test_a_wrong_typed_serial_writes_nothing_and_spends_nothing(
     auth_id = planned(client, services)
     answer = client.post(
         f"/workflow/restore/{auth_id}/execute",
-        json={"dry_run": False, "typed_serial": "NOT-IT"},
+        json={"typed_serial": "NOT-IT"},
     )
     assert answer.status_code == 409
     assert answer.json()["detail"]["physical_device_modified"] is False
@@ -290,7 +295,7 @@ def test_a_real_restore_without_approval_is_refused(
     auth_id = open_restore(client, backup_id).json()["authorization_id"]
     answer = client.post(
         f"/workflow/restore/{auth_id}/execute",
-        json={"dry_run": False, "typed_serial": SERIAL},
+        json={"typed_serial": SERIAL},
     )
     assert answer.status_code == 409
     assert answer.json()["detail"]["workflow_state"] == "HUMAN_APPROVAL_REQUIRED"
@@ -328,7 +333,7 @@ def test_drift_seen_only_by_the_helper_fails_the_job_and_writes_nothing(
     seam["override"] = {"mounted_at": ["/mnt/late"]}
     accepted = client.post(
         f"/workflow/restore/{auth_id}/execute",
-        json={"dry_run": False, "typed_serial": SERIAL},
+        json={"typed_serial": SERIAL},
     )
     assert accepted.status_code == 200
     status = _finish(client, services, accepted.json()["job_id"])
@@ -347,7 +352,7 @@ def test_an_erase_authorization_cannot_execute_a_restore(
     erase_id = authorize(client, services)
     answer = client.post(
         f"/workflow/restore/{erase_id}/execute",
-        json={"dry_run": False, "typed_serial": SERIAL},
+        json={"typed_serial": SERIAL},
     )
     assert answer.status_code == 409
     assert "'erase' authorization" in " ".join(answer.json()["detail"]["WHY BLOCKED"])
@@ -366,7 +371,6 @@ def test_a_restore_authorization_cannot_execute_an_erase(
         "/jobs/erase-drive",
         json={
             "path": "/dev/sdz",
-            "dry_run": False,
             "typed_serial": SERIAL,
             "authorization_id": restore_id,
         },

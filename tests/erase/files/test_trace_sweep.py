@@ -221,13 +221,29 @@ def photo(tmp_path: Path) -> Path:
 
 
 def erase(
-    paths: list[Path], *, dry_run: bool = False, ledger: Recorder | None = None
+    paths: list[Path], *, find_only: bool = False, ledger: Recorder | None = None
 ) -> TraceSweepResult:
-    options = (
-        real_erase(workers=1, sweep_traces=True)
-        if not dry_run
-        else real_erase(workers=1, sweep_traces=True, dry_run=True, confirm=False)
-    )
+    """Erase ``paths`` and sweep, or - ``find_only`` - only search, read-only.
+
+    ``find_only`` goes through :func:`core.erase.traces.find_traces`, the
+    read-only search, with records that say each path was erased. Nothing is
+    erased and no trace is removed; it is not a mode of the erase.
+    """
+    if find_only:
+        from core.erase.inspect import inspect_path
+
+        return traces.find_traces(
+            [
+                FileEraseRecord(
+                    path=str(path),
+                    ok=True,
+                    unlinked=True,
+                    inspection=inspect_path(path),
+                )
+                for path in paths
+            ]
+        )
+    options = real_erase(workers=1, sweep_traces=True)
     _, result = drain(
         erase_paths(paths, options, job_id="sweep-1", ledger=ledger or Recorder())
     )
@@ -276,7 +292,7 @@ def test_each_uri_encoding_a_desktop_may_have_hashed_is_tried(
     uri = "file://" + quote(os.fsencode(str(target)), safe=safe)
     cached = thumbnail(home, target, uri=uri)
 
-    sweep = erase([target], dry_run=True)
+    sweep = erase([target], find_only=True)
 
     assert [trace.location for trace in only(sweep, traces.TraceKind.THUMBNAIL)] == [
         str(cached)
@@ -457,7 +473,7 @@ def test_an_earlier_version_in_the_trash_is_named_as_one(
     trash = home / ".local" / "share" / "Trash"
     trash_item(trash, photo.name, str(photo), b"older and shorter")
 
-    sweep = erase([photo], dry_run=True)
+    sweep = erase([photo], find_only=True)
 
     (kept,) = only(sweep, traces.TraceKind.TRASH_COPY)
     assert "an earlier version" in kept.evidence
@@ -557,7 +573,7 @@ def _record(path: str, *, size: int = 11, directory: bool = False) -> FileEraseR
     return FileEraseRecord(
         path=path,
         ok=True,
-        dry_run=True,
+        unlinked=True,
         is_directory=directory,
         inspection=FileInspection(path=path, size_bytes=size),
     )
@@ -636,11 +652,11 @@ def test_the_macos_trash_is_reported_and_never_removed(
 
 
 # --------------------------------------------------------------------------
-# Scope, dry run and the chain
+# Scope, the read-only search and the chain
 # --------------------------------------------------------------------------
 
 
-def test_a_dry_run_reports_every_trace_and_removes_none(
+def test_the_read_only_search_reports_every_trace_and_removes_none(
     home: Path, where: traces.TraceLocations, photo: Path
 ) -> None:
     cached = thumbnail(home, photo)
@@ -648,7 +664,7 @@ def test_a_dry_run_reports_every_trace_and_removes_none(
     trash_item(home / ".local" / "share" / "Trash", photo.name, str(photo), b"x")
     listed_bytes = listed.read_bytes()
 
-    sweep = erase([photo], dry_run=True)
+    sweep = erase([photo], find_only=True)
 
     assert {trace.kind for trace in sweep.traces} == {
         "THUMBNAIL",

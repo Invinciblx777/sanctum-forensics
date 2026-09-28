@@ -3,9 +3,11 @@
 The properties, stated once so the tests below can be read as instances of
 them:
 
-1. **Omitting a flag never wipes anything.** ``dry_run`` defaults to True in
-   the request model, so a body that does not mention it simulates. This is the
-   one direction the API is not allowed to fail in.
+1. **An incomplete request never wipes anything, and there is no rehearsal
+   switch to forget.** Every destructive body is a real operation, refused
+   unless its confirmation (and, for a device, its authorization) is present.
+   A body that still carries ``dry_run``, ``simulation`` or ``simulate`` is
+   rejected with 422 rather than executed or ignored.
 2. **A mismatched serial is refused with the core's own remediation text.** The
    API does not paraphrase it. An operator reads the sentence the library
    author wrote, not the API author's guess about a subsystem it does not
@@ -91,30 +93,27 @@ def test_devices_reports_helper_failure_as_a_limitation_not_a_500(
 
 
 # --------------------------------------------------------------------------
-# Dry run is the default
+# No rehearsal mode, and an incomplete request is refused
 # --------------------------------------------------------------------------
 
 
-def test_erase_drive_defaults_to_dry_run_when_the_flag_is_omitted(
+def test_an_erase_drive_body_with_nothing_confirmed_never_reaches_the_helper(
     client: TestClient, helper: RecordingHelper
 ) -> None:
     """The single most important assertion in this file.
 
-    A body with no ``dry_run`` key must simulate. If this ever fails, a
-    forgotten field in a caller becomes a wiped disk.
+    A body with no serial and no authorization must write nothing. It used to
+    start a rehearsal; with no rehearsal left it is refused outright, before
+    the helper is asked anything.
     """
     answer = client.post("/jobs/erase-drive", json={"path": "/dev/sdz"})
 
-    assert answer.status_code == 200
-    assert answer.json()["dry_run"] is True
-
-    client.get(f"/jobs/{answer.json()['job_id']}")
-    erase_calls = [params for name, params in helper.calls if name == "run_erase"]
-    assert erase_calls, "the job never reached the helper"
-    assert all(call["dry_run"] is True for call in erase_calls)
+    assert answer.status_code == 409
+    assert answer.json()["detail"]["kind"] == "ConfirmationMismatch"
+    assert helper.calls == [], "nothing should reach the helper at all"
 
 
-def test_erase_files_defaults_to_dry_run_when_the_flag_is_omitted(
+def test_erase_files_without_confirm_is_refused_and_writes_nothing(
     client: TestClient, tmp_path: Path
 ) -> None:
     target = tmp_path / "keep.bin"
@@ -122,22 +121,45 @@ def test_erase_files_defaults_to_dry_run_when_the_flag_is_omitted(
 
     answer = client.post("/jobs/erase-files", json={"paths": [str(target)]})
 
-    assert answer.status_code == 200
-    assert answer.json()["dry_run"] is True
-    client.get(f"/jobs/{answer.json()['job_id']}")
-    assert target.read_bytes() == b"intact", "a defaulted request wrote to disk"
-
-
-def test_erase_files_without_confirm_is_refused(client: TestClient) -> None:
-    """Two gates. Turning off the first is not enough."""
-    answer = client.post(
-        "/jobs/erase-files", json={"paths": ["/tmp/x"], "dry_run": False}
-    )
-
     assert answer.status_code == 409
     detail = answer.json()["detail"]
     assert detail["kind"] == "ConfirmationMismatch"
-    assert "opt-in twice" in detail["error"]
+    assert "confirm" in detail["error"]
+    assert target.read_bytes() == b"intact", "an unconfirmed request wrote to disk"
+
+
+@pytest.mark.parametrize(
+    ("route", "body"),
+    [
+        ("/jobs/erase-drive", {"path": "/dev/sdz", "typed_serial": "SYN-PURGE-1"}),
+        ("/jobs/erase-files", {"paths": ["/tmp/x"], "confirm": True}),
+        ("/jobs/wipe-free-space", {"mount_point": "/mnt/x", "typed_identifier": "x"}),
+        ("/jobs/erase-drive-abc/resume", {"typed_serial": "SYN-PURGE-1"}),
+        ("/workflow/restore/rst-x/execute", {"typed_serial": "SYN-PURGE-1"}),
+        ("/workflow/hidden-area/hpa-x/execute", {"typed_serial": "SYN-PURGE-1"}),
+        ("/devices/prepare", {"path": "disk4", "typed_serial": "S"}),
+    ],
+)
+@pytest.mark.parametrize("key", ["dry_run", "simulation", "simulate"])
+@pytest.mark.parametrize("value", [True, False])
+def test_every_destructive_route_rejects_a_simulation_switch(
+    client: TestClient,
+    helper: RecordingHelper,
+    tmp_path: Path,
+    route: str,
+    body: dict[str, Any],
+    key: str,
+    value: bool,
+) -> None:
+    """A removed simulation switch is rejected, whatever its value.
+
+    Honouring it is impossible (there is no simulation) and ignoring it would
+    run for real a request whose sender expected nothing to be written.
+    """
+    answer = client.post(route, json={**body, key: value})
+    assert answer.status_code == 422, answer.text
+    assert key in answer.text
+    assert helper.calls == [], "a rejected body must not reach the helper"
 
 
 # --------------------------------------------------------------------------
@@ -150,7 +172,7 @@ def test_a_mismatched_serial_is_refused_with_the_remediation_verbatim(
 ) -> None:
     answer = client.post(
         "/jobs/erase-drive",
-        json={"path": "/dev/sdz", "dry_run": False, "typed_serial": "WRONG"},
+        json={"path": "/dev/sdz", "typed_serial": "WRONG"},
     )
 
     assert answer.status_code == 409
@@ -166,11 +188,11 @@ def test_a_mismatched_serial_is_refused_with_the_remediation_verbatim(
     )
 
 
-def test_a_missing_serial_with_dry_run_off_is_refused_before_the_helper(
+def test_a_missing_serial_is_refused_before_the_helper(
     client: TestClient, helper: RecordingHelper
 ) -> None:
     answer = client.post(
-        "/jobs/erase-drive", json={"path": "/dev/sdz", "dry_run": False}
+        "/jobs/erase-drive", json={"path": "/dev/sdz", "authorization_id": "x"}
     )
 
     assert answer.status_code == 409
@@ -185,14 +207,13 @@ def test_a_matching_serial_is_accepted(
         "/jobs/erase-drive",
         json={
             "path": "/dev/sdz",
-            "dry_run": False,
             "typed_serial": "SYN-PURGE-1",
             "authorization_id": authorize(client, services),
         },
     )
 
     assert answer.status_code == 200
-    assert answer.json()["dry_run"] is False
+    assert answer.json()["kind"] == "erase-drive"
 
 
 def test_the_typed_serial_is_never_echoed_back(
@@ -207,7 +228,6 @@ def test_the_typed_serial_is_never_echoed_back(
         "/jobs/erase-drive",
         json={
             "path": "/dev/sdz",
-            "dry_run": False,
             "typed_serial": "SYN-PURGE-1",
             "authorization_id": authorize(client, services),
         },
@@ -281,8 +301,17 @@ def test_an_unknown_job_is_a_clean_error_not_a_traceback(
     assert "Traceback" not in answer.text
 
 
-def test_cancel_is_accepted_and_recorded(client: TestClient) -> None:
-    accepted = client.post("/jobs/erase-drive", json={"path": "/dev/sdz"}).json()
+def test_cancel_is_accepted_and_recorded(
+    client: TestClient, services: AppServices
+) -> None:
+    accepted = client.post(
+        "/jobs/erase-drive",
+        json={
+            "path": "/dev/sdz",
+            "typed_serial": "SYN-PURGE-1",
+            "authorization_id": authorize(client, services),
+        },
+    ).json()
     answer = client.post(f"/jobs/{accepted['job_id']}/cancel")
     assert answer.status_code == 200
     assert "cancel_requested" in answer.json()
@@ -299,7 +328,8 @@ def test_job_status_carries_its_ledger_entries(
     target = tmp_path / "f.bin"
     target.write_bytes(b"x" * 64)
     accepted = client.post(
-        "/jobs/erase-files", json={"paths": [str(target)]}
+        "/jobs/erase-files",
+        json={"paths": [str(target)], "confirm": True, "sweep_traces": False},
     ).json()
 
     import time
@@ -465,10 +495,10 @@ def test_acquire_of_a_windows_disk_binds_to_the_serial_the_os_reports_now(
         assert word in answer.json()["detail"]["error"]
 
 
-def test_prepare_device_is_a_separate_dry_run_first_step(
+def test_prepare_device_is_a_separate_explicit_step(
     client: TestClient, helper: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Unmount / offline is its own call, dry run by default, errors kept."""
+    """Unmount / offline is its own call, with the typed serial, errors kept."""
     from helper.rpc import RpcError
 
     seen: list[dict[str, Any]] = []
@@ -482,14 +512,16 @@ def test_prepare_device_is_a_separate_dry_run_first_step(
                 remediation="",
                 kind="SystemDiskRefused",
             )
-        return {"device": params["path"], "performed": False, "dry_run": True}
+        return {"device": params["path"], "performed": True}
 
     monkeypatch.setattr(helper, "call", call)
-    answer = client.post("/devices/prepare", json={"path": "disk4"})
+    answer = client.post(
+        "/devices/prepare", json={"path": "disk4", "typed_serial": "S123"}
+    )
     assert answer.status_code == 200
-    assert answer.json()["performed"] is False
-    assert seen[0]["dry_run"] is True
-    assert seen[0]["typed_serial"] == ""
+    assert answer.json()["performed"] is True
+    assert "dry_run" not in seen[0]
+    assert seen[0]["typed_serial"] == "S123"
     refused = client.post("/devices/prepare", json={"path": "disk0"})
     assert refused.status_code >= 400
     assert refused.json()["detail"]["kind"] == "SystemDiskRefused"

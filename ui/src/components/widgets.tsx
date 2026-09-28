@@ -350,24 +350,52 @@ export function ErrorNotice({
 }
 
 /**
- * Shown on every screen that displays a dry-run job. The words are fixed so a
- * screenshot of a dry run can never be mistaken for a destructive run.
+ * Every operation this build runs is real: there is no rehearsal mode. The
+ * badge is fixed so a screenshot of a destructive screen always says so.
  */
-export function DryRunBanner() {
-  return (
-    <div className="dry-run-banner" role="status">
-      DRY RUN / NO PHYSICAL DEVICE MODIFIED
-    </div>
-  )
+export function OperationModeBadge() {
+  return <span className="chip operation-mode is-real">REAL DEVICE</span>
 }
 
-/** @deprecated Use {@link DryRunBanner}. */
-export const SimulationBanner = DryRunBanner
+/** One labelled fact about the target of a real operation. */
+export interface TargetFact {
+  label: string
+  value: string
+}
 
-export function OperationModeBadge({ dryRun }: { dryRun: boolean }) {
+/**
+ * The target a destructive screen is about to act on, named in full.
+ *
+ * Shown above the controls so the operator reads which physical device, which
+ * method and which verification before anything is confirmed. Every value
+ * comes from the server's scan and plan; nothing here is inferred.
+ */
+export function RealTargetCard({
+  operation,
+  target,
+  facts,
+}: {
+  operation: string
+  target: string
+  facts: TargetFact[]
+}) {
   return (
-    <span className={dryRun ? 'chip operation-mode is-dry-run' : 'chip operation-mode is-real'}>
-      {dryRun ? 'DRY RUN' : 'REAL DEVICE'}
-    </span>
+    <div className="real-target" role="group" aria-label="Real target">
+      <div className="real-target-head">
+        <OperationModeBadge />
+        <span className="real-target-operation">{operation}</span>
+      </div>
+      <div className="real-target-name">{target}</div>
+      <dl className="real-target-facts">
+        {facts
+          .filter((fact) => fact.value)
+          .map((fact) => (
+            <div key={fact.label}>
+              <dt>{fact.label}</dt>
+              <dd>{fact.value}</dd>
+            </div>
+          ))}
+      </dl>
+    </div>
   )
 }

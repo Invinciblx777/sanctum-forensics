@@ -113,18 +113,17 @@ test('a verification object that FAILED never advances past Verify', () => {
     certified: false,
   }
   // The object exists and says the read-back failed.
-  const failedReadBack = readBack({ passed: false }, false)
+  const failedReadBack = readBack({ passed: false })
   assert.deepEqual(failedReadBack, { verified: false, verifyFailed: true })
   assert.equal(currentStep({ ...s, ...failedReadBack }), 6)
   // Even with a signed record in hand, a failed read-back is not a certificate step.
   assert.equal(currentStep({ ...s, ...failedReadBack, certified: true }), 6)
   // Inconclusive is not a pass either: the tracker waits on Verify.
-  assert.deepEqual(readBack({ passed: null }, false), { verified: false, verifyFailed: false })
-  assert.equal(currentStep({ ...s, ...readBack({ passed: null }, false) }), 6)
-  assert.equal(currentStep({ ...s, ...readBack(null, false) }), 6)
-  // A passed read-back, and a dry run, progress normally.
-  assert.equal(currentStep({ ...s, ...readBack({ passed: true }, false) }), 7)
-  assert.equal(currentStep({ ...s, ...readBack(null, true) }), 7)
+  assert.deepEqual(readBack({ passed: null }), { verified: false, verifyFailed: false })
+  assert.equal(currentStep({ ...s, ...readBack({ passed: null }) }), 6)
+  assert.equal(currentStep({ ...s, ...readBack(null) }), 6)
+  // Only a passed read-back progresses: no verification is never a pass.
+  assert.equal(currentStep({ ...s, ...readBack({ passed: true }) }), 7)
 })
 
 test('an UNVERIFIED option with a method is offered; one without is not', () => {

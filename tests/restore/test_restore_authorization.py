@@ -74,7 +74,6 @@ def _params(
     )
     base = {
         "job_id": "restore-test",
-        "dry_run": False,
         "typed_serial": "TGT-1",
         "ledger_root": str(tmp_path / "ledger"),
         "actor": "tester",
@@ -99,15 +98,26 @@ def test_run_restore_is_an_allowlisted_streaming_operation() -> None:
     assert "run_restore" in STREAMING_OPERATIONS
 
 
-def test_a_dry_run_is_the_default_and_opens_nothing(
+def test_an_unapproved_unspent_restore_is_refused_and_opens_nothing(
     tmp_path: Path, record: BackupRecord, seam: dict[str, Any]
 ) -> None:
+    """There is no rehearsal restore that skips approval: it is refused."""
     params = _params(tmp_path, record, approved=False, spent=False)
-    del params["dry_run"]
-    answer = _run(params)
-    assert answer["result"]["result"] == "DRY_RUN"
+    with pytest.raises(WorkflowGateRefused, match="approved"):
+        _run(params)
     assert seam["opened"] == []
     assert seam["file"].read_bytes() == b"\xaa" * TARGET_SIZE
+    assert not (tmp_path / "authorizations" / "auth-00000000000000aa.executed").exists()
+
+
+@pytest.mark.parametrize("key", ["dry_run", "simulation", "simulate"])
+def test_a_simulation_switch_is_refused_at_the_restore_seam(
+    tmp_path: Path, record: BackupRecord, seam: dict[str, Any], key: str
+) -> None:
+    params = _params(tmp_path, record, **{key: True})
+    with pytest.raises(WorkflowGateRefused, match=key):
+        _run(params)
+    assert seam["opened"] == []
     assert not (tmp_path / "authorizations" / "auth-00000000000000aa.executed").exists()
 
 
@@ -246,7 +256,6 @@ def test_an_erase_authorization_cannot_be_spent_as_a_restore(
     extras = make_authorization(tmp_path, _erase_device())
     params = {
         "path": "/dev/fake-target",
-        "dry_run": False,
         "typed_serial": "TGT-1",
         **extras,
     }

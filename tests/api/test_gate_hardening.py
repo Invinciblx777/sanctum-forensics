@@ -25,12 +25,12 @@ from fastapi.testclient import TestClient
 from . import conftest
 from .conftest import RecordingHelper, approve_workflow, open_workflow
 
-REAL = {"path": "/dev/sdz", "dry_run": False, "typed_serial": "SYN-PURGE-1"}
+REAL = {"path": "/dev/sdz", "typed_serial": "SYN-PURGE-1"}
 
 
 def _writes(helper: RecordingHelper) -> list[Any]:
     return [
-        c for c in helper.calls if c[0] == "run_erase" and c[1].get("dry_run") is False
+        c for c in helper.calls if c[0] == "run_erase"
     ]
 
 

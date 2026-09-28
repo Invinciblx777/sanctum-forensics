@@ -80,7 +80,7 @@ def run(paths: list[Path], sk: ChainLedgerSink, job: str, **opt: Any) -> Any:
         return stop.value, progress
 
 
-REAL = {"dry_run": False, "confirm": True}
+REAL = {"confirm": True}
 
 
 def build_corpus(base: Path) -> dict[str, Path]:
@@ -134,28 +134,33 @@ def main() -> int:
         for p in (c["normal"], c["space"], c["unicode"], c["large"], c["readonly"])
     }
 
-    res, _ = run([c["normal"], c["tree"]], sk, "m2-dry")  # default options
+    try:
+        run([c["normal"], c["tree"]], sk, "m2-unconfirmed")  # default options
+        refused, kind = False, "none"
+    except SanctumError as exc:
+        refused, kind = True, type(exc).__name__
     intact = c["normal"].exists() and all(
         sha(p) == h for p, h in before.items() if p.exists()
     )
     case(
         "M2-A-01",
-        "default options are a dry run",
-        "nothing written, nothing removed",
-        f"dry_run={res.dry_run}, records={len(res.records)}, files intact={intact}",
-        res.dry_run and intact and c["tree"].exists(),
+        "default options (no confirm) are refused",
+        "refused before anything is inspected; nothing written, nothing removed",
+        f"refused={refused} kind={kind}, files intact={intact}",
+        refused and kind == "ConfirmationMismatch" and intact and c["tree"].exists(),
     )
 
-    res, _ = run([c["normal"]], sk, "m2-noconfirm", dry_run=False)
-    rec = res.records[0]
+    try:
+        FileEraseOptions(workers=1, dry_run=False)  # type: ignore[call-arg]
+        rejected = False
+    except ValueError:
+        rejected = True
     case(
         "M2-A-02",
-        "dry_run=False without confirm",
-        "refused (gate 2) as a recorded error; file untouched",
-        f"ok={rec.ok} kind={rec.error_kind} file present={c['normal'].exists()}",
-        (not rec.ok)
-        and rec.error_kind == "ConfirmationMismatch"
-        and c["normal"].exists(),
+        "a removed dry_run switch",
+        "rejected by the options model; there is no rehearsal mode to fall back to",
+        f"rejected={rejected} file present={c['normal'].exists()}",
+        rejected and c["normal"].exists(),
     )
 
     res, _ = run([c["normal"]], sk, "m2-single", **REAL)
@@ -306,7 +311,7 @@ def main() -> int:
             actual, ok = f"{type(exc).__name__}: {exc.message[:80]}", True
         case(
             f"M2-A-14{'abc'[idx]}",
-            f"protected path {prot} (dry run)",
+            f"protected path {prot} (unconfirmed)",
             "refused",
             actual,
             ok,

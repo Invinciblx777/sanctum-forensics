@@ -5,7 +5,7 @@ reaches a destructive path: open the workflow, approve, then execute with the
 server-issued ``authorization_id``. Each test below is one step of that chain
 against the synthetic helper; none opens a real device. ``run_erase`` on the
 recording helper is the only path that writes, so "reached the write path" means
-"the helper saw ``run_erase`` with ``dry_run=False``".
+"the helper saw ``run_erase``". There is no non-writing mode to confuse it with.
 """
 
 from __future__ import annotations
@@ -16,21 +16,21 @@ import time
 from typing import Any
 
 import pytest
-from api.authorization import DRY_RUN_MARK, AuthorizationStore
+from api.authorization import AuthorizationStore
 from api.deps import AppServices
 from fastapi.testclient import TestClient
 
 from . import conftest
 from .conftest import RecordingHelper, approve_workflow, make_backup, open_workflow
 
-REAL = {"path": "/dev/sdz", "dry_run": False, "typed_serial": "SYN-PURGE-1"}
+REAL = {"path": "/dev/sdz", "typed_serial": "SYN-PURGE-1"}
 
 
 def _real_writes(helper: RecordingHelper) -> list[dict[str, Any]]:
     return [
         params
         for name, params in helper.calls
-        if name in {"run_erase", "resume_erase"} and params.get("dry_run") is False
+        if name in {"run_erase", "resume_erase"}
     ]
 
 
@@ -143,7 +143,7 @@ def test_6_execution_with_the_authorization_enters_the_existing_write_path(
         "/jobs/erase-drive", json={**REAL, "authorization_id": auth_id}
     )
     assert answer.status_code == 200, answer.text
-    assert answer.json()["notice"] == ""
+    assert "dry_run" not in answer.json() and "notice" not in answer.json()
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline and not _real_writes(helper):
         time.sleep(0.02)
@@ -208,61 +208,59 @@ def test_9_a_changed_backup_after_approval_is_refused(
     assert any("backup" in reason for reason in detail["WHY BLOCKED"])
 
 
-def test_10_a_dry_run_simulates_and_is_marked_without_any_authorization(
+def test_10_a_bare_erase_request_is_refused_and_creates_nothing(
     client: TestClient, services: AppServices, helper: RecordingHelper
 ) -> None:
+    """No serial, no authorization: refused before the helper is asked to write.
+
+    This used to start a rehearsal. There is no rehearsal any more, so the same
+    body is now an incomplete request for a real erase, and it is refused.
+    """
     answer = client.post("/jobs/erase-drive", json={"path": "/dev/sdz"})
-    assert answer.status_code == 200
-    assert answer.json()["dry_run"] is True
-    assert (
-        answer.json()["notice"]
-        == DRY_RUN_MARK
-        == ("DRY RUN / NO PHYSICAL DEVICE MODIFIED")
-    )
+    detail = _refused(answer, helper)
+    assert detail["kind"] == "ConfirmationMismatch"
     assert not (services.state_dir / "authorizations").exists() or not list(
         (services.state_dir / "authorizations").glob("*")
-    ), "a simulation must not create or need an authorization record"
+    ), "a refused request must not create an authorization record"
 
 
-def test_simulation_cannot_reach_the_physical_write_path(
-    client: TestClient, services: AppServices, helper: RecordingHelper
+@pytest.mark.parametrize(
+    "removed",
+    [
+        {"dry_run": True},
+        {"dry_run": False},
+        {"simulation": True},
+        {"simulate": True},
+    ],
+    ids=["dry_run-true", "dry_run-false", "simulation", "simulate"],
+)
+def test_a_simulation_switch_is_rejected_not_honoured_or_ignored(
+    client: TestClient,
+    services: AppServices,
+    helper: RecordingHelper,
+    removed: dict[str, Any],
 ) -> None:
-    """A dry run never runs the write path, even when handed every credential.
+    """A body carrying a removed simulation switch never reaches the helper.
 
-    Sent with a valid, approved, unspent authorization *and* the right serial,
-    a request with ``dry_run=true`` must reach the helper as ``dry_run=True``,
-    must not consume the authorization, and must never be upgraded to a real
-    write by any parameter the client supplies.
+    Sent with a valid, approved, unspent authorization *and* the right serial:
+    the switch is neither honoured (there is no simulation to run) nor dropped
+    (the sender expected nothing to be written). The request is rejected, and
+    the authorization is not spent.
     """
     auth_id = open_workflow(client, services)
     approve_workflow(client, auth_id)
     store = AuthorizationStore(services.state_dir / "authorizations")
 
-    for extra in ({}, {"authorization_id": auth_id, "typed_serial": "SYN-PURGE-1"}):
-        answer = client.post(
-            "/jobs/erase-drive", json={"path": "/dev/sdz", "dry_run": True, **extra}
-        )
-        assert answer.status_code == 200, answer.text
-        assert answer.json()["dry_run"] is True
-        assert answer.json()["notice"] == DRY_RUN_MARK
-
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline and not [
-        c for c in helper.calls if c[0] == "run_erase"
-    ]:
-        time.sleep(0.02)
-    runs = [params for name, params in helper.calls if name == "run_erase"]
-    assert runs, "the simulation should have run"
-    assert all(params["dry_run"] is True for params in runs)
-    assert _real_writes(helper) == []
-    assert not store.is_spent(auth_id), "a simulation must not spend an authorization"
-
-    # And the omitted flag defaults closed: no dry_run means a simulation.
-    default = client.post("/jobs/erase-drive", json={"path": "/dev/sdz"})
-    assert default.json()["dry_run"] is True
+    answer = client.post(
+        "/jobs/erase-drive", json={**REAL, "authorization_id": auth_id, **removed}
+    )
+    assert answer.status_code == 422, answer.text
+    assert next(iter(removed)) in answer.text
+    assert [name for name, _ in helper.calls if name == "run_erase"] == []
+    assert not store.is_spent(auth_id)
 
 
-def test_a_simulated_job_cannot_be_resumed_into_a_real_write(
+def test_a_job_with_no_authorization_cannot_be_resumed_into_a_write(
     client: TestClient, services: AppServices, helper: RecordingHelper
 ) -> None:
     from tests.api.test_resume import _checkpoint, _plan
@@ -271,7 +269,7 @@ def test_a_simulated_job_cannot_be_resumed_into_a_real_write(
     _checkpoint(services, "erase-drive-sim1", 1024)
     answer = client.post(
         "/jobs/erase-drive-sim1/resume",
-        json={"dry_run": False, "typed_serial": "SYN-PURGE-1"},
+        json={"typed_serial": "SYN-PURGE-1"},
     )
     _refused(answer, helper)
 
@@ -337,13 +335,19 @@ def test_the_certificate_of_a_real_erase_names_device_levels_and_verification(
     assert sections["verification"]["passed"] is True
 
 
-def test_the_certificate_of_a_dry_run_says_nothing_was_achieved(
-    client: TestClient, helper: RecordingHelper
+def test_a_current_certificate_is_of_a_real_operation_only(
+    client: TestClient, services: AppServices, helper: RecordingHelper
 ) -> None:
-    job_id = client.post("/jobs/erase-drive", json={"path": "/dev/sdz"}).json()[
-        "job_id"
-    ]
-    sections = _report_for(client, job_id)["sections"]
-    assert sections["method"]["level_achieved"].startswith("NONE (dry run")
-    assert sections["verification"]["passed"] is False
-    assert sections["verification"]["bytes_checked"] == 0
+    """No rehearsal marker, flag or "NONE (dry run" level in a new report."""
+    import json
+
+    auth_id = open_workflow(client, services)
+    approve_workflow(client, auth_id)
+    job_id = client.post(
+        "/jobs/erase-drive", json={**REAL, "authorization_id": auth_id}
+    ).json()["job_id"]
+    report = _report_for(client, job_id)
+    text = json.dumps(report)
+    for marker in ("DRY RUN", "SIMULATION", "NONE (dry run", '"dry_run"'):
+        assert marker not in text
+    assert report["sections"]["method"]["level_achieved"] == "CLEAR"

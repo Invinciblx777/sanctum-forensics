@@ -44,7 +44,7 @@ def run_until_erase_then_cancel(
 ) -> tuple[Ledger, list[Any]]:
     """Drive a real overwrite as far as its first ERASE record, then close it."""
     device = make_device(path=str(medium), serial="SYN-0001", by_id_path=None)
-    job = make_job(device, dry_run=False)
+    job = make_job(device)
     chain = Ledger(
         tmp_path / "ledger", tool_version="0.0.0-test", pubkey_fingerprint="AA:BB"
     )

@@ -297,10 +297,11 @@ def _ledger(root: Path, key_dir: str | None = None) -> Any:
 
 
 def cmd_erase(args: argparse.Namespace) -> int:
-    """Run the real erase engine against real media.
+    """Run the real erase engine against real media. Always a real erase.
 
-    ``--dry-run`` exercises the identical code path and writes nothing, which
-    is what step A.4 hashes around to prove.
+    ``--typed-serial`` is the confirmation the engine checks; it defaults to
+    the serial just read. Step A.4 passes a wrong one first and hashes the
+    device around it, to prove a refused run writes nothing.
     """
     from core.device import capabilities
     from core.device.enumerate import get_device
@@ -313,8 +314,9 @@ def cmd_erase(args: argparse.Namespace) -> int:
         job_id=args.job_id,
         device=device,
         level=SanitizationLevel(args.level),
-        dry_run=args.dry_run,
-        confirmed_serial=device.serial,
+        confirmed_serial=(
+            device.serial if args.typed_serial is None else args.typed_serial
+        ),
         method=None,
     )
 
@@ -322,7 +324,6 @@ def cmd_erase(args: argparse.Namespace) -> int:
     progress: list[dict[str, Any]] = []
     result: dict[str, Any] = {
         "step": "erase",
-        "dry_run": args.dry_run,
         "job_id": args.job_id,
     }
 
@@ -1634,7 +1635,11 @@ def main() -> int:
     erase_parser.add_argument("--job-id", required=True)
     erase_parser.add_argument("--ledger-root", required=True)
     erase_parser.add_argument("--level", default="CLEAR")
-    erase_parser.add_argument("--dry-run", action="store_true")
+    erase_parser.add_argument(
+        "--typed-serial",
+        default=None,
+        help="The confirmation value. Defaults to the serial read from the device.",
+    )
     erase_parser.set_defaults(handler=cmd_erase)
 
     pattern_parser = sub.add_parser("pattern")

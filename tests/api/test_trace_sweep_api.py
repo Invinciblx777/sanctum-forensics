@@ -54,18 +54,18 @@ def _finish(client: TestClient, body: dict[str, Any]) -> dict[str, Any]:
     return status
 
 
-def test_a_defaulted_request_sweeps_in_simulation_and_removes_nothing(
+def test_an_unconfirmed_request_is_refused_and_removes_nothing(
     client: TestClient, home: Path, tmp_path: Path
 ) -> None:
+    """There is no preview sweep: without confirm, nothing is searched or removed."""
     target = tmp_path / "plan.jpg"
     target.write_bytes(b"\xff\xd8" + b"p" * 200)
     cached = _thumbnail(home, target)
 
-    status = _finish(client, {"paths": [str(target)]})
+    answer = client.post("/jobs/erase-files", json={"paths": [str(target)]})
 
-    assert status["params"]["sweep_traces"] is True
-    (trace,) = status["result"]["trace_sweep"]["traces"]
-    assert trace["kind"] == "THUMBNAIL" and trace["removed"] is False
+    assert answer.status_code == 409
+    assert answer.json()["detail"]["kind"] == "ConfirmationMismatch"
     assert cached.exists() and target.exists()
 
 
@@ -77,7 +77,7 @@ def test_a_real_erase_removes_the_trace_and_the_report_lists_it(
     cached = _thumbnail(home, target)
 
     status = _finish(
-        client, {"paths": [str(target)], "dry_run": False, "confirm": True}
+        client, {"paths": [str(target)], "confirm": True}
     )
 
     (trace,) = status["result"]["trace_sweep"]["traces"]
@@ -106,7 +106,6 @@ def test_the_sweep_can_be_turned_off(
         client,
         {
             "paths": [str(target)],
-            "dry_run": False,
             "confirm": True,
             "sweep_traces": False,
         },

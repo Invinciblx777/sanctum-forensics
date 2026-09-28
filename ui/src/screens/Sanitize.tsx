@@ -27,6 +27,7 @@ import {
   flashOf,
   methodLabel,
   planFor,
+  plannedVerification,
   runnable,
 } from '../lib/erasePlan'
 import { bytes, duration, exactBytes } from '../lib/format'
@@ -40,13 +41,12 @@ import {
   Panel,
   ProgressView,
   Railed,
-  DryRunBanner,
   OperationModeBadge,
+  RealTargetCard,
   Stat,
   Verdict,
 } from '../components/widgets'
 import type { Tone } from '../components/widgets'
-import { isDryRun } from '../lib/simulation'
 
 /**
  * The tone of a NIST level.
@@ -88,9 +88,8 @@ function levelTone(level: Level): Tone {
  */
 function verificationVerdict(
   verification: EraseVerification | null,
-  dryRun: boolean,
 ): { word: string; tone: Tone; note: string } {
-  const word = verificationWord(verification, dryRun)
+  const word = verificationWord(verification)
   if (word === 'PASSED') {
     return {
       word,
@@ -121,15 +120,11 @@ function verificationVerdict(
   return {
     word,
     tone: 'unknown',
-    note: dryRun
-      ? 'This was a dry run. Nothing was written, so there was nothing to ' +
-        'verify. A dry run never produces a verification result and never ' +
-        'claims one.'
-      : !verification
-        ? 'No verification was recorded for this run.'
-        : 'No read-back was attempted for this method. A firmware sanitize is ' +
-          'attested by the drive, not measured by the host; what that attests ' +
-          'to is in the residual-risk panel.',
+    note: !verification
+      ? 'No verification was recorded for this run.'
+      : 'No read-back was attempted for this method. A firmware sanitize is ' +
+        'attested by the drive, not measured by the host; what that attests ' +
+        'to is in the residual-risk panel.',
   }
 }
 
@@ -141,16 +136,10 @@ function verificationVerdict(
  * "verified" over every byte of a 64 MB stick are different claims and the
  * engine already distinguishes them.
  */
-function VerificationPanel({
-  status,
-  dryRun,
-}: {
-  status: JobStatus
-  dryRun: boolean
-}) {
+function VerificationPanel({ status }: { status: JobStatus }) {
   const verification =
     (status.result?.verification as EraseVerification | undefined) ?? null
-  const verdict = verificationVerdict(verification, dryRun)
+  const verdict = verificationVerdict(verification)
   const method =
     (status.result?.plan as { method?: string } | undefined)?.method ?? ''
   const warnings = (status.result?.limitations as string[] | undefined) ?? []
@@ -232,15 +221,11 @@ function VerificationPanel({
  */
 function ResumePanel({
   state,
-  serial,
-  onResume,
+  onAuthorize,
 }: {
   state: ResumeState
-  serial: string
-  onResume: (dryRun: boolean, typedSerial: string) => void
+  onAuthorize: () => void
 }) {
-  const [typed, setTyped] = useState('')
-
   if (!state.resumable) {
     return (
       <Railed tone="unknown">
@@ -265,32 +250,17 @@ function ResumePanel({
         <span className="note">{state.reason}</span>
       </Railed>
 
-      <div className="row wrap" style={{ alignItems: 'flex-end' }}>
-        <label className="grow">
-          Type the device serial to resume for real
-          <input
-            type="text"
-            value={typed}
-            spellCheck={false}
-            placeholder={serial}
-            onChange={(event) => setTyped(event.target.value)}
-          />
-        </label>
-        <button className="btn" onClick={() => onResume(true, '')}>
-          Resume (dry run)
-        </button>
-        <button
-          className="btn destructive"
-          disabled={typed !== serial || !serial}
-          onClick={() => onResume(false, typed)}
-        >
-          Resume erasure
+      <div className="row wrap">
+        <button className="btn destructive" onClick={onAuthorize}>
+          Authorize resume on the real device
         </button>
       </div>
       <p className="note">
-        A resume writes to the medium, so it keeps both gates of the run it
-        continues. The server re-reads the serial from the device itself and
-        refuses regardless of what is typed here.
+        A resume writes to the medium, so it keeps every gate of the run it
+        continues: a verified backup, a recorded approval with the typed
+        serial, and a new one-use authorization from the server. The server
+        re-reads the serial from the device itself and refuses regardless of
+        what is typed here.
       </p>
     </div>
   )
@@ -298,9 +268,11 @@ function ResumePanel({
 
 export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
   const [level, setLevel] = useState<Level>(defaultLevel(selected))
-  const [dryRun, setDryRun] = useState(true)
   const [typed, setTyped] = useState('')
   const [confirming, setConfirming] = useState(false)
+  // The approval dialog authorizes either a new erase or the resume of the
+  // interrupted one; both are real writes behind the same gates.
+  const [resuming, setResuming] = useState(false)
   // The real-erase workflow. Everything here is the server's answer, held so it
   // can be drawn; none of it is a decision made by this screen.
   const [backupImage, setBackupImage] = useState('')
@@ -350,9 +322,10 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
     setAcknowledged(false)
     setTyped('')
     setConfirming(false)
+    setResuming(false)
   }
-  // A record belongs to one device, level and mode. Change any and it is gone.
-  useEffect(resetWorkflow, [selected, level, dryRun])
+  // A record belongs to one device and level. Change either and it is gone.
+  useEffect(resetWorkflow, [selected, level])
 
   // Step 2, "Analyse": re-read the device now rather than trusting the row the
   // device list loaded. A failure leaves the list's assessment in place.
@@ -388,30 +361,48 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
       .catch(() => setResume(null))
   }, [jobId, status?.state])
 
-  async function startResume(resumeDryRun: boolean, typedSerial: string) {
-    if (!jobId) return
+  /**
+   * Resumes the interrupted overwrite on the real device. Like a new erase it
+   * carries the typed serial and an approved, unspent authorization the server
+   * issued; the server refuses it without either.
+   */
+  async function startResume(authorizationId: string) {
+    if (!jobId || !authorizationId || approvalBusy) return
+    const token = epoch.current()
+    setApprovalBusy(true)
     setError(null)
+    setRefusal(null)
+    setRequestFailure(null)
     try {
       const accepted = await api.resume(jobId, {
-        dry_run: resumeDryRun,
-        typed_serial: typedSerial,
+        typed_serial: typed,
+        authorization_id: authorizationId,
       })
       setJobId(accepted.job_id)
       setProgress(null)
       setStatus(null)
       setResume(null)
+      setConfirming(false)
+      setResuming(false)
       detach.current?.()
       detach.current = streamJob(accepted.job_id, {
         onProgress: setProgress,
         onState: setStatus,
       })
     } catch (exc) {
-      const failure = exc as RequestFailed
+      if (!epoch.isCurrent(token)) return
+      const failed = exc as RequestFailed
+      if (failed.status === 409) {
+        setRefusal(refusalFrom(failed))
+        return
+      }
       setError({
-        message: failure.message,
-        kind: failure.kind,
-        remediation: failure.remediation,
+        message: failed.message,
+        kind: failed.kind,
+        remediation: failed.remediation,
       })
+    } finally {
+      if (epoch.isCurrent(token)) setApprovalBusy(false)
     }
   }
 
@@ -428,11 +419,12 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
    * and is still available. The helper re-checks identity again when the job
    * starts; this is the check the operator sees.
    */
-  async function openConfirmation() {
+  async function openConfirmation(forResume = false) {
     const id = selected?.normalized?.id
     if (!id) {
       resetWorkflow()
       setConfirming(true)
+      setResuming(forResume)
       return
     }
     try {
@@ -456,6 +448,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
       }
       resetWorkflow()
       setConfirming(true)
+      setResuming(forResume)
     } catch (exc) {
       const failure = exc as RequestFailed
       setError({
@@ -549,12 +542,11 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
   }
 
   /**
-   * Starts the job. A real erase carries the id the server issued and nothing
-   * else can stand in for it; a dry run carries none and never asks for one.
+   * Starts the real erase. It carries the id the server issued and nothing
+   * else can stand in for it: there is no mode that runs without one.
    */
-  async function start(authorizationId = '') {
-    if (!device || !canRun) return
-    if (!dryRun && !authorizationId) return
+  async function start(authorizationId: string) {
+    if (!device || !canRun || !authorizationId) return
     if (approvalBusy) return
     const token = epoch.current()
     setApprovalBusy(true)
@@ -563,7 +555,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
     setRequestFailure(null)
     try {
       const accepted = await api.eraseDrive({
-        ...eraseBody(device.path, level, dryRun, typed, authorizationId),
+        ...eraseBody(device.path, level, typed, authorizationId),
         // Filed against the open case, so the wipe appears on the case screen
         // and its certificate inherits the case id.
         case_id: openCase?.case_id ?? '',
@@ -582,13 +574,13 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
     } catch (exc) {
       if (!epoch.isCurrent(token)) return
       const failed = exc as RequestFailed
-      if (!dryRun && failed.status === 409) {
+      if (failed.status === 409) {
         // A refusal is the server's answer, drawn as such: BLOCKED, why, and
         // whether the device was touched. Never "something went wrong".
         setRefusal(refusalFrom(failed))
         return
       }
-      if (!dryRun && failed.status >= 500) {
+      if (failed.status >= 500) {
         // The server broke while a real erase was being requested. Whether the
         // device was touched is not something this response can say.
         setRequestFailure({
@@ -649,9 +641,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
   )
   const verificationResult =
     (status?.result?.verification as EraseVerification | undefined) ?? null
-  // The job's own record decides dry run once it exists, as in the workflow.
-  const jobDryRun = status ? status.params?.dry_run !== false : dryRun
-  const { verified, verifyFailed } = readBack(verificationResult, jobDryRun)
+  const { verified, verifyFailed } = readBack(verificationResult)
   const readBackFailed = finished && status?.state === 'complete' && verifyFailed
   const step = currentStep({
     hasDevice: true,
@@ -668,13 +658,12 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
     failed: finished && status?.state !== 'complete',
     verifyFailed: readBackFailed,
   })
-  const wording = signedRecordWording(status?.state ?? '', dryRun, readBackFailed)
+  const wording = signedRecordWording(status?.state ?? '', readBackFailed)
   const flow = sanitizeWorkflow({
     assessment,
     offered,
     canRun,
     planRefusal: plan?.refusal ?? '',
-    dryRun,
     confirming,
     running,
     phase: progress?.phase ?? null,
@@ -693,7 +682,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
         <h1>Secure sanitization</h1>
         <p className="path">{device.path}</p>
         <Chip tone="muted">{device.model}</Chip>
-        <OperationModeBadge dryRun={jobId ? flow.simulation : dryRun} />
+        <OperationModeBadge />
         <span className="serial" style={{ color: 'var(--text-muted)' }}>
           {device.serial}
         </span>
@@ -701,7 +690,21 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
 
       <div className="screen-body">
         <FlowSteps current={step} stopped={stopped} />
-        {(jobId ? flow.simulation : dryRun) && <DryRunBanner />}
+        <RealTargetCard
+          operation={`WHOLE-DRIVE ${level}`}
+          target={device.model || device.path}
+          facts={[
+            { label: 'Serial', value: device.serial || 'none reported' },
+            { label: 'Path', value: device.path },
+            { label: 'Size', value: bytes(device.size_bytes) },
+            { label: 'Platform', value: selected?.normalized?.platform ?? '' },
+            {
+              label: 'Method',
+              value: plan?.method ? methodLabel(plan.method) : 'not reachable',
+            },
+            { label: 'Verification', value: plannedVerification(plan?.method ?? '') },
+          ]}
+        />
         <WorkflowStrip flow={flow} />
         <ErrorNotice error={error} />
 
@@ -719,7 +722,8 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
               Review plan
             </button>
             <span className="note">
-              Nothing is written until you confirm, and a dry run comes first.
+              Nothing is written until a verified backup, your approval with
+              the typed serial and a one-use server authorization all exist.
             </span>
           </div>
         )}
@@ -1030,34 +1034,22 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
 
             <Panel title="Run">
               <div className="col">
-                <label className="inline">
-                  <input
-                    type="checkbox"
-                    checked={dryRun}
-                    disabled={running}
-                    onChange={(event) => setDryRun(event.target.checked)}
-                  />
-                  <span>
-                    Dry run — plan and report only, nothing is written
-                  </span>
-                </label>
-
-                {!dryRun && (
-                  <Notice tone="danger">
-                    This will <strong>permanently destroy</strong> every byte on{' '}
-                    <span className="path">{device.path}</span> (
-                    {bytes(device.size_bytes)}). There is no undo. The device
-                    serial must be typed to confirm.
-                  </Notice>
-                )}
+                <Notice tone="danger">
+                  This runs on the <strong>real device</strong> and{' '}
+                  <strong>permanently destroys</strong> every byte on{' '}
+                  <span className="path">{device.path}</span> (
+                  {bytes(device.size_bytes)}). There is no undo. A verified
+                  backup, your approval with the typed serial and a one-use
+                  server authorization are required first.
+                </Notice>
 
                 <div className="row">
                   <button
-                    className={dryRun ? 'btn primary' : 'btn destructive'}
-                    disabled={running || !canRun || (!dryRun && !offered)}
-                    onClick={() => (dryRun ? void start() : void openConfirmation())}
+                    className="btn destructive"
+                    disabled={running || !canRun || !offered}
+                    onClick={() => void openConfirmation()}
                   >
-                    {dryRun ? 'Run dry run' : 'Erase this device'}
+                    Erase this device
                   </button>
                   {jobId && !status && (
                     <button
@@ -1081,7 +1073,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
                 title="Verification"
                 subtitle="Four outcomes. Uncertainty is never rendered as a pass."
               >
-                <VerificationPanel status={status} dryRun={dryRun} />
+                <VerificationPanel status={status} />
               </Panel>
             )}
 
@@ -1090,10 +1082,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
                 {resume ? (
                   <ResumePanel
                     state={resume}
-                    serial={device.serial}
-                    onResume={(resumeDry, typedSerial) =>
-                      void startResume(resumeDry, typedSerial)
-                    }
+                    onAuthorize={() => void openConfirmation(true)}
                   />
                 ) : (
                   <Empty>Reading the chain for a checkpoint&hellip;</Empty>
@@ -1101,10 +1090,9 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
               </Panel>
             )}
 
-            {jobId && isDryRun(status) && <DryRunBanner />}
             {jobId && (
               <Panel title="Progress">
-                <ProgressView progress={progress} destructive={!dryRun} />
+                <ProgressView progress={progress} destructive />
                 {status && (
                   <div style={{ marginTop: 'var(--space-3)' }}>
                     <Notice tone={status.state === 'complete' ? 'ok' : 'warn'}>
@@ -1207,7 +1195,7 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
         </details>
       </div>
 
-      {confirming && !dryRun && plan?.method && (
+      {confirming && plan?.method && (
         <EraseApproval
           device={device}
           level={level}
@@ -1224,8 +1212,13 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
           onTyped={setTyped}
           onOpen={() => void openWorkflow()}
           onApprove={() => void approve()}
-          onExecute={() => void start(view?.authorization_id ?? '')}
+          onExecute={() =>
+            resuming
+              ? void startResume(view?.authorization_id ?? '')
+              : void start(view?.authorization_id ?? '')
+          }
           onCancel={resetWorkflow}
+          executeLabel={resuming ? `Resume erasure of ${device.path}` : undefined}
         />
       )}
     </>

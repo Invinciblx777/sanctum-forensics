@@ -28,13 +28,14 @@ import { operationKind, operationLabel, shortTime } from '../lib/ledger'
 import type { OperationKind } from '../lib/ledger'
 import { ChainStrip } from '../components/chain'
 import { Panel, Verdict } from '../components/widgets'
+import { isHistoricalRehearsal } from '../lib/legacy'
 
 /**
  * The overview: the chain of custody first, then the three modules, then
  * what the open case - or every case - holds so far.
  *
- * Every figure and status here is read from the server. A dry run is a
- * simulation and is never counted as an erasure; a capability is the platform
+ * Every figure and status here is read from the server. A historical rehearsal
+ * record from an earlier build is never counted as an erasure; a capability is the platform
  * probe's word for this host, never a hopeful one. The chain block is the one
  * bold element on the screen because it is the claim everything else rests on:
  * each operation is sealed into an entry that carries the SHA-256 of the one
@@ -113,7 +114,7 @@ function figuresFor(
     const erased = detail.operations.filter(
       (op) =>
         ['erase-drive', 'erase-files', 'wipe-free-space'].includes(op.type) &&
-        op.params?.dry_run === false &&
+        !isHistoricalRehearsal(op.params) &&
         op.status === 'complete' &&
         op.verification_passed !== false,
     ).length

@@ -295,7 +295,7 @@ def test_cli_reports_a_missing_file_clearly(tmp_path: Path) -> None:
 def filtered_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """A report whose excerpt carries genesis plus one job, skipping another.
 
-    The shape the hardware run produced: a dry-run job wrote seqs 1..6, the real
+    The shape the hardware run produced: an earlier job wrote seqs 1..6, the real
     job wrote 7..41, and the report for the real job embedded genesis plus
     7..41. The store verified all 42 entries; the report's own chain check
     called it broken at entry 7.

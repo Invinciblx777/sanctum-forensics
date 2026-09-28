@@ -427,12 +427,11 @@ export const FILE_RECORDS: FileEraseRecord[] = [
   {
     path: '/home/analyst/case-2149/interview-notes.docx',
     ok: true,
-    dry_run: true,
     bytes_overwritten: 41984,
     streams_removed: [],
     xattrs_removed: ['user.xdg.origin.url'],
-    rename_chain: [],
-    unlinked: false,
+    rename_chain: ['a0b1c2d3e4f5', 'f5e4d3c2b1a0'],
+    unlinked: true,
     is_directory: false,
     findings: [
       {
@@ -461,18 +460,17 @@ export const FILE_RECORDS: FileEraseRecord[] = [
     verification: {
       passed: null,
       strategy: 'none',
-      reason: 'dry run: nothing was written, so nothing was read back',
+      reason: 'the filesystem does not expose physical extents to an unprivileged read',
     },
   },
   {
     path: '/home/analyst/case-2149/exhibits/DSC_0491.NEF',
     ok: true,
-    dry_run: true,
     bytes_overwritten: 25165824,
     streams_removed: [],
     xattrs_removed: [],
-    rename_chain: [],
-    unlinked: false,
+    rename_chain: ['a0b1c2d3e4f5', 'f5e4d3c2b1a0'],
+    unlinked: true,
     is_directory: false,
     findings: [
       {
@@ -504,18 +502,17 @@ export const FILE_RECORDS: FileEraseRecord[] = [
     verification: {
       passed: null,
       strategy: 'none',
-      reason: 'dry run: nothing was written, so nothing was read back',
+      reason: 'the filesystem does not expose physical extents to an unprivileged read',
     },
   },
   {
     path: '/home/analyst/case-2149/index.sqlite',
     ok: true,
-    dry_run: true,
     bytes_overwritten: 1048576,
     streams_removed: [],
     xattrs_removed: [],
-    rename_chain: [],
-    unlinked: false,
+    rename_chain: ['a0b1c2d3e4f5', 'f5e4d3c2b1a0'],
+    unlinked: true,
     is_directory: false,
     findings: [],
     limitations: [],
@@ -524,18 +521,17 @@ export const FILE_RECORDS: FileEraseRecord[] = [
     verification: {
       passed: null,
       strategy: 'none',
-      reason: 'dry run: nothing was written, so nothing was read back',
+      reason: 'the filesystem does not expose physical extents to an unprivileged read',
     },
   },
   {
     path: '/home/analyst/case-2149/transcript.txt',
     ok: true,
-    dry_run: true,
     bytes_overwritten: 892,
     streams_removed: [],
     xattrs_removed: [],
-    rename_chain: [],
-    unlinked: false,
+    rename_chain: ['a0b1c2d3e4f5', 'f5e4d3c2b1a0'],
+    unlinked: true,
     is_directory: false,
     findings: [
       {
@@ -555,13 +551,12 @@ export const FILE_RECORDS: FileEraseRecord[] = [
     verification: {
       passed: null,
       strategy: 'none',
-      reason: 'dry run: nothing was written, so nothing was read back',
+      reason: 'the filesystem does not expose physical extents to an unprivileged read',
     },
   },
   {
     path: '/var/log/journal/sanctum',
     ok: false,
-    dry_run: true,
     bytes_overwritten: 0,
     streams_removed: [],
     xattrs_removed: [],

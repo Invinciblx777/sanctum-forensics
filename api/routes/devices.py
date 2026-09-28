@@ -16,11 +16,12 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from api.deps import AppServices
 from api.identity import resolve as resolve_identity
 from api.routes.common import get_services, sanctum_error_response
+from api.routes.models import DestructiveRequest
 
 __all__ = ["router"]
 
@@ -67,13 +68,11 @@ def list_devices(
     return {"devices": answer.get("devices", []), "limitations": services.limitations}
 
 
-class PrepareDeviceRequest(BaseModel):
+class PrepareDeviceRequest(DestructiveRequest):
     """Body for ``POST /devices/prepare``."""
 
     path: str = Field(max_length=256)
-    #: Gate one: a dry run reports what would be unmounted or taken offline.
-    dry_run: bool = True
-    #: Gate two: the device serial, typed by hand.
+    #: The device serial, typed by hand. Checked against the helper's own read.
     typed_serial: str = Field(default="", max_length=128)
 
 
@@ -86,7 +85,7 @@ def prepare_device(
 
     Separate from every erase on purpose: an erase refuses a mounted device and
     never unmounts one itself. System and internal disks are refused by the
-    adapter. Dry run by default; a real run needs the typed serial.
+    adapter. Always a real unmount or offline; it needs the typed serial.
     """
     from helper.rpc import RpcError
 
@@ -95,7 +94,6 @@ def prepare_device(
             "prepare_device",
             {
                 "path": body.path,
-                "dry_run": body.dry_run,
                 "typed_serial": body.typed_serial,
                 "ledger_root": str(services.ledger_root),
                 "tool_version": services.tool_version,

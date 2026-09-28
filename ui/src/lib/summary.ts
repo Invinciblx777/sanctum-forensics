@@ -3,14 +3,16 @@
  * server recorded.
  *
  * Four questions, in the order a reviewer asks them. Every line is a count or a
- * status read from the case record, the chain, or the platform probe. A dry run
- * is never counted as an erasure: it is listed separately as a simulation that
- * wrote nothing. When nothing is recorded the line says so rather than
- * disappearing, because a missing line reads as "nothing to report".
+ * status read from the case record, the chain, or the platform probe. A
+ * historical rehearsal record from an earlier build (lib/legacy.ts) is never
+ * counted as an erasure: it is listed separately as a record that wrote
+ * nothing. When nothing is recorded the line says so rather than disappearing,
+ * because a missing line reads as "nothing to report".
  */
 import type { CaseDetail, PlatformStatus } from './api'
 import { capabilityWord } from './states.ts'
 import { isSafetyRefusal } from './refusal.ts'
+import { isHistoricalRehearsal } from './legacy.ts'
 
 export interface ExecutiveSummary {
   found: string[]
@@ -61,8 +63,8 @@ export function executiveSummary(
   }
 
   const eraseOps = ops.filter((op) => op.type in ERASE_KINDS)
-  const real = eraseOps.filter((op) => op.params?.dry_run === false)
-  const simulated = eraseOps.filter((op) => op.params?.dry_run !== false)
+  const real = eraseOps.filter((op) => !isHistoricalRehearsal(op.params))
+  const historical = eraseOps.filter((op) => isHistoricalRehearsal(op.params))
   for (const [kind, label] of Object.entries(ERASE_KINDS)) {
     const done = real.filter(
       (op) => op.type === kind && op.status === 'complete' && op.verification_passed !== false,
@@ -98,9 +100,9 @@ export function executiveSummary(
       `${plural(stopped.length, 'erase')} stopped on request (CANCELLED) before finishing; the target may be partly overwritten and is not sanitized`,
     )
   }
-  if (simulated.length) {
+  if (historical.length) {
     erased.push(
-      `${plural(simulated.length, 'dry run')}: nothing was written`,
+      `${plural(historical.length, 'historical rehearsal record')} from an earlier build: nothing was written`,
     )
   }
   if (!erased.length) erased.push('Nothing has been erased in this case.')
@@ -118,7 +120,6 @@ export function executiveSummary(
   }
   const running = ops.filter((op) => op.status === 'running').length
   if (running) unverified.push(`${plural(running, 'operation')} still running; its result is not in yet`)
-  if (simulated.length) unverified.push('Dry runs prove the plan, not the erasure.')
   for (const item of platform?.limitations ?? []) unverified.push(item)
   if (!unverified.length) unverified.push('none recorded')
 
@@ -171,7 +172,7 @@ export const NOT_PHYSICALLY_VALIDATED: readonly string[] = [
 ]
 
 export const SAFETY_LINES: readonly string[] = [
-  'Dry run is the default. Nothing is written unless it is turned off.',
+  'There is no rehearsal mode: every erase is a real operation on the selected device, so every gate below is enforced on every run.',
   'A real erase needs a backup image, an approval with the typed serial, and a one-use authorization the server issues; the helper re-checks device, plan and backup before it writes.',
   'The system disk and any device with a mounted filesystem are refused, never unmounted for you.',
   'No automatic sudo, no automatic unmount, and no substitute device when the named one is missing.',

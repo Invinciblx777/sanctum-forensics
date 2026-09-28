@@ -41,7 +41,7 @@ MIB = 1024 * 1024
 
 def _record(inspection: FileInspection) -> FileEraseRecord:
     return FileEraseRecord(
-        path=inspection.path, ok=True, dry_run=False, inspection=inspection
+        path=inspection.path, ok=True, inspection=inspection
     )
 
 

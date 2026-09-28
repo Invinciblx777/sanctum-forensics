@@ -121,10 +121,12 @@ FAKE_DEVICES: list[dict[str, Any]] = [
 class RecordingHelper:
     """A helper transport that answers from fixtures and records every call.
 
-    It enforces the *same* two gates the real handler does - dry-run default
-    and typed-serial match - because those are the behaviours the API tests
-    exist to check, and a stub that skipped them would let a regression in the
-    API's own gating pass unnoticed.
+    It enforces the gates the real handler does - a request carrying a removed
+    simulation switch is refused, a request with no authorization is refused,
+    and the typed serial must match - because those are the behaviours the API
+    tests exist to check, and a stub that skipped them would let a regression
+    in the API's own gating pass unnoticed. It is test infrastructure: it never
+    touches a device, and nothing it answers is physical evidence.
     """
 
     def __init__(self) -> None:
@@ -165,11 +167,27 @@ class RecordingHelper:
             return answer
 
         if method == "run_erase":
+            from core.device.guard import refuse_removed_mode_keys
+            from core.errors import WorkflowGateRefused
+
+            try:
+                refuse_removed_mode_keys(params)
+            except WorkflowGateRefused as exc:
+                raise RpcError(
+                    exc.message, remediation=exc.remediation,
+                    kind="WorkflowGateRefused",
+                ) from exc
+            if not isinstance(params.get("authorization"), dict):
+                raise RpcError(
+                    "REFUSED at the write seam: the request carries no "
+                    "authorization. Nothing was erased.",
+                    remediation="Open, approve and spend a workflow first.",
+                    kind="WorkflowGateRefused",
+                )
             row = self._row(params.get("path", ""))
-            dry_run = bool(params.get("dry_run", True))
             typed = str(params.get("typed_serial") or "")
             serial = str(row["device"]["serial"])
-            if not dry_run and typed != serial:
+            if typed != serial:
                 raise RpcError(
                     f"The typed serial {typed!r} does not match "
                     f"{row['device']['path']}, whose serial is {serial!r}. "
@@ -184,10 +202,9 @@ class RecordingHelper:
             return {
                 "result": {
                     "job_id": params.get("job_id", "erase"),
-                    "dry_run": dry_run,
                     # The shape core.erase.drive.execute returns: the plan, the
                     # level asked for and the level achieved, and a read-back
-                    # verdict - none of the last two for a dry run.
+                    # verdict.
                     "method": "SINGLE_PASS_OVERWRITE",
                     "level": level,
                     "plan": {
@@ -196,10 +213,8 @@ class RecordingHelper:
                         "justification": "fixture",
                         "est_seconds": 1,
                     },
-                    "achieved_level": None if dry_run else level,
-                    "verification": None
-                    if dry_run
-                    else {
+                    "achieved_level": level,
+                    "verification": {
                         "passed": True,
                         "strategy": "full_read",
                         "bytes_checked": int(row["device"]["size_bytes"]),

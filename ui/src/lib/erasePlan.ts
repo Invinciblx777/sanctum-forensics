@@ -31,6 +31,33 @@ export const METHOD_LABELS: Record<string, string> = {
   SED_CRYPTO_ERASE: 'SED cryptographic erase (Opal)',
 }
 
+/** Methods the host writes itself, so the host can read the pattern back. */
+const HOST_OVERWRITES: ReadonlySet<string> = new Set([
+  'SINGLE_PASS_OVERWRITE',
+  'DOD_5220_22_M_3PASS',
+])
+
+/** Methods that change the key rather than the data: verified by change, not pattern. */
+const CRYPTOGRAPHIC: ReadonlySet<string> = new Set([
+  'ATA_SANITIZE_CRYPTO_SCRAMBLE',
+  'NVME_FORMAT_SES1',
+  'SED_CRYPTO_ERASE',
+])
+
+/**
+ * How a method's result is checked, in the words the certificate uses.
+ *
+ * Stated before the run so the operator knows what "verified" will mean for
+ * this device: a host read-back of the written pattern, a sampled check that
+ * the data changed, or the drive's own completion status plus a sampled read.
+ */
+export function plannedVerification(method: string | null | undefined): string {
+  if (!method) return 'not planned: no method is reachable'
+  if (HOST_OVERWRITES.has(method)) return 'Read-back of the written pattern'
+  if (CRYPTOGRAPHIC.has(method)) return 'Sampled windows must change; device completion status'
+  return 'Device completion status, then a sampled read-back'
+}
+
 /** The label for a method id, falling back to the id itself, never to blank. */
 export function methodLabel(method: string | null | undefined): string {
   if (!method) return 'no method'
@@ -83,18 +110,17 @@ export function flashOf(row: DeviceRow | null): {
 export function eraseBody(
   path: string,
   level: Level,
-  dryRun: boolean,
   typedSerial: string,
-  authorizationId = '',
+  authorizationId: string,
 ): EraseDriveBody {
-  // A dry run never carries a serial or an authorization: it has no use for
-  // either, and sending one would suggest a simulation can be authorized.
+  // Always a real erase of the selected device. The serial and the server's
+  // one-use authorization travel with every request; the server refuses one
+  // that is missing either, and there is no mode that needs neither.
   return {
     path,
     level,
-    dry_run: dryRun,
-    typed_serial: dryRun ? '' : typedSerial,
-    ...(dryRun ? {} : { authorization_id: authorizationId }),
+    typed_serial: typedSerial,
+    authorization_id: authorizationId,
   }
 }
 

@@ -1,6 +1,6 @@
 /**
  * The executive summary counts only what the case record says, and never
- * counts a dry run as an erasure.
+ * counts a historical rehearsal record as an erasure.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -46,21 +46,22 @@ function detail(operations: OperationRecord[], chain = 'VALID', signed = [true])
 
 const platform = { limitations: ['Overwrite cannot reach remapped flash.'] } as PlatformStatus
 
-test('a dry run is never counted as an erasure', () => {
+test('a historical rehearsal record is never counted as an erasure', () => {
   const s = executiveSummary(detail([op('erase-drive', 'complete', { dry_run: true })]), platform)
-  assert.ok(s.erased.some((line) => line.includes('dry run')))
+  assert.ok(s.erased.some((line) => line.includes('historical rehearsal record')))
   assert.ok(!s.erased.some((line) => line.includes('drive sanitization completed')))
-  assert.ok(s.unverified.some((line) => line.includes('Dry runs prove the plan')))
 })
 
-test('a real completed erase is counted', () => {
-  const s = executiveSummary(detail([op('erase-drive', 'complete', { dry_run: false })]), platform)
+test('a completed erase this build ran is counted: every one is real', () => {
+  const s = executiveSummary(detail([op('erase-drive', 'complete', {})]), platform)
   assert.ok(s.erased.includes('1 drive sanitization completed'))
+  const files = executiveSummary(detail([op('erase-files', 'complete', {})]), platform)
+  assert.ok(!files.erased.some((line) => /dry run|rehearsal/.test(line)))
 })
 
-test('a missing dry_run flag is treated as a dry run', () => {
-  const s = executiveSummary(detail([op('erase-files', 'complete', {})]), platform)
-  assert.ok(s.erased.some((line) => line.includes('dry run')))
+test('a legacy real erase record still counts as real', () => {
+  const s = executiveSummary(detail([op('erase-drive', 'complete', {})]), platform)
+  assert.ok(s.erased.includes('1 drive sanitization completed'))
 })
 
 test('recovered artifacts are summed over completed carves only', () => {
@@ -135,10 +136,16 @@ test('each unvalidated or unavailable capability is named with its state', () =>
   assert.ok(NOT_PHYSICALLY_VALIDATED.some((line) => /No macOS physical device run is recorded/.test(line)))
 })
 
-test('the judge summary never counts a dry run as an erasure', () => {
+test('the judge summary never counts a historical rehearsal as an erasure', () => {
   const summary = judgeSummary(detail([op('erase-drive', 'complete', { dry_run: true })]), null, 'VALID')
   assert.ok(!summary.erasure.some((line) => /drive sanitization completed/.test(line)))
-  assert.ok(summary.erasure.some((line) => line.includes('dry run')))
+  assert.ok(summary.erasure.some((line) => line.includes('historical rehearsal')))
+})
+
+test('the safety lines describe real operation, not a dry-run default', () => {
+  const summary = judgeSummary(detail([]), null, 'VALID')
+  assert.ok(!summary.safety.some((line) => /dry run is the default/i.test(line)))
+  assert.ok(summary.safety.some((line) => /no rehearsal mode/.test(line)))
 })
 
 test('no judge summary line states a percentage', () => {
@@ -148,7 +155,7 @@ test('no judge summary line states a percentage', () => {
 })
 
 test('a write-seam refusal is BLOCKED on the overview, never a failed or partial erase', () => {
-  const refused = { ...op('erase-drive', 'failed', { dry_run: false }), error_kind: 'WorkflowGateRefused' }
+  const refused = { ...op('erase-drive', 'failed', {}), error_kind: 'WorkflowGateRefused' }
   const s = executiveSummary(detail([refused]), platform)
   assert.ok(s.erased.some((line) => /BLOCKED by a safety refusal before any write; nothing was erased/.test(line)))
   for (const line of s.erased) {
@@ -159,8 +166,8 @@ test('a write-seam refusal is BLOCKED on the overview, never a failed or partial
 })
 
 test('an erase that started and failed, and one stopped on request, are said apart', () => {
-  const failed = { ...op('erase-drive', 'failed', { dry_run: false }), error_kind: 'OverwriteIncomplete' }
-  const stopped = op('erase-drive', 'cancelled', { dry_run: false })
+  const failed = { ...op('erase-drive', 'failed', {}), error_kind: 'OverwriteIncomplete' }
+  const stopped = op('erase-drive', 'cancelled', {})
   const s = executiveSummary(detail([failed, stopped]), platform)
   assert.ok(s.erased.some((line) => /^1 erase FAILED/.test(line)))
   assert.ok(s.erased.some((line) => /stopped on request \(CANCELLED\)/.test(line)))
@@ -168,7 +175,7 @@ test('an erase that started and failed, and one stopped on request, are said apa
 })
 
 test('a completed run whose read-back FAILED is not counted as completed', () => {
-  const run = { ...op('erase-drive', 'complete', { dry_run: false }), verification_passed: false }
+  const run = { ...op('erase-drive', 'complete', {}), verification_passed: false }
   const s = executiveSummary(detail([run]), platform)
   assert.ok(!s.erased.some((line) => line.includes('drive sanitization completed')))
   assert.ok(s.erased.some((line) => /read-back verification FAILED/.test(line)))

@@ -118,14 +118,16 @@ def test_posting_a_resume_for_a_firmware_job_is_refused(
 ) -> None:
     _plan(services, "erase-drive-fw", "ATA_SANITIZE_BLOCK_ERASE")
 
-    answer = client.post("/jobs/erase-drive-fw/resume", json={"dry_run": True})
+    answer = client.post(
+        "/jobs/erase-drive-fw/resume", json={"typed_serial": "SYN-PURGE-1"}
+    )
 
     assert answer.status_code == 409, answer.text
     assert answer.json()["detail"]["kind"] == "ResumeNotAvailable"
 
 
 # --------------------------------------------------------------------------
-# A resume keeps both gates
+# A resume keeps every gate
 # --------------------------------------------------------------------------
 
 
@@ -137,24 +139,32 @@ def test_a_real_resume_without_a_typed_serial_is_refused(
     _checkpoint(services, "erase-drive-abc", 1024)
 
     answer = client.post(
-        "/jobs/erase-drive-abc/resume", json={"dry_run": False, "typed_serial": ""}
+        "/jobs/erase-drive-abc/resume", json={"typed_serial": ""}
     )
 
     assert answer.status_code == 409
     assert answer.json()["detail"]["kind"] == "ConfirmationMismatch"
 
 
-def test_a_resume_defaults_to_a_dry_run(
+def test_a_resume_without_an_authorization_is_refused(
     client: TestClient, services: AppServices
 ) -> None:
-    """A body that omits the flag simulates, as everywhere else."""
+    """There is no rehearsal resume: an empty body is refused, not simulated."""
     _plan(services, "erase-drive-abc", "SINGLE_PASS_OVERWRITE")
     _checkpoint(services, "erase-drive-abc", 1024)
 
-    answer = client.post("/jobs/erase-drive-abc/resume", json={})
-
-    assert answer.status_code == 200, answer.text
-    assert answer.json()["dry_run"] is True
+    empty = client.post("/jobs/erase-drive-abc/resume", json={})
+    assert empty.status_code == 409, empty.text
+    unauthorized = client.post(
+        "/jobs/erase-drive-abc/resume", json={"typed_serial": "SYN-PURGE-1"}
+    )
+    assert unauthorized.status_code == 409, unauthorized.text
+    assert unauthorized.json()["detail"]["kind"] == "WorkflowGateRefused"
+    rehearsal = client.post(
+        "/jobs/erase-drive-abc/resume",
+        json={"typed_serial": "SYN-PURGE-1", "dry_run": True},
+    )
+    assert rehearsal.status_code == 422
 
 
 def test_resume_is_in_the_helper_allowlist_on_both_paths() -> None:

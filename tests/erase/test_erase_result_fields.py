@@ -30,17 +30,11 @@ def test_a_real_run_records_device_verification_hidden_areas_and_level(
     assert result.achieved_level is SanitizationLevel.CLEAR
 
 
-def test_a_dry_run_records_no_verification_and_no_achieved_level(
-    tmp_path: Path,
-) -> None:
-    """Nothing was written, so nothing was verified and nothing was achieved."""
-    result, _, _, _, _ = run_with_calibration(
-        tmp_path, calibration=honest(), dry_run=True
-    )
+def test_a_result_has_no_rehearsal_flag(tmp_path: Path) -> None:
+    """Every result is of a real run; there is no field that could say otherwise."""
+    result, _, _, _, _ = run_with_calibration(tmp_path, calibration=honest())
     assert result is not None
-    assert result.verification is None
-    assert result.achieved_level is None
-    assert result.device is not None, "the target is still named"
+    assert "dry_run" not in result.model_dump()
 
 
 def test_the_report_inputs_name_the_levels_and_the_device(tmp_path: Path) -> None:
@@ -55,13 +49,17 @@ def test_the_report_inputs_name_the_levels_and_the_device(tmp_path: Path) -> Non
     assert "covered" in inputs["hidden_areas"]
 
 
-def test_a_dry_run_certificate_input_says_nothing_was_achieved(tmp_path: Path) -> None:
-    result, _, _, _, _ = run_with_calibration(
-        tmp_path, calibration=honest(), dry_run=True
+def test_a_legacy_dry_run_flag_in_a_result_is_not_honoured_as_a_claim() -> None:
+    """New reports never print "NONE (dry run"; a legacy flag claims nothing either.
+
+    A result recorded by an earlier build with ``dry_run`` set carried no
+    verification and no achieved level. Built into a new report, the achieved
+    level is simply not recorded - never a level, never a rehearsal wording.
+    """
+    inputs = drive_report_inputs(
+        {"dry_run": True, "plan": {"level": "CLEAR"}, "achieved_level": None}
     )
-    assert result is not None
-    inputs = drive_report_inputs(result.model_dump(mode="json"))
-    assert inputs["method"]["level_achieved"].startswith("NONE (dry run")
+    assert inputs["method"]["level_achieved"] == ""
     assert inputs["verification"] == {}
 
 

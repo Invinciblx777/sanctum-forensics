@@ -30,7 +30,7 @@ performed" - this measures the controller's behaviour, not the state of the
 cells.
 
 **This is destructive.** It writes twice over a region of the target. It runs
-only after the confirmation gates, and never in a dry run.
+only after the confirmation gates, and never on a firmware method or a resume.
 """
 
 from __future__ import annotations

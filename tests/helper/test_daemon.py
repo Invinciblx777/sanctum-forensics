@@ -46,11 +46,11 @@ def test_the_operation_allowlist_is_closed() -> None:
         "detect_hidden_areas",
         "run_erase",
         # Continues an interrupted overwrite from its recorded checkpoint. It
-        # writes to the medium, so it keeps both destructive gates.
+        # writes to the medium, so it keeps every destructive gate.
         "resume_erase",
         "acquire_image",
         # Writes a recorded backup image onto a device. Gated at the write seam
-        # by helper.authorization.revalidate_restore; dry-run by default.
+        # by helper.authorization.revalidate_restore; always a real restore.
         "run_restore",
         "prepare_device",
         # Read-only: a drive's native and accessible maxima, for the HPA/DCO
@@ -58,7 +58,7 @@ def test_the_operation_allowlist_is_closed() -> None:
         "discover_hidden_area",
         # The only operation that changes a drive's HPA. Gated at the write
         # seam by helper.authorization.revalidate_hpa (an ``hpa``-kind
-        # authorization only); dry-run by default. Never a DCO change.
+        # authorization only); always a real change. Never a DCO change.
         "run_hpa_change",
     }
 
@@ -121,76 +121,42 @@ def _device(serial: str = "SYN-1") -> Any:
         "tests/platform/ pins"
     ),
 )
-def test_run_erase_defaults_to_a_dry_run_when_the_flag_is_absent(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize(
+    "extra",
+    [{}, {"dry_run": True}, {"dry_run": False}, {"simulation": True}],
+    ids=["no-authorization", "dry_run-true", "dry_run-false", "simulation"],
+)
+def test_run_erase_never_reaches_the_engine_without_an_authorization(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, extra: dict[str, Any]
 ) -> None:
     """The gate lives behind the boundary, so the API cannot forget it.
 
-    A request that omits ``dry_run`` simulates. Checked here, in the privileged
-    process, rather than only in the layer that cannot be trusted to hold it.
+    There is no non-writing mode for a request to fall back to. A request with
+    no authorization - or one still asking for the removed rehearsal - is
+    refused here, in the privileged process, before the engine is entered.
     """
     import core.erase.drive as drive_mod
-    from core.models import EraseResult
+    from core.errors import WorkflowGateRefused
 
-    seen: dict[str, Any] = {}
-
-    def fake_execute(job: Any, capabilities: Any, *, ledger: Any) -> Any:
-        seen["dry_run"] = job.dry_run
-        seen["confirmed_serial"] = job.confirmed_serial
-
-        def generator() -> Any:
-            if False:  # pragma: no cover - makes this a generator
-                yield
-            return _result(job)
-
-        return generator()
-
-    def _result(job: Any) -> EraseResult:
-        from datetime import UTC, datetime
-
-        from core.models import (
-            EraseMethod,
-            ErasePlan,
-            ResidualRiskAssessment,
-            SanitizationLevel,
-        )
-
-        return EraseResult(
-            job_id=job.job_id,
-            method=EraseMethod.SINGLE_PASS_OVERWRITE,
-            level=SanitizationLevel.CLEAR,
-            dry_run=job.dry_run,
-            started_at=datetime.now(UTC),
-            finished_at=datetime.now(UTC),
-            bytes_written=0,
-            passes=0,
-            plan=ErasePlan(
-                method=EraseMethod.SINGLE_PASS_OVERWRITE,
-                level=SanitizationLevel.CLEAR,
-                justification="test",
-                est_seconds=1,
-            ),
-            residual_risk=ResidualRiskAssessment(
-                level="low", factors=[], purge_achieved=False, notes=""
-            ),
-        )
+    def tripwire(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("the engine was entered without an authorization")
 
     monkeypatch.setattr("core.device.enumerate.get_device", lambda path: _device())
     monkeypatch.setattr("core.device.capabilities.probe", lambda device: None)
-    monkeypatch.setattr(drive_mod, "execute", fake_execute)
+    monkeypatch.setattr(drive_mod, "execute", tripwire)
 
     daemon = HelperDaemon(operator_uid=_uid())
-    answer = daemon._dispatch(
-        "run_erase",
-        {
-            "path": "/dev/fake",
-            "job_id": "j",
-            "ledger_root": str(tmp_path / "ledger"),
-        },
-    )
-
-    assert seen["dry_run"] is True, "an omitted dry_run flag must simulate"
-    assert answer["result"]["dry_run"] is True
+    with pytest.raises(WorkflowGateRefused):
+        daemon._dispatch(
+            "run_erase",
+            {
+                "path": "/dev/fake",
+                "job_id": "j",
+                "typed_serial": "SYN-1",
+                "ledger_root": str(tmp_path / "ledger"),
+                **extra,
+            },
+        )
 
 
 @pytest.mark.skipif(
@@ -234,7 +200,6 @@ def test_run_erase_refuses_a_mismatched_serial_behind_the_boundary(
             {
                 "path": "/dev/fake",
                 "job_id": "j",
-                "dry_run": False,
                 "level": "CLEAR",
                 "typed_serial": "WHAT-THE-UI-BELIEVED",
                 "ledger_root": str(tmp_path / "ledger"),
@@ -292,11 +257,26 @@ def test_a_device_with_no_serial_is_confirmed_by_its_by_id_path(
     This asserts only that the confirmation gate is passed. What follows fails
     for want of a real device, which is a different refusal and the point.
     """
-    from core.errors import ConfirmationMismatch
+    import core.erase.drive as drive_mod
+    from core.errors import ConfirmationMismatch, WorkflowGateRefused
+
+    class ReachedEngine(Exception):
+        """The confirmation gate passed and the engine was about to run."""
+
+    def engine(job: Any, *_a: Any, **_k: Any) -> Any:
+        raise ReachedEngine(job.confirmed_serial)
 
     monkeypatch.setattr(
         "core.device.enumerate.get_device", lambda path: _serial_less_device()
     )
+    # Nothing past the gate may touch the host: the probe and the engine are
+    # replaced, so the suite never runs hdparm, lsblk or sedutil against a disk.
+    monkeypatch.setattr("core.device.capabilities.probe", lambda device: None)
+    monkeypatch.setattr(drive_mod, "execute", engine)
+    patch_probe(monkeypatch, _serial_less_device())
+    # A valid authorization, so the write seam passes and the confirmation
+    # gate behind it is what this exercises.
+    authorization = make_authorization(tmp_path / "a", _serial_less_device())
 
     daemon = HelperDaemon(operator_uid=_uid())
     with pytest.raises(Exception) as caught:  # noqa: B017 - the kind is the assertion
@@ -305,12 +285,15 @@ def test_a_device_with_no_serial_is_confirmed_by_its_by_id_path(
             {
                 "path": "/dev/fake",
                 "job_id": "j",
-                "dry_run": False,
+                "level": "CLEAR",
                 "typed_serial": "/dev/disk/by-id/usb-SYNTHETIC_no_serial-0:0",
                 "ledger_root": str(tmp_path / "ledger"),
+                **authorization,
             },
         )
 
+    assert not isinstance(caught.value, WorkflowGateRefused), caught.value
+    assert isinstance(caught.value, ReachedEngine), caught.value
     assert not isinstance(caught.value, ConfirmationMismatch), (
         "the by-id path is the only confirmation value a serial-less device has; "
         f"refusing it makes the device unerasable: {caught.value}"
@@ -351,7 +334,6 @@ def test_a_serial_less_device_still_refuses_a_wrong_confirmation(
                 {
                     "path": "/dev/fake",
                     "job_id": "j",
-                    "dry_run": False,
                     "level": "CLEAR",
                     "typed_serial": typed,
                     "ledger_root": str(tmp_path / "ledger"),

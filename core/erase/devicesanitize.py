@@ -72,7 +72,6 @@ class SanitizeRequest:
     protocol: str
     mechanism: str
     device_class: str
-    dry_run: bool = True
     limitations: tuple[str, ...] = ()
     verify: VerifyConfig = field(default_factory=lambda: VerifyConfig(sample_count=256))
     est_seconds: int = 0
@@ -158,7 +157,6 @@ def run(
             "mechanism": request.mechanism,
             "device_class": request.device_class,
             "identity": request.identity,
-            "dry_run": request.dry_run,
             "plan": plan.model_dump(mode="json"),
         },
     )
@@ -172,32 +170,6 @@ def run(
         eta_seconds=0,
         message="plan recorded",
     )
-    if request.dry_run:
-        ledger.record(
-            ErasePhase.ERASE,
-            "dry_run",
-            {"job_id": request.job_id, "command_not_issued": request.mechanism},
-        )
-        return EraseResult(
-            job_id=request.job_id,
-            method=request.method,
-            level=SanitizationLevel.PURGE,
-            dry_run=True,
-            started_at=started,
-            finished_at=datetime.now(UTC),
-            bytes_written=0,
-            passes=0,
-            plan=plan,
-            residual_risk=ResidualRiskAssessment(
-                level="high",
-                factors=["Dry run: no command was issued."],
-                purge_achieved=False,
-                notes="Nothing was sanitized.",
-            ),
-            limitations=[*request.limitations, "Dry run: no command was issued."],
-            device=request.device,
-        )
-
     windows: list[tuple[int, int]] = []
     before: list[str] = []
     if crypto:
@@ -285,7 +257,6 @@ def run(
         job_id=request.job_id,
         method=request.method,
         level=SanitizationLevel.PURGE,
-        dry_run=False,
         started_at=started,
         finished_at=datetime.now(UTC),
         bytes_written=0,

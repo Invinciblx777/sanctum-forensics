@@ -197,40 +197,36 @@ def _drain(generator: object) -> object:
         return finished.value
 
 
-def test_a_dry_run_creates_nothing_and_is_ledgered(tmp_path: Path) -> None:
-    from core.erase.freespace import NOT_REACHED, wipe_free_space
-    from core.ledger.chain import Ledger
+def test_the_read_only_plan_creates_nothing_and_names_the_identifier(
+    tmp_path: Path,
+) -> None:
+    from core.erase.freespace import NOT_REACHED, plan_volume
 
     point = tmp_path / "volume"
     point.mkdir()
-    ledger = Ledger(tmp_path / "ledger", tool_version="t", pubkey_fingerprint="")
-    result = _drain(
-        wipe_free_space(
-            point,
-            FreeSpaceWipeOptions(),
-            job_id="job-dry",
-            ledger=ledger,
-            volume=_unreal_volume(point),
-        )
-    )
+    volume = _unreal_volume(point)
+    plan = plan_volume(point, volume=volume)
     assert list(point.iterdir()) == []
-    assert result.dry_run is True  # type: ignore[attr-defined]
-    assert result.bytes_written == 0  # type: ignore[attr-defined]
-    assert result.verified is None  # type: ignore[attr-defined]
-    assert result.not_reached == list(NOT_REACHED)  # type: ignore[attr-defined]
-    operations = [entry.operation for entry in ledger.entries()]
-    assert "erase.freespace.preflight" in operations
-    assert "erase.freespace.complete" in operations
+    assert plan["identifier"] == volume.identifier
+    assert plan["not_reached"] == list(NOT_REACHED)
+    assert plan["free_bytes"] >= 0
 
 
-def test_a_real_run_without_the_identifier_writes_nothing(tmp_path: Path) -> None:
+def test_the_wipe_has_no_rehearsal_mode() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        FreeSpaceWipeOptions.model_validate({"dry_run": True})
+
+
+def test_a_run_without_the_identifier_writes_nothing(tmp_path: Path) -> None:
     from core.erase.freespace import wipe_free_space
 
     point = tmp_path / "volume"
     point.mkdir()
     generator = wipe_free_space(
         point,
-        FreeSpaceWipeOptions(dry_run=False, typed_identifier="wrong"),
+        FreeSpaceWipeOptions(typed_identifier="wrong"),
         job_id="job-refused",
         ledger=None,
         volume=_unreal_volume(point),
@@ -241,19 +237,11 @@ def test_a_real_run_without_the_identifier_writes_nothing(tmp_path: Path) -> Non
 
 
 def test_flash_and_reserved_blocks_are_named_before_the_fill(tmp_path: Path) -> None:
-    from core.erase.freespace import wipe_free_space
+    from core.erase.freespace import plan_volume
 
     point = tmp_path / "volume"
     point.mkdir()
-    result = _drain(
-        wipe_free_space(
-            point,
-            FreeSpaceWipeOptions(),
-            job_id="job-flash",
-            ledger=None,
-            volume=_unreal_volume(point),
-        )
-    )
-    blob = " ".join(result.limitations)  # type: ignore[attr-defined]
+    plan = plan_volume(point, volume=_unreal_volume(point))
+    blob = " ".join(plan["limitations"])
     assert "flash" in blob
-    assert "DRY RUN" in blob
+    assert list(point.iterdir()) == []

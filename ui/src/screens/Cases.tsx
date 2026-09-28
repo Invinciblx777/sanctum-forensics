@@ -5,12 +5,13 @@ import { useCase } from '../lib/caseContext'
 import {
   caseFacts,
   caseRequestFailed,
-  isSimulation,
+  isHistoricalRehearsalOp,
   operationStatus,
   operationType,
   reportsByOperation,
 } from '../lib/cases'
 import { timestamp } from '../lib/format'
+import { HISTORICAL_REHEARSAL_LABEL } from '../lib/legacy'
 import { operationLabel } from '../lib/ledger'
 import {
   Chip,
@@ -543,7 +544,9 @@ function OperationsTab({ detail }: { detail: CaseDetail }) {
                     <span className="cell-stack">
                       <span className="row" style={{ gap: 'var(--space-2)' }}>
                         {operationType(item.type)}
-                        {isSimulation(item) && <Chip>DRY RUN</Chip>}
+                        {isHistoricalRehearsalOp(item) && (
+                          <Chip>{HISTORICAL_REHEARSAL_LABEL}</Chip>
+                        )}
                       </span>
                       <span className="mono note-faint">{item.operation_id}</span>
                     </span>

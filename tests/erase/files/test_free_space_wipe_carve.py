@@ -211,7 +211,7 @@ def wipe(point: Path, ledger_root: Path, job_id: str) -> FreeSpaceWipeResult:
     volume = resolve_volume(point)
     generator = wipe_free_space(
         point,
-        FreeSpaceWipeOptions(dry_run=False, typed_identifier=volume.identifier),
+        FreeSpaceWipeOptions(typed_identifier=volume.identifier),
         job_id=job_id,
         ledger=ledger,
         protected=[ledger_root],
@@ -326,7 +326,7 @@ def test_a_cancelled_fill_removes_its_filler_and_is_ledgered(
     volume = resolve_volume(point)
     generator = wipe_free_space(
         point,
-        FreeSpaceWipeOptions(dry_run=False, typed_identifier=volume.identifier),
+        FreeSpaceWipeOptions(typed_identifier=volume.identifier),
         job_id="wipe-cancel",
         ledger=ledger,
         protected=[tmp_path / "ledger"],

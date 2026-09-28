@@ -1,4 +1,6 @@
-"""Whole-device sanitization. Destructive. Dry-run is the default.
+"""Whole-device sanitization. Destructive: every call writes to the device.
+
+The read-only decision is :func:`preview`; :func:`execute` always executes.
 
 Linux only, by construction. The overwrite path needs ``O_DIRECT`` with
 logical-block alignment, the ``BLKGETSIZE64`` ioctl and sysfs queue attributes;
@@ -465,7 +467,7 @@ def _achieved_level(
     capabilities: DeviceCapabilities,
     verification: VerificationResult,
 ) -> SanitizationLevel:
-    """The sanitization method a finished or dry-run job may put on its report.
+    """The sanitization method a finished job may put on its report.
 
     Purge is claimed only when ``method`` is itself a Purge mechanism for this
     device, as :func:`core.device.capabilities.purge_mechanisms` decides it.
@@ -474,7 +476,7 @@ def _achieved_level(
     must not say Purge for an enhanced erase on flash, or for a host overwrite
     passed in through ``EraseJob.method``, whatever path led there.
     """
-    if not (job.dry_run or verification.passed):
+    if not verification.passed:
         return SanitizationLevel.CLEAR
     if job.level is SanitizationLevel.PURGE and method not in purge_mechanisms(
         capabilities, job.device
@@ -1240,10 +1242,9 @@ def execute(
     hidden region was not covered. Exposing it is the separate, approved
     workflow in :mod:`core.device.hidden_area_workflow`.
 
-    When ``job.dry_run`` is set - the default - every check runs, the full plan
-    is emitted, and the generator returns without writing a byte. It is the same
-    code path, not a parallel one: the only difference is that the ERASE phase
-    reports the plan instead of executing it.
+    There is no non-writing mode. Every call that passes the gates writes to
+    the device; the read-only answer to "what would run" is :func:`preview`,
+    which makes the same :func:`select_method` call without a job.
 
     Raises:
         SystemDiskRefused, MountedRefused: the guard rejected the target.
@@ -1283,12 +1284,12 @@ def execute(
     # ---- write calibration -------------------------------------------------
     # Destructive: it writes twice over the first 64 MiB. It runs here and not
     # earlier because every confirmation gate above has already passed, and not
-    # at all in a dry run, on a firmware method that streams no host pattern, or
-    # on a resume - a resumed job would leave the calibration's own bytes at
-    # offset 0 in a region the erase has already covered.
+    # at all on a firmware method that streams no host pattern, or on a resume -
+    # a resumed job would leave the calibration's own bytes at offset 0 in a
+    # region the erase has already covered.
     calibration: calibrate_mod.CalibrationResult | None = None
     software = method in pattern_mod.SOFTWARE_METHODS
-    if software and not job.dry_run and resume_from is None:
+    if software and resume_from is None:
         calibration = calibrate_mod.calibrate_write(
             device.path,
             size_bytes=geometry.size_bytes,
@@ -1330,16 +1331,6 @@ def execute(
                 f"because {fill_reason}. The medium will hold "
                 f"0x{fills[-1]:02X} afterwards, not zeros."
             )
-        if job.dry_run:
-            # A dry run writes nothing, so it cannot calibrate, so its fill
-            # falls back to the transport. Saying which fill would be used
-            # without saying it is provisional would make the dry run a promise
-            # the real run might not keep.
-            limitations.append(
-                "This is a dry run, so no write calibration was taken. The fill "
-                "bytes in this plan are provisional: a real run measures the "
-                "device first and may choose differently."
-            )
 
     est_seconds, est_basis = (
         calibrate_mod.estimate_seconds(fills, geometry.size_bytes, calibration)
@@ -1377,7 +1368,6 @@ def execute(
                 "physical_block_size": geometry.physical_block_size,
             },
             "plan": plan.model_dump(mode="json"),
-            "dry_run": job.dry_run,
         },
     )
     yield _progress(
@@ -1490,92 +1480,74 @@ def execute(
             "reports. Refusing to erase part of a device and call it done."
         )
 
-    bytes_written = 0
-    passes = 0
-    unwritable: list[UnwritableRange] = []
-    hw_attested = False
-
-    if job.dry_run:
-        message = (
-            f"DRY RUN: would run {method.value} over {geometry.size_bytes} bytes "
-            f"in {pattern_mod.pass_count(method) if not firmware else 1} pass(es); "
-            f"estimated {plan.est_seconds // 60} min. No bytes written."
+    try:
+        outcome = yield from _dispatch(
+            device,
+            capabilities,
+            geometry,
+            method,
+            job_id=job.job_id,
+            io=io,
+            ledger=sink,
+            psid=psid,
+            sleep=sleep,
+            buffer_bytes=buffer_bytes,
+            checkpoint_bytes=checkpoint_bytes,
+            resume_from=resume_from,
+            fills=fills,
         )
+    except GeneratorExit:
+        # The caller closed this generator: an operator pressed Cancel, or
+        # the client that asked for the wipe went away. The write stopped at
+        # a yield point, never between an lseek and a write - but the device
+        # is now *partially* sanitized, and that is a fact about a physical
+        # object that outlives this process. It goes in the chain before the
+        # exception is allowed to continue, because a cancelled wipe that
+        # leaves no record is indistinguishable from one that never ran.
+        #
+        # No progress is yielded here and none can be: a generator that
+        # yields while closing raises RuntimeError. The ledger is the only
+        # channel out, which is the right one anyway.
         sink.record(
             ErasePhase.ERASE,
-            "dry_run",
-            {"job_id": job.job_id, "plan": plan.model_dump(mode="json")},
-        )
-        yield _progress(job.job_id, ErasePhase.ERASE, 10_000, message)
-    else:
-        try:
-            outcome = yield from _dispatch(
-                device,
-                capabilities,
-                geometry,
-                method,
-                job_id=job.job_id,
-                io=io,
-                ledger=sink,
-                psid=psid,
-                sleep=sleep,
-                buffer_bytes=buffer_bytes,
-                checkpoint_bytes=checkpoint_bytes,
-                resume_from=resume_from,
-                fills=fills,
-            )
-        except GeneratorExit:
-            # The caller closed this generator: an operator pressed Cancel, or
-            # the client that asked for the wipe went away. The write stopped at
-            # a yield point, never between an lseek and a write - but the device
-            # is now *partially* sanitized, and that is a fact about a physical
-            # object that outlives this process. It goes in the chain before the
-            # exception is allowed to continue, because a cancelled wipe that
-            # leaves no record is indistinguishable from one that never ran.
-            #
-            # No progress is yielded here and none can be: a generator that
-            # yields while closing raises RuntimeError. The ledger is the only
-            # channel out, which is the right one anyway.
-            sink.record(
-                ErasePhase.ERASE,
-                "cancelled",
-                {
-                    "job_id": job.job_id,
-                    "method": method.value,
-                    "note": (
-                        "Erase cancelled before completion. The device is "
-                        "PARTIALLY SANITIZED: data up to the last recorded "
-                        "checkpoint was overwritten and the remainder was not. "
-                        "No verification ran, so no sanitization level was "
-                        "achieved and no certificate is issued for this job."
-                        + (
-                            ""
-                            if method in pattern_mod.SOFTWARE_METHODS
-                            else " This method runs inside the drive's own "
-                            "firmware: cancelling stopped this tool from "
-                            "watching it, and does not stop the drive. Re-probe "
-                            "the device before drawing any conclusion about it."
-                        )
-                    ),
-                    "resumable": method in pattern_mod.SOFTWARE_METHODS,
-                },
-            )
-            raise
-        bytes_written = outcome[0]
-        passes = outcome[1]
-        unwritable = outcome[2]
-        limitations.extend(outcome[3])
-        hw_attested = outcome[4]
-        sink.record(
-            ErasePhase.ERASE,
-            "complete",
+            "cancelled",
             {
                 "job_id": job.job_id,
                 "method": method.value,
-                "bytes_written": bytes_written,
-                "unwritable_ranges": len(unwritable),
+                "note": (
+                    "Erase cancelled before completion. The device is "
+                    "PARTIALLY SANITIZED: data up to the last recorded "
+                    "checkpoint was overwritten and the remainder was not. "
+                    "No verification ran, so no sanitization level was "
+                    "achieved and no certificate is issued for this job."
+                    + (
+                        ""
+                        if method in pattern_mod.SOFTWARE_METHODS
+                        else " This method runs inside the drive's own "
+                        "firmware: cancelling stopped this tool from "
+                        "watching it, and does not stop the drive. Re-probe "
+                        "the device before drawing any conclusion about it."
+                    )
+                ),
+                "resumable": method in pattern_mod.SOFTWARE_METHODS,
             },
         )
+        raise
+    bytes_written = outcome[0]
+    passes = outcome[1]
+    unwritable: list[UnwritableRange] = outcome[2]
+    limitations.extend(outcome[3])
+    hw_attested = outcome[4]
+    sink.record(
+        ErasePhase.ERASE,
+        "complete",
+        {
+            "job_id": job.job_id,
+            "method": method.value,
+            "bytes_written": bytes_written,
+            "unwritable_ranges": len(unwritable),
+        },
+    )
 
     # ---------------- HIDDEN_AREA_RESTORE ----------------
     # Nothing to restore, ever: this erase did not change the HPA. The entry
@@ -1594,28 +1566,14 @@ def execute(
     )
 
     # ---------------- VERIFY ----------------
-    verify_seconds = 0.0
-    if job.dry_run:
-        verification = VerificationResult(
-            passed=True,
-            strategy=verify_mod.choose_strategy(
-                geometry.size_bytes, method, verify_config
-            ),
-            bytes_checked=0,
-            sample_count=0,
-            confidence_bp=0,
-            failed_offsets=[],
-            probability_note="Dry run: nothing was written, so nothing was verified.",
-        )
-    else:
-        # `fills` matters: on a zero-eliding controller the medium holds 0xA5,
-        # and verifying the method's default 0x00 would fail a good erase - or,
-        # worse, pass a bad one on a device where the FTL answers zero for free.
-        verify_started = time.monotonic()
-        verification = verify_mod.verify(
-            device, method, config=verify_config, io=io, fills=fills
-        )
-        verify_seconds = time.monotonic() - verify_started
+    # `fills` matters: on a zero-eliding controller the medium holds 0xA5, and
+    # verifying the method's default 0x00 would fail a good erase - or, worse,
+    # pass a bad one on a device where the FTL answers zero for free.
+    verify_started = time.monotonic()
+    verification = verify_mod.verify(
+        device, method, config=verify_config, io=io, fills=fills
+    )
+    verify_seconds = time.monotonic() - verify_started
     sink.record(
         ErasePhase.VERIFY,
         "result",
@@ -1661,7 +1619,6 @@ def execute(
         job_id=job.job_id,
         method=method,
         level=job.level,
-        dry_run=job.dry_run,
         started_at=started_at,
         finished_at=datetime.now(UTC),
         bytes_written=bytes_written,
@@ -1676,8 +1633,8 @@ def execute(
         physical_block_size=geometry.physical_block_size,
         hidden_areas=hidden,
         hidden_covered=hidden_covered,
-        verification=None if job.dry_run else verification,
-        achieved_level=None if job.dry_run else achieved,
+        verification=verification,
+        achieved_level=achieved,
     )
     sink.record(
         ErasePhase.REPORT,

@@ -1,10 +1,11 @@
 """The certificate page says what the record supports, and nothing more.
 
 The headline in the coloured band is the line a reader takes away, so each
-case that must not read as a sanitized medium is pinned here: a dry run, a
-simulation on a host file, a failed read-back, a run with no read-back, and a
-job that did not complete. The PDF streams are uncompressed, so the words are
-checked in the bytes.
+case that must not read as a sanitized medium is pinned here: a failed
+read-back, a run with no read-back, a job that did not complete, and - for
+reports signed by earlier builds, which are historical evidence and must stay
+readable - a rehearsal recorded as "dry run" or "SIMULATION". The PDF streams
+are uncompressed, so the words are checked in the bytes.
 """
 
 from __future__ import annotations
@@ -48,7 +49,7 @@ def test_the_page_carries_the_sha256_of_the_signed_file() -> None:
                 },
                 "verification": {},
             },
-            b"Dry run: nothing was written",
+            b"Rehearsal record: nothing was written",
         ),
         (
             {
@@ -71,10 +72,21 @@ def test_the_page_carries_the_sha256_of_the_signed_file() -> None:
         ),
         (
             {"limitations": ["DRY RUN / NO PHYSICAL DEVICE MODIFIED: host file."]},
-            b"Dry run: no device was sanitized",
+            b"Rehearsal record: no device was sanitized",
+        ),
+        (
+            {"limitations": ["SIMULATION / NO PHYSICAL DEVICE MODIFIED: host file."]},
+            b"Rehearsal record: no device was sanitized",
         ),
     ],
-    ids=["dry-run", "failed-read-back", "no-read-back", "job-failed", "host-file"],
+    ids=[
+        "legacy-dry-run",
+        "failed-read-back",
+        "no-read-back",
+        "job-failed",
+        "legacy-dry-run-host-file",
+        "legacy-simulation-host-file",
+    ],
 )
 def test_nothing_short_of_a_verified_run_is_headlined_as_one(
     overrides: dict[str, Any], headline: bytes

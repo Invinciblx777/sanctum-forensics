@@ -21,11 +21,33 @@ is the only thing that ties the six phase entries to the job that produced them.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
+import pytest
+from api.deps import AppServices
 from api.routes import jobs as jobs_route
 from fastapi.testclient import TestClient
 
-from tests.api.conftest import RecordingHelper
+from tests.api.conftest import RecordingHelper, authorize
+
+
+@pytest.fixture
+def erase(client: TestClient, services: AppServices) -> Any:
+    """Start one authorized erase of the synthetic device; return the answer."""
+
+    def start() -> dict[str, Any]:
+        answer = client.post(
+            "/jobs/erase-drive",
+            json={
+                "path": "/dev/sdz",
+                "typed_serial": "SYN-PURGE-1",
+                "authorization_id": authorize(client, services),
+            },
+        )
+        assert answer.status_code == 200, answer.text
+        return dict(answer.json())
+
+    return start
 
 
 def _run_erase_params(helper: RecordingHelper) -> dict[str, object]:
@@ -36,28 +58,28 @@ def _run_erase_params(helper: RecordingHelper) -> dict[str, object]:
 
 
 def test_the_helper_receives_the_job_id_the_caller_was_given(
-    client: TestClient, helper: RecordingHelper
+    client: TestClient, helper: RecordingHelper, erase: Any
 ) -> None:
     """The one property every consumer of the chain depends on."""
-    accepted = client.post("/jobs/erase-drive", json={"path": "/dev/sdz"}).json()
+    accepted = erase()
     client.get(f"/jobs/{accepted['job_id']}/stream")
 
     assert _run_erase_params(helper)["job_id"] == accepted["job_id"]
 
 
 def test_the_helper_is_never_handed_a_placeholder_id(
-    client: TestClient, helper: RecordingHelper
+    client: TestClient, helper: RecordingHelper, erase: Any
 ) -> None:
     """``"pending"`` is a JobState, not an identifier. It must not reach a ledger."""
-    accepted = client.post("/jobs/erase-drive", json={"path": "/dev/sdz"}).json()
+    accepted = erase()
     client.get(f"/jobs/{accepted['job_id']}/stream")
 
     assert _run_erase_params(helper)["job_id"] != "pending"
 
 
-def test_the_returned_id_keeps_the_registry_s_own_shape(client: TestClient) -> None:
+def test_the_returned_id_keeps_the_registry_s_own_shape(erase: Any) -> None:
     """Minting it in the route must not change the id format callers already see."""
-    accepted = client.post("/jobs/erase-drive", json={"path": "/dev/sdz"}).json()
+    accepted = erase()
 
     job_id = accepted["job_id"]
     assert job_id.startswith("erase-drive-")
@@ -65,10 +87,10 @@ def test_the_returned_id_keeps_the_registry_s_own_shape(client: TestClient) -> N
 
 
 def test_the_job_is_filed_in_the_registry_under_that_same_id(
-    client: TestClient,
+    client: TestClient, erase: Any
 ) -> None:
     """A job the route named and the registry filed differently is unreachable."""
-    accepted = client.post("/jobs/erase-drive", json={"path": "/dev/sdz"}).json()
+    accepted = erase()
 
     status = client.get(f"/jobs/{accepted['job_id']}")
     assert status.status_code == 200
@@ -76,10 +98,10 @@ def test_the_job_is_filed_in_the_registry_under_that_same_id(
 
 
 def test_progress_records_carry_the_job_id_the_caller_can_stream(
-    client: TestClient,
+    client: TestClient, erase: Any
 ) -> None:
     """The helper echoes the id back into every Progress record it returns."""
-    accepted = client.post("/jobs/erase-drive", json={"path": "/dev/sdz"}).json()
+    accepted = erase()
     client.get(f"/jobs/{accepted['job_id']}/stream")
 
     latest = client.get(f"/jobs/{accepted['job_id']}").json()["latest"]

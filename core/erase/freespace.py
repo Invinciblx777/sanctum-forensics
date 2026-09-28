@@ -1,4 +1,4 @@
-"""Free-space wipe for a mounted volume (M2). Destructive. Dry-run is the default.
+"""Free-space wipe for a mounted volume (M2). Destructive: every call writes.
 
 What it does: creates one directory of its own on the volume, fills the volume's
 unallocated space with :data:`FILL_BYTE` through files in that directory until
@@ -27,6 +27,10 @@ wiped on an assumption.
 **The pattern is 0xA5, not zero.** Some flash controllers acknowledge a zero fill
 without programming the cells (``docs/limitations.md``, "Some controllers do not
 program a zero fill at all"); a non-zero byte has to be written.
+
+Two entry points. :func:`plan_volume` is read-only: it resolves the volume,
+applies every refusal and reports the identifier the operator must type.
+:func:`wipe_free_space` always fills; there is no non-writing mode.
 
 Linux only: the volume is identified from ``/proc/mounts``.
 """
@@ -61,6 +65,7 @@ __all__ = [
     "NOT_REACHED",
     "SUPPORTED",
     "FREE_SPACE_PLATFORMS",
+    "plan_volume",
     "resolve_volume",
     "wipe_free_space",
 ]
@@ -246,6 +251,66 @@ def _progress(
     )
 
 
+def plan_volume(
+    mount_point: Path | str,
+    *,
+    protected: Sequence[Path] = (),
+    volume: VolumeInfo | None = None,
+) -> dict[str, Any]:
+    """Resolve a volume and apply every refusal, writing nothing. Read-only.
+
+    What the operator reads before a wipe: the filesystem, the identifier they
+    must type to confirm, the free space the fill will cover, and what it will
+    not reach. The refusals :func:`wipe_free_space` applies run here too, so a
+    volume this plans is one the wipe accepts once the identifier is typed.
+
+    Raises:
+        SystemDiskRefused, UnsupportedCapability, PlatformUnsupported: the
+        volume would be refused by the wipe.
+    """
+    target = volume or resolve_volume(mount_point)
+    guard.assert_volume_wipeable(target, protected=protected)
+    free_before, blocks_before = _free(target.mount_point)
+    return {
+        "volume": target.model_dump(mode="json"),
+        "filesystem": SUPPORTED[target.fs_type],
+        "identifier": target.identifier,
+        "fill_byte": FILL_BYTE,
+        "free_bytes": free_before,
+        "free_blocks_bytes": blocks_before,
+        "not_reached": list(NOT_REACHED),
+        "limitations": _limitations(target, free_before, blocks_before),
+    }
+
+
+def _limitations(
+    target: VolumeInfo, free_before: int, blocks_before: int
+) -> list[str]:
+    """What a fill of this volume cannot promise, measured now."""
+    limitations: list[str] = []
+    if target.trim_likely is True:
+        limitations.append(
+            "The volume is on flash that likely remaps writes. The fill reaches "
+            "the logical blocks the filesystem calls free; the flash translation "
+            "layer decides which physical pages receive it, and pages holding "
+            "old data may not be among them. Only a firmware sanitize or a "
+            "cryptographic erase of the whole device reaches those."
+        )
+    elif target.trim_likely is None:
+        limitations.append(
+            "Whether the volume is on flash could not be determined; if it is, "
+            "the fill may not reach pages the translation layer has remapped."
+        )
+    reserved = blocks_before - free_before
+    if reserved > 0:
+        limitations.append(
+            f"{reserved} bytes of free blocks are reserved for root on this "
+            "volume. This fill runs unprivileged, stops at ENOSPC while they are "
+            "still free, and does not write them."
+        )
+    return limitations
+
+
 def wipe_free_space(
     mount_point: Path | str,
     options: FreeSpaceWipeOptions | None = None,
@@ -274,36 +339,14 @@ def wipe_free_space(
     started_at = datetime.now(UTC)
     target = volume or resolve_volume(mount_point)
     guard.assert_volume_wipeable(target, protected=protected)
-    if not settings.dry_run:
-        guard.assert_volume_confirmed(target, settings.typed_identifier)
+    guard.assert_volume_confirmed(target, settings.typed_identifier)
 
     free_before, blocks_before = _free(target.mount_point)
-    limitations: list[str] = []
-    if target.trim_likely is True:
-        limitations.append(
-            "The volume is on flash that likely remaps writes. The fill reaches "
-            "the logical blocks the filesystem calls free; the flash translation "
-            "layer decides which physical pages receive it, and pages holding "
-            "old data may not be among them. Only a firmware sanitize or a "
-            "cryptographic erase of the whole device reaches those."
-        )
-    elif target.trim_likely is None:
-        limitations.append(
-            "Whether the volume is on flash could not be determined; if it is, "
-            "the fill may not reach pages the translation layer has remapped."
-        )
-    reserved = blocks_before - free_before
-    if reserved > 0:
-        limitations.append(
-            f"{reserved} bytes of free blocks are reserved for root on this "
-            "volume. This fill runs unprivileged, stops at ENOSPC while they are "
-            "still free, and does not write them."
-        )
+    limitations = _limitations(target, free_before, blocks_before)
 
     base = {
         "job_id": job_id,
         "volume": target.model_dump(mode="json"),
-        "dry_run": settings.dry_run,
         "fill_byte": FILL_BYTE,
         "free_bytes_before": free_before,
         "free_blocks_bytes_before": blocks_before,
@@ -323,7 +366,6 @@ def wipe_free_space(
         job_id=job_id,
         started_at=started_at,
         finished_at=started_at,
-        dry_run=settings.dry_run,
         volume=target,
         fill_byte=FILL_BYTE,
         free_bytes_before=free_before,
@@ -331,19 +373,6 @@ def wipe_free_space(
         not_reached=list(NOT_REACHED),
         limitations=limitations,
     )
-
-    if settings.dry_run:
-        result.stopped_by = "dry_run"
-        result.free_bytes_at_full = free_before
-        result.free_blocks_bytes_at_full = blocks_before
-        result.free_bytes_after = free_before
-        result.limitations.append(
-            "DRY RUN: nothing was written. Type the identifier above to run the wipe."
-        )
-        result.finished_at = datetime.now(UTC)
-        _append(ledger, operator, "complete", base | _summary(result))
-        yield _progress(job_id, "complete", 10_000, 0, free_before, "dry run")
-        return result
 
     state = _FillState(
         directory=Path(target.mount_point) / f".sanctum-freespace-{job_id}"

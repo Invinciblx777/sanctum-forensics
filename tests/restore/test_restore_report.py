@@ -26,7 +26,7 @@ def test_a_restore_report_carries_every_section(
     plan = plan_restore(record, file_target_identity(target_path))
     target = FileBlockTarget(target_path)
     _, result = drain(
-        execute_restore(record, plan, target, job_id="r", ledger=ledger, dry_run=False)
+        execute_restore(record, plan, target, job_id="r", ledger=ledger)
     )
     target.close()
     report = build_restore_report(

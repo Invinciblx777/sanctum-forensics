@@ -571,7 +571,6 @@ def test_a_real_windows_change_is_volatile_verified_and_ledgered(
             plan,
             win,
             device=_win_device(),
-            dry_run=False,
             typed_serial=WIN_SERIAL,
             ledger=ledger,
         )
@@ -599,7 +598,6 @@ def test_read_native_max_immediately_precedes_set_max(
             plan,
             win,
             device=_win_device(),
-            dry_run=False,
             typed_serial=WIN_SERIAL,
             ledger=_ledger(tmp_path),
         )
@@ -619,7 +617,6 @@ def test_a_permanent_change_clears_the_volatile_bit_only_when_planned(
             plan,
             win,
             device=_win_device(),
-            dry_run=False,
             typed_serial=WIN_SERIAL,
             ledger=_ledger(tmp_path),
         )
@@ -636,7 +633,6 @@ def test_the_dco_is_never_modified(
             plan,
             win,
             device=_win_device(),
-            dry_run=False,
             typed_serial=WIN_SERIAL,
             ledger=_ledger(tmp_path),
         )
@@ -647,19 +643,27 @@ def test_the_dco_is_never_modified(
     assert dco_features <= {DCO_IDENTIFY}, "only DEVICE CONFIGURATION IDENTIFY is sent"
 
 
-def test_a_dry_run_changes_nothing(
+def test_the_engine_has_no_non_writing_mode(
     win: WindowsHpaBackend, ata: FakeAta, tmp_path: Path
 ) -> None:
+    """A rehearsal flag is not a parameter; the typed serial is required."""
     ledger = _ledger(tmp_path)
     plan = _win_plan(win)
-    progress, result = _run(execute(plan, win, device=_win_device(), ledger=ledger))
+    with pytest.raises(TypeError):
+        _run(execute(plan, win, device=_win_device(), ledger=ledger))  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        _run(
+            execute(  # type: ignore[call-arg]
+                plan,
+                win,
+                device=_win_device(),
+                typed_serial=WIN_SERIAL,
+                dry_run=True,
+                ledger=ledger,
+            )
+        )
     assert ata.set_max_calls == []
     assert ata.accessible_max_lba == ACCESSIBLE
-    assert CMD_SET_MAX not in {command for command, _ in ata.commands}
-    assert result.outcome == "DRY_RUN" and result.dry_run
-    assert result.device_modified == "no"
-    assert "DRY RUN" in progress[-1]["message"]
-    assert _ops(ledger) == ["hpa.plan", "hpa.dry_run"]
 
 
 def test_a_real_run_needs_the_typed_serial(
@@ -674,7 +678,6 @@ def test_a_real_run_needs_the_typed_serial(
                     plan,
                     win,
                     device=_win_device(),
-                    dry_run=False,
                     typed_serial=typed,
                     ledger=ledger,
                 )
@@ -692,7 +695,6 @@ def test_the_typed_serial_is_case_and_space_tolerant(
             plan,
             win,
             device=_win_device(),
-            dry_run=False,
             typed_serial=f"  {WIN_SERIAL.lower()} ",
             ledger=_ledger(tmp_path),
         )
@@ -713,7 +715,6 @@ def test_a_stale_plan_is_refused(
                 plan,
                 win,
                 device=_win_device(),
-                dry_run=False,
                 typed_serial=WIN_SERIAL,
                 ledger=ledger,
             )
@@ -723,13 +724,22 @@ def test_a_stale_plan_is_refused(
     assert "hpa.blocked" in _ops(ledger)
 
 
-def test_a_dry_run_also_refuses_a_stale_plan(
+def test_a_changed_dco_makes_the_plan_stale(
     win: WindowsHpaBackend, ata: FakeAta, tmp_path: Path
 ) -> None:
     plan = _win_plan(win)
     ata.dco_max_lba = NATIVE + 7
     with pytest.raises(WorkflowGateRefused, match="DCO max LBA"):
-        _run(execute(plan, win, device=_win_device(), ledger=_ledger(tmp_path)))
+        _run(
+            execute(
+                plan,
+                win,
+                device=_win_device(),
+                typed_serial=WIN_SERIAL,
+                ledger=_ledger(tmp_path),
+            )
+        )
+    assert ata.set_max_calls == []
 
 
 def test_a_changed_identity_makes_the_plan_stale(
@@ -742,6 +752,7 @@ def test_a_changed_identity_makes_the_plan_stale(
                 plan,
                 win,
                 device=_win_device(model="ANOTHER"),
+                typed_serial=WIN_SERIAL,
                 ledger=_ledger(tmp_path),
             )
         )
@@ -750,7 +761,15 @@ def test_a_changed_identity_makes_the_plan_stale(
 def test_an_altered_plan_is_refused(win: WindowsHpaBackend, tmp_path: Path) -> None:
     plan = _win_plan(win).model_copy(update={"volatile": False})
     with pytest.raises(WorkflowGateRefused, match="altered"):
-        _run(execute(plan, win, device=_win_device(), ledger=_ledger(tmp_path)))
+        _run(
+            execute(
+                plan,
+                win,
+                device=_win_device(),
+                typed_serial=WIN_SERIAL,
+                ledger=_ledger(tmp_path),
+            )
+        )
 
 
 @pytest.mark.parametrize(
@@ -768,18 +787,16 @@ def test_a_mounted_or_system_device_is_never_touched(
     error: type[Exception],
 ) -> None:
     plan = _win_plan(win)
-    for dry_run in (True, False):
-        with pytest.raises(error):
-            _run(
-                execute(
-                    plan,
-                    win,
-                    device=_win_device(**override),
-                    dry_run=dry_run,
-                    typed_serial=WIN_SERIAL,
-                    ledger=_ledger(tmp_path),
-                )
+    with pytest.raises(error):
+        _run(
+            execute(
+                plan,
+                win,
+                device=_win_device(**override),
+                typed_serial=WIN_SERIAL,
+                ledger=_ledger(tmp_path),
             )
+        )
     assert ata.set_max_calls == []
 
 
@@ -793,7 +810,6 @@ def test_a_mounted_volume_found_at_the_write_seam_refuses(
             plan,
             win,
             device=_win_device(),
-            dry_run=False,
             typed_serial=WIN_SERIAL,
             ledger=_ledger(tmp_path),
         )
@@ -812,7 +828,15 @@ def test_a_blocked_plan_never_runs(win: WindowsHpaBackend, tmp_path: Path) -> No
         clock=_clock,
     )
     with pytest.raises(WorkflowGateRefused, match="no serial"):
-        _run(execute(plan, win, device=device, ledger=_ledger(tmp_path)))
+        _run(
+            execute(
+                plan,
+                win,
+                device=device,
+                typed_serial=device.serial,
+                ledger=_ledger(tmp_path),
+            )
+        )
 
 
 class _DriveIgnoresSetMax(WindowsHpaBackend):
@@ -833,7 +857,6 @@ def test_a_change_the_drive_did_not_apply_fails_verification(
             plan,
             backend,
             device=_win_device(),
-            dry_run=False,
             typed_serial=WIN_SERIAL,
             ledger=ledger,
         )
@@ -859,7 +882,6 @@ def test_a_refused_set_max_is_a_failure_with_an_unknown_state(
             _win_plan(backend),
             backend,
             device=_win_device(),
-            dry_run=False,
             typed_serial=WIN_SERIAL,
             ledger=ledger,
         )
@@ -877,7 +899,6 @@ def test_cancelling_after_the_command_is_ledgered(
         _win_plan(win),
         win,
         device=_win_device(),
-        dry_run=False,
         typed_serial=WIN_SERIAL,
         ledger=ledger,
     )
@@ -898,7 +919,15 @@ def test_a_linux_plan_is_refused_by_a_windows_backend(
     plan = _win_plan(win).model_copy(update={"platform": "linux"})
     plan = plan.model_copy(update={"plan_digest": plan_digest_of(plan)})
     with pytest.raises(WorkflowGateRefused, match="for linux"):
-        _run(execute(plan, win, device=_win_device(), ledger=_ledger(tmp_path)))
+        _run(
+            execute(
+                plan,
+                win,
+                device=_win_device(),
+                typed_serial=WIN_SERIAL,
+                ledger=_ledger(tmp_path),
+            )
+        )
 
 
 # --------------------------------------------------------------------------
@@ -930,7 +959,6 @@ def test_a_real_linux_change_sends_the_volatile_form(
             plan,
             linux,
             device=device,
-            dry_run=False,
             typed_serial=LINUX_SERIAL,
             ledger=_ledger(tmp_path),
         )
@@ -957,7 +985,6 @@ def test_a_permanent_linux_change_uses_the_p_prefix_only_when_planned(
             plan,
             linux,
             device=device,
-            dry_run=False,
             typed_serial=LINUX_SERIAL,
             ledger=_ledger(tmp_path),
         )
@@ -966,14 +993,19 @@ def test_a_permanent_linux_change_uses_the_p_prefix_only_when_planned(
     assert sets == [("hdparm", "-N", f"p{NATIVE + 1}", "/dev/sdq")]
 
 
-def test_a_linux_dry_run_sends_no_set(
+def test_a_linux_change_without_the_serial_sends_no_set(
     linux: LinuxHpaBackend, hdparm: StatefulHdparm, tmp_path: Path
 ) -> None:
     device = _linux_device()
     plan = plan_hpa_change(
         device, linux.discover(device), platform="linux", clock=_clock
     )
-    _run(execute(plan, linux, device=device, ledger=_ledger(tmp_path)))
+    with pytest.raises(ConfirmationMismatch):
+        _run(
+            execute(
+                plan, linux, device=device, typed_serial="", ledger=_ledger(tmp_path)
+            )
+        )
     assert all(len(call) == 3 for call in hdparm.calls)
     assert hdparm.accessible == ACCESSIBLE + 1
 
@@ -991,7 +1023,6 @@ def test_a_linux_drive_that_ignores_the_set_fails_verification(
             plan,
             linux,
             device=device,
-            dry_run=False,
             typed_serial=LINUX_SERIAL,
             ledger=_ledger(tmp_path),
         )

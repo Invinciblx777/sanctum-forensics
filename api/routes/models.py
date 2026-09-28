@@ -7,20 +7,29 @@ capability set, and cannot set a flag that would let a wipe run without a typed
 serial. Reusing the core models here would widen the attack surface of every
 endpoint to the full expressiveness of the domain.
 
-**Every destructive flag defaults to the safe value.** ``dry_run`` is ``True``
-in the model, so a request body that omits it simulates. A field that defaulted
-the other way would make a forgotten key destructive, and that is the one
-direction this cannot fail in.
+**There is no simulation switch.** Every destructive body describes a real
+operation against the selected target, and each one is gated by what a body
+cannot forge: a typed serial or identifier checked against a fresh read, and -
+for a device - a server-issued, human-approved, single-use authorization.
+
+**A body that still carries ``dry_run``, ``simulation`` or ``simulate`` is
+refused (422).** Those keys once asked for a rehearsal. Silently dropping one
+would run for real a request whose sender expected nothing to be written, so
+every request model rejects them, and every destructive model also rejects any
+other key it does not declare.
 """
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
+from core.device.guard import REMOVED_MODE_KEYS
 from core.models import DestructionRecord
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 __all__ = [
+    "DestructiveRequest",
+    "Request",
     "ApproveHiddenAreaRequest",
     "ExecuteHiddenAreaRequest",
     "OpenHiddenAreaRequest",
@@ -34,6 +43,7 @@ __all__ = [
     "ResumeEraseRequest",
     "EraseDriveRequest",
     "EraseFilesRequest",
+    "PlanFreeSpaceRequest",
     "WipeFreeSpaceRequest",
     "AcquireRequest",
     "CarveRequest",
@@ -42,7 +52,36 @@ __all__ = [
 ]
 
 
-class CaseCreateRequest(BaseModel):
+def _refuse_removed_modes(data: Any) -> Any:
+    """Reject a body that asks for the simulation mode that no longer exists."""
+    if isinstance(data, dict):
+        present = [key for key in REMOVED_MODE_KEYS if key in data]
+        if present:
+            raise ValueError(
+                f"{', '.join(present)} is not accepted: there is no simulation "
+                "or dry-run mode. Every destructive request runs against the "
+                "real device. Remove the field."
+            )
+    return data
+
+
+class Request(BaseModel):
+    """Every request body. Refuses the removed simulation switches by name."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_removed_modes(cls, data: Any) -> Any:
+        return _refuse_removed_modes(data)
+
+
+class DestructiveRequest(Request):
+    """A body that starts or authorizes a write. Undeclared keys are refused."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+
+class CaseCreateRequest(Request):
     """Body for ``POST /cases``.
 
     There is no ``created_by``. The author is the trusted local identity the
@@ -55,7 +94,7 @@ class CaseCreateRequest(BaseModel):
     description: str = Field(default="", max_length=4000)
 
 
-class EvidenceAttachRequest(BaseModel):
+class EvidenceAttachRequest(Request):
     """Body for ``POST /cases/{case_id}/evidence``.
 
     Registration only: this records that an exhibit exists and what its hashes
@@ -75,7 +114,7 @@ class EvidenceAttachRequest(BaseModel):
     state: str = Field(default="registered", max_length=32)
 
 
-class TamperDemoRequest(BaseModel):
+class TamperDemoRequest(Request):
     """Body for ``POST /ledger/tamper-demo``.
 
     ``seq`` names the entry to alter **in the scratch copy**. The production
@@ -89,26 +128,24 @@ class TamperDemoRequest(BaseModel):
     seq: int | None = None
 
 
-class EraseDriveRequest(BaseModel):
-    """Body for ``POST /jobs/erase-drive``."""
+class EraseDriveRequest(DestructiveRequest):
+    """Body for ``POST /jobs/erase-drive``. Always a real erase of ``path``."""
 
     #: Device path or by-id link. Resolved and re-read by the helper, so a
     #: stale value fails the serial check rather than erasing the wrong disk.
     path: str
     level: Literal["CLEAR", "PURGE"] = "CLEAR"
-    #: Gate one. True means nothing is written. Defaults closed.
-    dry_run: bool = True
-    #: Gate two. The operator types the device serial; the helper compares it
-    #: against the serial it reads itself, not against anything the UI sent.
+    #: The operator types the device serial; the helper compares it against
+    #: the serial it reads itself, not against anything the UI sent.
     typed_serial: str = ""
-    #: Gate three, required when ``dry_run`` is false: the id of an approved
-    #: workflow record from ``/workflow/erase-drive``. See api.authorization.
+    #: Required: the id of an approved workflow record from
+    #: ``/workflow/erase-drive``. See api.authorization.
     authorization_id: str = ""
     case_id: str = ""
     operator: str = "sanctum"
 
 
-class OpenEraseWorkflowRequest(BaseModel):
+class OpenEraseWorkflowRequest(Request):
     """Body for ``POST /workflow/erase-drive``."""
 
     path: str
@@ -117,7 +154,7 @@ class OpenEraseWorkflowRequest(BaseModel):
     backup_image: str
 
 
-class ApproveEraseRequest(BaseModel):
+class ApproveEraseRequest(DestructiveRequest):
     """Body for ``POST /workflow/erase-drive/{id}/approve``."""
 
     typed_serial: str = ""
@@ -125,14 +162,12 @@ class ApproveEraseRequest(BaseModel):
     acknowledge_data_destruction: bool = False
 
 
-class EraseFilesRequest(BaseModel):
-    """Body for ``POST /jobs/erase-files``."""
+class EraseFilesRequest(DestructiveRequest):
+    """Body for ``POST /jobs/erase-files``. Always a real erase of ``paths``."""
 
     paths: list[str] = Field(min_length=1)
-    #: Gate one.
-    dry_run: bool = True
-    #: Gate two. File erasure has no serial to type, so an explicit confirm
-    #: takes its place - the same two-gate shape as a drive wipe.
+    #: File erasure has no serial to type, so an explicit confirm takes its
+    #: place. Refused unless sent true.
     confirm: bool = False
     cleanse_metadata: bool = True
     #: Overwriting a file with more than one hard link destroys data reachable
@@ -143,8 +178,8 @@ class EraseFilesRequest(BaseModel):
     #: After the erase, find the thumbnails, recent-files entries and Trash or
     #: Recycle Bin copies the desktop kept of these files, and remove the ones
     #: tied to an erased path on evidence. On by default because the problem
-    #: this answers is the operator's; a dry run lists every trace first, and
-    #: nothing is removed without both gates.
+    #: this answers is the operator's. Only a trace tied to an erased path on
+    #: evidence is removed; every other one is reported and left alone.
     sweep_traces: bool = True
     case_id: str = ""
     operator: str = "sanctum"
@@ -161,21 +196,27 @@ class DestroyRecordRequest(DestructionRecord):
     operator: str = "sanctum"
 
 
-class WipeFreeSpaceRequest(BaseModel):
-    """Body for ``POST /jobs/wipe-free-space``."""
+class PlanFreeSpaceRequest(Request):
+    """Body for ``POST /workflow/wipe-free-space``: resolve a volume, write nothing."""
 
     #: The volume's mount point, exactly. A folder inside a volume is refused.
     mount_point: str
-    #: Gate one.
-    dry_run: bool = True
-    #: Gate two: the volume identifier a dry run reports (the filesystem UUID,
-    #: or the mount point when the volume has none).
+
+
+class WipeFreeSpaceRequest(DestructiveRequest):
+    """Body for ``POST /jobs/wipe-free-space``. Always a real fill."""
+
+    #: The volume's mount point, exactly. A folder inside a volume is refused.
+    mount_point: str
+    #: Required: the volume identifier ``POST /workflow/wipe-free-space``
+    #: reports (the filesystem UUID, or the mount point when the volume has
+    #: none).
     typed_identifier: str = ""
     operator: str = "sanctum"
 
 
-class AcquireRequest(BaseModel):
-    """Body for ``POST /jobs/acquire``. Read-only: no dry-run gate needed."""
+class AcquireRequest(Request):
+    """Body for ``POST /jobs/acquire``. Read-only: nothing is destroyed."""
 
     source: str
     dest: str
@@ -189,7 +230,7 @@ class AcquireRequest(BaseModel):
     expected_serial: str = Field(default="", max_length=128)
 
 
-class CarveRequest(BaseModel):
+class CarveRequest(Request):
     """Body for ``POST /jobs/carve``. Read-only by construction."""
 
     image: str
@@ -223,21 +264,20 @@ class CarveRequest(BaseModel):
     operator: str = "sanctum"
 
 
-class ResumeEraseRequest(BaseModel):
+class ResumeEraseRequest(DestructiveRequest):
     """Body for ``POST /jobs/{job_id}/resume``.
 
-    Both gates again. A resume writes to the medium and is not a lesser
+    Every gate again. A resume writes to the medium and is not a lesser
     operation than the run it continues.
     """
 
-    dry_run: bool = True
     typed_serial: str = ""
-    #: Required when ``dry_run`` is false. See api.authorization.
+    #: Required. See api.authorization.
     authorization_id: str = ""
     operator: str = "sanctum"
 
 
-class ReportRequest(BaseModel):
+class ReportRequest(Request):
     """Body for ``POST /reports/{job_id}``."""
 
     case_id: str = ""
@@ -254,14 +294,11 @@ class JobAccepted(BaseModel):
     job_id: str
     kind: str
     state: str
-    dry_run: bool
     #: Where to attach for live progress.
     stream_url: str
-    #: Set on every dry run so a simulation cannot be read as a wipe.
-    notice: str = ""
 
 
-class CreateBackupRequest(BaseModel):
+class CreateBackupRequest(Request):
     """Body for ``POST /workflow/backup``: record an image as a backup of a device."""
 
     #: A raw image under the evidence directory. Hashed read-only.
@@ -275,14 +312,14 @@ class CreateBackupRequest(BaseModel):
     operator: str = "sanctum"
 
 
-class OpenRestoreRequest(BaseModel):
+class OpenRestoreRequest(Request):
     """Body for ``POST /workflow/restore``: plan a restore, write nothing."""
 
     backup_id: str
     target_path: str
 
 
-class ApproveRestoreRequest(BaseModel):
+class ApproveRestoreRequest(DestructiveRequest):
     """Body for ``POST /workflow/restore/{id}/approve``."""
 
     typed_serial: str = ""
@@ -290,18 +327,16 @@ class ApproveRestoreRequest(BaseModel):
     acknowledge_data_overwrite: bool = False
 
 
-class ExecuteRestoreRequest(BaseModel):
-    """Body for ``POST /workflow/restore/{id}/execute``."""
+class ExecuteRestoreRequest(DestructiveRequest):
+    """Body for ``POST /workflow/restore/{id}/execute``. Always a real restore."""
 
-    #: Gate one. True means nothing is written. Defaults closed.
-    dry_run: bool = True
-    #: Gate two. Re-checked by the helper against the serial it reads itself.
+    #: Required. Re-checked by the helper against the serial it reads itself.
     typed_serial: str = ""
     case_id: str = ""
     operator: str = "sanctum"
 
 
-class OpenHiddenAreaRequest(BaseModel):
+class OpenHiddenAreaRequest(Request):
     """Body for ``POST /workflow/hidden-area``: discover, analyze, plan. No write."""
 
     path: str
@@ -313,7 +348,7 @@ class OpenHiddenAreaRequest(BaseModel):
     volatile: bool = True
 
 
-class ApproveHiddenAreaRequest(BaseModel):
+class ApproveHiddenAreaRequest(DestructiveRequest):
     """Body for ``POST /workflow/hidden-area/{id}/approve``."""
 
     typed_serial: str = ""
@@ -323,12 +358,10 @@ class ApproveHiddenAreaRequest(BaseModel):
     acknowledge_permanent: bool = False
 
 
-class ExecuteHiddenAreaRequest(BaseModel):
-    """Body for ``POST /workflow/hidden-area/{id}/execute``."""
+class ExecuteHiddenAreaRequest(DestructiveRequest):
+    """Body for ``POST /workflow/hidden-area/{id}/execute``. Always a real change."""
 
-    #: Gate one. True means nothing is sent to the drive. Defaults closed.
-    dry_run: bool = True
-    #: Gate two. Re-checked by the helper against the serial it reads itself.
+    #: Required. Re-checked by the helper against the serial it reads itself.
     typed_serial: str = ""
     case_id: str = ""
     operator: str = "sanctum"

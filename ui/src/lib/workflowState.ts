@@ -8,15 +8,14 @@
  * from a guess. It decides nothing: the server re-checks every gate when a job
  * starts, whatever this returns.
  *
- * Two rules keep it honest:
+ * There is one path, and it is a real operation on the selected device. There
+ * is no rehearsal mode: every job this screen starts writes to the device once
+ * the server's gates pass. The rule that keeps it honest:
  *
  * - EXECUTING and later are only derived from a job that exists. A dialog that
  *   is open, or a button that is enabled, is never shown as execution.
- * - A dry run is labelled a simulation at every state it reaches, including
- *   COMPLETE, because a completed dry run wrote nothing.
  *
- * A simulation needs no backup, so SANITIZE_PATH has no backup state. A real
- * erase does: the server verifies a backup image when the workflow opens
+ * The server verifies a backup image when the workflow opens
  * (POST /workflow/erase-drive) and the helper re-checks it before the engine
  * starts, so REAL_ERASE_PATH draws BACKUP_VERIFIED. The physical benchmark
  * write in `scripts/media_benchmark.py` has its own backup gate on top.
@@ -37,16 +36,6 @@ export type WorkflowStateName =
   | 'COMPLETE'
   | 'FAILED'
 
-/** The happy path of a simulation, in order. It needs no backup and no approval. */
-export const SANITIZE_PATH: readonly WorkflowStateName[] = [
-  'DISCOVERED',
-  'PREFLIGHT',
-  'HUMAN_APPROVAL_REQUIRED',
-  'EXECUTING',
-  'VERIFYING',
-  'COMPLETE',
-]
-
 /**
  * The happy path of a real erase. The states and their order are
  * `core/workflow.py`'s: the server derives HUMAN_APPROVAL_REQUIRED until a
@@ -64,10 +53,10 @@ export const REAL_ERASE_PATH: readonly WorkflowStateName[] = [
 ]
 
 export const BACKUP_NOTE =
-  'A real erase needs a backup image the server has hashed and sized, and a ' +
+  'Every erase needs a backup image the server has hashed and sized, and a ' +
   'recorded approval; the server enforces both (POST /workflow/erase-drive, ' +
   'then /approve). Neither proves the image is a copy of this device or who ' +
-  'approved. A simulation needs neither and writes nothing.'
+  'approved.'
 
 /** What the server's workflow endpoint reported, verbatim. */
 export interface ServerWorkflow {
@@ -92,7 +81,6 @@ export interface SanitizeFacts {
   canRun: boolean
   /** The engine's refusal for the chosen level, when it has one. */
   planRefusal: string
-  dryRun: boolean
   /** The serial-confirmation dialog is open. */
   confirming: boolean
   /** A job id exists and no terminal status has arrived. */
@@ -114,7 +102,6 @@ export interface SanitizeWorkflow {
   /** Empty unless the state is BLOCKED or FAILED. */
   whyBlocked: string[]
   nextAction: string
-  simulation: boolean
   /** The states drawn in the strip, with BLOCKED or FAILED placed where reached. */
   path: WorkflowStateName[]
 }
@@ -123,11 +110,11 @@ function label(state: WorkflowStateName): string {
   return state.replace(/_/g, ' ')
 }
 
-function pathFor(state: WorkflowStateName, real: boolean): WorkflowStateName[] {
+function pathFor(state: WorkflowStateName): WorkflowStateName[] {
   if (state === 'BLOCKED') return ['DISCOVERED', 'PREFLIGHT', 'BLOCKED']
   if (state === 'BACKUP_REQUIRED') return ['DISCOVERED', 'PREFLIGHT', 'BACKUP_REQUIRED']
   if (state === 'FAILED') return ['DISCOVERED', 'PREFLIGHT', 'HUMAN_APPROVAL_REQUIRED', 'EXECUTING', 'FAILED']
-  return [...(real ? REAL_ERASE_PATH : SANITIZE_PATH)]
+  return [...REAL_ERASE_PATH]
 }
 
 const STATE_NAMES: ReadonlySet<string> = new Set<WorkflowStateName>([
@@ -150,17 +137,15 @@ function isStateName(value: string): value is WorkflowStateName {
 
 function result(
   state: WorkflowStateName,
-  simulation: boolean,
   nextAction: string,
   whyBlocked: string[] = [],
 ): SanitizeWorkflow {
   return {
     state,
-    headline: simulation ? `${label(state)} (DRY RUN)` : label(state),
+    headline: label(state),
     whyBlocked,
     nextAction,
-    simulation,
-    path: pathFor(state, !simulation),
+    path: pathFor(state),
   }
 }
 
@@ -182,11 +167,9 @@ function refusals(facts: SanitizeFacts): string[] {
 
 export function sanitizeWorkflow(facts: SanitizeFacts): SanitizeWorkflow {
   const status = facts.status
-  // A job's own record decides the simulation label once one exists.
-  const simulation = status ? status.params?.dry_run !== false : facts.dryRun
 
   if (status && status.state !== 'running') {
-    if (status.state === 'complete' && !simulation) {
+    if (status.state === 'complete') {
       // "The job returned" is not "the medium was sanitized". The engine ends a
       // job normally even when the read-back failed, so COMPLETE is only shown
       // when verification did not fail, and says so when it settled nothing.
@@ -196,7 +179,6 @@ export function sanitizeWorkflow(facts: SanitizeFacts): SanitizeWorkflow {
       if (verification?.passed === false) {
         return result(
           'FAILED',
-          false,
           'The medium is NOT sanitized. Read the verification panel; the device is in an unknown state until checked.',
           [
             `read-back verification FAILED at ${verification.failed_offsets?.length ?? 0} sampled offset(s)`,
@@ -205,27 +187,16 @@ export function sanitizeWorkflow(facts: SanitizeFacts): SanitizeWorkflow {
       }
       return result(
         'COMPLETE',
-        false,
         verification?.passed === true
           ? 'Read the verification and the residual risk before relying on the result.'
           : 'The run finished but verification did not confirm it (inconclusive or not attempted). Do not treat the medium as verified sanitized; read the residual risk.',
       )
     }
-    if (status.state === 'complete') {
-      return result(
-        'COMPLETE',
-        simulation,
-        simulation
-          ? 'Nothing was written. Get the certificate to record the dry run.'
-          : 'Read the verification and the residual risk before relying on the result.',
-      )
-    }
-    if (!simulation && isSafetyRefusal(status.error_kind)) {
+    if (isSafetyRefusal(status.error_kind)) {
       // The helper re-checked the authorization at the write seam and refused
       // before entering the engine. That is a refusal, not a failed erase.
       return result(
         'BLOCKED',
-        false,
         'The helper refused at the write seam, before any write. The authorization is spent: open a new workflow.',
         [status.error || 'The helper refused the authorization.'],
       )
@@ -233,33 +204,26 @@ export function sanitizeWorkflow(facts: SanitizeFacts): SanitizeWorkflow {
     const why = status.error || `The job ended ${status.state}.`
     return result(
       'FAILED',
-      simulation,
-      simulation
-        ? 'The dry run stopped. Nothing was written.'
-        : 'The device is in an unknown state until checked. Read the failure.',
+      'The device is in an unknown state until checked. Read the failure.',
       [why],
     )
   }
 
   if (facts.running) {
     if (facts.phase === 'VERIFY') {
-      return result('VERIFYING', simulation, 'Wait for read-back verification to finish.')
+      return result('VERIFYING', 'Wait for read-back verification to finish.')
     }
     return result(
       'EXECUTING',
-      simulation,
-      simulation
-        ? 'The plan is being run without writing to the device.'
-        : 'Wait for the operation to finish. Do not disconnect the device.',
+      'Wait for the operation to finish. Do not disconnect the device.',
     )
   }
 
-  if (!facts.dryRun && facts.refusal) {
+  if (facts.refusal) {
     // The server refused. Say so in its words; never a generic failure.
     const refusal = facts.refusal
     return result(
       'BLOCKED',
-      false,
       `The server refused at ${refusal.workflowState || 'the workflow gate'}. ` +
         (refusal.physicalDeviceModified === false
           ? 'PHYSICAL DEVICE MODIFIED: FALSE'
@@ -268,50 +232,33 @@ export function sanitizeWorkflow(facts: SanitizeFacts): SanitizeWorkflow {
     )
   }
 
-  if (!facts.dryRun && facts.server && isStateName(facts.server.state)) {
+  if (facts.server && isStateName(facts.server.state)) {
     // The state is the server's own, from core/workflow.py:derive. This screen
     // names it and decides nothing.
     const state = facts.server.state
     const stopped = state === 'BLOCKED' || state === 'BACKUP_REQUIRED'
-    return result(
-      state,
-      false,
-      facts.server.next_action,
-      stopped ? facts.server.why_blocked : [],
-    )
+    return result(state, facts.server.next_action, stopped ? facts.server.why_blocked : [])
   }
 
   if (!facts.assessment) {
-    return result('DISCOVERED', facts.dryRun, 'Waiting for the server preflight of this device.')
+    return result('DISCOVERED', 'Waiting for the server preflight of this device.')
   }
 
   const reasons = refusals(facts)
-  // NOT AUTHORIZED blocks a real erase only: a dry run needs no raw access.
-  const privilegeOnly =
-    facts.assessment.headline === 'NOT AUTHORIZED' && reasons.every((r) => r.startsWith('Privilege'))
-  if (reasons.length && !(facts.dryRun && privilegeOnly)) {
+  if (reasons.length) {
     return result(
       'BLOCKED',
-      false,
       facts.assessment.recommended_action ||
         'Resolve every reason listed by hand, then rescan. Nothing here unmounts, elevates or retries on its own.',
       reasons,
     )
   }
-  if (facts.assessment.headline === 'NOT AUTHORIZED' && !facts.dryRun) {
-    return result('BLOCKED', false, facts.assessment.recommended_action, [facts.assessment.reason])
+  if (facts.assessment.headline === 'NOT AUTHORIZED') {
+    return result('BLOCKED', facts.assessment.recommended_action, [facts.assessment.reason])
   }
 
-  if (facts.dryRun) {
-    return result(
-      'PREFLIGHT',
-      true,
-      'Preflight passed. A dry run writes nothing and needs no approval. A real erase needs a backup image, an approval with the typed serial, and a one-use authorization from the server.',
-    )
-  }
   return result(
     'HUMAN_APPROVAL_REQUIRED',
-    false,
     facts.confirming
       ? 'Give a backup image, open the workflow, then approve with the typed serial. The server re-reads the device and refuses a mismatch.'
       : 'Nothing is written until a verified backup exists and a person approves with the typed serial.',
@@ -365,7 +312,6 @@ export interface SignedRecordWording {
  */
 export function signedRecordWording(
   state: string,
-  dryRun: boolean,
   readBackFailed = false,
 ): SignedRecordWording {
   if (state === 'complete' && readBackFailed) {
@@ -385,9 +331,7 @@ export function signedRecordWording(
       action: 'Get certificate',
       issued: 'Certificate issued',
       tone: 'success',
-      note:
-        'The certificate records what ran, how it was verified, and what it could not claim' +
-        (dryRun ? ' - for a dry run, that nothing was written.' : '.'),
+      note: 'The certificate records what ran, how it was verified, and what it could not claim.',
     }
   }
   return {

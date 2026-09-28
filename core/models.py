@@ -10,7 +10,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 __all__ = [
     "SanitizationLevel",
@@ -257,12 +257,18 @@ class ResidualRiskAssessment(BaseModel):
 
 
 class EraseJob(BaseModel):
-    """A single sanitization request against one device."""
+    """A single sanitization request against one device. Always executed.
+
+    Undeclared keys are refused, not ignored: a caller passing the removed
+    ``dry_run`` switch expects nothing to be written, and must not get a real
+    erase on the strength of a key that was silently dropped.
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     job_id: str
     device: Device
     level: SanitizationLevel
-    dry_run: bool
     confirmed_serial: str | None
     #: An explicitly requested method, or ``None`` to select from probed
     #: capability. Only the software methods may be requested; the erase layer
@@ -398,7 +404,6 @@ class EraseResult(BaseModel):
     job_id: str
     method: EraseMethod
     level: SanitizationLevel
-    dry_run: bool
     started_at: datetime
     finished_at: datetime
     bytes_written: int
@@ -420,10 +425,11 @@ class EraseResult(BaseModel):
     #: run's erase covered the hidden region.
     hidden_areas: HiddenAreaReport | None = None
     hidden_covered: bool = False
-    #: The read-back verdict. None for a dry run: nothing was written, so
-    #: nothing was verified, and a result object would invite a "passed".
+    #: The read-back verdict. None when verification did not run: a result
+    #: object would invite a "passed" for bytes nobody read back.
     verification: VerificationResult | None = None
-    #: The level this run may claim (drive._achieved_level). None for a dry run.
+    #: The level this run may claim (drive._achieved_level). None when the run
+    #: stopped before verification.
     achieved_level: SanitizationLevel | None = None
 
 
@@ -996,11 +1002,15 @@ class FileErasePhase(StrEnum):
 
 
 class FileEraseOptions(BaseModel):
-    """Caller-controlled policy. Both destructive gates default to closed."""
+    """Caller-controlled policy. The destructive gate defaults to closed.
 
-    #: Gate 1. Nothing is written while this is True.
-    dry_run: bool = True
-    #: Gate 2. Must be set explicitly even when dry_run is False.
+    Undeclared keys (the removed ``dry_run`` among them) are refused.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: The confirmation gate. Every erase is real, so nothing runs until the
+    #: caller sets this explicitly.
     confirm: bool = False
     cleanse_metadata: bool = True
     #: When False (the default) a file with st_nlink > 1 is unlinked but NOT
@@ -1019,7 +1029,7 @@ class FileEraseOptions(BaseModel):
     #: recent-files entries, Trash and Recycle Bin copies - and, on a real run,
     #: remove the ones tied to an erased path on evidence. See
     #: core.erase.traces. Off here, so a library caller opts in; the API turns
-    #: it on, and its dry run lists every trace before anything is removed.
+    #: it on. Only a trace tied to an erased path on evidence is removed.
     sweep_traces: bool = False
 
 
@@ -1046,7 +1056,6 @@ class FileEraseRecord(BaseModel):
 
     path: str
     ok: bool
-    dry_run: bool
     inspection: FileInspection
     #: Bytes overwritten in the unnamed data stream.
     bytes_overwritten: int = 0
@@ -1105,7 +1114,7 @@ class TraceRecord(BaseModel):
     exact: bool
     #: "erased" (put through the same steps as a target), "entry removed" (cut
     #: out of a shared list, which was overwritten in place), or empty when
-    #: nothing was done: a dry run, an inexact match, or a failure.
+    #: nothing was done: an inexact match, a report-only trace, or a failure.
     action: str = ""
     removed: bool = False
     bytes_overwritten: int = 0
@@ -1150,7 +1159,6 @@ class FileEraseResult(BaseModel):
     job_id: str
     started_at: datetime
     finished_at: datetime
-    dry_run: bool
     #: In the order the caller supplied the paths, regardless of completion order.
     records: list[FileEraseRecord] = []
     limitations: list[str] = []
@@ -1189,7 +1197,8 @@ class VolumeInfo(BaseModel):
     #: The filesystem UUID from /dev/disk/by-uuid, when one links to the source.
     fs_uuid: str | None = None
     #: What the operator types to confirm: the UUID when known, otherwise the
-    #: mount point. Shown by a dry run, never guessable from the request alone.
+    #: mount point. Shown by the read-only plan, never guessable from the
+    #: request alone.
     identifier: str
     #: ``st_dev`` of the mount point, used to refuse the system volume and any
     #: volume holding this deployment's own state.
@@ -1202,11 +1211,15 @@ class VolumeInfo(BaseModel):
 
 
 class FreeSpaceWipeOptions(BaseModel):
-    """Caller policy for a free-space wipe. Both gates default to closed."""
+    """Caller policy for a free-space wipe. The gate defaults to closed.
 
-    #: Gate 1. Nothing is written while this is True.
-    dry_run: bool = True
-    #: Gate 2. Must equal the volume's identifier, as a dry run reports it.
+    Undeclared keys (the removed ``dry_run`` among them) are refused.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: The confirmation gate. Must equal the volume's identifier, as the
+    #: read-only plan (:func:`core.erase.freespace.plan_volume`) reports it.
     typed_identifier: str = ""
 
 
@@ -1222,7 +1235,6 @@ class FreeSpaceWipeResult(BaseModel):
     job_id: str
     started_at: datetime
     finished_at: datetime
-    dry_run: bool
     volume: VolumeInfo
     fill_byte: int
     #: Bytes this job wrote into its own filler files.

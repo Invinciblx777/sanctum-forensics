@@ -124,22 +124,18 @@ def test_purge_on_magnetic_with_enhanced_erase_only_selects_it() -> None:
         ),
     ],
 )
-@pytest.mark.parametrize("dry_run", [True, False])
 def test_purge_is_claimed_only_for_a_purge_mechanism_of_this_device(
     device: dict[str, object],
     method: EraseMethod,
     expected: SanitizationLevel,
-    dry_run: bool,
 ) -> None:
     caps = enhanced_caps(ata_sanitize_ops=["BLOCK_ERASE_EXT"])
-    job = make_job(
-        make_device(**device), level=SanitizationLevel.PURGE, dry_run=dry_run
-    )
+    job = make_job(make_device(**device), level=SanitizationLevel.PURGE)
     assert _achieved_level(job, method, caps, verification()) is expected
 
 
 def test_failed_verification_is_clear_whatever_the_method() -> None:
-    job = make_job(make_device(**HDD), level=SanitizationLevel.PURGE, dry_run=False)
+    job = make_job(make_device(**HDD), level=SanitizationLevel.PURGE)
     achieved = _achieved_level(
         job,
         EraseMethod.ATA_SECURITY_ERASE_ENHANCED,
@@ -150,7 +146,7 @@ def test_failed_verification_is_clear_whatever_the_method() -> None:
 
 
 def test_clear_job_stays_clear() -> None:
-    job = make_job(make_device(**SSD), level=SanitizationLevel.CLEAR, dry_run=False)
+    job = make_job(make_device(**SSD), level=SanitizationLevel.CLEAR)
     achieved = _achieved_level(
         job, EraseMethod.SINGLE_PASS_OVERWRITE, make_caps(), verification()
     )

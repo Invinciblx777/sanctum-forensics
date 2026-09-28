@@ -14,11 +14,11 @@ in calls no request can collapse into one:
    the device serial typed by hand and an explicit acknowledgement (a second
    one for a permanent change). It is refused until a backup of at least the
    accessible range has been recorded and verified.
-3. ``POST /workflow/hidden-area/{id}/execute`` simulates by default. With
-   ``dry_run=false`` and the typed serial it passes the API gate, spends the
-   authorization, and hands the helper a ``run_hpa_change``; the helper
-   re-checks everything at the write seam and the engine re-reads the drive
-   immediately before the command, refusing a stale plan.
+3. ``POST /workflow/hidden-area/{id}/execute`` runs the real change. With the
+   typed serial it passes the API gate, spends the authorization, and hands the
+   helper a ``run_hpa_change``; the helper re-checks everything at the write
+   seam and the engine re-reads the drive immediately before the command,
+   refusing a stale plan. There is no dry-run mode.
 4. ``GET /workflow/hidden-area/{id}`` reports the state from a fresh read.
 
 An ``hpa`` authorization is never spendable as an erase or a restore, and an
@@ -60,7 +60,6 @@ from core.models import Device
 from fastapi import APIRouter, Depends, HTTPException
 
 from api.authorization import (
-    DRY_RUN_MARK,
     AuthorizationStore,
     GateRefused,
     _now,
@@ -632,7 +631,7 @@ def execute_hidden_area(
     body: ExecuteHiddenAreaRequest,
     services: AppServices = Depends(get_services),
 ) -> JobAccepted:
-    """Run the change through the helper. Simulates unless ``dry_run`` is false."""
+    """Run the real change through the helper. Refused without the typed serial."""
     store = _store(services)
     actor = resolve_identity(services).actor
     record = store.load(auth_id)
@@ -646,25 +645,17 @@ def execute_hidden_area(
                 else [f"authorization {auth_id!r} does not exist"]
             ),
         )
-    if not body.dry_run and not body.typed_serial:
+    if not body.typed_serial:
         raise _refusal(
             services, actor=actor, path=record.path,
             state=HpaState.APPROVAL_REQUIRED,
-            reasons=[
-                "dry_run is off but no serial was typed; an HPA change is "
-                "opt-in twice"
-            ],
+            reasons=["no serial was typed; an HPA change is opt-in twice"],
         )
-    binding = (
-        _binding(record)
-        if body.dry_run
-        else authorize_hpa(
-            services, auth_id=auth_id, typed_serial=body.typed_serial, actor=actor
-        )
+    binding = authorize_hpa(
+        services, auth_id=auth_id, typed_serial=body.typed_serial, actor=actor
     )
     params: dict[str, Any] = {
         "path": record.path,
-        "dry_run": body.dry_run,
         "typed_serial": body.typed_serial,
         "authorization": binding,
         "authorization_dir": str(store.root),
@@ -682,7 +673,6 @@ def execute_hidden_area(
         job_id=job_id, label=body.operator, case_id=body.case_id,
     )
     return JobAccepted(
-        job_id=job_id, kind="hpa-change", state="running", dry_run=body.dry_run,
+        job_id=job_id, kind="hpa-change", state="running",
         stream_url=f"/jobs/{job_id}/stream",
-        notice=DRY_RUN_MARK if body.dry_run else "",
     )
