@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from api.deps import AppServices
 from fastapi.testclient import TestClient
 
@@ -237,11 +238,11 @@ def test_acquire_rejects_a_missing_source(client: TestClient) -> None:
     assert answer.json()["detail"]["kind"] == "EvidenceIntegrityError"
 
 
-def test_acquire_refuses_a_win32_raw_device_as_not_implemented(
+def test_acquire_of_a_win32_device_off_windows_says_why(
     client: TestClient,
 ) -> None:
-    # Raw physical-device acquisition on Windows is not implemented. The refusal
-    # must say so, not report the device as "not found".
+    # A Win32 device path on a host that is not Windows is refused by name,
+    # never reported as "not found".
     answer = client.post(
         "/jobs/acquire",
         json={"source": "\\\\.\\PhysicalDrive2", "dest": "/tmp/out.dd"},
@@ -249,7 +250,7 @@ def test_acquire_refuses_a_win32_raw_device_as_not_implemented(
     assert answer.status_code == 422
     detail = answer.json()["detail"]
     assert detail["kind"] == "EvidenceIntegrityError"
-    assert "not implemented on Windows" in detail["error"]
+    assert "not Windows" in detail["error"]
     assert "not found" not in detail["error"]
 
 
@@ -411,3 +412,43 @@ def test_an_unanticipated_failure_returns_an_incident_id_and_not_the_message(
     assert len(body["incident"]) == 12
     assert body["incident"] in body["error"]
     assert body["incident"] in body["remediation"]
+
+
+def test_acquire_of_a_windows_disk_binds_to_the_serial_the_os_reports_now(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The operator's serial is checked against a fresh read, never trusted."""
+    import json as _json
+
+    from core.device._sysio import CommandResult
+    from core.platform.windows import WindowsAdapter
+
+    inventory = _json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "platform"
+            / "fixtures"
+            / "windows_inventory.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    class _Runner:
+        def run(self, argv: list[str]) -> CommandResult:
+            return CommandResult(argv, 0, _json.dumps(inventory), "")
+
+    monkeypatch.setattr("api.routes.jobs.sys.platform", "win32")
+    monkeypatch.setattr(
+        "core.platform.current_adapter",
+        lambda **kw: WindowsAdapter(runner=_Runner(), **kw),
+    )
+    for serial, word in (("", "needs the serial"), ("WRONG", "must match")):
+        answer = client.post(
+            "/jobs/acquire",
+            json={
+                "source": "\\\\.\\PhysicalDrive2",
+                "dest": "out.dd",
+                "expected_serial": serial,
+            },
+        )
+        assert answer.status_code == 422, answer.text
+        assert word in answer.json()["detail"]["error"]

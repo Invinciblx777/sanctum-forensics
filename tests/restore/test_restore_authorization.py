@@ -51,8 +51,8 @@ def seam(
         "helper.authorization._fresh_restore_probe", lambda path: state["probe"]
     )
 
-    def opener(path: str) -> FileBlockTarget:
-        state["opened"].append(path)
+    def opener(target: Any) -> FileBlockTarget:
+        state["opened"].append(target.path)
         return FileBlockTarget(target_file)
 
     monkeypatch.setattr("helper.daemon._open_restore_target", opener)

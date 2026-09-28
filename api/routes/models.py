@@ -180,6 +180,10 @@ class AcquireRequest(BaseModel):
     compression: Literal["none", "fast", "best"] = "fast"
     case_id: str = ""
     operator: str = "sanctum"
+    #: For a raw device on Windows or macOS: the serial of the disk the operator
+    #: selected. Not trusted - the reader binds its handle to it and refuses a
+    #: disk that answers differently.
+    expected_serial: str = Field(default="", max_length=128)
 
 
 class CarveRequest(BaseModel):

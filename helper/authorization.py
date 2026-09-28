@@ -78,15 +78,15 @@ def _refuse(reasons: list[str]) -> WorkflowGateRefused:
 
 
 def _fresh_probe(path: str) -> dict[str, Any]:
-    """Re-read the device and its capabilities from the host, now."""
-    from core.device import capabilities
-    from core.device.enumerate import get_device
+    """Re-read the device and its capabilities from the host, now.
 
-    device = get_device(path)
-    return {
-        "device": device.model_dump(mode="json"),
-        "capabilities": capabilities.probe(device).model_dump(mode="json"),
-    }
+    Through this host's platform adapter: ``lsblk`` and the hdparm/nvme probe
+    on Linux, the Storage module and the controller's IDENTIFY on Windows,
+    ``diskutil`` and ``system_profiler`` on macOS.
+    """
+    from core.platform import current_adapter
+
+    return current_adapter().authorization_probe(path)
 
 
 def revalidate_execution(
@@ -224,10 +224,15 @@ def _refuse_restore(reasons: list[str]) -> WorkflowGateRefused:
 
 
 def _fresh_restore_probe(path: str) -> dict[str, Any]:
-    """Re-read the restore target's identity from the host, now."""
-    from core.device.enumerate import get_device
+    """Re-read the restore target's identity from the host, now.
 
-    return {"device": get_device(path).model_dump(mode="json")}
+    Through the platform adapter, so Windows and macOS targets are re-read by
+    their own discovery (identity, system disk, mounts), exactly as an erase's.
+    """
+    from core.platform import current_adapter
+
+    probe = current_adapter().authorization_probe(path)
+    return {"device": probe["device"]}
 
 
 @dataclass(frozen=True)

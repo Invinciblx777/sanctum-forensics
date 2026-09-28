@@ -676,6 +676,14 @@ def test_the_macos_adapters_discovery_commands_are_refused_under_macos_rules() -
         ["apfs", "list", "-plist"],
         ["info", "-plist", "/"],
         ["info", "-plist", "disk4"],
+        [
+            "-json",
+            "SPUSBDataType",
+            "SPUSBHostDataType",
+            "SPNVMeDataType",
+            "SPSerialATADataType",
+            "SPThunderboltDataType",
+        ],
     ]
     for argv in runner.argvs:
         assert command_reason(argv, MACOS), argv

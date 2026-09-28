@@ -27,34 +27,78 @@ is a physical store of **any** container that holds the booted volume, or a
 volume with the System, Data, VM (swap), Preboot or Recovery role, and it is
 mounted when any volume of any container it backs is mounted.
 
-Whole-drive sanitization
-------------------------
-**Not offered in this build.** Internal Apple storage on Apple silicon and T2
-Macs is always encrypted by the Secure Enclave, and the purge-capable path is
-macOS's own *Erase All Content and Settings*, which destroys those keys; this
-app cannot perform it and cannot verify it, so it is named as the recommended
-action rather than claimed. For external media ``diskutil`` can overwrite a
-disk, but that path has not been validated here, so it is not offered either.
+Whole-drive clear, and what is never done
+-----------------------------------------
+Devices are classified before anything is offered:
+
+* **Internal Mac storage** (``Internal: true``) - Apple silicon's fabric-attached
+  SSD and the T2- or Intel-attached internal disk. Never raw-written, never
+  raw-imaged: on Apple silicon and T2 Macs the Secure Enclave encrypts it, and
+  the purge-capable path is macOS's own *Erase All Content and Settings*,
+  which this app cannot perform or verify. The resolver reports it BLOCKED FOR
+  SAFETY with that reason.
+* **External disks** (USB flash, USB/Thunderbolt SSD and HDD, card readers) -
+  whole-drive **Clear** through :mod:`core.erase.blockclear` over
+  ``/dev/rdiskN``, bound to the planned size and re-read identity. macOS gives
+  applications no ATA or NVMe sanitize path, so device sanitize is
+  PLATFORM-LIMITED and a Purge request is refused, never downgraded.
+
+A mounted disk is refused. Unmounting is its own explicit step
+(:meth:`MacOSAdapter.prepare_device`, ``diskutil unmountDisk``), never part
+of an erase. APFS file erase remains a filesystem operation with its own,
+weaker semantics; it is never described as a physical sanitization.
+
+Serial numbers come from ``system_profiler -json`` (USB, NVMe, SATA and
+Thunderbolt reports), matched to the BSD name. A disk with no serial there
+cannot be bound and is refused for destructive work.
 """
 
 from __future__ import annotations
 
+import json
 import plistlib
 import re
+from collections.abc import Generator
 from typing import Any
 
 import structlog
 
-from core.errors import PlatformUnsupported
-from core.platform.base import FLASH_LIMITATION, BaseAdapter
+from core.device.mac.rawdisk import MacIo, MacRawDisk
+from core.errors import (
+    ConfirmationMismatch,
+    MountedRefused,
+    PlatformUnsupported,
+    SystemDiskRefused,
+    UnsupportedCapability,
+)
+from core.platform.base import (
+    FLASH_LIMITATION,
+    BaseAdapter,
+    core_device,
+    json_records,
+    ledger_sink,
+    normalized_serial,
+)
 from core.platform.model import (
+    RUNNABLE_STATES,
+    Capability,
     Interface,
     MediaType,
     NormalizedDevice,
+    OperationCapability,
     PartitionInfo,
+    PrivilegeState,
+    SanitizeOption,
 )
 
-__all__ = ["MacOSAdapter", "parse_inventory", "DISKUTIL", "PROTECTED_ROLES"]
+__all__ = [
+    "MacOSAdapter",
+    "parse_inventory",
+    "serial_map",
+    "DISKUTIL",
+    "SYSTEM_PROFILER",
+    "PROTECTED_ROLES",
+]
 
 logger = structlog.get_logger(__name__)
 
@@ -130,11 +174,46 @@ def _media(info: dict[str, Any], interface: Interface) -> tuple[MediaType, str]:
     return "unknown", "diskutil did not report whether the disk is solid-state."
 
 
+#: Keys under which ``system_profiler -json`` reports a device serial.
+_SERIAL_KEYS = ("serial_num", "device_serial", "spnvme_serial", "spsata_serial")
+
+
+def serial_map(profile: dict[str, Any]) -> dict[str, str]:
+    """BSD whole-disk name -> serial, from ``system_profiler -json``. Pure.
+
+    Every dict carrying a serial key claims every ``bsd_name`` in its subtree;
+    the nearest claim wins, so a hub's serial never labels the stick below it.
+    """
+    found: dict[str, str] = {}
+
+    def walk(node: Any, serial: str) -> None:
+        if isinstance(node, dict):
+            for key in _SERIAL_KEYS:
+                value = node.get(key)
+                if isinstance(value, str) and value.strip():
+                    serial = value.strip()
+                    break
+            name = node.get("bsd_name")
+            if isinstance(name, str) and serial:
+                whole = _whole(name)
+                if whole:
+                    found[whole] = serial
+            for value in node.values():
+                walk(value, serial)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, serial)
+
+    walk(profile, "")
+    return found
+
+
 def parse_inventory(
     listing: dict[str, Any],
     apfs: dict[str, Any],
     infos: dict[str, dict[str, Any]],
     root_info: dict[str, Any],
+    serials: dict[str, str] | None = None,
 ) -> list[NormalizedDevice]:
     """Normalize ``diskutil`` plists. Pure; no I/O.
 
@@ -256,8 +335,10 @@ def parse_inventory(
             )
         points = sorted(set(mounts.get(ident, [])))
         removable = info.get("RemovableMedia", info.get("Removable"))
-        if removable is None and info.get("Internal") is not None:
-            removable = not bool(info.get("Internal"))
+        internal = info.get("Internal")
+        if removable is None and internal is not None:
+            removable = not bool(internal)
+        serial = (serials or {}).get(ident, "")
         devices.append(
             NormalizedDevice(
                 id=ident,
@@ -266,12 +347,13 @@ def parse_inventory(
                 model=str(
                     info.get("MediaName") or info.get("IORegistryEntryName") or ""
                 ).strip(),
-                serial="",
+                serial=serial,
                 capacity_bytes=int(info.get("TotalSize") or info.get("Size") or 0),
                 interface=interface,
                 media_type=media_type,
                 media_basis=basis,
                 removable=bool(removable) if removable is not None else None,
+                internal=bool(internal) if internal is not None else None,
                 mounted=bool(points),
                 mount_points=points,
                 system_device=bool(reasons),
@@ -279,13 +361,29 @@ def parse_inventory(
                 filesystems=sorted(fs_by_disk.get(ident, set())),
                 partitions=parts_by_disk.get(ident, []),
                 stable_id=str(info.get("DiskUUID") or info.get("MediaUUID") or ""),
-                limitations=[
-                    "diskutil does not report a serial number; the disk is "
-                    "identified by its BSD name and size."
-                ],
+                limitations=(
+                    []
+                    if serial
+                    else [
+                        "No serial number was found for this disk (diskutil "
+                        "reports none, and system_profiler did not name it), so "
+                        "its identity cannot be bound for destructive work."
+                    ]
+                ),
             )
         )
     return devices
+
+
+#: Absolute, never looked up on PATH.
+SYSTEM_PROFILER = "/usr/sbin/system_profiler"
+_PROFILER_TYPES = (
+    "SPUSBDataType",
+    "SPUSBHostDataType",
+    "SPNVMeDataType",
+    "SPSerialATADataType",
+    "SPThunderboltDataType",
+)
 
 
 class MacOSAdapter(BaseAdapter):
@@ -300,13 +398,16 @@ class MacOSAdapter(BaseAdapter):
         helper: str = "in-process",
         helper_basis: str = "",
         runner: Any = None,
+        mac_io: MacIo | None = None,
+        privilege: PrivilegeState | None = None,
     ) -> None:
-        super().__init__(helper=helper, helper_basis=helper_basis)
+        super().__init__(helper=helper, helper_basis=helper_basis, privilege=privilege)
         if runner is None:
             from core.device._sysio import SubprocessRunner
 
             runner = SubprocessRunner(timeout_s=60.0)
         self._runner = runner
+        self._mac_io = mac_io
 
     def _diskutil(self, *args: str, required: bool = True) -> dict[str, Any]:
         result = self._runner.run([DISKUTIL, *args])
@@ -322,6 +423,17 @@ class MacOSAdapter(BaseAdapter):
                 remediation="Confirm /usr/sbin/diskutil runs from Terminal.",
             )
         return _load(result.stdout)
+
+    def serials(self) -> dict[str, str]:
+        """BSD name -> serial from ``system_profiler``, or empty if it fails."""
+        result = self._runner.run([SYSTEM_PROFILER, "-json", *_PROFILER_TYPES])
+        if not result.ok:
+            return {}
+        try:
+            loaded = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return {}
+        return serial_map(loaded) if isinstance(loaded, dict) else {}
 
     def inventory(self) -> list[NormalizedDevice]:
         listing = self._diskutil("list", "-plist")
@@ -342,7 +454,7 @@ class MacOSAdapter(BaseAdapter):
             # A failed info call still lists the disk, with its unknowns
             # unknown, rather than hiding a device the listing showed.
             infos[ident] = self._diskutil("info", "-plist", ident, required=False)
-        return parse_inventory(listing, apfs, infos, root)
+        return parse_inventory(listing, apfs, infos, root, self.serials())
 
     def enumerate_devices(
         self, *, include_virtual: bool = False
@@ -358,27 +470,186 @@ class MacOSAdapter(BaseAdapter):
             devices = [item for item in devices if item.interface != "virtual"]
         self.discovery.record(
             ok=True,
-            tool="diskutil list / apfs list / info (-plist)",
+            tool="diskutil list / apfs list / info (-plist); system_profiler -json",
             detail="disks read from diskutil",
             devices=devices,
         )
         return devices
 
+    # -- classification and options -------------------------------------------
+
+    def apple_managed(self, device: NormalizedDevice) -> bool:
+        return device.internal is True
+
     def whole_drive_unavailable_reason(self) -> str:
-        return (
-            "Whole-drive sanitization is not offered on macOS in this build. "
-            "Internal Apple storage is purged by macOS's own Erase All Content "
-            "and Settings, which this app cannot perform or verify, and an "
-            "overwrite path for external disks has not been validated."
-        )
+        return ""
 
     def whole_drive_recommended_action(self) -> str:
         return (
-            "Internal Mac storage: use System Settings > General > Transfer or "
-            "Reset > Erase All Content and Settings (Apple silicon / T2), which "
-            "destroys the storage encryption keys. External disks: sanitize "
-            "with the Sanctum Linux build (AppImage) on a Linux host."
+            "External disks: unmount every volume (Devices > Prepare, or diskutil "
+            "unmountDisk) and run the helper with sudo. Internal Mac storage: use "
+            "System Settings > General > Transfer or Reset > Erase All Content "
+            "and Settings, which destroys the storage encryption keys."
         )
+
+    def _system_disk_advice(self, device: NormalizedDevice) -> str:
+        return (
+            "Internal Mac storage is purged by macOS itself: System Settings > "
+            "General > Transfer or Reset > Erase All Content and Settings (Apple "
+            "silicon and T2), which destroys the storage encryption keys. This "
+            "app cannot perform or verify that, and never raw-writes the disk."
+        )
+
+    def _elevation_advice(self) -> str:
+        return (
+            "Raw device access on macOS needs root: start the Sanctum helper with "
+            "sudo, then rescan."
+        )
+
+    def drive_options(
+        self, device: NormalizedDevice
+    ) -> tuple[list[SanitizeOption], str]:
+        from core.platform.windows import options_from_resolution
+
+        return options_from_resolution(self.device_resolution(device))
+
+    def _platform_rows(self, privilege: PrivilegeState) -> list[OperationCapability]:
+        return self._block_engine_rows(privilege)
+
+    def authorization_probe(self, path: str) -> dict[str, Any]:
+        device = self.inspect_device(path)
+        resolution = self.device_resolution(device)
+        clear = resolution.get(Capability.WHOLE_DRIVE_CLEAR)
+        achievable = ["CLEAR"] if clear.state in RUNNABLE_STATES else []
+        row = core_device(device).model_dump(mode="json")
+        return {
+            "device": row,
+            "capabilities": {
+                "achievable_levels": achievable,
+                "est_erase_seconds": int(device.capacity_bytes / (30 * 1024 * 1024)),
+                "limitations": sorted(set(clear.limitations)),
+                "resolution": resolution.model_dump(mode="json"),
+            },
+        }
+
+    # -- execution --------------------------------------------------------------
+
+    def _open_bound(self, device: NormalizedDevice, *, write: bool) -> MacRawDisk:
+        """Re-read the device from diskutil, then open and bind the raw node.
+
+        macOS has no ioctl that names a drive's serial, so the serial is
+        re-read from ``system_profiler`` here, immediately before the open,
+        and the open descriptor is then bound by the kernel's size.
+        """
+        fresh = self.inspect_device(device.id)
+        if normalized_serial(fresh.serial) != normalized_serial(device.serial):
+            raise ConfirmationMismatch(
+                f"{device.path} now reports serial {fresh.serial!r}, the plan "
+                f"recorded {device.serial!r}. Nothing was written."
+            )
+        if write and fresh.mounted:
+            raise MountedRefused(
+                f"{device.path} has a mounted volume at "
+                + ", ".join(fresh.mount_points)
+                + " at the write seam. Nothing was written.",
+                remediation=self.whole_drive_recommended_action(),
+            )
+        disk = MacRawDisk(device.id, write=write, io=self._mac_io).open()
+        return disk.bind(size_bytes=device.capacity_bytes)
+
+    def _clear_generator(
+        self, params: dict[str, Any], *, resume: bool
+    ) -> Generator[Any, None, Any]:
+        from core.erase.blockclear import ClearRequest, clear
+
+        dry_run = params.get("dry_run", True) is not False
+        device = self._revalidated(params)
+        level = "CLEAR" if resume else str(params.get("level", "CLEAR"))
+        _, resolution = self._choose(device, level, dry_run=dry_run)
+        sink = ledger_sink(params)
+        job_id = str(params["job_id"])
+        checkpoint = sink.last_checkpoint(job_id) if resume else None
+        if resume and checkpoint is None:
+            raise UnsupportedCapability(
+                f"No checkpoint was recorded for job {job_id}; only an "
+                "interrupted clear resumes.",
+                remediation="Start the clear again from the beginning.",
+            )
+        row = resolution.get(Capability.WHOLE_DRIVE_CLEAR)
+        request = ClearRequest(
+            job_id=job_id,
+            device=core_device(device),
+            identity={
+                "bsd_name": device.id,
+                "serial": device.serial,
+                "model": device.model,
+                "size_bytes": device.capacity_bytes,
+            },
+            platform="macos",
+            mechanism=row.mechanism,
+            device_class=resolution.device_class,
+            flash=device.media_type != "hdd",
+            dry_run=dry_run,
+            limitations=(
+                *row.limitations,
+                "macOS gives no ioctl that names a drive's serial: the serial was "
+                "re-read from system_profiler immediately before the raw device "
+                "was opened, and the open device was bound by its kernel size.",
+            ),
+            resume_from=checkpoint,
+        )
+        return clear(
+            request, lambda: self._open_bound(device, write=True), ledger=sink
+        )
+
+    def execute_drive_sanitization(
+        self, params: dict[str, Any]
+    ) -> Generator[dict[str, Any], None, dict[str, Any]]:
+        return (yield from json_records(self._clear_generator(params, resume=False)))
+
+    def resume_drive_sanitization(
+        self, params: dict[str, Any]
+    ) -> Generator[dict[str, Any], None, dict[str, Any]]:
+        return (yield from json_records(self._clear_generator(params, resume=True)))
+
+    def prepare_device(self, params: dict[str, Any]) -> dict[str, Any]:
+        """``diskutil unmountDisk`` for an external disk, as its own step.
+
+        Dry run by default; a real run needs the typed serial. Internal and
+        system disks are refused. Unmounting writes nothing to the medium.
+        """
+        device = self.inspect_device(str(params["path"]))
+        dry_run = params.get("dry_run", True) is not False
+        if device.system_device or device.internal is True:
+            raise SystemDiskRefused(
+                f"Refusing to unmount {device.path}: it is internal Mac storage "
+                "or holds the running system."
+            )
+        if not dry_run and normalized_serial(
+            str(params.get("typed_serial") or "")
+        ) != normalized_serial(device.serial) or (
+            not dry_run and not normalized_serial(device.serial)
+        ):
+            raise ConfirmationMismatch(
+                f"The typed serial does not match {device.path}. Nothing changed."
+            )
+        action = {
+            "device": device.path,
+            "serial": device.serial,
+            "action": f"{DISKUTIL} unmountDisk {device.path}",
+            "unmounts": device.mount_points,
+            "dry_run": dry_run,
+        }
+        if dry_run:
+            return {**action, "performed": False}
+        result = self._runner.run([DISKUTIL, "unmountDisk", device.path])
+        if not result.ok:
+            raise UnsupportedCapability(
+                f"diskutil unmountDisk {device.path} failed: "
+                + ((result.stderr or result.stdout).strip()[:300] or "no output"),
+                remediation="Close whatever holds the volume open, then retry.",
+            )
+        return {**action, "performed": True}
 
     def _file_limitations(self) -> list[str]:
         return [
@@ -393,12 +664,15 @@ class MacOSAdapter(BaseAdapter):
 
     def restrictions(self) -> list[str]:
         return [
-            "Whole-drive sanitization is not offered on macOS in this build.",
+            "Whole-drive clear is offered for external disks only, through the "
+            "raw device node, with root. Internal Mac storage is never raw-written.",
+            "macOS gives applications no ATA or NVMe sanitize command, so device "
+            "sanitize (Purge) is not available on macOS; a Purge request is "
+            "refused, never replaced by an overwrite.",
             "APFS copy-on-write means file overwrite cannot destroy the "
             "original blocks; file erase on APFS is removal plus a residual "
             "report, never a verified destruction.",
-            "diskutil reports no drive serial numbers.",
-            "Free-space wipe is Linux-only.",
-            "No privileged helper runs on macOS because no implemented "
-            "operation needs one.",
+            "Free-space wipe is not implemented on macOS.",
+            "A disk whose serial system_profiler does not report cannot be "
+            "bound, and is refused for destructive work.",
         ]

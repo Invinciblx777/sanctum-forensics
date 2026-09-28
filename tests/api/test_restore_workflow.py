@@ -74,8 +74,8 @@ def seam(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
                 return {"device": {**row["device"], **state["override"]}}
         raise LookupError(path)
 
-    def opener(path: str) -> FileBlockTarget:
-        state["opened"].append(path)
+    def opener(planned: Any) -> FileBlockTarget:
+        state["opened"].append(planned.path)
         return FileBlockTarget(target)
 
     monkeypatch.setattr("helper.authorization._fresh_restore_probe", probe)

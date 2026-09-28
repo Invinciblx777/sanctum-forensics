@@ -15,6 +15,7 @@ a device that was swapped since the page loaded.
 
 from __future__ import annotations
 
+import sys
 import uuid
 from pathlib import Path
 from typing import Any, cast
@@ -539,25 +540,51 @@ def acquire_image(
     it today.
     """
     from core.carve.acquire import AcquireOptions, acquire, is_win32_device_path
+    from core.errors import SanctumError
     from core.ledger.chain import Ledger
+    from core.platform.base import normalized_serial
 
-    if is_win32_device_path(body.source):
+    raw_device = is_win32_device_path(body.source) or (
+        sys.platform == "darwin" and body.source.startswith(("/dev/disk", "/dev/rdisk"))
+    )
+    expected_size = 0
+    if is_win32_device_path(body.source) and sys.platform != "win32":
         raise sanctum_error_response(
             "EvidenceIntegrityError",
-            "raw physical-device acquisition is not implemented on Windows: "
-            f"{body.source} is in the Win32 device namespace, which this build "
-            "cannot open",
-            "Image the device with a hardware write blocker and a dedicated imager, "
-            "or boot Linux and acquire it there, then acquire the resulting image "
-            "file. Nothing was opened.",
+            f"{body.source} is a Win32 device path, and this host is not Windows",
+            "Acquire the device on the Windows machine it is attached to. "
+            "Nothing was opened.",
         )
-    source = Path(body.source)
-    if not source.exists():
-        raise sanctum_error_response(
-            "EvidenceIntegrityError",
-            f"acquisition source not found: {source}",
-            "Check the path. Nothing was created.",
-        )
+    if raw_device:
+        # The device is re-read from the OS here; the size and serial the reader
+        # binds to come from that read, and the operator's serial must agree.
+        from core.platform import current_adapter
+
+        try:
+            device = current_adapter().inspect_device(body.source)
+        except SanctumError as exc:
+            raise sanctum_error_response(
+                type(exc).__name__, exc.message, exc.remediation
+            ) from exc
+        expected = normalized_serial(body.expected_serial)
+        if not expected or expected != normalized_serial(device.serial):
+            raise sanctum_error_response(
+                "EvidenceIntegrityError",
+                f"raw acquisition of {body.source} needs the serial of the selected "
+                f"disk, and it must match what the disk reports now "
+                f"({device.serial or 'no serial'}). Nothing was opened.",
+                "Start the acquisition from the Devices screen.",
+            )
+        expected_size = device.capacity_bytes
+        source: Path | str = body.source
+    else:
+        source = Path(body.source)
+        if not source.exists():
+            raise sanctum_error_response(
+                "EvidenceIntegrityError",
+                f"acquisition source not found: {source}",
+                "Check the path. Nothing was created.",
+            )
 
     dest = resolve_output_path(services.evidence_dir, body.dest, field="dest")
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -586,6 +613,8 @@ def acquire_image(
             dest,
             fmt=body.fmt,
             options=AcquireOptions(
+                expected_serial=body.expected_serial,
+                expected_size=expected_size,
                 compression=body.compression,
                 # The trusted actor, not body.operator. The engine writes this
                 # into the chain, so it has to be the identity the helper

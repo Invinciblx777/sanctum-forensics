@@ -66,14 +66,12 @@ def test_platform_status_is_served_through_the_allowlist(
 
 
 def test_run_erase_on_a_platform_without_an_engine_never_reaches_it(
-    monkeypatch: pytest.MonkeyPatch, windows_inventory: dict[str, Any]
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from core.platform.windows import WindowsAdapter
+    from core.platform.base import BaseAdapter
 
-    runner = FakeRunner(lambda argv: ok(argv, json.dumps(windows_inventory)))
     monkeypatch.setattr(
-        "core.platform.current_adapter",
-        lambda **kw: WindowsAdapter(runner=runner, **kw),
+        "core.platform.current_adapter", lambda **kw: BaseAdapter(**kw)
     )
     reached: list[str] = []
     monkeypatch.setattr(
@@ -87,7 +85,7 @@ def test_run_erase_on_a_platform_without_an_engine_never_reaches_it(
             helper.call_stream(
                 "run_erase",
                 {
-                    "path": "PhysicalDrive2",
+                    "path": "disk9",
                     "dry_run": False,
                     "typed_serial": "X",
                     "ledger_root": "l",
@@ -98,10 +96,43 @@ def test_run_erase_on_a_platform_without_an_engine_never_reaches_it(
     assert excinfo.value.kind == "PlatformUnsupported"
     assert "No operation was performed" in str(excinfo.value)
     assert reached == []
-    assert runner.calls == []
+    with pytest.raises(RpcError, match="No operation was performed"):
+        helper.call("probe_capabilities", {"path": "disk9"})
 
-    with pytest.raises(RpcError, match="not implemented for Windows"):
-        helper.call("probe_capabilities", {"path": "PhysicalDrive2"})
+
+def test_a_real_windows_erase_without_authorization_opens_nothing(
+    monkeypatch: pytest.MonkeyPatch, windows_inventory: dict[str, Any]
+) -> None:
+    """Windows has an engine now; the write seam's authorization still comes first."""
+    from core.platform.windows import WindowsAdapter
+    from testkit.fake_windows import FakeWindowsApi
+
+    runner = FakeRunner(lambda argv: ok(argv, json.dumps(windows_inventory)))
+    api = FakeWindowsApi([])
+    monkeypatch.setattr(
+        "core.platform.current_adapter",
+        lambda **kw: WindowsAdapter(runner=runner, native=api, **kw),
+    )
+    helper = InProcessHelper()
+    with pytest.raises(RpcError) as excinfo:
+        list(
+            helper.call_stream(
+                "run_erase",
+                {
+                    "path": "PhysicalDrive2",
+                    "dry_run": False,
+                    "typed_serial": "E0D55EA574E2F4B1",
+                    "ledger_root": "l",
+                    "job_id": "j",
+                },
+            )
+        )
+    assert excinfo.value.kind == "WorkflowGateRefused"
+    assert "no authorization" in str(excinfo.value)
+    assert runner.calls == [], "refused before discovery ran"
+    assert api.calls == []
+    probe = helper.call("probe_capabilities", {"path": "PhysicalDrive2"})
+    assert probe["device"]["serial"] == "E0D55EA574E2F4B1"
 
 
 def test_assess_device_rereads_the_device_now(

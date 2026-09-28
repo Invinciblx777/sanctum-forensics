@@ -31,7 +31,13 @@ import sys
 from collections.abc import Generator
 from typing import TYPE_CHECKING, Any, Protocol
 
-from core.errors import PlatformUnsupported
+from core.errors import (
+    ConfirmationMismatch,
+    MountedRefused,
+    PlatformUnsupported,
+    SystemDiskRefused,
+    UnsupportedCapability,
+)
 from core.platform.model import (
     OPERATION_LABELS,
     RUNNABLE_STATES,
@@ -287,9 +293,17 @@ class BaseAdapter:
     name = "base"
     family: PlatformFamily = "other"
 
-    def __init__(self, *, helper: str = "in-process", helper_basis: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        helper: str = "in-process",
+        helper_basis: str = "",
+        privilege: PrivilegeState | None = None,
+    ) -> None:
         self._helper = helper
         self._helper_basis = helper_basis
+        #: Tests only: the privilege this adapter reports instead of the host's.
+        self._privilege_override = privilege
         self.discovery = DiscoveryOutcome()
 
     # -- host ---------------------------------------------------------------
@@ -300,6 +314,8 @@ class BaseAdapter:
         return platform_info()
 
     def privilege_state(self) -> PrivilegeState:
+        if self._privilege_override is not None:
+            return self._privilege_override
         from core.platform.host import privilege_state
 
         return privilege_state(helper=self._helper, helper_basis=self._helper_basis)
@@ -373,6 +389,185 @@ class BaseAdapter:
             remediation=self.whole_drive_recommended_action(),
         )
         yield {}  # pragma: no cover - makes this a generator
+
+    def authorization_probe(self, path: str) -> dict[str, Any]:
+        """The fresh read the erase workflow binds and the write seam re-checks.
+
+        ``{"device": {path, serial, model, size_bytes, is_system_disk,
+        mounted_at, ...}, "capabilities": {achievable_levels,
+        est_erase_seconds, limitations}}``. The default refuses: a platform
+        without an engine has nothing to authorize.
+        """
+        raise PlatformUnsupported(
+            self.whole_drive_unavailable_reason()
+            + " No operation was performed on the device.",
+            remediation=self.whole_drive_recommended_action(),
+        )
+
+    def prepare_device(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Unmount or take offline, as a separate explicit step. Default: none."""
+        raise PlatformUnsupported(
+            f"This build has no device preparation step for {self.family}; "
+            "unmount the device with the operating system's own tools.",
+        )
+
+    #: Device-sanitize capabilities this adapter can execute, strongest first.
+    sanitize_capabilities: tuple[Capability, ...] = ()
+
+    def _revalidated(self, params: dict[str, Any]) -> NormalizedDevice:
+        """Re-read the device now and apply every refusal before anything opens."""
+        wanted = str(params["path"])
+        device = self.inspect_device(wanted)
+        dry_run = params.get("dry_run", True) is not False
+        if device.system_device:
+            raise SystemDiskRefused(
+                f"Refusing {device.path}: it is the system or boot disk. "
+                + " ".join(device.system_reasons)
+            )
+        if device.mounted:
+            raise MountedRefused(
+                f"Refusing {device.path}: volumes on it are mounted at "
+                + ", ".join(device.mount_points)
+                + ". Nothing was written.",
+                remediation=self.whole_drive_recommended_action(),
+            )
+        serial = normalized_serial(device.serial)
+        if not serial:
+            raise ConfirmationMismatch(
+                f"{device.path} reports no serial number, so its identity cannot "
+                "be bound. Nothing was written.",
+                remediation="Use a device that reports a serial, or clear it on "
+                "Linux where the by-id path is available.",
+            )
+        twins = [
+            item.id
+            for item in self.discovery.devices
+            if item.id != device.id and normalized_serial(item.serial) == serial
+        ]
+        if twins:
+            raise ConfirmationMismatch(
+                f"{device.path} and {', '.join(twins)} report the same serial "
+                f"{device.serial!r}; the identity is ambiguous. Nothing was written.",
+                remediation="Detach the other device, rescan and try again.",
+            )
+        if not dry_run:
+            typed = normalized_serial(str(params.get("typed_serial") or ""))
+            if typed != serial:
+                raise ConfirmationMismatch(
+                    f"The typed serial does not match {device.path}, whose serial "
+                    f"is {device.serial!r}. Nothing was written."
+                )
+        return device
+
+    def _choose(
+        self, device: NormalizedDevice, level: str, *, dry_run: bool
+    ) -> tuple[Capability, Any]:
+        resolution = self.device_resolution(device)
+        allowed = set(RUNNABLE_STATES)
+        if dry_run:
+            allowed.add(CapabilityState.AVAILABLE_BUT_REQUIRES_PRIVILEGE)
+        if level == "CLEAR":
+            row = resolution.get(Capability.WHOLE_DRIVE_CLEAR)
+            if row.state not in allowed:
+                raise UnsupportedCapability(
+                    f"Whole-drive clear of {device.path} is {row.state_label}: "
+                    f"{row.reason}",
+                    remediation=self.whole_drive_recommended_action(),
+                )
+            return Capability.WHOLE_DRIVE_CLEAR, resolution
+        for capability in (
+            Capability.NVME_SANITIZE,
+            Capability.ATA_SANITIZE,
+            Capability.CRYPTO_ERASE,
+        ):
+            if resolution.get(capability).state in allowed and (
+                capability in self.sanitize_capabilities
+            ):
+                return capability, resolution
+        reasons = "; ".join(
+            f"{row.label}: {row.state_label} ({row.reason})"
+            for row in resolution.capabilities
+            if row.capability
+            in {
+                Capability.NVME_SANITIZE,
+                Capability.ATA_SANITIZE,
+                Capability.CRYPTO_ERASE,
+                Capability.NVME_FORMAT,
+                Capability.ATA_SECURITY_ERASE,
+            }
+        )
+        raise UnsupportedCapability(
+            f"No device sanitize is available for {device.path}. It is never "
+            f"replaced by an overwrite. {reasons}",
+            remediation="Choose Clear, or attach the drive where its controller "
+            "is reachable (a direct SATA or NVMe connection).",
+        )
+
+    def _block_engine_rows(
+        self, privilege: PrivilegeState
+    ) -> list[OperationCapability]:
+        """Whole-drive rows for a platform whose engine is ``core.erase.blockclear``.
+
+        The resolver decides the final state; these rows carry only what the
+        adapter knows (privilege) and the verification wording.
+        """
+        privileged = self._privileged_enough(privilege)
+        status = (
+            CapabilityStatus.NOT_AUTHORIZED
+            if privileged is False
+            else CapabilityStatus.UNVERIFIED
+        )
+        src = "core.erase.blockclear; " + privilege.basis
+        return [
+            row(
+                Operation.FREE_SPACE_WIPE,
+                CapabilityStatus.UNSUPPORTED,
+                "Free-space wipe is not implemented on this platform.",
+                "core.erase.freespace.FREE_SPACE_PLATFORMS",
+                verification="Nothing runs here, so there is nothing to verify.",
+                state=CapabilityState.NOT_IMPLEMENTED,
+            ),
+            row(
+                Operation.WHOLE_DRIVE_CLEAR,
+                status,
+                "Every addressable LBA is overwritten through a handle bound to "
+                "the planned disk, then read back.",
+                src,
+                verification="Full read-back up to 64 GiB, seeded sampling "
+                "above it with the detection probability stated.",
+                limitations=[FLASH_LIMITATION],
+                requires_privilege=True,
+            ),
+            row(
+                Operation.WHOLE_DRIVE_PURGE,
+                status,
+                "Decided per device from the controller's own report.",
+                "core.erase.devicesanitize; " + privilege.basis,
+                verification="The device's or driver's completion status, then a "
+                "sampled read-back of the medium.",
+                requires_privilege=True,
+            ),
+            row(
+                Operation.DRIVE_VERIFICATION,
+                status,
+                "Overwrites are read back; device sanitize is sampled after the "
+                "command completes.",
+                "core.erase.blockclear.verify_target",
+                verification="A sampled verification states its seed and "
+                "detection probability; uncertainty is never reported as a pass.",
+                requires_privilege=True,
+            ),
+            row(
+                Operation.RESUME,
+                status,
+                "An interrupted clear continues from its last ledgered "
+                "checkpoint, through a handle bound to the same disk.",
+                "core.erase.blockclear.clear(resume_from=...)",
+                verification="The resumed run is verified over the whole "
+                "device, exactly as an uninterrupted one.",
+                requires_privilege=True,
+            ),
+        ]
 
     # -- restrictions -------------------------------------------------------
 
@@ -538,11 +733,7 @@ class BaseAdapter:
                     "This is the system or boot disk, or holds a protected "
                     "operating-system volume. " + " ".join(device.system_reasons)
                 ).strip(),
-                recommended_action=(
-                    "Boot the machine from external media (for example the "
-                    "Sanctum Linux build on a USB stick) and sanitize the "
-                    "internal disk from there, or use the OS's own reset flow."
-                ),
+                recommended_action=self._system_disk_advice(device),
                 unavailable=options,
             )
         if device.mounted:
@@ -562,7 +753,11 @@ class BaseAdapter:
                 unavailable=options,
             )
         if recommended is None:
-            first = options[0] if options else None
+            # The Clear option's reason when there is one: it is the path every
+            # device has, so why *it* is unavailable is the answer an operator
+            # needs; why a firmware path is also absent is secondary.
+            clears = [item for item in options if item.level == "CLEAR"]
+            first = clears[0] if clears else options[0] if options else None
             return DeviceAssessment(
                 **base,
                 status=CapabilityStatus.UNSUPPORTED,
@@ -600,6 +795,13 @@ class BaseAdapter:
 
     def _elevation_advice(self) -> str:
         return "Start the privileged helper, then rescan."
+
+    def _system_disk_advice(self, device: NormalizedDevice) -> str:
+        return (
+            "Boot the machine from external media (for example the Sanctum "
+            "Linux build on a USB stick) and sanitize the internal disk from "
+            "there, or use the OS's own reset flow."
+        )
 
     # -- file-side capability rows, shared -----------------------------------
 
@@ -1088,6 +1290,70 @@ def _planned_probes(options: list[SanitizeOption]) -> dict[str, MechanismProbe]:
                 command="engine capability probe",
             )
     return out
+
+
+def json_records(
+    generator: Generator[Any, None, Any],
+) -> Generator[dict[str, Any], None, dict[str, Any]]:
+    """Yield each engine record as JSON; return the result as JSON.
+
+    Closing this generator closes the engine's at its next yield, which is how
+    a cancel reaches a running wipe.
+    """
+    try:
+        while True:
+            try:
+                record = next(generator)
+            except StopIteration as stop:
+                return {"result": stop.value.model_dump(mode="json")}
+            yield record.model_dump(mode="json")
+    finally:
+        generator.close()
+
+
+def ledger_sink(params: dict[str, Any]) -> Any:
+    """The hash-chained ledger a helper request names, as an erase sink."""
+    from pathlib import Path
+
+    from core.erase.sink import ChainLedgerSink
+    from core.ledger.chain import Ledger
+
+    owner = params.get("owner_uid")
+    return ChainLedgerSink(
+        Ledger(
+            Path(str(params["ledger_root"])),
+            tool_version=str(params.get("tool_version", "sanctum-forensics/0.0.0")),
+            pubkey_fingerprint=str(params.get("pubkey_fingerprint", "")),
+            owner_uid=int(owner) if isinstance(owner, int) else None,
+        )
+    )
+
+
+def core_device(device: NormalizedDevice) -> Any:
+    """A normalized device as the erase engines' :class:`core.models.Device`."""
+    from core.models import Device
+
+    transport = (
+        device.interface
+        if device.interface in {"sata", "nvme", "usb", "mmc"}
+        else "unknown"
+    )
+    return Device(
+        path=device.path,
+        model=device.model,
+        serial=device.serial,
+        size_bytes=device.capacity_bytes,
+        rotational=device.media_type == "hdd",
+        transport=transport,
+        is_system_disk=device.system_device,
+        mounted_at=list(device.mount_points),
+        pt_type=None,
+        by_id_path=device.stable_id or None,
+    )
+
+
+def normalized_serial(serial: str) -> str:
+    return "".join(serial.split()).upper()
 
 
 def running_on(family: PlatformFamily) -> bool:

@@ -94,6 +94,9 @@ class EraseMethod(StrEnum):
     # job means from the capability set.
     ATA_SANITIZE_CRYPTO_SCRAMBLE = "ATA_SANITIZE_CRYPTO_SCRAMBLE"
     SED_CRYPTO_ERASE = "SED_CRYPTO_ERASE"
+    #: NVMe Sanitize, crypto-erase action. Issued on Windows through
+    #: IOCTL_STORAGE_REINITIALIZE_MEDIA; the Linux engine does not offer it.
+    NVME_SANITIZE_CRYPTO = "NVME_SANITIZE_CRYPTO"
 
 
 class ErasePhase(StrEnum):

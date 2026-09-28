@@ -970,8 +970,11 @@ def _safety_reasons(profile: DeviceProfile) -> list[str]:
             + (", ".join(profile.mount_points) or "mount point not reported")
             + "); unmount or take the disk offline, then rescan."
         )
-    if not (profile.serial or profile.path):
-        reasons.append("The device identity could not be read.")
+    if not profile.serial.strip():
+        reasons.append(
+            "The device reports no serial number, so its identity cannot be "
+            "bound between planning and the write; destructive work is refused."
+        )
     return reasons
 
 

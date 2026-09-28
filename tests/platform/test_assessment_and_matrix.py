@@ -141,23 +141,35 @@ def test_a_passing_record_for_that_platform_is_what_lifts_it(
         assert "windows PASS" in rows[Operation.FILE_ERASE].source
 
 
-def test_windows_and_macos_never_offer_whole_drive(
+def test_windows_and_macos_offer_whole_drive_through_the_resolver(
     windows_inventory: dict[str, Any],
 ) -> None:
     from core.platform.macos import MacOSAdapter
+    from core.platform.model import CapabilityState
 
     from .conftest import mac_runner
 
-    for adapter in (_windows(windows_inventory), MacOSAdapter(runner=mac_runner())):
+    offered = {
+        CapabilityState.IMPLEMENTED_NOT_PHYSICALLY_VALIDATED,
+        CapabilityState.AVAILABLE_BUT_REQUIRES_PRIVILEGE,
+    }
+    windows = _windows(windows_inventory)
+    mac = MacOSAdapter(runner=mac_runner())
+    for adapter in (windows, mac):
         rows = {r.operation: r for r in adapter.operation_capabilities()}
-        for op in (
-            Operation.WHOLE_DRIVE_CLEAR,
-            Operation.WHOLE_DRIVE_PURGE,
-            Operation.DRIVE_VERIFICATION,
-            Operation.RESUME,
-            Operation.FREE_SPACE_WIPE,
-        ):
-            assert rows[op].status is CapabilityStatus.UNSUPPORTED, (adapter.name, op)
+        assert rows[Operation.WHOLE_DRIVE_CLEAR].state in offered, adapter.name
+        assert rows[Operation.WHOLE_DRIVE_CLEAR].mechanism
+        assert rows[Operation.FREE_SPACE_WIPE].state is CapabilityState.NOT_IMPLEMENTED
+    windows_rows = {r.operation: r for r in windows.operation_capabilities()}
+    mac_rows = {r.operation: r for r in mac.operation_capabilities()}
+    assert windows_rows[Operation.WHOLE_DRIVE_PURGE].state in {
+        CapabilityState.IMPLEMENTED_DEVICE_DEPENDENT,
+        CapabilityState.AVAILABLE_BUT_REQUIRES_PRIVILEGE,
+    }
+    assert (
+        mac_rows[Operation.WHOLE_DRIVE_PURGE].state
+        is CapabilityState.UNSUPPORTED_BY_PLATFORM
+    )
 
 
 def test_media_classes_count_what_discovery_found(
@@ -169,7 +181,9 @@ def test_media_classes_count_what_discovery_found(
     assert classes["USB SSD / flash drive"].detected_now == 2
     assert classes["Internal HDD"].detected_now == 1
     assert classes["Internal SSD"].detected_now == 1
-    assert all(m.whole_drive is CapabilityStatus.UNSUPPORTED for m in classes.values())
+    assert all(
+        m.whole_drive is not CapabilityStatus.SUPPORTED for m in classes.values()
+    )
 
 
 def test_the_filesystem_registry_separates_detection_from_support(

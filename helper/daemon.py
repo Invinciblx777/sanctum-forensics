@@ -331,14 +331,7 @@ def _require_drive_engine(params: dict[str, Any]) -> None:
 def _op_probe_capabilities(params: dict[str, Any]) -> dict[str, Any]:
     """Probe sanitization capability for one device."""
     _require_drive_engine(params)
-    from core.device import capabilities
-    from core.device.enumerate import get_device
-
-    device = get_device(str(params["path"]))
-    return {
-        "device": device.model_dump(mode="json"),
-        "capabilities": capabilities.probe(device).model_dump(mode="json"),
-    }
+    return _adapter(params).authorization_probe(str(params["path"]))
 
 
 def _op_detect_hidden_areas(params: dict[str, Any]) -> dict[str, Any]:
@@ -500,16 +493,33 @@ def _stream_acquire_image(
         yield record.model_dump(mode="json")
 
 
-def _open_restore_target(path: str) -> Any:
+def _open_restore_target(target: Any) -> Any:
     """Open the restore target for writing. Only reached past the write seam.
 
-    Linux block devices only, opened ``O_WRONLY | O_SYNC`` by
-    :class:`core.restore.LinuxBlockDeviceTarget`. Windows and macOS backends
-    implement :class:`core.restore.BlockTarget` and plug in here.
+    Linux: :class:`core.restore.LinuxBlockDeviceTarget` (``O_WRONLY | O_SYNC``).
+    Windows: an unbuffered, write-through ``\\\\.\\PhysicalDriveN`` handle
+    bound to the planned serial and size. macOS: ``/dev/rdiskN`` bound to the
+    planned size. Each implements :class:`core.restore.BlockTarget`.
     """
+    if sys.platform == "win32":
+        from core.device.win.disk import WindowsDisk, parse_disk_number
+        from core.device.win.native import default_api
+
+        number = parse_disk_number(str(target.path))
+        disk = WindowsDisk(default_api(), number, write=True).open()
+        disk.bind(serial=str(target.serial), size_bytes=int(target.size_bytes))
+        return disk
+    if sys.platform == "darwin":
+        from core.device.mac.rawdisk import MacRawDisk
+
+        return (
+            MacRawDisk(str(target.path), write=True)
+            .open()
+            .bind(size_bytes=int(target.size_bytes))
+        )
     from core.restore import LinuxBlockDeviceTarget
 
-    return LinuxBlockDeviceTarget(path)
+    return LinuxBlockDeviceTarget(str(target.path))
 
 
 def _op_run_restore(params: dict[str, Any]) -> dict[str, Any]:
@@ -533,15 +543,7 @@ def _stream_run_restore(
     Closing this generator stops the engine at its next yield; the engine
     ledgers the byte range written before the exception propagates.
     """
-    if sys.platform != "linux":
-        from core.errors import PlatformUnsupported
-
-        raise PlatformUnsupported(
-            "restore onto a block device is implemented for Linux only; Windows "
-            "and macOS block backends plug into core.restore.BlockTarget. "
-            "No operation was performed on the device.",
-            remediation="Restore from a Linux host.",
-        )
+    _require_drive_engine(params)
     from core.ledger.chain import Ledger
     from core.restore import execute_restore
 
@@ -561,8 +563,8 @@ def _stream_run_restore(
     )
     job_id = str(params.get("job_id", "restore"))
     actor = str(params.get("actor") or "sanctum")
-    target = None if authorized.dry_run else _open_restore_target(
-        authorized.plan.target.path
+    target = (
+        None if authorized.dry_run else _open_restore_target(authorized.plan.target)
     )
     try:
         generator = execute_restore(

@@ -345,6 +345,9 @@ class NormalizedDevice(BaseModel):
     #: Sentence naming the signal that decided ``media_type``.
     media_basis: str = ""
     removable: bool | None = None
+    #: The OS reports the disk as internal to the machine (macOS ``Internal``).
+    #: ``None`` when the OS does not say.
+    internal: bool | None = None
     mounted: bool = False
     mount_points: list[str] = Field(default_factory=list)
     system_device: bool = False

@@ -24,15 +24,25 @@ hibernation file. It is **mounted** when any partition has a drive letter or a
 folder mount path. Both refuse a whole-drive operation, through the same
 :meth:`BaseAdapter.assess_device` every platform uses.
 
-Whole-drive sanitization
-------------------------
-**Not implemented in this build, and reported as such.** Windows can reach a
-disk through ``\\\\.\\PhysicalDriveN`` and can pass ATA and NVMe sanitize
-commands with ``IOCTL_STORAGE_PROTOCOL_COMMAND`` /
-``IOCTL_ATA_PASS_THROUGH``. None of those paths has been written and validated
-here, and an unvalidated raw-disk writer is exactly the component where being
-wrong destroys the wrong disk. So every device gets UNSUPPORTED with that
-reason, and the recommended action is the validated Linux engine.
+Whole-drive clear and device sanitize
+-------------------------------------
+Implemented natively (:mod:`core.device.win`), never through a shell:
+
+* **Clear** - :mod:`core.erase.blockclear` over ``\\\\.\\PhysicalDriveN``
+  opened with ``FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH``. The handle
+  is bound to the planned disk number, serial and length before the first
+  write, and the volume manager is asked again, through the same API, whether
+  any volume on the disk is mounted.
+* **Device sanitize** - ATA SANITIZE (block erase, crypto scramble) through
+  ``IOCTL_ATA_PASS_THROUGH``, NVMe Sanitize (block, crypto) through
+  ``IOCTL_STORAGE_REINITIALIZE_MEDIA``; offered only when the controller's own
+  IDENTIFY answer reports it, which :meth:`WindowsAdapter.device_probes` reads.
+  ATA SECURITY ERASE and NVMe Format are not issued; the resolver says why.
+
+A drive letter is never a target. A mounted disk is refused; taking it
+offline is a separate, explicit step (:meth:`WindowsAdapter.prepare_device`).
+Every destructive run needs an elevated process, the typed serial and, for a
+real run, the workflow's authorization re-checked at the write seam.
 """
 
 from __future__ import annotations
@@ -40,18 +50,42 @@ from __future__ import annotations
 import base64
 import json
 import os
-from typing import Any
+from collections.abc import Generator
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from core.errors import PlatformUnsupported
-from core.platform.base import FLASH_LIMITATION, BaseAdapter
+from core.errors import (
+    ConfirmationMismatch,
+    MountedRefused,
+    PlatformUnsupported,
+    SystemDiskRefused,
+    UnsupportedCapability,
+)
+from core.platform.base import (
+    FLASH_LIMITATION,
+    BaseAdapter,
+    core_device,
+    json_records,
+    ledger_sink,
+    normalized_serial,
+)
 from core.platform.model import (
+    RUNNABLE_STATES,
+    Capability,
+    CapabilityState,
     Interface,
     MediaType,
     NormalizedDevice,
+    OperationCapability,
     PartitionInfo,
+    PrivilegeState,
+    SanitizeOption,
 )
+
+if TYPE_CHECKING:  # pragma: no cover
+    from core.device.win.native import NativeApi
+    from core.platform.capability import MechanismProbe
 
 __all__ = [
     "WindowsAdapter",
@@ -363,6 +397,11 @@ class WindowsAdapter(BaseAdapter):
 
     name = "windows"
     family = "windows"
+    sanitize_capabilities = (
+        Capability.NVME_SANITIZE,
+        Capability.ATA_SANITIZE,
+        Capability.CRYPTO_ERASE,
+    )
 
     def __init__(
         self,
@@ -370,13 +409,37 @@ class WindowsAdapter(BaseAdapter):
         helper: str = "in-process",
         helper_basis: str = "",
         runner: Any = None,
+        native: NativeApi | None = None,
+        privilege: PrivilegeState | None = None,
+        os_build: int | None = None,
+        poll_s: float = 5.0,
     ) -> None:
-        super().__init__(helper=helper, helper_basis=helper_basis)
+        super().__init__(helper=helper, helper_basis=helper_basis, privilege=privilege)
         if runner is None:
             from core.device._sysio import SubprocessRunner
 
             runner = SubprocessRunner(timeout_s=60.0)
         self._runner = runner
+        self._native = native
+        self._os_build = os_build
+        self._poll_s = poll_s
+        self._probes: dict[str, dict[str, MechanismProbe]] = {}
+
+    def native(self) -> NativeApi:
+        """The kernel32 binding, created on first use (Windows only)."""
+        if self._native is None:
+            from core.device.win.native import default_api
+
+            self._native = default_api()
+        return self._native
+
+    def os_build(self) -> int:
+        if self._os_build is not None:
+            return self._os_build
+        import sys
+
+        version = getattr(sys, "getwindowsversion", None)
+        return int(version().build) if version is not None else 0
 
     def inventory(self) -> dict[str, Any]:
         """Run the inventory script. Raises :class:`PlatformUnsupported`."""
@@ -435,12 +498,317 @@ class WindowsAdapter(BaseAdapter):
         return devices
 
     def whole_drive_unavailable_reason(self) -> str:
+        return ""
+
+    def whole_drive_recommended_action(self) -> str:
         return (
-            "Whole-drive sanitization is not implemented for Windows in this "
-            "build. Windows can reach a disk through \\\\.\\PhysicalDriveN and "
-            "IOCTL_STORAGE_PROTOCOL_COMMAND, but no engine using them has been "
-            "written and validated, so none is offered."
+            "Run Sanctum as Administrator. Take the disk offline first (Devices > "
+            "Prepare, or Disk Management > Offline) so no volume on it is "
+            "mounted, then rescan."
         )
+
+    def _elevation_advice(self) -> str:
+        return (
+            "Close Sanctum and start it again with Run as administrator. The "
+            "Windows build has no separate helper: raw disk access is granted "
+            "to an elevated process only."
+        )
+
+    # -- probes -------------------------------------------------------------
+
+    def device_probes(self, device: NormalizedDevice) -> dict[str, MechanismProbe]:
+        cached = self._probes.get(device.id)
+        if cached is not None:
+            return cached
+        elevated = self._privileged_enough(self.privilege_state()) is True
+        try:
+            api = self.native() if elevated else None
+        except OSError:
+            api = None
+        probes = probe_mechanisms(api, device)
+        self._probes[device.id] = probes
+        return probes
+
+    def drive_options(
+        self, device: NormalizedDevice
+    ) -> tuple[list[SanitizeOption], str]:
+        resolution = self.device_resolution(device)
+        return options_from_resolution(resolution)
+
+    def _platform_rows(self, privilege: PrivilegeState) -> list[OperationCapability]:
+        return self._block_engine_rows(privilege)
+
+    # -- the workflow's fresh read ---------------------------------------------
+
+    def authorization_probe(self, path: str) -> dict[str, Any]:
+        device = self.inspect_device(path)
+        resolution = self.device_resolution(device)
+        achievable: list[str] = []
+        clear = resolution.get(Capability.WHOLE_DRIVE_CLEAR)
+        if clear.state in RUNNABLE_STATES:
+            achievable.append("CLEAR")
+        if resolution.sanitize_order:
+            achievable.append("PURGE")
+        limits = sorted(
+            {text for row in resolution.capabilities for text in row.limitations}
+        )
+        row = core_device(device).model_dump(mode="json")
+        row["stable_id"] = device.stable_id
+        return {
+            "device": row,
+            "capabilities": {
+                "achievable_levels": achievable,
+                "est_erase_seconds": int(device.capacity_bytes / (30 * 1024 * 1024)),
+                "limitations": limits,
+                "resolution": resolution.model_dump(mode="json"),
+            },
+        }
+
+    # -- execution ------------------------------------------------------------
+
+    def execute_drive_sanitization(
+        self, params: dict[str, Any]
+    ) -> Generator[dict[str, Any], None, dict[str, Any]]:
+        from core.device.win.disk import parse_disk_number
+
+        dry_run = params.get("dry_run", True) is not False
+        level = str(params.get("level", "CLEAR"))
+        device = self._revalidated(params)
+        capability, resolution = self._choose(device, level, dry_run=dry_run)
+        number = parse_disk_number(device.id)
+        sink = ledger_sink(params)
+        job_id = str(params["job_id"])
+        if capability is Capability.WHOLE_DRIVE_CLEAR:
+            generator: Any = self._clear(
+                device, number, resolution, job_id, dry_run, sink
+            )
+        else:
+            generator = self._sanitize(
+                device, number, capability, resolution, job_id, dry_run, sink
+            )
+        return (yield from json_records(generator))
+
+    def resume_drive_sanitization(
+        self, params: dict[str, Any]
+    ) -> Generator[dict[str, Any], None, dict[str, Any]]:
+        from core.device.win.disk import parse_disk_number
+
+        dry_run = params.get("dry_run", True) is not False
+        device = self._revalidated(params)
+        _, resolution = self._choose(device, "CLEAR", dry_run=dry_run)
+        sink = ledger_sink(params)
+        job_id = str(params["job_id"])
+        checkpoint = sink.last_checkpoint(job_id)
+        if checkpoint is None:
+            raise UnsupportedCapability(
+                f"No checkpoint was recorded for job {job_id}; only an "
+                "interrupted clear resumes.",
+                remediation="Start the clear again from the beginning.",
+            )
+        generator = self._clear(
+            device,
+            parse_disk_number(device.id),
+            resolution,
+            job_id,
+            dry_run,
+            sink,
+            resume_from=checkpoint,
+        )
+        return (yield from json_records(generator))
+
+    def _open_bound(self, number: int, device: NormalizedDevice, *, write: bool) -> Any:
+        """Open, bind, and (for a write) check the volume manager once more."""
+        from core.device.win.disk import WindowsDisk, volumes_on_disk
+
+        api = self.native()
+        disk = WindowsDisk(api, number, write=write).open()
+        disk.bind(serial=device.serial, size_bytes=device.capacity_bytes)
+        if write:
+            mounted = [
+                path for _, paths in volumes_on_disk(api, number) for path in paths
+            ]
+            if mounted:
+                disk.close()
+                raise MountedRefused(
+                    f"{disk.path} has a mounted volume at {', '.join(mounted)} "
+                    "at the write seam. Nothing was written.",
+                    remediation=self.whole_drive_recommended_action(),
+                )
+        return disk
+
+    def _clear(
+        self,
+        device: NormalizedDevice,
+        number: int,
+        resolution: Any,
+        job_id: str,
+        dry_run: bool,
+        sink: Any,
+        *,
+        resume_from: Any = None,
+    ) -> Any:
+        from core.erase.blockclear import ClearRequest, clear
+
+        row = resolution.get(Capability.WHOLE_DRIVE_CLEAR)
+        request = ClearRequest(
+            job_id=job_id,
+            device=core_device(device),
+            identity={
+                "number": number,
+                "serial": device.serial,
+                "model": device.model,
+                "size_bytes": device.capacity_bytes,
+                "stable_id": device.stable_id,
+            },
+            platform="windows",
+            mechanism=row.mechanism,
+            device_class=resolution.device_class,
+            flash=device.media_type != "hdd",
+            dry_run=dry_run,
+            limitations=tuple(row.limitations),
+            resume_from=resume_from,
+        )
+        return clear(
+            request,
+            lambda: self._open_bound(number, device, write=True),
+            ledger=sink,
+        )
+
+    def _sanitize(
+        self,
+        device: NormalizedDevice,
+        number: int,
+        capability: Capability,
+        resolution: Any,
+        job_id: str,
+        dry_run: bool,
+        sink: Any,
+    ) -> Any:
+        from core.device.win import ata, ioctl, nvme
+        from core.erase.devicesanitize import SanitizeRequest, run
+        from core.models import EraseMethod, ErasePhase, Progress
+
+        row = resolution.get(capability)
+        nvme_bus = device.interface == "nvme"
+        if capability is Capability.NVME_SANITIZE:
+            method = EraseMethod.NVME_SANITIZE_BLOCK
+        elif capability is Capability.ATA_SANITIZE:
+            method = EraseMethod.ATA_SANITIZE_BLOCK_ERASE
+        elif nvme_bus:
+            method = EraseMethod.NVME_SANITIZE_CRYPTO
+        else:
+            method = EraseMethod.ATA_SANITIZE_CRYPTO_SCRAMBLE
+        request = SanitizeRequest(
+            job_id=job_id,
+            device=core_device(device),
+            identity={
+                "number": number,
+                "serial": device.serial,
+                "size_bytes": device.capacity_bytes,
+            },
+            platform="windows",
+            method=method,
+            capability=capability.value,
+            protocol="NVMe" if nvme_bus else "ATA",
+            mechanism=row.mechanism,
+            device_class=resolution.device_class,
+            dry_run=dry_run,
+            limitations=tuple(row.limitations),
+        )
+        build = self.os_build()
+
+        def issue() -> Generator[Progress, None, dict[str, Any]]:
+            disk = self._open_bound(number, device, write=True)
+            try:
+                if nvme_bus:
+                    code = (
+                        ioctl.STORAGE_SANITIZE_CRYPTO_ERASE
+                        if method is EraseMethod.NVME_SANITIZE_CRYPTO
+                        else ioctl.STORAGE_SANITIZE_BLOCK_ERASE
+                    )
+                    record = nvme.reinitialize_media(
+                        disk, code, timeout_s=6 * 3600, os_build=build
+                    )
+                    limits = [str(record["note"])]
+                    return {"hw_attested": False, **record, "limitations": limits}
+                action = (
+                    ata.SANITIZE_BLOCK_ERASE
+                    if method is EraseMethod.ATA_SANITIZE_BLOCK_ERASE
+                    else ata.SANITIZE_CRYPTO_SCRAMBLE
+                )
+                polling = ata.sanitize(disk, action, poll_s=self._poll_s)
+                while True:
+                    try:
+                        status = next(polling)
+                    except StopIteration as stop:
+                        final = stop.value
+                        break
+                    yield Progress(
+                        job_id=job_id,
+                        phase=ErasePhase.ERASE.value,
+                        pct_bp=min(10_000, status.progress * 10_000 // 65_536),
+                        bytes_done=0,
+                        bytes_total=device.capacity_bytes,
+                        throughput_bytes_per_sec=0,
+                        eta_seconds=0,
+                        message="drive sanitizing",
+                    )
+                return {
+                    "hw_attested": bool(final.completed_ok),
+                    "command": f"SANITIZE {ata.SANITIZE_NAMES[action]}",
+                    "sanitize_status": "completed successfully",
+                }
+            finally:
+                disk.close()
+
+        return run(
+            request,
+            issue=issue,
+            open_reader=lambda: self._open_bound(number, device, write=False),
+            ledger=sink,
+        )
+
+    # -- preparation -------------------------------------------------------------
+
+    def prepare_device(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Take a disk offline (non-persistently), as its own explicit step.
+
+        Dry run by default. A real run needs the typed serial, refuses the
+        system disk, and binds the handle before the attribute is changed.
+        Taking a disk offline dismounts its volumes; it writes nothing to the
+        medium, and the disk returns online at the next replug or reboot.
+        """
+        from core.device.win.disk import WindowsDisk, parse_disk_number
+
+        device = self.inspect_device(str(params["path"]))
+        dry_run = params.get("dry_run", True) is not False
+        if device.system_device:
+            raise SystemDiskRefused(
+                f"Refusing to take {device.path} offline: it is the system disk."
+            )
+        if not dry_run and normalized_serial(
+            str(params.get("typed_serial") or "")
+        ) != normalized_serial(device.serial):
+            raise ConfirmationMismatch(
+                f"The typed serial does not match {device.path}. Nothing changed."
+            )
+        action = {
+            "device": device.path,
+            "serial": device.serial,
+            "action": "IOCTL_DISK_SET_DISK_ATTRIBUTES offline, not persistent",
+            "unmounts": device.mount_points,
+            "dry_run": dry_run,
+        }
+        if dry_run:
+            return {**action, "performed": False}
+        disk = WindowsDisk(self.native(), parse_disk_number(device.id), write=True)
+        disk.open()
+        try:
+            disk.bind(serial=device.serial, size_bytes=device.capacity_bytes)
+            disk.set_offline(offline=True, persist=False)
+        finally:
+            disk.close()
+        return {**action, "performed": True}
 
     def _file_limitations(self) -> list[str]:
         return [
@@ -456,12 +824,250 @@ class WindowsAdapter(BaseAdapter):
 
     def restrictions(self) -> list[str]:
         return [
-            "Whole-drive sanitization is not available on Windows in this "
-            "build; use the Linux build for whole-drive work.",
-            "Free-space wipe is Linux-only (fill behaviour not measured on NTFS).",
+            "Whole-drive clear and device sanitize need Sanctum running as "
+            "Administrator; the Windows build has no separate helper.",
+            "A disk with a mounted volume is refused; take it offline first. A "
+            "drive letter is never accepted as a whole-disk target.",
+            "ATA SECURITY ERASE and NVMe Format NVM are not issued on Windows; "
+            "ATA SANITIZE and NVMe Sanitize are, where the controller reports them.",
+            "Free-space wipe is not implemented on Windows.",
             "Physical read-back of an erased file needs an elevated process "
             "(raw volume read of \\\\.\\C:); unelevated it is reported as not "
             "verified.",
-            "No privileged helper runs on Windows because no implemented "
-            "operation needs one; the app never asks to run as Administrator.",
         ]
+
+
+# --------------------------------------------------------------------------
+# Probes and options, pure given the native API
+# --------------------------------------------------------------------------
+
+_DEVICE_CAPS = (
+    Capability.ATA_SANITIZE,
+    Capability.ATA_SECURITY_ERASE,
+    Capability.NVME_SANITIZE,
+    Capability.NVME_FORMAT,
+    Capability.CRYPTO_ERASE,
+    Capability.HPA_DCO_DISCOVERY,
+    Capability.HPA_DCO_MODIFY,
+)
+
+
+def _all(exposed: bool | None, basis: str, command: str) -> dict[str, MechanismProbe]:
+    from core.platform.capability import MechanismProbe
+
+    return {
+        item.value: MechanismProbe(exposed=exposed, basis=basis, command=command)
+        for item in _DEVICE_CAPS
+    }
+
+
+def probe_mechanisms(
+    api: NativeApi | None, device: NormalizedDevice
+) -> dict[str, MechanismProbe]:
+    """Ask the controller what it supports. ``api=None`` means unelevated.
+
+    Read-only commands only: IDENTIFY DEVICE, SANITIZE STATUS EXT, and the NVMe
+    Identify Controller property query. A refusal is recorded as the answer
+    for every mechanism it hides, with the reason; an untrustworthy IDENTIFY
+    (bad checksum) settles nothing.
+    """
+    from core.device.win import ata, nvme
+    from core.device.win.disk import WindowsDisk, parse_disk_number
+    from core.platform.capability import MechanismProbe
+
+    if api is None:
+        return _all(
+            None,
+            "Not probed: asking the controller needs an Administrator process.",
+            "not run (unelevated)",
+        )
+    if device.interface in {"mmc", "virtual"}:
+        return _all(
+            False,
+            f"A {device.interface} device exposes no ATA or NVMe command set to "
+            "the host.",
+            "bus type from Get-Disk",
+        )
+    try:
+        number = parse_disk_number(device.id)
+    except UnsupportedCapability as exc:
+        return _all(None, exc.message, "not run")
+    probes: dict[str, MechanismProbe] = {}
+    if device.interface == "nvme":
+        try:
+            with WindowsDisk(api, number) as disk:
+                identity = nvme.identify_controller(disk)
+        except (UnsupportedCapability, OSError) as exc:
+            return _all(False, str(exc), "IOCTL_STORAGE_QUERY_PROPERTY Identify")
+        command = "IOCTL_STORAGE_QUERY_PROPERTY NVMe Identify Controller"
+        probes[Capability.NVME_SANITIZE.value] = MechanismProbe(
+            exposed=identity.block_erase,
+            basis=f"SANICAP block erase: {'yes' if identity.block_erase else 'no'}.",
+            command=command,
+        )
+        probes[Capability.CRYPTO_ERASE.value] = MechanismProbe(
+            exposed=identity.crypto_erase,
+            basis=f"SANICAP crypto erase: {'yes' if identity.crypto_erase else 'no'}.",
+            command=command,
+        )
+        probes[Capability.NVME_FORMAT.value] = MechanismProbe(
+            exposed=identity.format_supported,
+            basis=f"OACS Format NVM: {'yes' if identity.format_supported else 'no'}.",
+            command=command,
+        )
+        for item in (
+            Capability.ATA_SANITIZE,
+            Capability.ATA_SECURITY_ERASE,
+            Capability.HPA_DCO_DISCOVERY,
+            Capability.HPA_DCO_MODIFY,
+        ):
+            probes[item.value] = MechanismProbe(
+                exposed=False,
+                basis="An NVMe controller has no ATA command set, HPA or DCO.",
+                command=command,
+            )
+        return probes
+    command = "IOCTL_ATA_PASS_THROUGH IDENTIFY DEVICE"
+    try:
+        with WindowsDisk(api, number, write=True) as disk:
+            identity_ata = ata.identify(disk)
+            frozen = False
+            if identity_ata.sanitize_supported and identity_ata.trustworthy:
+                try:
+                    frozen = ata.sanitize_status(disk).frozen
+                except (UnsupportedCapability, OSError):
+                    frozen = False
+    except (UnsupportedCapability, OSError) as exc:
+        return _all(False, str(exc), command)
+    if not identity_ata.trustworthy:
+        return _all(
+            None,
+            "IDENTIFY DEVICE came back with a bad checksum; the answer was not "
+            "the drive's, and nothing is inferred from it.",
+            command,
+        )
+    sanitize_basis = (
+        "SANITIZE feature set: "
+        + ("yes" if identity_ata.sanitize_supported else "no")
+        + f"; BLOCK ERASE EXT: {'yes' if identity_ata.block_erase else 'no'}"
+        + f"; CRYPTO SCRAMBLE EXT: {'yes' if identity_ata.crypto_scramble else 'no'}."
+    )
+    frozen_basis = " SANITIZE FROZEN is set until the next power cycle."
+    probes[Capability.ATA_SANITIZE.value] = MechanismProbe(
+        exposed=identity_ata.sanitize_supported and identity_ata.block_erase,
+        blocked=frozen,
+        basis=sanitize_basis + (frozen_basis if frozen else ""),
+        command=command,
+    )
+    probes[Capability.CRYPTO_ERASE.value] = MechanismProbe(
+        exposed=identity_ata.sanitize_supported and identity_ata.crypto_scramble,
+        blocked=frozen,
+        basis=sanitize_basis + (frozen_basis if frozen else ""),
+        command=command,
+    )
+    probes[Capability.ATA_SECURITY_ERASE.value] = MechanismProbe(
+        exposed=identity_ata.security_supported,
+        blocked=identity_ata.security_frozen,
+        basis="Security feature set: "
+        + ("yes" if identity_ata.security_supported else "no")
+        + ("; frozen" if identity_ata.security_frozen else ""),
+        command=command,
+    )
+    hpa_basis = (
+        f"HPA feature set: {'yes' if identity_ata.hpa_supported else 'no'}; "
+        f"DCO: {'yes' if identity_ata.dco_supported else 'no'}."
+    )
+    for item in (Capability.HPA_DCO_DISCOVERY, Capability.HPA_DCO_MODIFY):
+        probes[item.value] = MechanismProbe(
+            exposed=identity_ata.hpa_supported, basis=hpa_basis, command=command
+        )
+    for item in (Capability.NVME_SANITIZE, Capability.NVME_FORMAT):
+        probes[item.value] = MechanismProbe(
+            exposed=False,
+            basis="The device answered as ATA, not NVMe.",
+            command=command,
+        )
+    return probes
+
+
+_OPTION_METHOD: dict[Capability, str] = {
+    Capability.NVME_SANITIZE: "NVME_SANITIZE_BLOCK",
+    Capability.ATA_SANITIZE: "ATA_SANITIZE_BLOCK_ERASE",
+}
+
+
+def options_from_resolution(resolution: Any) -> tuple[list[SanitizeOption], str]:
+    """Sanitize options straight from the resolver: Purge first, then Clear."""
+    from core.platform.capability import legacy_status
+    from core.platform.model import STATE_LABELS
+
+    options: list[SanitizeOption] = []
+    purge = None
+    for capability in (
+        Capability.NVME_SANITIZE,
+        Capability.ATA_SANITIZE,
+        Capability.CRYPTO_ERASE,
+    ):
+        row = resolution.get(capability)
+        if row.state in RUNNABLE_STATES or (
+            row.state is CapabilityState.AVAILABLE_BUT_REQUIRES_PRIVILEGE
+        ):
+            purge = row
+            break
+    if purge is None:
+        best = min(
+            (
+                resolution.get(item)
+                for item in (
+                    Capability.NVME_SANITIZE,
+                    Capability.ATA_SANITIZE,
+                    Capability.CRYPTO_ERASE,
+                )
+            ),
+            key=lambda row: row.state is CapabilityState.UNSUPPORTED_BY_PLATFORM,
+        )
+        options.append(
+            SanitizeOption(
+                level="PURGE",
+                title="Device sanitize (Purge)",
+                status=legacy_status(best.state),
+                state=best.state,
+                state_label=STATE_LABELS[best.state],
+                capability=best.capability,
+                why=best.reason,
+                remediation="Choose Clear, or attach the drive directly.",
+            )
+        )
+    else:
+        crypto = purge.capability is Capability.CRYPTO_ERASE
+        options.append(
+            SanitizeOption(
+                level="PURGE",
+                title="Cryptographic erase (Purge)"
+                if crypto
+                else "Device sanitize (Purge)",
+                status=legacy_status(purge.state),
+                method=_OPTION_METHOD.get(
+                    purge.capability,
+                    "NVME_SANITIZE_CRYPTO"
+                    if purge.protocol == "NVMe"
+                    else "ATA_SANITIZE_CRYPTO_SCRAMBLE",
+                ),
+                why=purge.reason,
+                technical=[purge.mechanism, purge.assurance],
+                verification=purge.verification,
+            )
+        )
+    clear = resolution.get(Capability.WHOLE_DRIVE_CLEAR)
+    options.append(
+        SanitizeOption(
+            level="CLEAR",
+            title="Addressable overwrite (Clear)",
+            status=legacy_status(clear.state),
+            method="SINGLE_PASS_OVERWRITE",
+            why=clear.reason,
+            technical=[clear.mechanism, clear.assurance],
+            verification=clear.verification,
+        )
+    )
+    return options, clear.verification
