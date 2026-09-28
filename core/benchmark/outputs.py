@@ -159,7 +159,7 @@ def index_outputs(files: Path) -> list[dict[str, Any]]:
                 size += len(chunk)
         entries.append(
             {
-                "path": str(path.relative_to(files)),
+                "path": path.relative_to(files).as_posix(),
                 "name": path.name,
                 "size": size,
                 "sha256": digest.hexdigest(),
