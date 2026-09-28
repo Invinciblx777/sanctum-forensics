@@ -261,6 +261,36 @@ def erase_drive(
     return _accepted(job_id, "erase-drive")
 
 
+def _linux_block_identity(source: str) -> Any:
+    """The serial and size to bind a Linux block-device read to.
+
+    A whole disk answers with its own serial and capacity. A partition has no
+    serial of its own, so it is bound to the disk that holds it, and to its own
+    size: an image of ``/dev/sda1`` must come from the disk the operator chose,
+    and must be as long as that partition.
+
+    Raises:
+        DeviceVanished: no enumerated disk or partition is ``source``.
+    """
+    from types import SimpleNamespace
+
+    from core.errors import DeviceVanished
+    from core.platform import current_adapter
+
+    for device in current_adapter().enumerate_devices(include_virtual=True):
+        if source in {device.path, device.id}:
+            return device
+        for partition in device.partitions:
+            if source == partition.id:
+                return SimpleNamespace(
+                    serial=device.serial, capacity_bytes=partition.size_bytes
+                )
+    raise DeviceVanished(
+        f"No storage device or partition matches {source!r}.",
+        remediation="Re-enumerate devices and confirm the target is still connected.",
+    )
+
+
 def _is_block_device(path: str) -> bool:
     """True when ``path`` names a block device node on this host."""
     import stat
@@ -600,7 +630,11 @@ def acquire_image(
         from core.platform import current_adapter
 
         try:
-            device = current_adapter().inspect_device(body.source)
+            device = (
+                _linux_block_identity(body.source)
+                if linux_block
+                else current_adapter().inspect_device(body.source)
+            )
         except SanctumError as exc:
             raise sanctum_error_response(
                 type(exc).__name__, exc.message, exc.remediation

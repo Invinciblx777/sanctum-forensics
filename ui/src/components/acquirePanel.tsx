@@ -26,6 +26,7 @@ export function AcquirePanel({
   const [rows, setRows] = useState<DeviceRow[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [path, setPath] = useState('')
+  const [partition, setPartition] = useState('')
   const [dest, setDest] = useState('')
   const [fmt, setFmt] = useState<'raw' | 'e01'>('raw')
   const [compression, setCompression] = useState<'none' | 'fast' | 'best'>('fast')
@@ -56,7 +57,8 @@ export function AcquirePanel({
   }
 
   const row = rows?.find((item) => item.device.path === path) ?? null
-  const source = row ? rawSource(row) : null
+  const partitions = row?.normalized?.partitions ?? []
+  const source = row ? rawSource(row, partition || undefined) : null
 
   async function start() {
     if (!source || !source.allowed || !dest) return
@@ -104,7 +106,13 @@ export function AcquirePanel({
           <>
             <label>
               Source device
-              <select value={path} onChange={(event) => setPath(event.target.value)}>
+              <select
+                value={path}
+                onChange={(event) => {
+                  setPath(event.target.value)
+                  setPartition('')
+                }}
+              >
                 <option value="">choose a device</option>
                 {rows.map((item) => (
                   <option key={item.device.path} value={item.device.path}>
@@ -115,10 +123,27 @@ export function AcquirePanel({
               </select>
             </label>
 
+            {partitions.length > 0 && row?.normalized?.platform === 'linux' && (
+              <label>
+                What to image
+                <select
+                  value={partition}
+                  onChange={(event) => setPartition(event.target.value)}
+                >
+                  <option value="">the whole disk</option>
+                  {partitions.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.id} · {bytes(item.size_bytes)} · {item.filesystem || 'no filesystem'}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
             {source && (
               <div className="col tight" data-testid="raw-acquisition-state">
                 <span className="row" style={{ gap: 'var(--space-2)' }}>
-                  <strong>Raw acquisition:</strong>
+                  <strong>{partition ? 'Volume acquisition:' : 'Raw acquisition:'}</strong>
                   <StateMark row={source.capability ?? null} />
                 </span>
                 <span className="note">{source.reason}</span>

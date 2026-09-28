@@ -481,12 +481,18 @@ export interface RawSource {
  * refuses the job unless the serial matches. Whether it may start follows the
  * resolver's raw-acquisition state for that device.
  */
-export function rawSource(row: DeviceRow): RawSource {
+export function rawSource(row: DeviceRow, partition?: string): RawSource {
   const normalized = row.normalized
   const platform = normalized?.platform ?? 'linux'
-  const source = normalized?.path || row.device.path
+  // A partition is imaged as the volume it is: the source is its own node, it
+  // is bound to the serial of the disk that holds it, and the resolver's
+  // volume-acquisition state decides whether it is offered.
+  const source = partition || normalized?.path || row.device.path
   const expectedSerial = (normalized?.serial ?? row.device.serial ?? '').trim()
-  const capability = deviceCapability(row.assessment, 'raw_acquisition')
+  const capability = deviceCapability(
+    row.assessment,
+    partition ? 'volume_acquisition' : 'raw_acquisition',
+  )
   const word = capabilityWord(capability)
   const serialRequired = platform === 'windows' || platform === 'macos'
   if (serialRequired && !expectedSerial) {

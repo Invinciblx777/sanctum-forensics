@@ -48,11 +48,14 @@ class _StreamingHelper:
 @pytest.fixture
 def block_device(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("api.routes.jobs._is_block_device", lambda path: True)
-    adapter = SimpleNamespace(
-        inspect_device=lambda path: SimpleNamespace(
-            serial="SER-1234", capacity_bytes=4096
-        )
+    disk = SimpleNamespace(
+        path="/dev/sdz",
+        id="/dev/sdz",
+        serial="SER-1234",
+        capacity_bytes=4096,
+        partitions=[SimpleNamespace(id="/dev/sdz1", size_bytes=1024)],
     )
+    adapter = SimpleNamespace(enumerate_devices=lambda include_virtual=True: [disk])
     monkeypatch.setattr("core.platform.current_adapter", lambda: adapter)
 
 
@@ -93,6 +96,50 @@ def test_a_block_device_without_the_matching_serial_is_refused_untouched(
     refused = client.post(
         "/jobs/acquire",
         json={"source": "/dev/sdz", "dest": "stick.dd", "expected_serial": "WRONG"},
+    )
+    assert refused.status_code >= 400
+    assert helper.requests == []
+
+
+@pytest.mark.usefixtures("block_device")
+def test_a_partition_is_bound_to_its_disks_serial_and_its_own_size(
+    client: TestClient, services: AppServices
+) -> None:
+    helper = _StreamingHelper()
+    services.helper = helper  # type: ignore[assignment]
+
+    accepted = client.post(
+        "/jobs/acquire",
+        json={
+            "source": "/dev/sdz1",
+            "dest": "volume.dd",
+            "expected_serial": "SER-1234",
+        },
+    )
+    assert accepted.status_code == 200, accepted.text
+    settle(services, accepted.json()["job_id"])
+
+    [(method, params)] = helper.requests
+    assert method == "acquire_image"
+    assert params["source"] == "/dev/sdz1"
+    assert params["expected_serial"] == "SER-1234"
+    assert params["expected_size"] == 1024
+
+
+@pytest.mark.usefixtures("block_device")
+def test_an_unknown_partition_is_refused_untouched(
+    client: TestClient, services: AppServices
+) -> None:
+    helper = _StreamingHelper()
+    services.helper = helper  # type: ignore[assignment]
+
+    refused = client.post(
+        "/jobs/acquire",
+        json={
+            "source": "/dev/sdz9",
+            "dest": "volume.dd",
+            "expected_serial": "SER-1234",
+        },
     )
     assert refused.status_code >= 400
     assert helper.requests == []
