@@ -28,7 +28,9 @@ Destructive operations keep both of their gates on this side of the boundary.
 ``run_erase`` refuses unless ``dry_run`` is explicitly false *and* the typed
 serial matches the device the helper itself re-reads. The API cannot talk the
 helper out of either check, which is the point of putting them here rather than
-in the request handler.
+in the request handler. ``run_restore`` keeps the same two gates, plus its own
+write-seam revalidation of a ``restore``-kind authorization
+(:func:`helper.authorization.revalidate_restore`).
 
 Streaming, and liveness
 -----------------------
@@ -498,6 +500,94 @@ def _stream_acquire_image(
         yield record.model_dump(mode="json")
 
 
+def _open_restore_target(path: str) -> Any:
+    """Open the restore target for writing. Only reached past the write seam.
+
+    Linux block devices only, opened ``O_WRONLY | O_SYNC`` by
+    :class:`core.restore.LinuxBlockDeviceTarget`. Windows and macOS backends
+    implement :class:`core.restore.BlockTarget` and plug in here.
+    """
+    from core.restore import LinuxBlockDeviceTarget
+
+    return LinuxBlockDeviceTarget(path)
+
+
+def _op_run_restore(params: dict[str, Any]) -> dict[str, Any]:
+    """Restore a backup image onto a device, returning its progress in one batch."""
+    return _drain(_stream_run_restore(params))
+
+
+def _stream_run_restore(
+    params: dict[str, Any],
+) -> Generator[dict[str, Any], None, dict[str, Any]]:
+    """Write a verified backup image onto a target device, then read it back.
+
+    ``dry_run`` defaults to True when absent, as for an erase. Every request -
+    dry or real - must carry a restore authorization, which
+    :func:`helper.authorization.revalidate_restore` re-checks against a fresh
+    read of the target and the image in *this* process before anything is
+    opened. A real restore also needs the typed serial of the device this
+    process re-reads and takes the single-use ``.executed`` marker. A dry run
+    never opens the target.
+
+    Closing this generator stops the engine at its next yield; the engine
+    ledgers the byte range written before the exception propagates.
+    """
+    if sys.platform != "linux":
+        from core.errors import PlatformUnsupported
+
+        raise PlatformUnsupported(
+            "restore onto a block device is implemented for Linux only; Windows "
+            "and macOS block backends plug into core.restore.BlockTarget. "
+            "No operation was performed on the device.",
+            remediation="Restore from a Linux host.",
+        )
+    from core.ledger.chain import Ledger
+    from core.restore import execute_restore
+
+    from helper.authorization import revalidate_restore
+
+    authorized = revalidate_restore(params)
+    ledger_root = params.get("ledger_root")
+    ledger = (
+        Ledger(
+            Path(str(ledger_root)),
+            tool_version=str(params.get("tool_version", "sanctum-forensics/0.0.0")),
+            pubkey_fingerprint=str(params.get("pubkey_fingerprint", "")),
+            owner_uid=_owner_uid(params),
+        )
+        if ledger_root
+        else None
+    )
+    job_id = str(params.get("job_id", "restore"))
+    actor = str(params.get("actor") or "sanctum")
+    target = None if authorized.dry_run else _open_restore_target(
+        authorized.plan.target.path
+    )
+    try:
+        generator = execute_restore(
+            authorized.record,
+            authorized.plan,
+            target,
+            job_id=job_id,
+            actor=actor,
+            ledger=ledger,
+            dry_run=authorized.dry_run,
+        )
+        try:
+            while True:
+                try:
+                    record = next(generator)
+                except StopIteration as stop:
+                    return {"result": stop.value.model_dump(mode="json")}
+                yield record.model_dump(mode="json")
+        finally:
+            generator.close()
+    finally:
+        if target is not None:
+            target.close()
+
+
 #: Static allowlist. The only operations the daemon will ever perform.
 OPERATIONS: dict[str, Handler] = {
     "whoami": _op_whoami,
@@ -509,6 +599,7 @@ OPERATIONS: dict[str, Handler] = {
     "run_erase": _op_run_erase,
     "resume_erase": _op_resume_erase,
     "acquire_image": _op_acquire_image,
+    "run_restore": _op_run_restore,
 }
 
 #: The subset of :data:`OPERATIONS` served incrementally. A name here must also
@@ -518,6 +609,7 @@ STREAMING_OPERATIONS: dict[str, StreamHandler] = {
     "run_erase": _stream_run_erase,
     "resume_erase": _stream_resume_erase,
     "acquire_image": _stream_acquire_image,
+    "run_restore": _stream_run_restore,
 }
 
 

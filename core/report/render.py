@@ -45,6 +45,7 @@ __all__ = [
     "build_file_erase_report",
     "build_carve_report",
     "build_destroy_report",
+    "build_restore_report",
     "dpdp_erasure_reference",
     "drive_report_inputs",
     "excerpt_gaps",
@@ -205,6 +206,13 @@ _SECTION_TITLES = {
     "recovery": "4. Recovery",
     "confidence": "5. Confidence",
     "pii_triage": "6. PII Triage",
+    # Restore. Method, source, target, scope and verification, then the shared
+    # limitations and audit trail.
+    "restore_method": "2. Method",
+    "restore_source": "3. Source",
+    "restore_target": "4. Target",
+    "restore_scope": "5. Scope",
+    "restore_verification": "6. Verification",
 }
 
 #: Fields rendered in monospace: hashes, serials, paths, and anything an
@@ -1007,6 +1015,99 @@ def build_carve_report(
             ),
         },
         "limitations": {"items": _or_none_recorded(list(limitations))},
+        "audit_trail": _audit_trail(
+            ledger_excerpt=ledger_excerpt,
+            chain_verification=chain_verification,
+            merkle_root=merkle_root,
+            anchor=anchor,
+        ),
+        "signature": signature.model_dump() if signature else {},
+    }
+    return _envelope(
+        case_id=case_id,
+        generated_at=generated_at,
+        tool_version=tool_version,
+        pubkey_fingerprint=pubkey_fingerprint,
+        sections=sections,
+        signature=signature,
+    )
+
+
+def build_restore_report(
+    *,
+    case_id: str,
+    operator: str,
+    generated_at: datetime,
+    tool_version: str,
+    result: dict[str, Any],
+    ledger_excerpt: list[dict[str, Any]],
+    chain_verification: ChainVerification,
+    pubkey_fingerprint: str,
+    merkle_root: str | None = None,
+    anchor: dict[str, Any] | None = None,
+    signature: Signature | None = None,
+    job_state: str | None = None,
+    platform: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """A restore of a backup image onto a target, from its ``RestoreResult``.
+
+    A restore is not a sanitization and the method section says so; the
+    verification section is the read-back of the written range, not a claim
+    about where the image came from.
+    """
+    verification = result.get("verification") or {}
+    first = verification.get("first_mismatch") or {}
+    target = result.get("target") or {}
+    sections: dict[str, Any] = {
+        "case_identity": _case_identity(
+            case_id=case_id,
+            operator=operator,
+            generated_at=generated_at,
+            tool_version=tool_version,
+            job_state=job_state,
+            platform=platform,
+        ),
+        "restore_method": {
+            "method": "image restore (sector-aligned write of a recorded backup)",
+            "dry_run": bool(result.get("dry_run", True)),
+            "result": str(result.get("result", NONE_RECORDED)),
+            "note": "A restore writes data; it is not a NIST SP 800-88 "
+            "Clear, Purge or Destroy outcome.",
+        },
+        "restore_source": {
+            "backup_id": str(result.get("backup_id", "")),
+            "backup_record_digest": str(result.get("backup_record_digest", "")),
+            "path": str(result.get("backup_image_path", "")),
+            "image_sha256": str(result.get("image_sha256", "")),
+            "source_device": dict(result.get("source") or {}),
+        },
+        "restore_target": {
+            "path": str(target.get("path", "")),
+            "serial": str(target.get("serial") or NONE_RECORDED),
+            "model": str(target.get("model") or NONE_RECORDED),
+            "size_bytes": target.get("size_bytes"),
+            "identity_relation": str(result.get("identity_relation", "")),
+        },
+        "restore_scope": {
+            "write_offset": result.get("write_offset"),
+            "bytes_planned": result.get("bytes_planned"),
+            "bytes_written": result.get("bytes_written"),
+            "unwritable": _rows_or_none_recorded(list(result.get("unwritable") or [])),
+            "plan_digest": str(result.get("plan_digest", "")),
+        },
+        "restore_verification": {
+            "performed": bool(verification),
+            "passed": bool(verification.get("passed", False)),
+            "expected_sha256": str(verification.get("expected_sha256", "")),
+            "actual_sha256": str(verification.get("actual_sha256", "")),
+            "bytes_verified": verification.get("bytes_verified", 0),
+            "first_mismatching_chunk": first.get("index"),
+        },
+        "limitations": {
+            "items": _or_none_recorded(
+                [str(item) for item in result.get("limitations") or []]
+            )
+        },
         "audit_trail": _audit_trail(
             ledger_excerpt=ledger_excerpt,
             chain_verification=chain_verification,

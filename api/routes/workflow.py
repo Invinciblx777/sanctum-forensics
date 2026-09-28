@@ -75,6 +75,19 @@ def _store(services: AppServices) -> AuthorizationStore:
     return AuthorizationStore(services.state_dir / "authorizations")
 
 
+def _load_erase(store: AuthorizationStore, auth_id: str) -> _Record:
+    """An erase authorization record, or 404. A restore record is not one."""
+    record = store.load(auth_id)
+    if record is None or record.kind != "erase":
+        raise sanctum_error_response(
+            "JobNotKnown",
+            f"No erase authorization {auth_id!r}."
+            + (f" It is a {record.kind} authorization." if record else ""),
+            "Open a workflow first.",
+        )
+    return record
+
+
 def _present(services: AppServices, record: _Record) -> dict[str, Any]:
     probe = _probe(services, record.path)
     view = _view(record, probe)
@@ -154,11 +167,7 @@ def open_erase_workflow(
 def erase_workflow_state(
     auth_id: str, services: AppServices = Depends(get_services)
 ) -> dict[str, Any]:
-    record = _store(services).load(auth_id)
-    if record is None:
-        raise sanctum_error_response(
-            "JobNotKnown", f"No authorization {auth_id!r}.", "Open a workflow first."
-        )
+    record = _load_erase(_store(services), auth_id)
     return _present(services, record)
 
 
@@ -170,11 +179,7 @@ def approve_erase(
 ) -> dict[str, Any]:
     """Record a human approval of the plan. The only place approval is written."""
     store = _store(services)
-    record = store.load(auth_id)
-    if record is None:
-        raise sanctum_error_response(
-            "JobNotKnown", f"No authorization {auth_id!r}.", "Open a workflow first."
-        )
+    record = _load_erase(store, auth_id)
     if store.is_spent(auth_id) or record.approved_by:
         # An approval is written once. Overwriting it would let a later caller
         # replace the recorded approver, and approving a spent record would put

@@ -64,6 +64,9 @@ IMPLEMENTED = (
     # Covered by tests/api/test_gate_hardening.py and
     # tests/helper/test_write_seam_authorization.py.
     "core.authorization",
+    # Covered by tests/restore/ and tests/api/test_restore_workflow.py.
+    "core.backup",
+    "core.restore",
 )
 
 

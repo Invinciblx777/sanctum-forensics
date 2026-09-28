@@ -55,6 +55,7 @@ from core.authorization import (
     build_plan,
     device_identity,
     identity_drift,
+    kind_mismatch,
     plan_drift,
 )
 from core.workflow import (
@@ -131,6 +132,9 @@ class _Record:
     approved_by: str = ""
     approved_at: str = ""
     consumed_at: str = ""
+    #: What this record authorizes: ``erase`` or ``restore``. Records written
+    #: before kinds existed load with the default, and were all erase records.
+    kind: str = "erase"
 
 
 class AuthorizationStore:
@@ -312,6 +316,11 @@ def authorize_execution(
             ],
             open_hint,
         )
+    kind_reasons = kind_mismatch(
+        {"auth_id": auth_id, "kind": record.kind}, "erase"
+    )
+    if kind_reasons:
+        raise refuse(WorkflowState.BLOCKED, kind_reasons, open_hint)
     if store.is_spent(auth_id):
         raise refuse(
             WorkflowState.BLOCKED,
