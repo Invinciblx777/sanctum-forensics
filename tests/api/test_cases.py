@@ -17,6 +17,8 @@ from api.deps import AppServices
 from core.cases import CaseError, create_case, list_cases, load_case, valid_case_id
 from fastapi.testclient import TestClient
 
+from .conftest import settle
+
 
 def _open_case(client: TestClient, case_id: str = "CASE-2026-001") -> dict[str, object]:
     answer = client.post(
@@ -144,7 +146,7 @@ def test_evidence_is_registered_against_a_case(client: TestClient) -> None:
 
 
 def test_a_job_started_under_a_case_appears_in_its_operations_and_timeline(
-    client: TestClient, tmp_path: Path
+    client: TestClient, services: AppServices, tmp_path: Path
 ) -> None:
     _open_case(client)
     source = tmp_path / "exhibit.bin"
@@ -161,9 +163,7 @@ def test_a_job_started_under_a_case_appears_in_its_operations_and_timeline(
     )
     assert accepted.status_code == 200, accepted.text
     job_id = accepted.json()["job_id"]
-    for _ in range(600):
-        if client.get(f"/jobs/{job_id}").json()["state"] != "running":
-            break
+    assert settle(services, job_id) == "complete"
 
     detail = client.get("/cases/CASE-2026-001").json()
     assert [item["operation_id"] for item in detail["operations"]] == [job_id]

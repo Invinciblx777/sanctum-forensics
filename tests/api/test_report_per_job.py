@@ -21,24 +21,24 @@ from api.routes.audit import REPORT_GENERATED
 from core.ledger.chain import Ledger
 from fastapi.testclient import TestClient
 
+from .conftest import settle
 
-def _job(client: TestClient, tmp_path: Path, name: str) -> str:
+
+def _job(client: TestClient, services: AppServices, tmp_path: Path, name: str) -> str:
     source = tmp_path / f"{name}.bin"
     source.write_bytes(name.encode() * 512)
     job_id: str = client.post(
         "/jobs/acquire", json={"source": str(source), "dest": f"{name}.dd"}
     ).json()["job_id"]
-    for _ in range(600):
-        if client.get(f"/jobs/{job_id}").json()["state"] != "running":
-            break
+    assert settle(services, job_id) == "complete"
     return job_id
 
 
 def test_two_reports_in_one_case_do_not_overwrite_each_other(
-    client: TestClient, tmp_path: Path
+    client: TestClient, services: AppServices, tmp_path: Path
 ) -> None:
-    first = _job(client, tmp_path, "first")
-    second = _job(client, tmp_path, "second")
+    first = _job(client, services, tmp_path, "first")
+    second = _job(client, services, tmp_path, "second")
     a = client.post(f"/reports/{first}", json={"case_id": "SAME-CASE"}).json()
     b = client.post(f"/reports/{second}", json={"case_id": "SAME-CASE"}).json()
 
@@ -52,9 +52,9 @@ def test_two_reports_in_one_case_do_not_overwrite_each_other(
 
 
 def test_report_urls_resolve_through_the_artifact_endpoint(
-    client: TestClient, tmp_path: Path
+    client: TestClient, services: AppServices, tmp_path: Path
 ) -> None:
-    job = _job(client, tmp_path, "urls")
+    job = _job(client, services, tmp_path, "urls")
     made = client.post(f"/reports/{job}", json={"case_id": "C"}).json()
     verdict = client.get(f"/reports/{job}/verify").json()
 
@@ -66,7 +66,7 @@ def test_report_urls_resolve_through_the_artifact_endpoint(
 def test_the_report_entry_actor_is_the_trusted_identity(
     client: TestClient, services: AppServices, tmp_path: Path
 ) -> None:
-    job = _job(client, tmp_path, "actor")
+    job = _job(client, services, tmp_path, "actor")
     client.post(f"/reports/{job}", json={"case_id": "C", "operator": "Chief Examiner"})
 
     chain = Ledger(services.ledger_root, tool_version="t", pubkey_fingerprint="")
