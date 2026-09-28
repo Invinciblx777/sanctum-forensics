@@ -678,7 +678,7 @@ export const WINDOWS_ROW: DeviceRow = {
   erase_preview: null,
   hidden_areas: null,
   capability_error:
-    'Whole-drive sanitization is not implemented for Windows in this build.',
+    'Legacy payload from a build before the capability resolver (no state field); the preview exercises the status fallback.',
   normalized: {
     ...SANITIZE_TARGET.normalized,
     id: 'PhysicalDrive2',
@@ -697,7 +697,7 @@ export const WINDOWS_ROW: DeviceRow = {
     status: 'UNSUPPORTED',
     headline: 'NOT AVAILABLE',
     reason:
-      'Whole-drive sanitization is not implemented for Windows in this build. ' +
+      'Legacy payload from a build before the capability resolver (no state field); the preview exercises the status fallback. ' +
       'Windows can reach a disk through \\\\.\\PhysicalDriveN and ' +
       'IOCTL_STORAGE_PROTOCOL_COMMAND, but no engine using them has been ' +
       'written and validated, so none is offered.',
@@ -763,10 +763,10 @@ export const PLATFORM: PlatformStatus = {
   operations: [
     { operation: 'device_discovery', label: 'Device discovery', status: 'SUPPORTED', reason: '3 storage device(s) found.', source: 'PowerShell Get-Disk / Get-PhysicalDisk / Get-Partition / Get-Volume', verification: '', limitations: [], requires_privilege: false },
     { operation: 'file_erase', label: 'File erase', status: 'UNVERIFIED', reason: 'Overwrites the file in place, renames, truncates, deletes. The file-erase test suite has not been recorded as passing on this platform for this build, so this is UNVERIFIED rather than supported.', source: "core.erase.files with the 'windows' file backend; validation record: file_erase suite on windows NOT RUN", verification: '', limitations: [], requires_privilege: false },
-    { operation: 'whole_drive_clear', label: 'Whole-drive Clear', status: 'UNSUPPORTED', reason: 'Whole-drive sanitization is not implemented for Windows in this build.', source: 'core.platform.windows.WindowsAdapter', verification: '', limitations: [], requires_privilege: false },
+    { operation: 'whole_drive_clear', label: 'Whole-drive Clear', status: 'UNSUPPORTED', reason: 'Legacy payload from a build before the capability resolver (no state field); the preview exercises the status fallback.', source: 'core.platform.windows.WindowsAdapter', verification: '', limitations: [], requires_privilege: false },
   ],
   media_classes: [
-    { media_class: 'Internal SSD', discovery: 'SUPPORTED', file_erase: 'UNVERIFIED', whole_drive: 'UNSUPPORTED', reason: 'Whole-drive sanitization is not implemented for Windows in this build.', detected_now: 1 },
+    { media_class: 'Internal SSD', discovery: 'SUPPORTED', file_erase: 'UNVERIFIED', whole_drive: 'UNSUPPORTED', reason: 'Legacy payload from a build before the capability resolver (no state field); the preview exercises the status fallback.', detected_now: 1 },
     { media_class: 'USB SSD / flash drive', discovery: 'SUPPORTED', file_erase: 'UNVERIFIED', whole_drive: 'UNSUPPORTED', reason: '', detected_now: 2 },
   ],
   filesystems: [

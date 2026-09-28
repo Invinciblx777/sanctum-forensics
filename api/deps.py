@@ -285,10 +285,13 @@ def default_services(
         # on Windows or macOS needs elevation. Saying "in-process" as if a
         # daemon were missing would send an operator looking for one.
         limitations.append(
-            "HELPER_NOT_REQUIRED: no privileged helper runs on this platform. "
-            "Device discovery and file erasure run unprivileged in this "
-            "process, and whole-drive sanitization is not offered here, so "
-            "nothing needs elevation and nothing is escalated."
+            "HELPER_NOT_REQUIRED: no separate privileged helper runs on this "
+            "platform. Device discovery and file erasure run unprivileged in "
+            "this process. Whole-drive clear, raw acquisition and device "
+            "sanitize need this process itself to be elevated (Run as "
+            "administrator on Windows, sudo on macOS); until it is, the "
+            "capability screen reports REQUIRES PRIVILEGE and nothing is "
+            "escalated."
         )
     elif not socket_path:
         limitations.append(

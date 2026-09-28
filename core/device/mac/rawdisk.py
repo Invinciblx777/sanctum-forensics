@@ -5,8 +5,9 @@ open descriptor. macOS exposes no ioctl that returns a drive serial, so
 binding here is by the kernel's size and block size against the plan; the
 serial and media name are re-read from ``system_profiler`` / ``diskutil`` by
 the adapter immediately before :meth:`MacRawDisk.open` (see
-:meth:`core.platform.macos.MacOSAdapter.revalidate`), and the report states
-that window.
+``MacOSAdapter._open_bound``). The window between that read and the open is
+stated in the clear's limitations, which the report prints: a same-size disk
+swapped into the same BSD name inside it would not be detected.
 
 Only whole disks (``diskN``) and their partitions (``diskNsM``) are accepted.
 A synthesized APFS container disk is refused by the adapter before this module

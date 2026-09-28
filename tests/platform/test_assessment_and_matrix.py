@@ -202,8 +202,8 @@ def test_the_filesystem_registry_separates_detection_from_support(
     assert rows["NTFS"].cells["free_space"]["linux"] is CapabilityStatus.UNSUPPORTED
     assert rows["NTFS"].cells["free_space"]["windows"] is CapabilityStatus.UNSUPPORTED
     for row in rows.values():
-        assert row.cells["whole_drive"]["windows"] is CapabilityStatus.UNSUPPORTED
-        assert row.cells["whole_drive"]["macos"] is CapabilityStatus.UNSUPPORTED
+        assert row.cells["whole_drive"]["windows"] is CapabilityStatus.UNVERIFIED
+        assert row.cells["whole_drive"]["macos"] is CapabilityStatus.UNVERIFIED
         assert set(row.notes) == set(row.cells)
     # Without a recorded run, nothing on Windows or macOS reads as supported.
     assert rows["NTFS"].cells["erase_files"]["windows"] is CapabilityStatus.UNVERIFIED

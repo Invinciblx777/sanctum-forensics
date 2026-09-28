@@ -96,7 +96,12 @@ def _require_linux() -> None:
         raise PlatformUnsupported(
             "Whole-device sanitization requires Linux block-device semantics "
             f"(O_DIRECT alignment, BLKGETSIZE64, ATA/NVMe pass-through); this "
-            f"host reports sys.platform={sys.platform!r}."
+            f"host reports sys.platform={sys.platform!r}.",
+            remediation=(
+                "This module is the Linux engine. On Windows and macOS the "
+                "whole-drive clear runs through the platform adapter and "
+                "core.erase.blockclear; use the Sanitize screen there."
+            ),
         )
 
 

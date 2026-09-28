@@ -487,7 +487,7 @@ class MacOSAdapter(BaseAdapter):
     def whole_drive_recommended_action(self) -> str:
         return (
             "External disks: unmount every volume (Devices > Prepare, or diskutil "
-            "unmountDisk) and run the helper with sudo. Internal Mac storage: use "
+            "unmountDisk) and start Sanctum with sudo. Internal Mac storage: use "
             "System Settings > General > Transfer or Reset > Erase All Content "
             "and Settings, which destroys the storage encryption keys."
         )
@@ -502,7 +502,7 @@ class MacOSAdapter(BaseAdapter):
 
     def _elevation_advice(self) -> str:
         return (
-            "Raw device access on macOS needs root: start the Sanctum helper with "
+            "Raw device access on macOS needs root: start Sanctum itself with "
             "sudo, then rescan."
         )
 
@@ -596,7 +596,9 @@ class MacOSAdapter(BaseAdapter):
                 *row.limitations,
                 "macOS gives no ioctl that names a drive's serial: the serial was "
                 "re-read from system_profiler immediately before the raw device "
-                "was opened, and the open device was bound by its kernel size.",
+                "was opened, and the open device was bound by its kernel size. A "
+                "different disk of exactly the same size swapped into the same "
+                "BSD name between that read and the open would not be detected.",
             ),
             resume_from=checkpoint,
         )
