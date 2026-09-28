@@ -19,7 +19,7 @@ import type {
   PlatformStatus,
 } from '../lib/api'
 import { useCase } from '../lib/caseContext'
-import { statusWord } from '../lib/platform'
+import { capabilityWord } from '../lib/states'
 import { NOT_PHYSICALLY_VALIDATED, judgeSummary } from '../lib/summary'
 import { operationKind, operationLabel, shortTime } from '../lib/ledger'
 import type { OperationKind } from '../lib/ledger'
@@ -52,7 +52,9 @@ function capability(
 
 function CapabilityMark({ row }: { row: OperationCapability | undefined }) {
   if (!row) return <span className="state-mark is-unknown">not probed</span>
-  const { word, tone } = statusWord(row.status)
+  // The resolver's word when the row carries a state, never a generic
+  // UNSUPPORTED over it; the older status word only for an older payload.
+  const { word, tone } = capabilityWord(row)
   return (
     <span className={`state-mark is-${tone}`} title={row.reason}>
       {word}
@@ -384,7 +386,7 @@ export default function Home({ onOpen }: { onOpen: (target: WorkflowTarget) => v
               )}
             </Panel>
 
-            <Panel title="Not yet proven on hardware">
+            <Panel title="Not proven on hardware, or not available">
               <ul className="limitations">
                 {NOT_PHYSICALLY_VALIDATED.map((line) => (
                   <li key={line}>{line}</li>

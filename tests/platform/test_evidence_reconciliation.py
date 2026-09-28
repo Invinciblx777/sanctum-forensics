@@ -80,11 +80,39 @@ def test_the_ui_names_each_unvalidated_capability_with_its_state() -> None:
     summary = (ROOT / "ui" / "src" / "lib" / "summary.ts").read_text(encoding="utf-8")
     block = summary[summary.index("export const NOT_PHYSICALLY_VALIDATED") :]
     block = block[block.index("= [") : block.index("\n]")]
-    assert "Raw physical-device acquisition on Windows: not implemented" in block
-    assert "Not implemented on Windows or macOS" in block
-    assert "Backup restoration: not implemented" in block
-    assert "never run on a drive" in block
+    unvalidated = "IMPLEMENTED / NOT PHYSICALLY VALIDATED"
+    lines = [line.strip() for line in block.splitlines() if line.strip().startswith("'")]
+
+    def the_line(prefix: str) -> str:
+        found = [line for line in lines if line.startswith(f"'{prefix}")]
+        assert len(found) == 1, prefix
+        return found[0]
+
+    # Implemented now, and not run on a physical disk: said as exactly that,
+    # never as "not implemented" and never as supported.
+    for prefix in (
+        "Windows whole-drive clear",
+        "Windows raw physical-device acquisition",
+        "Windows device sanitize",
+        "macOS whole-drive clear and raw acquisition",
+        "Backup restore",
+    ):
+        entry = the_line(prefix)
+        assert unvalidated in entry, prefix
+        assert "not implemented" not in entry.lower(), prefix
+    assert "ATA SANITIZE" in the_line("Windows device sanitize")
+    assert "NVMe Sanitize" in the_line("Windows device sanitize")
+    # Still not available, each with its own state word and reason.
+    assert "NOT IMPLEMENTED" in the_line("ATA SECURITY ERASE on Windows")
+    assert "PLATFORM-LIMITED" in the_line("NVMe Format on Windows")
+    assert "PLATFORM-LIMITED" in the_line("HPA/DCO discovery and modification on macOS")
+    # Firmware purge has never run on a physical drive; macOS has no physical run.
+    assert "never run on a physical drive" in the_line("Firmware Purge")
     assert "No macOS physical device run is recorded" in block
+    # The old claims are gone: nothing implemented is called unimplemented.
+    assert "Backup restoration: not implemented" not in block
+    assert "Not implemented on Windows or macOS" not in block
+    assert "Raw physical-device acquisition on Windows: not implemented" not in block
 
 
 def test_the_readme_separates_not_validated_from_not_implemented() -> None:

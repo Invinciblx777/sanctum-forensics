@@ -171,6 +171,9 @@ export const api = {
   verifyReport: (jobId: string) =>
     request<ReportVerification>(`/reports/${jobId}/verify`),
 
+  /** The signed report JSON itself, read through its artifact URL. */
+  reportJson: (url: string) => request<Record<string, unknown>>(url),
+
   // -- cases ----------------------------------------------------------------
 
   cases: () => request<{ cases: CaseSummary[] }>('/cases'),
@@ -403,6 +406,45 @@ export type CapabilityStatus =
   | 'INCONCLUSIVE'
   | 'UNSUPPORTED'
 
+/**
+ * The resolver's precise state for one capability (core/platform/model.py
+ * `CapabilityState`). Where a payload carries it, it is what the screen shows;
+ * `CapabilityStatus` is the older, coarser word kept for saved payloads.
+ */
+export type CapabilityState =
+  | 'VALIDATED_PHYSICAL'
+  | 'IMPLEMENTED_NOT_PHYSICALLY_VALIDATED'
+  | 'IMPLEMENTED_DEVICE_DEPENDENT'
+  | 'AVAILABLE_BUT_REQUIRES_PRIVILEGE'
+  | 'UNSUPPORTED_BY_DEVICE'
+  | 'UNSUPPORTED_BY_PLATFORM'
+  | 'NOT_IMPLEMENTED'
+  | 'BLOCKED_BY_SAFETY_POLICY'
+
+/** One capability resolved for one device or for the platform. */
+export interface ResolvedCapability {
+  capability: string
+  label: string
+  state: CapabilityState
+  /** The interface word (`STATE_LABELS` on the server). */
+  state_label: string
+  reason: string
+  source: string
+  mechanism: string
+  protocol: string
+  required_privilege: string
+  safety_restrictions: string[]
+  verification: string
+  assurance: string
+  limitations: string[]
+  /** The device class physical evidence was matched against. */
+  device_class: string
+  evidence: string[]
+  /** Device classes with a recorded physical run (platform matrix only). */
+  validated_classes: string[]
+  module: string
+}
+
 export interface PlatformInfo {
   family: 'linux' | 'windows' | 'macos' | 'other'
   os_name: string
@@ -433,6 +475,13 @@ export interface OperationCapability {
   verification: string
   limitations: string[]
   requires_privilege: boolean
+  /** Absent in payloads saved before the resolver existed. */
+  state?: CapabilityState | null
+  state_label?: string
+  mechanism?: string
+  assurance?: string
+  validated_classes?: string[]
+  evidence?: string[]
 }
 
 export interface MediaClassSupport {
@@ -459,6 +508,8 @@ export interface PlatformStatus {
   restrictions: string[]
   adapter: string
   limitations: string[]
+  /** The resolver's platform matrix. Absent from older servers. */
+  capabilities?: ResolvedCapability[]
 }
 
 export interface PartitionInfo {
@@ -507,6 +558,14 @@ export interface SanitizeOption {
   technical: string[]
   verification: string
   remediation: string
+  /** The resolver's state for the capability this option would run. */
+  state?: CapabilityState | null
+  state_label?: string
+  capability?: string | null
+  mechanism?: string
+  protocol?: string
+  assurance?: string
+  limitations?: string[]
 }
 
 export interface DeviceAssessment {
@@ -522,6 +581,10 @@ export interface DeviceAssessment {
   verification: string
   safety_checks: SafetyCheck[]
   flash_limitation: string
+  /** The evidence bucket the device falls in (`usb-flash`, `nvme`, ...). */
+  device_class?: string
+  /** Every device capability as the resolver answers it. */
+  capabilities?: ResolvedCapability[]
 }
 
 export interface DeviceRow {
@@ -928,6 +991,12 @@ export interface AcquireBody {
   compression: string
   case_id?: string
   operator?: string
+  /**
+   * For a raw device on Windows (`\\.\PhysicalDriveN`) or macOS
+   * (`/dev/diskN`): the serial of the disk selected on the Devices data. The
+   * server re-reads the device and refuses a mismatch.
+   */
+  expected_serial?: string
 }
 
 export interface CarveBody {

@@ -13,6 +13,7 @@ import { timestamp } from '../lib/format'
 import { verdictMeaning } from '../lib/verdict'
 import { operationLabel } from '../lib/ledger'
 import { ChainStrip } from '../components/chain'
+import { ReportSemanticsPanel } from '../components/capabilityState'
 import {
   Empty,
   ErrorNotice,
@@ -573,6 +574,10 @@ export default function Audit() {
                 })}
 
                 <Notice tone="info">{verification.caveat}</Notice>
+
+                {/* What the verified report says it documents: category and
+                    assurance, read from the signed JSON. */}
+                <ReportSemanticsPanel url={verification.json_url} />
               </div>
             </Panel>
           ) : (
@@ -681,6 +686,8 @@ export default function Audit() {
                       },
                     ]}
                   />
+
+                  <ReportSemanticsPanel url={report.json_url} />
 
                   <div className="row wrap" style={{ gap: 'var(--space-2)' }}>
                     <a

@@ -32,6 +32,7 @@ import {
 } from '../components/widgets'
 import type { Tone } from '../components/widgets'
 import { MediaMapPanel } from '../components/mediaMap'
+import { AcquirePanel } from '../components/acquirePanel'
 
 /**
  * Confidence bucket to tone.
@@ -649,6 +650,10 @@ export default function Recovery() {
             Open a case first if this is evidence work.
           </Notice>
         )}
+
+        {/* A raw device is imaged first, read-only, then carved as an image.
+            On Windows and macOS the job carries the selected disk's serial. */}
+        <AcquirePanel caseId={openCase?.case_id ?? ''} onImage={setImage} />
 
         <Panel title="Evidence and scan configuration">
           <div className="row wrap" style={{ alignItems: 'flex-end' }}>
