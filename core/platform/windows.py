@@ -624,15 +624,21 @@ class WindowsAdapter(BaseAdapter):
         disk = WindowsDisk(api, number, write=write).open()
         disk.bind(serial=device.serial, size_bytes=device.capacity_bytes)
         if write:
-            mounted = [
-                path for _, paths in volumes_on_disk(api, number) for path in paths
-            ]
-            if mounted:
+            # Any volume the volume manager still exposes on this disk, with or
+            # without a drive letter, can have a filesystem mounted on demand,
+            # and Windows refuses raw writes inside a live volume's extent. An
+            # offline disk exposes none, so that is the state required here.
+            live = volumes_on_disk(api, number)
+            if live:
                 disk.close()
+                shown = [
+                    ", ".join(paths) if paths else volume for volume, paths in live
+                ]
                 raise MountedRefused(
-                    f"{disk.path} has a mounted volume at {', '.join(mounted)} "
-                    "at the write seam. Nothing was written.",
-                    remediation=self.whole_drive_recommended_action(),
+                    f"{disk.path} still exposes volume(s) {'; '.join(shown)} at "
+                    "the write seam. Nothing was written.",
+                    remediation="Take the disk offline first (Devices > Prepare, "
+                    "or Disk Management > Offline), then retry.",
                 )
         return disk
 

@@ -533,9 +533,11 @@ class FakeWindowsApi:
         self._disk(handle)
 
     def volumes(self) -> list[str]:
+        """Volumes the volume manager exposes: none for an offline disk."""
         out: list[str] = []
         for disk in self.disks.values():
-            out.extend(disk.volumes)
+            if not disk.offline and disk.present:
+                out.extend(disk.volumes)
         return out
 
     def volume_paths(self, volume: str) -> list[str]:

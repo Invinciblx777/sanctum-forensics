@@ -300,6 +300,20 @@ def test_a_volume_mounted_after_discovery_is_refused_at_the_seam(
     assert api.disks[2].writes == 0
 
 
+def test_a_letterless_volume_still_blocks_until_the_disk_is_offline(
+    tmp_path: Path,
+) -> None:
+    adapter, api = _usb_setup(volumes={"\\\\?\\Volume{hidden}\\": []})
+    with pytest.raises(MountedRefused, match="still exposes volume"):
+        _drain(adapter.execute_drive_sanitization(_params(tmp_path)))
+    assert api.disks[2].writes == 0
+    adapter.prepare_device(
+        {"path": "PhysicalDrive2", "dry_run": False, "typed_serial": "STICK01"}
+    )
+    result = _drain(adapter.execute_drive_sanitization(_params(tmp_path)))["result"]
+    assert result["verification"]["passed"] is True
+
+
 def test_an_ambiguous_serial_is_refused(tmp_path: Path) -> None:
     api = FakeWindowsApi([_stick(), _stick(number=3)])
     inventory = _inventory(
