@@ -27,8 +27,12 @@ from api.deps import AppServices
 from api.routes.audit import REPORT_GENERATED
 from fastapi.testclient import TestClient
 
+from .conftest import settle
 
-def acquire_job(client: TestClient, tmp_path: Path, name: str) -> str:
+
+def acquire_job(
+    client: TestClient, services: AppServices, tmp_path: Path, name: str
+) -> str:
     """Run one real acquisition to completion and return its job id."""
     source = tmp_path / f"{name}.dd"
     source.write_bytes(name.encode() * 512)
@@ -37,9 +41,7 @@ def acquire_job(client: TestClient, tmp_path: Path, name: str) -> str:
     )
     assert accepted.status_code == 200, accepted.text
     job_id: str = accepted.json()["job_id"]
-    for _ in range(500):
-        if client.get(f"/jobs/{job_id}").json()["state"] != "running":
-            break
+    assert settle(services, job_id) == "complete"
     return job_id
 
 
@@ -67,7 +69,7 @@ def test_generating_a_report_appends_a_chain_entry_naming_the_artifact(
     """
     from core.ledger.chain import Ledger
 
-    job_id = acquire_job(client, tmp_path, "alpha")
+    job_id = acquire_job(client, services, tmp_path, "alpha")
     report = generate(client, job_id, "CASE-ALPHA")
 
     chain = Ledger(
@@ -92,10 +94,10 @@ def test_generating_a_report_appends_a_chain_entry_naming_the_artifact(
 
 
 def test_the_chain_still_verifies_after_a_report_entry(
-    client: TestClient, tmp_path: Path
+    client: TestClient, services: AppServices, tmp_path: Path
 ) -> None:
     """A new entry kind must not be a new way to break the chain."""
-    job_id = acquire_job(client, tmp_path, "beta")
+    job_id = acquire_job(client, services, tmp_path, "beta")
     generate(client, job_id, "CASE-BETA")
 
     chain = client.get("/ledger/verify").json()
@@ -108,10 +110,10 @@ def test_the_chain_still_verifies_after_a_report_entry(
 
 
 def test_verify_resolves_the_report_belonging_to_the_job(
-    client: TestClient, tmp_path: Path
+    client: TestClient, services: AppServices, tmp_path: Path
 ) -> None:
     """The case id is in the filename and the job id is not; resolution still works."""
-    job_id = acquire_job(client, tmp_path, "gamma")
+    job_id = acquire_job(client, services, tmp_path, "gamma")
     report = generate(client, job_id, "CASE-GAMMA")
 
     answer = client.get(f"/reports/{job_id}/verify")
@@ -126,7 +128,7 @@ def test_verify_resolves_the_report_belonging_to_the_job(
 
 
 def test_a_directory_of_other_reports_never_answers_for_this_job(
-    client: TestClient, tmp_path: Path
+    client: TestClient, services: AppServices, tmp_path: Path
 ) -> None:
     """The C8 defect itself, in one assertion.
 
@@ -134,9 +136,9 @@ def test_a_directory_of_other_reports_never_answers_for_this_job(
     document - and critically, the job with no report of its own must not be
     handed one of the other two.
     """
-    first = acquire_job(client, tmp_path, "one")
-    second = acquire_job(client, tmp_path, "two")
-    third = acquire_job(client, tmp_path, "three")
+    first = acquire_job(client, services, tmp_path, "one")
+    second = acquire_job(client, services, tmp_path, "two")
+    third = acquire_job(client, services, tmp_path, "three")
 
     first_report = generate(client, first, "AAA-CASE")
     second_report = generate(client, second, "ZZZ-CASE")
@@ -156,10 +158,10 @@ def test_a_directory_of_other_reports_never_answers_for_this_job(
 
 
 def test_a_job_with_no_report_is_a_404_naming_the_job(
-    client: TestClient, tmp_path: Path
+    client: TestClient, services: AppServices, tmp_path: Path
 ) -> None:
     """Not a failed verification, and not somebody else's report."""
-    job_id = acquire_job(client, tmp_path, "delta")
+    job_id = acquire_job(client, services, tmp_path, "delta")
 
     answer = client.get(f"/reports/{job_id}/verify")
 
@@ -179,10 +181,10 @@ def test_an_unknown_job_is_a_404_not_a_report(client: TestClient) -> None:
 
 
 def test_regenerating_a_report_resolves_to_the_newest_one(
-    client: TestClient, tmp_path: Path
+    client: TestClient, services: AppServices, tmp_path: Path
 ) -> None:
     """Regenerating is legitimate; the latest entry is the one that counts."""
-    job_id = acquire_job(client, tmp_path, "epsilon")
+    job_id = acquire_job(client, services, tmp_path, "epsilon")
     generate(client, job_id, "FIRST-CASE")
     second = generate(client, job_id, "SECOND-CASE")
 
@@ -192,10 +194,10 @@ def test_regenerating_a_report_resolves_to_the_newest_one(
 
 
 def test_a_report_deleted_after_generation_is_a_404_naming_the_path(
-    client: TestClient, tmp_path: Path
+    client: TestClient, services: AppServices, tmp_path: Path
 ) -> None:
     """The chain says it existed; the disk says otherwise. Say both."""
-    job_id = acquire_job(client, tmp_path, "zeta")
+    job_id = acquire_job(client, services, tmp_path, "zeta")
     report = generate(client, job_id, "CASE-ZETA")
     Path(report["json_path"]).unlink()
 
@@ -211,9 +213,9 @@ def test_a_report_deleted_after_generation_is_a_404_naming_the_path(
 
 
 def test_verify_reports_whether_the_file_is_still_the_recorded_bytes(
-    client: TestClient, tmp_path: Path
+    client: TestClient, services: AppServices, tmp_path: Path
 ) -> None:
-    job_id = acquire_job(client, tmp_path, "eta")
+    job_id = acquire_job(client, services, tmp_path, "eta")
     report = generate(client, job_id, "CASE-ETA")
 
     body = client.get(f"/reports/{job_id}/verify").json()

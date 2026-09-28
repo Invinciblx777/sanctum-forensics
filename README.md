@@ -8,7 +8,7 @@ record of both that a third party can check on their own machine.
 
 `SANITIZATION` · `FILE ERASURE` · `FORENSIC RECOVERY` · `VERIFICATION` · `AUDIT`
 
-![tests](https://img.shields.io/badge/pytest-3113%20passed%20·%2048%20skipped%20·%200%20failed-2ea44f)
+![tests](https://img.shields.io/badge/pytest-3114%20passed%20·%2048%20skipped%20·%200%20failed-2ea44f)
 ![python](https://img.shields.io/badge/Python-3.11-3776ab)
 ![stack](https://img.shields.io/badge/FastAPI%20%2B%20React-localhost%20only-555)
 ![signing](https://img.shields.io/badge/reports-Ed25519-555)
@@ -19,8 +19,8 @@ record of both that a third party can check on their own machine.
 >
 > | | |
 > |---|---|
-> | Source | branch `feat/platform-capability-completion` at `bf4c59b` (2026-09-28). The last packaged builds on record are `76dde42` ([`release-report-2026-09-25.md`](docs/validation/release-report-2026-09-25.md)) and the Windows installer at `437081e` ([`windows-hardware-2026-09-27-fixes/`](docs/validation/windows-hardware-2026-09-27-fixes/README.md)); no package build from `bf4c59b` is recorded here |
-> | Test suite | 3113 passed · 48 skipped · 0 failed (Linux host, 2026-09-28, at `16c9ae6`); UI 148 passed. CI proves every platform backend ships and runs a read-only native smoke on real Windows and macOS runners; that is not physical validation |
+> | Source | branch `feat/platform-capability-completion` at `32b21bf` (2026-09-28). The last packaged builds on record are `76dde42` ([`release-report-2026-09-25.md`](docs/validation/release-report-2026-09-25.md)) and the Windows installer at `437081e` ([`windows-hardware-2026-09-27-fixes/`](docs/validation/windows-hardware-2026-09-27-fixes/README.md)); `platform-ci` built all three packages from `32b21bf` (run 36386022246) and drove each one on its runner; none of those builds was installed on physical hardware |
+> | Test suite | 3114 passed · 48 skipped · 0 failed (Linux host, 2026-09-28, at `32b21bf`); UI 148 passed. `platform-ci` run 36386022246 at `32b21bf`: every job green (Linux 3066 passed, macOS 2621, Windows 2534; package on all three). CI proves every platform backend ships and runs a read-only native smoke on real Windows and macOS runners; that is not physical validation |
 > | Capability state | Per platform and capability, generated from the resolver: [`capability-matrix.md`](docs/validation/capability-completion-2026-09-28/capability-matrix.md). What changed and why: [`capability-completion-2026-09-28/`](docs/validation/capability-completion-2026-09-28/README.md) |
 > | Physically validated (device class) | Linux whole-drive clear, device discovery and raw acquisition on one TOSHIBA TransMemory USB stick (`usb-flash`, 2026-09-05, earlier build, [`hardware.md`](docs/validation/hardware.md)); Windows device discovery on a USB stick (`usb-flash`, 2026-09-27); Windows file erase on the host system disk (class not recorded, 2026-09-27). Nothing else |
 > | Implemented, not physically validated | Windows whole-drive clear; Windows raw physical-device and volume acquisition; macOS whole-drive clear and raw acquisition of external disks; Firmware device sanitize on Linux and Windows (ATA SANITIZE, NVMe Sanitize, crypto erase; ATA SECURITY ERASE UNIT and NVMe Format on Linux only), DEVICE-DEPENDENT; the guarded HPA/DCO change (Linux, Windows); Backup restore with post-restore verification (Linux, Windows, macOS); file erase on Linux and macOS; Linux free-space wipe; removing a real trace from a live desktop; any macOS physical device; the registered physical recovery benchmark (BLOCKED at gate 1) |
@@ -291,8 +291,10 @@ How to verify a report on your own machine:
 
 ## Validation
 
-**Automated.** 3113 passed · 48 skipped · 0 failed on the Linux host
-(2026-09-28, at `16c9ae6`). Each skip names its reason: root and `losetup`, and
+**Automated.** 3114 passed · 48 skipped · 0 failed on the Linux host
+(2026-09-28, at `32b21bf`). On the runners, `platform-ci` run 36386022246 at the
+same commit: Linux 3066 passed · 96 skipped, macOS 2621 · 430, Windows
+2534 · 517, 0 failed, and the package job green on all three. Each skip names its reason: root and `losetup`, and
 behaviour that only exists on Windows or macOS, which runs on those runners in
 `platform-ci`. The Windows and macOS whole-drive, raw-acquisition, device-sanitize
 and restore paths are exercised on every host through adapter doubles

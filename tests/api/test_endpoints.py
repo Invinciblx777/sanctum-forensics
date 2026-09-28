@@ -430,6 +430,8 @@ def test_acquire_of_a_windows_disk_binds_to_the_serial_the_os_reports_now(
     from core.device._sysio import CommandResult
     from core.platform.windows import WindowsAdapter
 
+    from tests.platform.conftest import windows_api_for
+
     inventory = _json.loads(
         (
             Path(__file__).resolve().parents[1]
@@ -446,7 +448,9 @@ def test_acquire_of_a_windows_disk_binds_to_the_serial_the_os_reports_now(
     monkeypatch.setattr("api.routes.jobs.sys.platform", "win32")
     monkeypatch.setattr(
         "core.platform.current_adapter",
-        lambda **kw: WindowsAdapter(runner=_Runner(), **kw),
+        lambda **kw: WindowsAdapter(
+            runner=_Runner(), native=windows_api_for(inventory), **kw
+        ),
     )
     for serial, word in (("", "needs the serial"), ("WRONG", "must match")):
         answer = client.post(

@@ -369,6 +369,21 @@ def approve_workflow(
     assert answer.status_code == 200, answer.text
 
 
+def settle(services: AppServices, job_id: str, timeout: float = 60.0) -> str:
+    """Block until the job is terminal and its outcome is in the chain.
+
+    Waits on :attr:`JobRecord.settled`, the event the registry sets last. A
+    loop over ``GET /jobs/{id}`` that stops at ``state != "running"`` is wrong
+    twice: ``pending`` is not ``running``, so a worker thread that has not
+    started yet reads as finished, and a bounded loop that runs out falls
+    through to the next request with the job still going. Both were seen on
+    the Windows runner as a report refused with ``JobNotFinished``.
+    """
+    record = services.registry.wait(job_id, timeout=timeout)
+    assert record.settled.is_set(), f"job {job_id} did not settle in {timeout} s"
+    return record.state
+
+
 def authorize(client: TestClient, services: AppServices) -> str:
     """The full, legitimate path: open, then approve. Returns the id."""
     auth_id = open_workflow(client, services)

@@ -16,16 +16,18 @@ from api.deps import AppServices
 from core.ledger.chain import Ledger
 from fastapi.testclient import TestClient
 
+from .conftest import settle
 
-def _job_and_report(client: TestClient, tmp_path: Path) -> dict[str, object]:
+
+def _job_and_report(
+    client: TestClient, services: AppServices, tmp_path: Path
+) -> dict[str, object]:
     source = tmp_path / "exhibit.bin"
     source.write_bytes(b"\x00" * 1024)
     job_id = client.post(
         "/jobs/acquire", json={"source": str(source), "dest": "anchor.dd"}
     ).json()["job_id"]
-    for _ in range(600):
-        if client.get(f"/jobs/{job_id}").json()["state"] != "running":
-            break
+    assert settle(services, job_id) == "complete"
     answer = client.post(f"/reports/{job_id}", json={"case_id": "C"})
     assert answer.status_code == 200, answer.text
     loaded: dict[str, object] = json.loads(
@@ -43,11 +45,14 @@ def _audit(document: dict[str, object]) -> dict[str, object]:
 
 
 def test_without_an_anchor_the_report_says_nothing_was_published(
-    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    client: TestClient,
+    services: AppServices,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("SANCTUM_ANCHOR_FILE", raising=False)
 
-    audit = _audit(_job_and_report(client, tmp_path))
+    audit = _audit(_job_and_report(client, services, tmp_path))
 
     assert len(str(audit["merkle_root"])) == 64
     anchor = audit["anchor"]
@@ -59,7 +64,7 @@ def test_without_an_anchor_the_report_says_nothing_was_published(
 def test_the_root_matches_the_chain_it_was_computed_over(
     client: TestClient, services: AppServices, tmp_path: Path
 ) -> None:
-    document = _job_and_report(client, tmp_path)
+    document = _job_and_report(client, services, tmp_path)
     audit = _audit(document)
     anchor = audit["anchor"]
     assert isinstance(anchor, dict)
@@ -71,12 +76,15 @@ def test_the_root_matches_the_chain_it_was_computed_over(
 
 
 def test_a_configured_file_anchor_receives_the_root(
-    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    client: TestClient,
+    services: AppServices,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target = tmp_path / "worm" / "anchors.jsonl"
     monkeypatch.setenv("SANCTUM_ANCHOR_FILE", str(target))
 
-    audit = _audit(_job_and_report(client, tmp_path))
+    audit = _audit(_job_and_report(client, services, tmp_path))
 
     anchor = audit["anchor"]
     assert isinstance(anchor, dict)

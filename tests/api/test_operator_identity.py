@@ -23,13 +23,17 @@ from core.ledger.chain import Ledger
 from fastapi.testclient import TestClient
 from helper.daemon import HelperDaemon, InProcessHelper
 
+from .conftest import settle
+
 
 def _actors(services: AppServices) -> list[str]:
     chain = Ledger(services.ledger_root, tool_version="t", pubkey_fingerprint="")
     return [entry.actor for entry in chain.entries()]
 
 
-def _run_acquire(client: TestClient, tmp_path: Path, operator: str) -> str:
+def _run_acquire(
+    client: TestClient, services: AppServices, tmp_path: Path, operator: str
+) -> str:
     source = tmp_path / "exhibit.bin"
     source.write_bytes(b"\x00" * 2048)
     accepted = client.post(
@@ -38,9 +42,7 @@ def _run_acquire(client: TestClient, tmp_path: Path, operator: str) -> str:
     )
     assert accepted.status_code == 200, accepted.text
     job_id: str = accepted.json()["job_id"]
-    for _ in range(600):
-        if client.get(f"/jobs/{job_id}").json()["state"] != "running":
-            break
+    assert settle(services, job_id) == "complete"
     return job_id
 
 
@@ -105,7 +107,7 @@ def test_a_confined_daemon_reports_the_stronger_basis(tmp_path: Path) -> None:
 def test_a_client_supplied_operator_never_becomes_the_ledger_actor(
     client: TestClient, services: AppServices, tmp_path: Path
 ) -> None:
-    _run_acquire(client, tmp_path, "Chief Examiner")
+    _run_acquire(client, services, tmp_path, "Chief Examiner")
 
     identity = resolve(services)
     actors = _actors(services)
@@ -124,7 +126,7 @@ def test_a_claimed_name_is_kept_as_a_label_and_marked_as_one(
     client: TestClient, services: AppServices, tmp_path: Path
 ) -> None:
     """The label is not discarded - it is useful - but it is never the identity."""
-    _run_acquire(client, tmp_path, "Chief Examiner")
+    _run_acquire(client, services, tmp_path, "Chief Examiner")
 
     identity = resolve(services)
     labelled = [a for a in _actors(services) if "label:" in a]
@@ -205,7 +207,7 @@ def test_a_report_carries_the_identity_limitation(
 ) -> None:
     import json
 
-    job_id = _run_acquire(client, tmp_path, "tester")
+    job_id = _run_acquire(client, services, tmp_path, "tester")
     answer = client.post(f"/reports/{job_id}", json={"case_id": "C", "operator": "t"})
     assert answer.status_code == 200, answer.text
 

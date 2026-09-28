@@ -47,6 +47,28 @@ def windows_inventory() -> dict[str, Any]:
     return loaded
 
 
+def windows_api_for(inventory: dict[str, Any]) -> Any:
+    """A fake kernel32 holding one synthetic disk per ``Get-Disk`` row.
+
+    Without it a :class:`WindowsAdapter` falls back to the real kernel32 on a
+    Windows host, and an elevated CI runner then opens its own
+    ``\\\\.\\PhysicalDriveN``. The disks are tiny: the probes read IDENTIFY data,
+    never the medium, and no test here binds a disk by size. None of them
+    answers ATA or NVMe pass-through, so every mechanism probes as refused.
+    """
+    from testkit.fake_windows import FakeDisk, FakeWindowsApi
+
+    disks = [
+        FakeDisk(
+            number=int(row["Number"]),
+            size_bytes=1 << 16,
+            serial=str(row.get("SerialNumber") or "").strip(),
+        )
+        for row in inventory["disks"]
+    ]
+    return FakeWindowsApi(disks)
+
+
 def mac_listing() -> dict[str, Any]:
     """``diskutil list -plist`` on an Apple silicon Mac with two externals."""
     return {
