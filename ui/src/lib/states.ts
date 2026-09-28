@@ -551,3 +551,16 @@ export function acquireBody(
     expected_serial: source.expectedSerial,
   }
 }
+
+
+/**
+ * Whether the explicit unmount / take-offline step applies to a device row:
+ * Windows or macOS, mounted, and not the system disk (the server refuses that
+ * anyway, and internal Mac storage too).
+ */
+export function preparable(row: DeviceRow): boolean {
+  const device = row.normalized
+  if (!device) return false
+  if (device.platform !== 'windows' && device.platform !== 'macos') return false
+  return device.mounted && !device.system_device
+}

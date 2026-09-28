@@ -92,6 +92,13 @@ export const api = {
       `/devices?include_virtual=${includeVirtual}`,
     ),
 
+  /** Unmount (macOS) or take offline (Windows) as its own step; dry run by default. */
+  prepareDevice: (body: PrepareDeviceBody) =>
+    request<PrepareDeviceResult>('/devices/prepare', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
   eraseDrive: (body: EraseDriveBody) =>
     request<JobAccepted>('/jobs/erase-drive', {
       method: 'POST',
@@ -585,6 +592,21 @@ export interface DeviceAssessment {
   device_class?: string
   /** Every device capability as the resolver answers it. */
   capabilities?: ResolvedCapability[]
+}
+
+export interface PrepareDeviceBody {
+  path: string
+  dry_run: boolean
+  typed_serial?: string
+}
+
+export interface PrepareDeviceResult {
+  device: string
+  serial?: string
+  action: string
+  unmounts?: string[]
+  dry_run: boolean
+  performed: boolean
 }
 
 export interface DeviceRow {

@@ -22,6 +22,7 @@ import {
   honestLevel,
   optionTitle,
   platformMatrix,
+  preparable,
   purgeAbsence,
   rawSource,
   STATE_LABELS,
@@ -471,4 +472,21 @@ test('raw acquisition is refused with the reason when the state is not runnable 
   assert.match(noSerial.reason, /no serial/)
   // No resolver answer off Linux: nothing is claimed.
   assert.equal(rawSource(row('windows', 'S', undefined)).allowed, false)
+})
+
+
+test('the prepare step is offered only for a mounted, non-system Windows or macOS disk', () => {
+  const base = {
+    device: {} as DeviceRow['device'],
+    capabilities: null,
+    hidden_areas: null,
+  }
+  const normalized = (over: Record<string, unknown>) =>
+    ({ id: 'disk4', platform: 'macos', mounted: true, system_device: false, serial: 'S', ...over }) as unknown as DeviceRow['normalized']
+  assert.equal(preparable({ ...base, normalized: normalized({}) } as DeviceRow), true)
+  assert.equal(preparable({ ...base, normalized: normalized({ platform: 'windows' }) } as DeviceRow), true)
+  assert.equal(preparable({ ...base, normalized: normalized({ platform: 'linux' }) } as DeviceRow), false)
+  assert.equal(preparable({ ...base, normalized: normalized({ mounted: false }) } as DeviceRow), false)
+  assert.equal(preparable({ ...base, normalized: normalized({ system_device: true }) } as DeviceRow), false)
+  assert.equal(preparable({ ...base } as DeviceRow), false)
 })

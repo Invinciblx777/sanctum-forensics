@@ -8,6 +8,7 @@ import { bytes, exactBytes } from '../lib/format'
 import { flashOf } from '../lib/erasePlan'
 import { Empty, ErrorNotice, Limitations, Panel, Verdict } from '../components/widgets'
 import { DestroyRecordPanel } from '../components/destroyRecord'
+import { PreparePanel } from '../components/preparePanel'
 
 /**
  * Hidden areas.
@@ -299,6 +300,7 @@ export default function Devices({
                                   reason and its mechanism. Physical validation
                                   is scoped to the device class above. */}
                               <DeviceCapabilityList assessment={row.assessment} />
+                              <PreparePanel row={row} onDone={refresh} />
                             </td>
                           </tr>
                         )}
