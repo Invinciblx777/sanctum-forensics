@@ -229,6 +229,12 @@ addressed to a name other than `127.0.0.1`, `localhost` or `[::1]` gets 400.
 Loopback alone is not an authorisation boundary: on a shared machine, any
 other account can reach a loopback port.
 
+To open the same session in its own window instead of a browser tab, install
+the `desktop` extra (`pip install -c constraints.txt -e ".[desktop]"`) and run
+`.venv/bin/python -m api.desktop` with the same three variables. It picks a
+free port and mints its own token, so it ignores `SANCTUM_PORT` and
+`SANCTUM_SESSION_TOKEN`; closing the window stops it.
+
 A new token is minted each start. To script against the API, set
 `SANCTUM_SESSION_TOKEN` yourself and send `Cookie: sanctum_session=<token>`.
 `SANCTUM_DEV_INSECURE=1` turns the session off entirely, prints a warning

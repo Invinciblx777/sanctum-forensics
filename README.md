@@ -622,6 +622,13 @@ make check          # ruff + four mypy --strict passes + pytest
 make run            # prints http://127.0.0.1:8787/session/<token>; open it
 ```
 
+To run it as a desktop app in its own window instead of a browser tab:
+
+```bash
+pip install --constraint constraints.txt -e ".[desktop]"   # Qt backend on Linux
+python -m api.desktop
+```
+
 The control surface binds `127.0.0.1` only, serves its own bundled assets, and
 makes no network call. It mints a session token per run and refuses any
 request without it, or addressed to a non-loopback host name.

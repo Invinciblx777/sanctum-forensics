@@ -49,11 +49,16 @@ dev = [
     "types-PyYAML==6.0.12.20260815",
 ]
 
-# Desktop packaging only. `desktop` gives the packaged app a native window
-# (WebView2 on Windows, WKWebView on macOS); without it the launcher opens the
-# default browser. `build` is the freezer the scripts/build-* scripts run.
+# Desktop packaging only. `desktop` gives the app a native window (WebView2 on
+# Windows, WKWebView on macOS, Qt WebEngine on Linux); without it the launcher
+# opens the default browser. Linux takes the `qt` extra because pywebview has no
+# built-in Linux backend, and PyQt6 ships wheels where PyGObject needs system
+# headers to build. scripts/build-linux*.sh do not install this extra, so the
+# Linux packages still open the browser. `build` is the freezer the
+# scripts/build-* scripts run.
 desktop = [
-    "pywebview==6.2.1",
+    "pywebview==6.2.1; sys_platform != 'linux'",
+    "pywebview[qt]==6.2.1; sys_platform == 'linux'",
 ]
 build = [
     "pyinstaller==6.22.3",

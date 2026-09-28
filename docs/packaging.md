@@ -70,9 +70,9 @@ suite and bundling the result (see *Validation record* below).
 
 | Platform | Installed | From source (developer) |
 |---|---|---|
-| Linux | `./Sanctum-<ver>-x86_64.AppImage` (or `--appimage-extract-and-run` without FUSE); `.deb`: `sudo apt install ./sanctum_<ver>_amd64.deb`, then *Sanctum* in the app menu or `sanctum` | `make run`, then open the `/session/<token>` URL it prints; or `python -m api.desktop` |
-| Windows | Run `SanctumSetup.exe`, then *Sanctum* in the Start menu | `py -3.11 -m venv .venv; .venv\Scripts\python -m pip install -c constraints.txt -e .[dev]; .venv\Scripts\python -m api.desktop` |
-| macOS | Open `Sanctum.dmg`, drag *Sanctum* to Applications, open it (right-click > Open the first time: the build is unsigned) | `python3.11 -m venv .venv && .venv/bin/pip install -c constraints.txt -e .[dev] && .venv/bin/python -m api.desktop` |
+| Linux | `./Sanctum-<ver>-x86_64.AppImage` (or `--appimage-extract-and-run` without FUSE); `.deb`: `sudo apt install ./sanctum_<ver>_amd64.deb`, then *Sanctum* in the app menu or `sanctum` | `pip install -c constraints.txt -e .[dev,desktop]`, then `python -m api.desktop` (native Qt window); or `make run` and open the `/session/<token>` URL it prints |
+| Windows | Run `SanctumSetup.exe`, then *Sanctum* in the Start menu | `py -3.11 -m venv .venv; .venv\Scripts\python -m pip install -c constraints.txt -e .[dev,desktop]; .venv\Scripts\python -m api.desktop` |
+| macOS | Open `Sanctum.dmg`, drag *Sanctum* to Applications, open it (right-click > Open the first time: the build is unsigned) | `python3.11 -m venv .venv && .venv/bin/pip install -c constraints.txt -e .[dev,desktop] && .venv/bin/python -m api.desktop` |
 
 ### Whole-drive and raw device work
 
@@ -114,8 +114,10 @@ SANCTUM_HELPER_SOCKET=/run/sanctum/helper.sock SANCTUM_STATE_DIR=/var/lib/sanctu
    `SameSite=Strict` cookie gets 401 (`api/security.py`).
 3. Starts the API and waits for `/health`.
 4. Opens `http://127.0.0.1:<port>/session/<token>` - in a native window
-   (WebView2 on Windows, WKWebView on macOS) when `pywebview` is bundled,
-   otherwise in the default browser.
+   (WebView2 on Windows, WKWebView on macOS, Qt WebEngine on Linux) when
+   `pywebview` is installed, otherwise in the default browser. The Linux
+   packages do not bundle `pywebview`, so they open the browser; a Linux
+   source install with the `desktop` extra gets the Qt window.
 5. Stops when the window closes, or when *Quit Sanctum* is pressed in the
    sidebar.
 

@@ -11,8 +11,9 @@ developer does not:
   environment and to the window in the one URL it opens. Every other process
   on the machine - another account, a page in some other browser tab - gets
   401. See :mod:`api.security`.
-* **A window.** A native webview (WebView2 on Windows, WKWebView on macOS)
-  when ``pywebview`` is bundled; otherwise the default browser, with the
+* **A window.** A native webview (WebView2 on Windows, WKWebView on macOS,
+  Qt WebEngine on Linux) when ``pywebview`` is installed; otherwise the
+  default browser, with the
   process staying alive until the user presses Quit in the sidebar.
 * **Its own state directory** in the OS's per-user data location, never the
   directory the launcher happened to be started from.
@@ -109,8 +110,13 @@ def _open_window(url: str, stop: threading.Event) -> None:
             stop.set()
         return
     if os.environ.get("SANCTUM_BROWSER") != "1":
+        if sys.platform.startswith("linux"):
+            # The `desktop` extra installs the Qt backend on Linux. Without
+            # this, pywebview tries GTK first and prints a traceback when
+            # PyGObject is absent before it falls back to Qt.
+            os.environ.setdefault("PYWEBVIEW_GUI", "qt")
         try:
-            import webview  # type: ignore[import-not-found]
+            import webview  # type: ignore[import-not-found,unused-ignore]
 
             webview.create_window(
                 TITLE, url, width=1280, height=860, min_size=(960, 640)

@@ -74,7 +74,9 @@ sudo apt install ./sanctum_<ver>_amd64.deb
 sanctum          # or "Sanctum" in the application menu
 ```
 
-The app opens in your default browser on a private loopback URL.
+The packaged app opens in your default browser on a private loopback URL.
+The Linux packages do not bundle a native window; to run Sanctum in its own
+window on Linux, install from source (Option B) with the `desktop` extra.
 
 ### Option B: from source
 
@@ -123,6 +125,17 @@ python -c "import pytsk3, pyewf; print('native bindings OK')"
 
 On Debian/Ubuntu, `./scripts/devsetup.sh` does steps 1 and 2 in one go.
 
+To run Sanctum as its own desktop window rather than a browser tab, also
+install the `desktop` extra:
+
+```bash
+python -m pip install --constraint constraints.txt -e ".[desktop]"
+```
+
+On Linux it installs pywebview with its Qt backend (PyQt6 and Qt WebEngine,
+about 530 MB once installed). No system packages and no `sudo` are needed. Run on
+Fedora 44 under Wayland (2026-09-28); X11 has not been tried.
+
 **3. Build the UI**
 
 ```bash
@@ -133,14 +146,49 @@ On Debian/Ubuntu, `./scripts/devsetup.sh` does steps 1 and 2 in one go.
 
 ```bash
 make check       # ruff, mypy --strict, pytest; optional but recommended
+```
+
+As a desktop app, in its own window (needs the `desktop` extra from step 2):
+
+```bash
+python -m api.desktop
+```
+
+It picks a free loopback port, mints a session token and opens the UI in a
+native window. Closing the window stops Sanctum. Without the `desktop` extra,
+the same command opens the default browser instead; `SANCTUM_BROWSER=1` forces
+the browser.
+
+As a plain server, in a browser:
+
+```bash
 make run         # prints http://127.0.0.1:8787/session/<token>
 ```
 
 Open the `/session/<token>` URL it prints. Any other URL, including the bare
 `http://127.0.0.1:8787`, is refused with 401.
 
-To run the desktop launcher (picks a free port and opens the browser for you)
-instead: `python -m api.desktop`.
+**5. Optional: an application menu entry**
+
+To start the source checkout from the application menu like any other app,
+create `~/.local/share/applications/sanctum-dev.desktop`, replacing
+`/path/to/sanctum-forensics` with the absolute path of your checkout:
+
+```ini
+[Desktop Entry]
+Type=Application
+Name=Sanctum (dev)
+Comment=Sanctum Forensics desktop window, run from the source checkout
+Exec=/path/to/sanctum-forensics/.venv/bin/python -m api.desktop
+Path=/path/to/sanctum-forensics
+Icon=/path/to/sanctum-forensics/ui/public/favicon.svg
+Terminal=false
+Categories=Utility;
+```
+
+Then run `update-desktop-database ~/.local/share/applications`. This entry
+runs as your own user, so it uses the in-process helper; whole-drive work still
+needs the root helper below.
 
 ### Linux: whole-drive work
 
@@ -159,6 +207,9 @@ SANCTUM_HELPER_SOCKET=/run/sanctum/helper.sock \
 SANCTUM_STATE_DIR=/var/lib/sanctum \
 .venv/bin/python -m api.main
 ```
+
+With the `desktop` extra installed, replace `api.main` with `api.desktop` to
+get the same session in its own window.
 
 With a package, replace `.venv/bin/python -m helper` with
 `./Sanctum-<ver>-x86_64.AppImage --appimage-extract-and-run helper` or
