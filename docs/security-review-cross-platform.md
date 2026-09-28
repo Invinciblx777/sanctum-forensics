@@ -192,7 +192,8 @@ Taking a disk offline writes nothing to it.
   and the `open` that overwrites it, a process with write access to the parent
   directory could swap in a link. Pre-existing on every platform; exploiting
   it needs write access to the directory being erased.
-- **Browser fallback.** Without `pywebview` (always on Linux) the session URL
+- **Browser fallback.** Without `pywebview` (always in the Linux packages;
+  a Linux source install gets it from the `desktop` extra) the session URL
   is passed to the default browser's command line, where another process of
   the same user could read it. Such a process can already act as that user.
 - **Unsigned packages.** See `docs/packaging.md`.
