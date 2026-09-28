@@ -488,6 +488,9 @@ Details: [`platform-support.md`](docs/platform-support.md),
 
 ## Quick start
 
+Step-by-step installation for Linux, Windows and macOS, from a package or from
+source: [`INSTALL.md`](INSTALL.md).
+
 Fedora or Debian/Ubuntu with Python 3.11. The host `python3` is often not
 3.11; [`docs/technical.md`](docs/technical.md) explains why that matters.
 
