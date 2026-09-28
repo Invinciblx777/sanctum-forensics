@@ -832,6 +832,22 @@ export interface TraceRecord {
   removed: boolean
   bytes_overwritten: number
   error: string
+  /**
+   * Tied on evidence, but inside a file another process owns (a daemon's
+   * database, a live jump list, a Trash .DS_Store): reported, never edited.
+   * Absent from results recorded before the field existed.
+   */
+  report_only?: boolean
+  report_only_reason?: string
+}
+
+/** One place the sweep inspected, and what came of looking there. */
+export interface TraceInspection {
+  label: string
+  location: string
+  /** "searched", "absent", "unreadable" or "permission-denied". */
+  outcome: string
+  detail: string
 }
 
 export interface TraceSweep {
@@ -840,6 +856,8 @@ export interface TraceSweep {
   traces: TraceRecord[]
   /** Places that were present but could not be read, and why. */
   notes: string[]
+  /** Each place inspected with its outcome. Absent from older results. */
+  inspected?: TraceInspection[]
 }
 
 export type DestroyMediaType = 'HDD' | 'SSD' | 'USB' | 'SD_CARD' | 'OPTICAL' | 'TAPE' | 'OTHER'

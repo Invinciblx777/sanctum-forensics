@@ -531,9 +531,13 @@ found, including files deleted from it long ago. A Trash folder that once held
 the file loses only the copy of that file; the folder's other contents stay.
 
 The file report adds a **6. Desktop Traces** section: every trace with its
-evidence and what became of it, every place searched, and the places on this
+evidence and what became of it, every place inspected with its outcome
+(searched, absent, unreadable, permission-denied), and the places on this
 platform that keep traces and were not searched (application caches, search
-indexes, jump lists, snapshots, sync clients). Each trace also gets an
+indexes, `thumbcache_*.db`, snapshots, sync clients). A trace tied on evidence
+but held in a file a daemon or the shell owns - a macOS recent item, a Quick Look
+cache entry, a jump-list entry beside other entries, a Trash `.DS_Store` record -
+is marked **reported only**, with the reason, and left as it is. Each trace also gets an
 `erase.file.trace` ledger entry, and the sweep closes with `erase.file.traces`.
 
 **A per-file erase is usually unverifiable, and is reported as unverifiable rather

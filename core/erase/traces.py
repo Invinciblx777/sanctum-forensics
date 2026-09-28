@@ -17,33 +17,60 @@ removes the ones it can tie to an erased path **on evidence**:
   and a KDE ``RecentDocuments`` link whose ``URL`` does;
 * a Trash item whose ``.trashinfo`` names the path, or names a folder that held
   it (the freedesktop Trash specification), in the home Trash and in the
-  ``.Trash-$uid`` directory of the volume the file was on;
+  ``.Trash-$uid`` or sticky ``.Trash/$uid`` directory of the file's volume;
 * a Recycle Bin ``$R`` item whose ``$I`` record names the path;
-* a Windows Recent shortcut whose LinkInfo names the path ([MS-SHLLINK] 2.3).
+* a Windows Recent shortcut whose LinkInfo names the path ([MS-SHLLINK] 2.3);
+* a Windows jump list (``*.automaticDestinations-ms``) every one of whose
+  shortcut streams names an erased path;
+* a macOS Trash item whose put-back record (``ptbL`` and ``ptbN`` in the
+  Trash's ``.DS_Store``) names the path, or a folder that held it.
 
-Anything weaker is reported with ``exact=False`` and never removed. The macOS
-Trash is the case in point: it records where an item came from only inside its
-``.DS_Store``, which this module does not parse, so a same-name item there is a
-*possible* copy, left for the operator to judge.
+Some traces are tied to an erased path on evidence but sit inside a file that
+another process owns and rewrites. Those are reported with ``exact=True`` and
+``report_only=True``, with the reason, and never edited:
+
+* a macOS recent item (a ``.sfl2``/``.sfl3`` shared file list, which
+  ``sharedfilelistd`` owns) whose bookmark names the path;
+* a macOS Quick Look cache entry (``index.sqlite``, which the Quick Look daemon
+  owns), read through a read-only, immutable SQLite open;
+* a jump-list entry in a jump list that also names files nobody asked to
+  erase, and any entry of a ``*.customDestinations-ms`` list;
+* the put-back record in a macOS Trash's ``.DS_Store``.
+
+Anything weaker is reported with ``exact=False`` and never removed: a macOS
+Trash item of the same name with no put-back record, or one whose record names
+some other path, is a *possible* copy, left for the operator to judge.
 
 **Removal reuses the erase.** A trace that is a file - a thumbnail, a Trash
-copy, a shortcut - goes through :func:`core.erase.files.erase_one`, the same
-steps as a target, so it is overwritten, renamed and unlinked, and the same
-residual findings apply to it. An entry inside a shared list is cut out and the
-list is overwritten in place, padded to its old length, so the bytes that named
-the file are replaced rather than left behind in a freed block.
+copy, a shortcut, a whole jump list - goes through
+:func:`core.erase.files.erase_one`, the same steps as a target, so it is
+overwritten, renamed and unlinked, and the same residual findings apply to it.
+An entry inside a shared list is cut out and the list is overwritten in place,
+padded to its old length, so the bytes that named the file are replaced rather
+than left behind in a freed block.
 
-A dry run searches and reports everything and removes nothing.
+**Links are never followed.** A place that is itself a link is recorded as
+unreadable and not searched; every file is opened with ``O_NOFOLLOW``; the
+erase refuses a link by name.
+
+Every place inspected is returned with its outcome (searched, absent,
+unreadable, permission-denied), and every place this platform keeps traces in
+that the sweep does not search is named. A dry run searches and reports
+everything and removes nothing.
 """
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import html
+import io
 import ntpath
 import os
+import plistlib
 import posixpath
 import re
+import sqlite3
 import stat as stat_mod
 import struct
 import xml.etree.ElementTree as ET
@@ -61,6 +88,7 @@ from core.models import (
     FileEraseOptions,
     FileEraseRecord,
     Progress,
+    TraceInspection,
     TraceRecord,
     TraceSweepResult,
 )
@@ -71,12 +99,19 @@ __all__ = [
     "PHASE",
     "TraceKind",
     "TraceLocations",
+    "bookmark_path",
+    "custom_destination_targets",
     "default_locations",
+    "ds_store_records",
     "file_uris",
     "find_traces",
+    "jump_list_streams",
     "locations_for",
     "path_from_uri",
+    "quicklook_entries",
+    "shared_file_list_paths",
     "sweep",
+    "trash_putback",
 ]
 
 logger = structlog.get_logger(__name__)
@@ -99,7 +134,17 @@ class TraceKind(StrEnum):
     RECYCLE_BIN_RECORD = "RECYCLE_BIN_RECORD"
     RECENT_SHORTCUT = "RECENT_SHORTCUT"
     POSSIBLE_COPY = "POSSIBLE_COPY"
+    #: A Windows jump list (automatic or custom destinations) naming the file.
+    JUMP_LIST_ENTRY = "JUMP_LIST_ENTRY"
+    #: A macOS Quick Look thumbnail cache entry for the file.
+    QUICKLOOK_THUMBNAIL = "QUICKLOOK_THUMBNAIL"
 
+
+#: Outcomes of inspecting one place.
+SEARCHED = "searched"
+ABSENT = "absent"
+UNREADABLE = "unreadable"
+PERMISSION_DENIED = "permission-denied"
 
 #: Places each platform keeps traces that this sweep does not search. Printed
 #: in the report, so its reader knows where the sweep stopped.
@@ -112,18 +157,49 @@ NOT_SEARCHED: dict[str, list[str]] = {
         "Backups, filesystem snapshots and sync clients.",
     ],
     "windows": [
-        "Jump lists (AutomaticDestinations and CustomDestinations).",
-        "The thumbnail databases (thumbcache_*.db) and the Windows Search index.",
+        "The thumbnail databases (thumbcache_*.db): cannot be tied to a path on "
+        "evidence: entries are keyed by a cache hash, not the file path.",
+        "The Windows Search index.",
         "Recent lists an application keeps for itself, such as Office's, and "
         "the RecentDocs registry key.",
         "Volume Shadow Copies, File History, OneDrive and other sync clients.",
     ],
     "macos": [
-        "The QuickLook thumbnail cache and the Spotlight index.",
-        "Recent items (the shared file lists) and recent lists an application "
-        "keeps for itself.",
+        "The Spotlight index.",
+        "Recent lists an application keeps for itself outside the shared file "
+        "lists, and the per-document versions store.",
         "Time Machine and APFS snapshots, iCloud Drive and other sync clients.",
     ],
+}
+
+#: Why a trace tied to an erased path on evidence is still only reported.
+REPORT_ONLY_REASONS: dict[str, str] = {
+    "sfl": (
+        "macOS rewrites this list from sharedfilelistd; Sanctum reports it and "
+        "does not edit a live daemon-owned file."
+    ),
+    "quicklook": (
+        "The Quick Look cache is a shared database owned by a system daemon; "
+        "Sanctum reports the entry and does not edit it. `qlmanage -r cache` "
+        "resets the whole cache, which deletes its files but does not "
+        "overwrite them."
+    ),
+    "jump_list": (
+        "The jump list also names files nobody asked to erase. Editing a live "
+        "compound file the shell owns risks corrupting those entries, so this "
+        "one is reported and the file left as it is."
+    ),
+    "custom_jump_list": (
+        "A custom jump list is written by the application it belongs to, as "
+        "back-to-back shortcuts; cutting one out in place risks corrupting the "
+        "rest, so the entry is reported and the file left as it is."
+    ),
+    "ds_store": (
+        "The put-back record lives in the Trash's .DS_Store, a B-tree Finder "
+        "owns and rewrites; Sanctum reports it and does not edit the file. It "
+        "names the path, not the content, and stays until Finder rewrites the "
+        "file."
+    ),
 }
 
 #: freedesktop thumbnail size directories.
@@ -148,6 +224,29 @@ SCAN_LIMIT = 20_000
 #: Size bounds for the small files a trace is recorded in.
 _RECORD_LIMIT = 64 * 1024
 _LIST_LIMIT = 32 * 1024 * 1024
+
+#: Bounds for the structured files parsed below. Each is far above what a
+#: desktop writes, and each stops a hostile file from costing more than that.
+_DS_STORE_LIMIT = 16 * 1024 * 1024
+_DS_MAX_BLOCKS = 65_536
+_DS_MAX_DEPTH = 32
+_DS_MAX_RECORDS = 1_000_000
+_BOOKMARK_MAX_TOCS = 16
+_BOOKMARK_MAX_ENTRIES = 4_096
+_PLIST_MAX_OBJECTS = 1_000_000
+#: Shared file lists under the sharedfilelist folder, and how deep to look.
+_SFL_FILE_LIMIT = 2_000
+_SFL_DEPTH = 4
+_SFL_SUFFIXES = (".sfl", ".sfl2", ".sfl3")
+#: Quick Look cache rows read.
+_QUICKLOOK_ROW_LIMIT = 500_000
+#: Jump list streams read, and shortcuts found in one custom list.
+_JUMP_LIST_STREAMS = 10_000
+_CUSTOM_LINKS = 4_096
+
+#: A Shell Link header: HeaderSize 0x4C, then CLSID 00021401-0000-0000-C000-
+#: 000000000046 in its little-endian GUID form ([MS-SHLLINK] 2.1).
+_LNK_HEADER = b"\x4c\x00\x00\x00" + bytes.fromhex("0114020000000000c000000000000046")
 
 _XBEL_BOOKMARK = re.compile(
     rb"""[ \t]*<bookmark\b[^>]*?\bhref=(["'])(.*?)\1[^>]*?"""
@@ -206,8 +305,22 @@ class TraceLocations:
     recent_shortcut_dirs: tuple[Path, ...] = ()
     #: Search ``<volume>\\$Recycle.Bin`` on each erased path's volume.
     recycle_bin: bool = False
-    #: The macOS Trash.
+    #: The macOS home Trash (``~/.Trash``).
     mac_trash: Path | None = None
+    #: The volume the home Trash's put-back locations are relative to: the
+    #: boot volume, ``/``.
+    mac_trash_volume: Path = Path("/")
+    #: Roots walked for macOS shared file lists (``.sfl2``/``.sfl3``).
+    shared_file_lists: tuple[Path, ...] = ()
+    #: macOS Quick Look thumbnail cache folders (holding ``index.sqlite``).
+    quicklook_caches: tuple[Path, ...] = ()
+    #: Windows ``AutomaticDestinations`` folders.
+    jump_list_dirs: tuple[Path, ...] = ()
+    #: Windows ``CustomDestinations`` folders.
+    custom_jump_list_dirs: tuple[Path, ...] = ()
+    #: Places this platform keeps traces in that could not be located on this
+    #: host, each with the reason. Reported as not searched.
+    not_located: tuple[str, ...] = ()
     #: Finds the top of the volume that holds a path. Injected, so a test never
     #: walks up the host's own mounts.
     volume_top: Callable[[str], Path | None] = field(default=_mount_top)
@@ -225,32 +338,69 @@ def locations_for(
     home: Path,
     *,
     uid: int | None = None,
+    volume_top: Callable[[str], Path | None] | None = None,
 ) -> TraceLocations:
-    """The places ``platform`` keeps traces, for the user whose home is ``home``."""
+    """The places ``platform`` keeps traces, for the user whose home is ``home``.
+
+    ``env`` supplies ``APPDATA`` on Windows, ``TMPDIR`` on macOS and the XDG
+    base directories elsewhere; ``volume_top`` replaces the walk to a path's
+    volume root, so a test can build a whole profile, drive root included,
+    under a temporary directory.
+    """
     if platform == "windows":
         appdata = env.get("APPDATA", "")
-        recent = (
-            (Path(appdata) / "Microsoft" / "Windows" / "Recent",) if appdata else ()
-        )
+        recent = Path(appdata) / "Microsoft" / "Windows" / "Recent" if appdata else None
         return TraceLocations(
             family=platform,
             home=home,
-            recent_shortcut_dirs=recent,
+            recent_shortcut_dirs=(recent,) if recent else (),
+            jump_list_dirs=(recent / "AutomaticDestinations",) if recent else (),
+            custom_jump_list_dirs=(recent / "CustomDestinations",) if recent else (),
             recycle_bin=True,
-            volume_top=_drive_top,
+            volume_top=volume_top or _drive_top,
+            not_located=()
+            if recent
+            else (
+                "Recent shortcuts and jump lists: APPDATA is not set, so the "
+                "Recent folder could not be located.",
+            ),
         )
     if platform == "macos":
-        return TraceLocations(family=platform, home=home, mac_trash=home / ".Trash")
+        tmpdir = env.get("TMPDIR", "")
+        quicklook: tuple[Path, ...] = ()
+        if tmpdir and posixpath.isabs(tmpdir):
+            # $TMPDIR is /var/folders/xx/yyyy/T/; the cache is in its sibling C.
+            per_user = Path(posixpath.dirname(posixpath.normpath(tmpdir)))
+            quicklook = (per_user / "C" / "com.apple.QuickLook.thumbnailcache",)
+        return TraceLocations(
+            family=platform,
+            home=home,
+            mac_trash=home / ".Trash",
+            uid=uid,
+            shared_file_lists=(
+                home / "Library" / "Application Support" / "com.apple.sharedfilelist",
+            ),
+            quicklook_caches=quicklook,
+            volume_top=volume_top or _mount_top,
+            not_located=()
+            if quicklook
+            else (
+                "The Quick Look thumbnail cache: TMPDIR is not set, so its "
+                "per-user folder ($TMPDIR/../C/) could not be located.",
+            ),
+        )
     cache = _xdg_dir(env, "XDG_CACHE_HOME", home / ".cache")
     data = _xdg_dir(env, "XDG_DATA_HOME", home / ".local" / "share")
     return TraceLocations(
         family=platform,
         home=home,
         thumbnail_roots=(cache / "thumbnails", home / ".thumbnails"),
-        recent_lists=(data / "recently-used.xbel",),
+        # GTK 3 and 4 write the first; GTK 2 wrote the second.
+        recent_lists=(data / "recently-used.xbel", home / ".recently-used.xbel"),
         recent_document_dirs=(data / "RecentDocuments",),
         home_trash=data / "Trash",
         uid=uid,
+        volume_top=volume_top or _mount_top,
     )
 
 
@@ -336,6 +486,54 @@ def _listdir(directory: Path) -> list[Path] | None:
         return sorted(Path(entry.path) for entry in os.scandir(directory))
     except OSError:
         return None
+
+
+def _is_link(info: os.stat_result) -> bool:
+    """A symbolic link, or on Windows a symlink or junction reparse point."""
+    if stat_mod.S_ISLNK(info.st_mode):
+        return True
+    tag = getattr(info, "st_reparse_tag", 0)
+    return tag in (0xA000000C, 0xA0000003)  # IO_REPARSE_TAG_SYMLINK, MOUNT_POINT
+
+
+def _probe(where: Path, *, directory: bool) -> tuple[str, str]:
+    """``(outcome, detail)`` for one place, before anything in it is read.
+
+    A place that is a link is not searched: the sweep never follows one, so a
+    link planted where a Trash or cache belongs cannot lead the erase anywhere.
+    """
+    try:
+        info = os.lstat(where)
+    except (FileNotFoundError, NotADirectoryError):
+        return ABSENT, ""
+    except PermissionError as exc:
+        return PERMISSION_DENIED, f"It could not be examined: {exc.strerror}."
+    except OSError as exc:
+        return UNREADABLE, f"It could not be examined: {exc.strerror}."
+    if _is_link(info):
+        return UNREADABLE, "It is a link, and the sweep never follows one."
+    if directory and not stat_mod.S_ISDIR(info.st_mode):
+        return UNREADABLE, "It is not a directory."
+    if not directory and not stat_mod.S_ISREG(info.st_mode):
+        return UNREADABLE, "It is not a regular file."
+    try:
+        if directory:
+            with os.scandir(where):
+                pass
+        else:
+            fd = os.open(
+                where,
+                os.O_RDONLY
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0)
+                | getattr(os, "O_BINARY", 0),
+            )
+            os.close(fd)
+    except OSError as exc:
+        if isinstance(exc, PermissionError) or exc.errno in (errno.EACCES, errno.EPERM):
+            return PERMISSION_DENIED, f"It could not be opened: {exc.strerror}."
+        return UNREADABLE, f"It could not be opened: {exc.strerror}."
+    return SEARCHED, ""
 
 
 def _is_real_dir(path: Path) -> bool:
@@ -449,6 +647,434 @@ def shortcut_target(data: bytes) -> str | None:
     return (head + _cstring(info, suffix, wide=False)) or None
 
 
+class _Malformed(Exception):
+    """A structure that does not hold together; the whole file is set aside."""
+
+
+class _Cursor:
+    """Bounded reads from ``data[start:end]``. Every read is checked."""
+
+    def __init__(self, data: bytes, start: int, end: int) -> None:
+        if start < 0 or start > end or end > len(data):
+            raise _Malformed
+        self.data = data
+        self.pos = start
+        self.end = end
+
+    def take(self, count: int) -> bytes:
+        if count < 0 or self.pos + count > self.end:
+            raise _Malformed
+        chunk = self.data[self.pos : self.pos + count]
+        self.pos += count
+        return chunk
+
+    def u8(self) -> int:
+        return self.take(1)[0]
+
+    def u32(self) -> int:
+        (value,) = struct.unpack(">I", self.take(4))
+        return int(value)
+
+
+def _ds_value(cursor: _Cursor, kind: bytes) -> str | int | bytes:
+    """One record value of a ``.DS_Store``, by its four-byte type code."""
+    if kind == b"bool":
+        return cursor.u8()
+    if kind in (b"long", b"shor"):
+        return cursor.u32()
+    if kind == b"type":
+        return cursor.take(4)
+    if kind in (b"comp", b"dutc"):
+        return cursor.take(8)
+    if kind == b"blob":
+        return cursor.take(cursor.u32())
+    if kind == b"ustr":
+        chars = cursor.u32()
+        try:
+            return cursor.take(2 * chars).decode("utf-16-be")
+        except UnicodeDecodeError as exc:
+            raise _Malformed from exc
+    # An unknown type has an unknown length: nothing after it can be trusted.
+    raise _Malformed
+
+
+def ds_store_records(
+    data: bytes, wanted: frozenset[str] = frozenset({"ptbL", "ptbN"})
+) -> dict[str, dict[str, str | int | bytes]] | None:
+    """The ``wanted`` records of a Finder ``.DS_Store``, by file name.
+
+    The file is a buddy-allocated store ("Bud1"): a header naming the
+    allocator's root block, which lists every block's address and a table of
+    contents whose ``DSDB`` entry is the B-tree's master block. Each tree node
+    holds records of (file name, four-byte structure id, typed value). Every
+    offset and length is checked against the file; a node reached twice, a
+    tree deeper than any Finder writes, or a value of a type not known here
+    makes the whole file unreadable, and None is returned.
+    """
+    try:
+        return _ds_store_records(data, wanted)
+    except _Malformed:
+        return None
+
+
+def _ds_store_records(
+    data: bytes, wanted: frozenset[str]
+) -> dict[str, dict[str, str | int | bytes]]:
+    if len(data) < 36 or data[:8] != b"\x00\x00\x00\x01Bud1":
+        raise _Malformed
+    root_offset, root_size, root_check = struct.unpack_from(">III", data, 8)
+    if root_offset != root_check:
+        raise _Malformed
+    # Every offset in the file counts from byte 4, after the leading 1.
+    root = _Cursor(data, 4 + root_offset, 4 + root_offset + root_size)
+    count = root.u32()
+    root.u32()
+    if count > _DS_MAX_BLOCKS:
+        raise _Malformed
+    addresses = [root.u32() for _ in range(count)]
+    root.take(4 * (-count % 256))  # the address table is padded to 256 slots
+    toc: dict[bytes, int] = {}
+    for _ in range(root.u32()):
+        name = root.take(root.u8())
+        toc[name] = root.u32()
+    if b"DSDB" not in toc:
+        raise _Malformed
+
+    def block(number: int) -> _Cursor:
+        if number >= len(addresses):
+            raise _Malformed
+        address = addresses[number]
+        start = 4 + (address & ~0x1F)
+        size = 1 << (address & 0x1F)
+        if start >= len(data):
+            raise _Malformed
+        return _Cursor(data, start, min(len(data), start + size))
+
+    master = block(toc[b"DSDB"])
+    root_node = master.u32()
+    found: dict[str, dict[str, str | int | bytes]] = {}
+    visited: set[int] = set()
+    records = 0
+
+    def record(cursor: _Cursor) -> None:
+        nonlocal records
+        records += 1
+        if records > _DS_MAX_RECORDS:
+            raise _Malformed
+        try:
+            name = cursor.take(2 * cursor.u32()).decode("utf-16-be")
+        except UnicodeDecodeError as exc:
+            raise _Malformed from exc
+        structure = cursor.take(4).decode("latin-1")
+        value = _ds_value(cursor, cursor.take(4))
+        if structure in wanted:
+            found.setdefault(name, {})[structure] = value
+
+    def walk(number: int, depth: int) -> None:
+        if depth > _DS_MAX_DEPTH or number in visited:
+            raise _Malformed
+        visited.add(number)
+        node = block(number)
+        right = node.u32()
+        entries = node.u32()
+        if right == 0:
+            for _ in range(entries):
+                record(node)
+            return
+        for _ in range(entries):
+            walk(node.u32(), depth + 1)
+            record(node)
+        walk(right, depth + 1)
+
+    walk(root_node, 0)
+    return found
+
+
+def trash_putback(data: bytes) -> dict[str, tuple[str, str]] | None:
+    """``{Trash item name: (ptbL, ptbN)}`` from a Trash's ``.DS_Store``.
+
+    ``ptbL`` is the folder the item was deleted from, relative to its volume's
+    root; ``ptbN`` its name there (the Trash renames an item whose name is
+    taken, so the two names can differ). None when the file is not a readable
+    ``.DS_Store``; an item without both records is left out.
+    """
+    records = ds_store_records(data)
+    if records is None:
+        return None
+    putback: dict[str, tuple[str, str]] = {}
+    for name, fields in records.items():
+        location, original = fields.get("ptbL"), fields.get("ptbN")
+        if isinstance(location, str) and isinstance(original, str):
+            putback[name] = (location, original)
+    return putback
+
+
+def _putback_path(volume: Path, location: str, name: str) -> str | None:
+    """The path a put-back record names, or None when it is not a plain path."""
+    parts = [part for part in location.split("/") if part]
+    if (
+        not name
+        or name in (".", "..")
+        or "/" in name
+        or "\x00" in name
+        or any(part in (".", "..") or "\x00" in part for part in parts)
+    ):
+        return None
+    return posixpath.join(str(volume), *parts, name)
+
+
+def _book_item(view: bytes, base: int, offset: int) -> tuple[int, bytes] | None:
+    """``(type code, payload)`` of one item in a bookmark's data section."""
+    start = base + offset
+    if start + 8 > len(view):
+        return None
+    length, code = struct.unpack_from("<II", view, start)
+    if start + 8 + length > len(view):
+        return None
+    return code, view[start + 8 : start + 8 + length]
+
+
+def bookmark_path(data: bytes) -> str | None:
+    """The absolute path a macOS bookmark (``book``) names, or None.
+
+    The path is the ``0x1004`` entry of the bookmark's table of contents: an
+    array of UTF-8 strings, one per path component from the root. Only a path
+    decoded in full is returned: a component that is not a UTF-8 string, is
+    empty or holds a separator, or any offset that leaves the blob, and there
+    is no path - never a partial one.
+    """
+    if len(data) < 16 or data[:4] != b"book":
+        return None
+    total, _version, header = struct.unpack_from("<III", data, 4)
+    if header < 16 or total < header + 4 or total > len(data):
+        return None
+    view = data[:total]
+    (first,) = struct.unpack_from("<I", view, header)
+    toc = header + first
+    seen: set[int] = set()
+    for _ in range(_BOOKMARK_MAX_TOCS):
+        if toc in seen or toc + 20 > len(view):
+            return None
+        seen.add(toc)
+        _size, magic, _ident, next_toc, count = struct.unpack_from("<5I", view, toc)
+        if magic != 0xFFFFFFFE or count > _BOOKMARK_MAX_ENTRIES:
+            return None
+        if toc + 20 + 12 * count > len(view):
+            return None
+        for number in range(count):
+            key, offset, _reserved = struct.unpack_from(
+                "<3I", view, toc + 20 + 12 * number
+            )
+            if key == 0x1004:
+                return _book_path(view, header, offset)
+        if next_toc == 0:
+            return None
+        toc = header + next_toc
+    return None
+
+
+def _book_path(view: bytes, base: int, offset: int) -> str | None:
+    """The path components array of a bookmark, joined, or None."""
+    item = _book_item(view, base, offset)
+    if item is None or item[0] != 0x0601 or len(item[1]) % 4:
+        return None
+    count = len(item[1]) // 4
+    if not count or count > _BOOKMARK_MAX_ENTRIES:
+        return None
+    parts: list[str] = []
+    for (element,) in struct.iter_unpack("<I", item[1]):
+        component = _book_item(view, base, element)
+        if component is None or component[0] != 0x0101:
+            return None
+        try:
+            text = component[1].decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        if not text or "/" in text or "\x00" in text:
+            return None
+        parts.append(text)
+    return "/" + "/".join(parts)
+
+
+def _plist_plausible(data: bytes) -> bool:
+    """A binary plist whose trailer fits the file, checked before plistlib.
+
+    The trailer gives the object count and offset table; a forged one could
+    otherwise make the parser reserve room for billions of objects.
+    """
+    if len(data) < 40 or not data.startswith(b"bplist00"):
+        return False
+    trailer: tuple[int, int, int, int, int] = struct.unpack_from(
+        ">6xBBQQQ", data, len(data) - 32
+    )
+    offset_size, _ref_size, objects, _top, table = trailer
+    return (
+        1 <= offset_size <= 8
+        and 0 < objects <= min(_PLIST_MAX_OBJECTS, len(data))
+        and 8 <= table
+        and table + objects * offset_size <= len(data) - 32
+    )
+
+
+def shared_file_list_paths(data: bytes) -> list[str] | None:
+    """Paths named by the bookmarks in a macOS shared file list, or None.
+
+    ``.sfl2`` and ``.sfl3`` files are NSKeyedArchiver binary property lists;
+    each item carries its file as bookmark data. The archive's layout differs
+    between releases, so rather than walk it, every data object in it that is
+    a bookmark is decoded, and only paths decoded in full are returned. An
+    XML plist is not parsed: a shared file list is always binary.
+    """
+    if not _plist_plausible(data):
+        return None
+    try:
+        archive = plistlib.loads(data, fmt=plistlib.FMT_BINARY)
+    except (
+        plistlib.InvalidFileException,
+        ValueError,
+        TypeError,
+        KeyError,
+        IndexError,
+        OverflowError,
+        RecursionError,
+        MemoryError,
+        struct.error,
+    ):
+        return None
+    objects = archive.get("$objects") if isinstance(archive, dict) else None
+    if not isinstance(objects, list):
+        return None
+    paths: list[str] = []
+    for item in objects[:_PLIST_MAX_OBJECTS]:
+        blob = item.get("NS.data") if isinstance(item, dict) else item
+        if isinstance(blob, bytes) and blob.startswith(b"book"):
+            path = bookmark_path(blob)
+            if path is not None and path not in paths:
+                paths.append(path)
+    return paths
+
+
+def quicklook_entries(
+    index_db: Path,
+) -> tuple[list[tuple[str, int, int]] | None, str]:
+    """``(path, row id, thumbnails)`` per file in a Quick Look ``index.sqlite``.
+
+    The database is opened read-only and immutable, through a URI, in place:
+    nothing is copied, locked or written, and no journal is created. Returns
+    ``(None, reason)`` when it cannot be opened or its schema is not the one
+    known here - a ``files`` table with ``folder`` and ``file_name`` columns.
+    """
+    uri = index_db.absolute().as_uri() + "?mode=ro&immutable=1"
+    try:
+        connection = sqlite3.connect(uri, uri=True)
+    except sqlite3.Error as exc:
+        return None, f"it could not be opened read-only ({exc})"
+    try:
+        tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        if "files" not in tables:
+            return None, "its schema is not a known one (no files table)"
+        columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(files)")
+        }
+        if not {"folder", "file_name"} <= columns:
+            return None, (
+                "its schema is not a known one (the files table has no folder "
+                "and file_name columns)"
+            )
+        counts: dict[int, int] = {}
+        if "thumbnails" in tables:
+            thumb_columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(thumbnails)")
+            }
+            if "file_id" in thumb_columns:
+                counts = {
+                    file_id: int(number)
+                    for file_id, number in connection.execute(
+                        "SELECT file_id, COUNT(*) FROM thumbnails GROUP BY file_id"
+                    )
+                    if isinstance(file_id, int)
+                }
+        entries: list[tuple[str, int, int]] = []
+        for rowid, folder, name in connection.execute(
+            "SELECT rowid, folder, file_name FROM files LIMIT ?",
+            (_QUICKLOOK_ROW_LIMIT,),
+        ):
+            path = _quicklook_path(folder, name)
+            if path is not None:
+                entries.append((path, int(rowid), counts.get(int(rowid), 0)))
+        return entries, ""
+    except sqlite3.Error as exc:
+        return None, f"it could not be read ({exc})"
+    finally:
+        connection.close()
+
+
+def _quicklook_path(folder: object, name: object) -> str | None:
+    """The path a Quick Look ``files`` row names: a folder path or URL, and a name."""
+    if isinstance(folder, bytes):
+        folder = folder.decode("utf-8", "surrogateescape")
+    if isinstance(name, bytes):
+        name = name.decode("utf-8", "surrogateescape")
+    if not isinstance(folder, str) or not isinstance(name, str):
+        return None
+    name = name.strip("/")
+    local = path_from_uri(folder) if folder.startswith("file://") else folder
+    if not name or "/" in name or not local or not local.startswith("/"):
+        return None
+    return posixpath.join(local, name)
+
+
+def jump_list_streams(data: bytes) -> list[tuple[str, str | None]] | None:
+    """``(stream, link target)`` for each entry stream of an automatic jump list.
+
+    An ``*.automaticDestinations-ms`` file is an OLE compound file: a
+    ``DestList`` stream indexes numbered streams, each a Shell Link. The target
+    is None for a stream that is not a link or names no local path. None when
+    the file is not a readable compound file.
+    """
+    import olefile
+
+    try:
+        if not olefile.isOleFile(io.BytesIO(data)):
+            return None
+        with olefile.OleFileIO(io.BytesIO(data)) as ole:
+            found: list[tuple[str, str | None]] = []
+            for entry in ole.listdir(streams=True, storages=False):
+                name = "/".join(entry)
+                if name == "DestList":
+                    continue
+                if len(found) >= _JUMP_LIST_STREAMS:
+                    return None
+                blob = ole.openstream(entry).read(_RECORD_LIMIT)
+                found.append((name, shortcut_target(blob)))
+            return found
+    except (OSError, ValueError, TypeError, KeyError, IndexError, struct.error):
+        return None
+
+
+def custom_destination_targets(data: bytes) -> list[str]:
+    """Link targets of the shortcuts in a ``*.customDestinations-ms`` list.
+
+    The file is shortcuts back to back between a header and a footer, with no
+    index; each Shell Link header is found by its signature and parsed where
+    it starts.
+    """
+    targets: list[str] = []
+    start = data.find(_LNK_HEADER)
+    while start >= 0 and len(targets) < _CUSTOM_LINKS:
+        target = shortcut_target(data[start : start + _RECORD_LIMIT])
+        if target and target not in targets:
+            targets.append(target)
+        start = data.find(_LNK_HEADER, start + len(_LNK_HEADER))
+    return targets
+
+
 # --------------------------------------------------------------------------
 # What was erased
 # --------------------------------------------------------------------------
@@ -552,19 +1178,54 @@ class _Found:
     content_copy: bool
     exact: bool = True
     #: How a real run removes it: "erase" puts the file through erase_one,
-    #: "list" cuts ``entry`` out of the list at ``location``.
+    #: "list" cuts ``entry`` out of the list at ``location``, "report" leaves
+    #: it where it is and says why in ``reason``.
     how: str = "erase"
     entry: str = ""
     #: For a Trash or Recycle Bin record, the copy it describes. The record is
     #: kept when that copy could not be removed, so the copy stays visible.
     pair: Path | None = None
+    reason: str = ""
+
+
+_OUTCOME_WORDS = {
+    ABSENT: " (not present)",
+    UNREADABLE: " (not read)",
+    PERMISSION_DENIED: " (permission denied)",
+}
+
+
+@dataclass
+class _Inspected:
+    """One place inspected, and what came of it."""
+
+    label: str
+    location: Path
+    outcome: str
+    detail: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.outcome == SEARCHED
+
+    def fail(self, outcome: str, detail: str) -> None:
+        """A place that was present but could not be searched through."""
+        if self.outcome == SEARCHED:
+            self.outcome = outcome
+            self.detail = detail
+
+    def line(self) -> str:
+        return f"{self.label}: {self.location}{_OUTCOME_WORDS.get(self.outcome, '')}"
 
 
 @dataclass
 class _Plan:
     found: list[_Found] = field(default_factory=list)
-    searched: list[str] = field(default_factory=list)
+    inspected: list[_Inspected] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    #: Places found at run time that could not be searched (an unknown
+    #: schema, say), added to the platform's fixed list.
+    not_searched: list[str] = field(default_factory=list)
     _seen: set[tuple[str, str]] = field(default_factory=set)
 
     def add(self, trace: _Found) -> None:
@@ -573,9 +1234,18 @@ class _Plan:
             self._seen.add(key)
             self.found.append(trace)
 
-    def place(self, label: str, where: Path) -> None:
-        present = "" if os.path.lexists(where) else " (not present)"
-        self.searched.append(f"{label}: {where}{present}")
+    def place(self, label: str, where: Path, *, directory: bool = True) -> _Inspected:
+        """Record a place as inspected, probed without following a link."""
+        outcome, detail = _probe(where, directory=directory)
+        entry = _Inspected(label, where, outcome, detail)
+        self.inspected.append(entry)
+        if outcome in (UNREADABLE, PERMISSION_DENIED):
+            self.notes.append(f"The {label} at {where} was not searched. {detail}")
+        return entry
+
+    @property
+    def searched(self) -> list[str]:
+        return [entry.line() for entry in self.inspected]
 
 
 def _size_words(copy: Path, erased: _Erased) -> str:
@@ -612,7 +1282,8 @@ def _thumbnail_kind(failed: bool) -> TraceKind:
 
 def _find_thumbnails(root: Path, index: _Index, plan: _Plan) -> None:
     """Thumbnails of erased files, by name, then of files inside erased folders."""
-    plan.place("thumbnail cache", root)
+    if not plan.place("thumbnail cache", root).ok:
+        return
     directories = _thumbnail_dirs(root)
     if not directories:
         return
@@ -695,19 +1366,22 @@ def _find_thumbnails(root: Path, index: _Index, plan: _Plan) -> None:
 
 def _find_recent_list(path: Path, index: _Index, plan: _Plan) -> None:
     """Entries of a GTK recent-files list that name an erased path."""
-    plan.place("recent-files list", path)
-    if not os.path.lexists(path):
+    entry = plan.place("recent-files list", path, directory=False)
+    if not entry.ok:
         return
     data = _read(path, _LIST_LIMIT, whole=True)
     if data is None:
+        entry.fail(UNREADABLE, f"It is larger than {_LIST_LIMIT:,} bytes.")
         plan.notes.append(f"{path} could not be read, so it was not searched.")
         return
     if b"<!DOCTYPE" in data or b"<!ENTITY" in data:
+        entry.fail(UNREADABLE, "It declares a DTD or entities.")
         plan.notes.append(f"{path} declares a DTD or entities and was not parsed.")
         return
     try:
         root = ET.fromstring(data)
     except ET.ParseError as exc:
+        entry.fail(UNREADABLE, f"It is not well-formed XML ({exc}).")
         plan.notes.append(
             f"{path} is not well-formed XML ({exc}) and was not searched."
         )
@@ -750,7 +1424,8 @@ def _find_recent_documents(
     directory: Path, index: _Index, plan: _Plan, home: Path | None
 ) -> None:
     """KDE ``RecentDocuments`` links whose URL names an erased path."""
-    plan.place("recent documents", directory)
+    if not plan.place("recent documents", directory).ok:
+        return
     for link in _listdir(directory) or []:
         if link.suffix != ".desktop":
             continue
@@ -793,6 +1468,7 @@ def _find_bin_items(
     *,
     copy_kind: TraceKind,
     record_kind: TraceKind,
+    record_reason: str = "",
 ) -> None:
     """Trash or Recycle Bin items whose recorded origin was erased, or held it.
 
@@ -801,6 +1477,9 @@ def _find_bin_items(
     folder deleted from above an erased path may hold a copy of it inside; only
     that inner copy goes, because the folder and its record also describe
     files nobody asked to erase.
+
+    ``record_reason`` makes the record report-only: the macOS put-back record
+    is one entry of a ``.DS_Store`` that describes the whole Trash.
     """
     for original, copy, record in items:
         owner = index.owner(original)
@@ -827,9 +1506,13 @@ def _find_bin_items(
                     kind=record_kind,
                     target=owner.path,
                     location=record,
-                    evidence=f"It records the deletion of {where}.",
+                    evidence=f"It records the deletion of {where}"
+                    + (f" (the entry for {copy.name})." if record_reason else "."),
                     content_copy=False,
                     pair=copy if present else None,
+                    how="report" if record_reason else "erase",
+                    entry=copy.name if record_reason else "",
+                    reason=record_reason,
                 )
             )
             continue
@@ -889,28 +1572,45 @@ def _trash_items(
     return items
 
 
-def _volume_trashes(where: TraceLocations, index: _Index) -> list[tuple[Path, Path]]:
-    """``(trash directory, volume top)`` for each erased path's volume."""
-    if where.uid is None:
-        return []
-    home_trash = os.path.realpath(where.home_trash) if where.home_trash else None
-    found: list[tuple[Path, Path]] = []
+def _volume_tops(where: TraceLocations, index: _Index) -> list[Path]:
+    """The top of each erased path's volume, once each."""
     tops: list[Path] = []
     for item in index.roots:
         top = where.volume_top(item.path)
         if top is not None and top not in tops:
             tops.append(top)
-    for top in tops:
+    return tops
+
+
+def _volume_trashes(
+    where: TraceLocations, index: _Index, plan: _Plan
+) -> list[tuple[Path, Path]]:
+    """``(trash directory, volume top)`` for each erased path's volume.
+
+    The freedesktop specification: ``$topdir/.Trash/$uid`` is used only when
+    ``$topdir/.Trash`` is a real directory (not a link) with the sticky bit
+    set; otherwise ``$topdir/.Trash-$uid``. A ``.Trash`` that fails the check
+    is named in the notes, as the specification asks.
+    """
+    if where.uid is None or where.family in ("windows", "macos"):
+        return []
+    home_trash = os.path.realpath(where.home_trash) if where.home_trash else None
+    found: list[tuple[Path, Path]] = []
+    for top in _volume_tops(where, index):
         candidates = [top / f".Trash-{where.uid}"]
         shared = top / ".Trash"
         try:
             info = os.lstat(shared)
-            # The specification: use $topdir/.Trash only when it is a real
-            # directory with the sticky bit set.
+        except OSError:
+            info = None
+        if info is not None:
             if stat_mod.S_ISDIR(info.st_mode) and info.st_mode & stat_mod.S_ISVTX:
                 candidates.append(shared / str(where.uid))
-        except OSError:
-            pass
+            else:
+                plan.notes.append(
+                    f"{shared} is not a real directory with the sticky bit set, "
+                    "so by the freedesktop Trash specification it was not used."
+                )
         for candidate in candidates:
             if _is_real_dir(candidate) and os.path.realpath(candidate) != home_trash:
                 found.append((candidate, top))
@@ -941,7 +1641,8 @@ def _recycle_items(bin_root: Path) -> list[tuple[str, Path, Path]]:
 
 def _find_shortcuts(directory: Path, index: _Index, plan: _Plan) -> None:
     """Windows Recent shortcuts whose link target was erased."""
-    plan.place("Recent shortcuts", directory)
+    if not plan.place("Recent shortcuts", directory).ok:
+        return
     for link in _listdir(directory) or []:
         if link.suffix.lower() != ".lnk":
             continue
@@ -961,35 +1662,333 @@ def _find_shortcuts(directory: Path, index: _Index, plan: _Plan) -> None:
         )
 
 
-def _find_mac_trash(trash: Path, index: _Index, plan: _Plan) -> None:
-    """Same-name items in the macOS Trash: possible copies, never removed."""
-    plan.place("Trash", trash)
-    if not os.path.lexists(trash):
+def _entries_word(count: int) -> str:
+    return f"{count} other entr{'y' if count == 1 else 'ies'}"
+
+
+def _find_jump_lists(directory: Path, index: _Index, plan: _Plan) -> None:
+    """Automatic jump lists with an entry whose shortcut names an erased path.
+
+    A jump list every entry of which names an erased path is a trace as a
+    whole and is erased as a file. One that also names other files is only
+    reported: cutting a stream out of a compound file the shell holds open is
+    an edit that can corrupt the entries around it.
+    """
+    if not plan.place("jump lists (AutomaticDestinations)", directory).ok:
         return
-    items = _listdir(trash)
-    if items is None:
+    for path in _listdir(directory) or []:
+        if not path.name.lower().endswith(".automaticdestinations-ms"):
+            continue
+        data = _read(path, _LIST_LIMIT, whole=True)
+        if data is None:
+            plan.notes.append(f"{path} could not be read, so it was not searched.")
+            continue
+        streams = jump_list_streams(data)
+        if streams is None:
+            plan.notes.append(
+                f"{path} is not a compound file this sweep can read, so it was "
+                "not searched."
+            )
+            continue
+        owners: dict[str, tuple[_Erased, list[str]]] = {}
+        tied = 0
+        for name, target in streams:
+            owner = index.owner(target) if target else None
+            if owner is None:
+                continue
+            tied += 1
+            owners.setdefault(owner.key, (owner, []))[1].append(
+                f"stream {name} is a shortcut to {target}"
+            )
+        whole = bool(streams) and tied == len(streams)
+        for owner, links in owners.values():
+            evidence = "In this jump list, " + "; ".join(links) + "."
+            if whole:
+                evidence += (
+                    " Every entry in it names an erased path, so the whole file "
+                    "is a trace and is erased, its DestList index with it."
+                )
+            else:
+                evidence += f" It also holds {_entries_word(len(streams) - tied)}."
+            plan.add(
+                _Found(
+                    kind=TraceKind.JUMP_LIST_ENTRY,
+                    target=owner.path,
+                    location=path,
+                    evidence=evidence,
+                    content_copy=False,
+                    how="erase" if whole else "report",
+                    entry=owner.key,
+                    reason="" if whole else REPORT_ONLY_REASONS["jump_list"],
+                )
+            )
+
+
+def _find_custom_jump_lists(directory: Path, index: _Index, plan: _Plan) -> None:
+    """Custom jump lists holding a shortcut to an erased path. Report only."""
+    if not plan.place("jump lists (CustomDestinations)", directory).ok:
+        return
+    for path in _listdir(directory) or []:
+        if not path.name.lower().endswith(".customdestinations-ms"):
+            continue
+        data = _read(path, _LIST_LIMIT, whole=True)
+        if data is None:
+            plan.notes.append(f"{path} could not be read, so it was not searched.")
+            continue
+        for target in custom_destination_targets(data):
+            owner = index.owner(target)
+            if owner is None:
+                continue
+            plan.add(
+                _Found(
+                    kind=TraceKind.JUMP_LIST_ENTRY,
+                    target=owner.path,
+                    location=path,
+                    evidence=f"This custom jump list holds a shortcut to {target}.",
+                    content_copy=False,
+                    how="report",
+                    entry=owner.key,
+                    reason=REPORT_ONLY_REASONS["custom_jump_list"],
+                )
+            )
+
+
+def _mac_putback(
+    trash: Path, plan: _Plan
+) -> tuple[dict[str, tuple[str, str]] | None, str]:
+    """The Trash's put-back records, or None and why they are not available."""
+    store = trash / ".DS_Store"
+    entry = plan.place("Trash put-back records", store, directory=False)
+    if entry.outcome == ABSENT:
+        return {}, "the Trash has no .DS_Store"
+    if not entry.ok:
+        return None, f"its .DS_Store was not read ({entry.detail})"
+    data = _read(store, _DS_STORE_LIMIT, whole=True)
+    putback = trash_putback(data) if data is not None else None
+    if putback is None:
+        entry.fail(UNREADABLE, "It is not a .DS_Store this sweep can read.")
+        plan.notes.append(
+            f"{store} is not a .DS_Store this sweep can read, so no put-back "
+            "record in it was used."
+        )
+        return None, "its .DS_Store could not be read"
+    return putback, ""
+
+
+def _find_mac_trash(
+    trash: Path, volume: Path, index: _Index, plan: _Plan, *, label: str = "Trash"
+) -> None:
+    """macOS Trash items, tied to an erased path by their put-back record.
+
+    Finder records where an item came from in the Trash's ``.DS_Store``: the
+    folder (``ptbL``, relative to ``volume``) and the name (``ptbN``). An item
+    whose record names an erased path, or a folder that held one, is a copy
+    and is erased like a freedesktop Trash copy. An item with no record, or
+    whose record names another path, is at most a same-name possible copy and
+    is never removed.
+    """
+    entry = plan.place(label, trash)
+    if entry.outcome == PERMISSION_DENIED:
         plan.notes.append(
             f"{trash} could not be listed. macOS lets an application read the "
             "Trash only with Full Disk Access."
         )
+    if not entry.ok:
         return
+    items = _listdir(trash)
+    if items is None:
+        entry.fail(UNREADABLE, "It could not be listed.")
+        return
+    putback, why = _mac_putback(trash, plan)
+    store = trash / ".DS_Store"
     names = index.names
+    tied: list[tuple[str, Path, Path]] = []
     for item in items:
+        if item.name == ".DS_Store":
+            continue
+        record = putback.get(item.name) if putback else None
+        original = _putback_path(volume, *record) if record else None
         erased = names.get(item.name)
+        if original is not None:
+            if index.owner(original) is not None or index.inside(original):
+                tied.append((original, item, store))
+            elif erased is not None:
+                plan.add(
+                    _Found(
+                        kind=TraceKind.POSSIBLE_COPY,
+                        target=erased.path,
+                        location=item,
+                        evidence=(
+                            "An item of the same name is in the Trash, but its "
+                            f"put-back record says it was deleted from {original}, "
+                            "not from the erased path. Left in place."
+                        ),
+                        content_copy=True,
+                        exact=False,
+                    )
+                )
+            continue
         if erased is None:
             continue
+        missing = why or "it has no put-back record in the Trash's .DS_Store"
         plan.add(
             _Found(
                 kind=TraceKind.POSSIBLE_COPY,
                 target=erased.path,
                 location=item,
                 evidence=(
-                    "An item of the same name is in the Trash. The Trash records "
-                    "where an item came from only in its .DS_Store, which is not "
-                    "read here, so this is a possible copy and was left in place."
+                    f"An item of the same name is in the Trash, and {missing}, "
+                    "so nothing ties it to the erased file. It is a possible "
+                    "copy and was left in place."
                 ),
                 content_copy=True,
                 exact=False,
+            )
+        )
+    _find_bin_items(
+        tied,
+        index,
+        plan,
+        copy_kind=TraceKind.TRASH_COPY,
+        record_kind=TraceKind.TRASH_RECORD,
+        record_reason=REPORT_ONLY_REASONS["ds_store"],
+    )
+
+
+def _mac_volume_trashes(where: TraceLocations, index: _Index, plan: _Plan) -> None:
+    """``$volume/.Trashes/$uid`` on each erased path's volume but the boot one."""
+    if where.uid is None:
+        return
+    for top in _volume_tops(where, index):
+        if top == where.mac_trash_volume:
+            continue
+        trashes = top / ".Trashes"
+        if not os.path.lexists(trashes):
+            continue
+        if not _is_real_dir(trashes):
+            plan.notes.append(
+                f"{trashes} is not a real directory, so it was not searched."
+            )
+            continue
+        _find_mac_trash(
+            trashes / str(where.uid), top, index, plan, label="volume Trash"
+        )
+
+
+def _sfl_files(root: Path, plan: _Plan) -> list[Path]:
+    """Shared file lists under ``root``, never through a link, bounded."""
+    found: list[Path] = []
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    while stack:
+        directory, depth = stack.pop()
+        try:
+            entries = sorted(os.scandir(directory), key=lambda item: item.name)
+        except OSError:
+            plan.notes.append(
+                f"{directory} could not be listed, so it was not searched."
+            )
+            continue
+        for item in entries:
+            if item.is_dir(follow_symlinks=False):
+                if depth < _SFL_DEPTH:
+                    stack.append((Path(item.path), depth + 1))
+            elif item.is_file(follow_symlinks=False) and item.name.endswith(
+                _SFL_SUFFIXES
+            ):
+                if len(found) >= _SFL_FILE_LIMIT:
+                    plan.notes.append(
+                        f"{root} holds more than {_SFL_FILE_LIMIT:,} shared file "
+                        "lists; only the first were searched."
+                    )
+                    return found
+                found.append(Path(item.path))
+    return found
+
+
+def _find_shared_file_lists(root: Path, index: _Index, plan: _Plan) -> None:
+    """macOS recent items whose bookmark names an erased path. Report only."""
+    if not plan.place("recent items (shared file lists)", root).ok:
+        return
+    for path in _sfl_files(root, plan):
+        data = _read(path, _LIST_LIMIT, whole=True)
+        if data is None:
+            plan.notes.append(f"{path} could not be read, so it was not searched.")
+            continue
+        named_paths = shared_file_list_paths(data)
+        if named_paths is None:
+            plan.notes.append(
+                f"{path} is not a binary property list this sweep can read, so "
+                "it was not searched."
+            )
+            continue
+        for named in named_paths:
+            owner = index.owner(named)
+            if owner is None:
+                continue
+            plan.add(
+                _Found(
+                    kind=TraceKind.RECENT_ENTRY,
+                    target=owner.path,
+                    location=path,
+                    evidence=f"An item's bookmark in this list names {named}.",
+                    content_copy=False,
+                    how="report",
+                    entry=named,
+                    reason=REPORT_ONLY_REASONS["sfl"],
+                )
+            )
+
+
+def _find_quicklook(cache: Path, index: _Index, plan: _Plan) -> None:
+    """Quick Look cache entries for an erased path. Report only."""
+    if not plan.place("Quick Look thumbnail cache", cache).ok:
+        return
+    database = cache / "index.sqlite"
+    entry = plan.place("Quick Look index", database, directory=False)
+    if not entry.ok:
+        return
+    rows, why = quicklook_entries(database)
+    if rows is None:
+        entry.fail(UNREADABLE, f"It was not searched: {why}.")
+        plan.not_searched.append(
+            f"The Quick Look thumbnail cache at {database}: {why}, so it was "
+            "not searched."
+        )
+        return
+    if len(rows) >= _QUICKLOOK_ROW_LIMIT:
+        plan.notes.append(
+            f"{database} holds more than {_QUICKLOOK_ROW_LIMIT:,} entries; only "
+            "the first were searched."
+        )
+    log = cache / "index.sqlite-wal"
+    try:
+        pending = os.lstat(log).st_size > 0
+    except OSError:
+        pending = False
+    if pending:
+        plan.notes.append(
+            f"{log} holds changes not yet written into index.sqlite. The cache "
+            "is opened immutable, so an entry only in that log was not read."
+        )
+    for path, rowid, thumbnails in rows:
+        owner = index.owner(path)
+        if owner is None:
+            continue
+        stored = (
+            f", and thumbnails.data holds {thumbnails} thumbnail(s) of it."
+            if thumbnails
+            else ", with no stored thumbnail recorded for it."
+        )
+        plan.add(
+            _Found(
+                kind=TraceKind.QUICKLOOK_THUMBNAIL,
+                target=owner.path,
+                location=database,
+                evidence=f"Row {rowid} of the files table names {path}{stored}",
+                content_copy=thumbnails > 0,
+                how="report",
+                entry=str(rowid),
+                reason=REPORT_ONLY_REASONS["quicklook"],
             )
         )
 
@@ -1003,8 +2002,7 @@ def _find(records: Sequence[FileEraseRecord], where: TraceLocations) -> _Plan:
         _find_recent_list(recent, index, plan)
     for directory in where.recent_document_dirs:
         _find_recent_documents(directory, index, plan, where.home)
-    if where.home_trash is not None:
-        plan.place("home Trash", where.home_trash)
+    if where.home_trash is not None and plan.place("home Trash", where.home_trash).ok:
         _find_bin_items(
             _trash_items(where.home_trash, None, plan),
             index,
@@ -1012,15 +2010,15 @@ def _find(records: Sequence[FileEraseRecord], where: TraceLocations) -> _Plan:
             copy_kind=TraceKind.TRASH_COPY,
             record_kind=TraceKind.TRASH_RECORD,
         )
-    for trash, top in _volume_trashes(where, index):
-        plan.place("volume Trash", trash)
-        _find_bin_items(
-            _trash_items(trash, top, plan),
-            index,
-            plan,
-            copy_kind=TraceKind.TRASH_COPY,
-            record_kind=TraceKind.TRASH_RECORD,
-        )
+    for trash, top in _volume_trashes(where, index, plan):
+        if plan.place("volume Trash", trash).ok:
+            _find_bin_items(
+                _trash_items(trash, top, plan),
+                index,
+                plan,
+                copy_kind=TraceKind.TRASH_COPY,
+                record_kind=TraceKind.TRASH_RECORD,
+            )
     if where.recycle_bin:
         bins: list[Path] = []
         for item in index.roots:
@@ -1028,22 +2026,32 @@ def _find(records: Sequence[FileEraseRecord], where: TraceLocations) -> _Plan:
             if volume is not None and volume / "$Recycle.Bin" not in bins:
                 bins.append(volume / "$Recycle.Bin")
         for bin_root in bins:
-            plan.place("Recycle Bin", bin_root)
-            _find_bin_items(
-                _recycle_items(bin_root),
-                index,
-                plan,
-                copy_kind=TraceKind.RECYCLE_BIN_COPY,
-                record_kind=TraceKind.RECYCLE_BIN_RECORD,
-            )
+            if plan.place("Recycle Bin", bin_root).ok:
+                _find_bin_items(
+                    _recycle_items(bin_root),
+                    index,
+                    plan,
+                    copy_kind=TraceKind.RECYCLE_BIN_COPY,
+                    record_kind=TraceKind.RECYCLE_BIN_RECORD,
+                )
     for directory in where.recent_shortcut_dirs:
         _find_shortcuts(directory, index, plan)
+    for directory in where.jump_list_dirs:
+        _find_jump_lists(directory, index, plan)
+    for directory in where.custom_jump_list_dirs:
+        _find_custom_jump_lists(directory, index, plan)
     if where.mac_trash is not None:
-        _find_mac_trash(where.mac_trash, index, plan)
+        _find_mac_trash(where.mac_trash, where.mac_trash_volume, index, plan)
+        _mac_volume_trashes(where, index, plan)
+    for root in where.shared_file_lists:
+        _find_shared_file_lists(root, index, plan)
+    for cache in where.quicklook_caches:
+        _find_quicklook(cache, index, plan)
     return plan
 
 
 def _as_record(found: _Found) -> TraceRecord:
+    report_only = found.exact and found.how == "report"
     return TraceRecord(
         kind=found.kind.value,
         target=found.target,
@@ -1051,6 +2059,31 @@ def _as_record(found: _Found) -> TraceRecord:
         evidence=found.evidence,
         content_copy=found.content_copy,
         exact=found.exact,
+        report_only=report_only,
+        report_only_reason=found.reason if report_only else "",
+    )
+
+
+def _result(
+    plan: _Plan, where: TraceLocations, traces: list[TraceRecord]
+) -> TraceSweepResult:
+    """The sweep's result: what was inspected, what was not, what was found."""
+    return TraceSweepResult(
+        searched=plan.searched,
+        not_searched=list(NOT_SEARCHED.get(where.family, NOT_SEARCHED["linux"]))
+        + list(where.not_located)
+        + plan.not_searched,
+        traces=traces,
+        notes=plan.notes,
+        inspected=[
+            TraceInspection(
+                label=entry.label,
+                location=str(entry.location),
+                outcome=entry.outcome,
+                detail=entry.detail,
+            )
+            for entry in plan.inspected
+        ],
     )
 
 
@@ -1064,12 +2097,7 @@ def find_traces(
     """
     where = locations if locations is not None else default_locations()
     plan = _find(records, where)
-    return TraceSweepResult(
-        searched=plan.searched,
-        not_searched=list(NOT_SEARCHED.get(where.family, NOT_SEARCHED["linux"])),
-        traces=[_as_record(found) for found in plan.found],
-        notes=plan.notes,
-    )
+    return _result(plan, where, [_as_record(found) for found in plan.found])
 
 
 # --------------------------------------------------------------------------
@@ -1227,10 +2255,13 @@ def sweep(
 
     lists: dict[Path, str] = {}
     kept: set[Path] = set()
+    #: Trace files already put through the erase, with the outcome: a jump
+    #: list tied to two erased paths is one file, erased once.
+    erased: dict[Path, tuple[bool, str]] = {}
     traces: list[TraceRecord] = []
     for found in plan.found:
         trace = _as_record(found)
-        if not settings.dry_run and found.exact:
+        if not settings.dry_run and found.exact and found.how != "report":
             if found.pair is not None and found.pair in kept:
                 trace.error = (
                     "Kept, because the copy it describes could not be removed; "
@@ -1249,8 +2280,12 @@ def sweep(
                 trace.error = lists[found.location]
                 trace.removed = not trace.error
                 trace.action = "entry removed" if trace.removed else ""
+            elif found.location in erased:
+                trace.removed, trace.error = erased[found.location]
+                trace.action = "erased" if trace.removed else ""
             else:
                 removed, written, error = _erase_trace(found.location, settings)
+                erased[found.location] = (removed, error)
                 trace.removed = removed
                 trace.bytes_overwritten = written
                 trace.error = error
@@ -1265,21 +2300,19 @@ def sweep(
         traces.append(trace)
         yield _progress(job_id, f"{trace.kind} {trace.location}")
 
-    result = TraceSweepResult(
-        searched=plan.searched,
-        not_searched=list(NOT_SEARCHED.get(where.family, NOT_SEARCHED["linux"])),
-        traces=traces,
-        notes=plan.notes,
-    )
+    result = _result(plan, where, traces)
     ledger.record_file(
         "traces",
         {
             "job_id": job_id,
             "dry_run": settings.dry_run,
             "searched": result.searched,
+            "inspected": [entry.model_dump(mode="json") for entry in result.inspected],
+            "not_searched": result.not_searched,
             "found": len(traces),
             "exact": sum(1 for trace in traces if trace.exact),
             "removed": sum(1 for trace in traces if trace.removed),
+            "report_only": sum(1 for trace in traces if trace.report_only),
             "notes": result.notes,
         },
     )

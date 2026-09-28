@@ -61,6 +61,7 @@ __all__ = [
     "FileEraseOptions",
     "FileEraseRecord",
     "FileEraseResult",
+    "TraceInspection",
     "TraceRecord",
     "TraceSweepResult",
     "FileVerificationResult",
@@ -1106,6 +1107,23 @@ class TraceRecord(BaseModel):
     removed: bool = False
     bytes_overwritten: int = 0
     error: str = ""
+    #: True for an exact trace the sweep reports and never removes, because it
+    #: sits inside a file another process owns (a daemon's database, a live
+    #: compound file, a Finder ``.DS_Store``). ``report_only_reason`` says why.
+    report_only: bool = False
+    report_only_reason: str = ""
+
+
+class TraceInspection(BaseModel):
+    """One place the trace sweep inspected, and what came of looking there."""
+
+    #: What the place is: "home Trash", "Jump lists", "Quick Look cache" ...
+    label: str
+    location: str
+    #: "searched", "absent", "unreadable" or "permission-denied".
+    outcome: str
+    #: Why a place was unreadable or refused, in words; empty when searched.
+    detail: str = ""
 
 
 class TraceSweepResult(BaseModel):
@@ -1118,6 +1136,9 @@ class TraceSweepResult(BaseModel):
     traces: list[TraceRecord] = []
     #: Places that were present but could not be read, and why.
     notes: list[str] = []
+    #: Each place inspected, with its outcome. ``searched`` is the same list as
+    #: one line per place; this one keeps the outcome as a field.
+    inspected: list[TraceInspection] = []
 
 
 class FileEraseResult(BaseModel):
@@ -1145,9 +1166,7 @@ class FileEraseResult(BaseModel):
     def highest_severity(self) -> Severity | None:
         order = {Severity.LOW: 0, Severity.MEDIUM: 1, Severity.HIGH: 2}
         found = [
-            finding.severity
-            for record in self.records
-            for finding in record.findings
+            finding.severity for record in self.records for finding in record.findings
         ]
         return max(found, key=lambda s: order[s]) if found else None
 

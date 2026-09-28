@@ -468,8 +468,12 @@ All 37 questions, with evidence and a status for each:
   named in it attest (destruction attested, not observed), and the application
   does not authenticate them.
 - The trace sweep covers the desktop's shared thumbnail cache, recent-files
-  lists, Trash and Recycle Bin. Application caches, search indexes, jump lists,
-  snapshots and sync clients are listed in each report as not searched. On a
+  lists, Trash and Recycle Bin, Windows jump lists, and macOS recent items and
+  the Quick Look cache. The macOS recent items, the Quick Look cache and a jump
+  list that also names other files are reported only, never edited, because a
+  daemon or the shell owns them. Application caches, search indexes,
+  `thumbcache_*.db` (keyed by hash, not path), snapshots and sync clients are
+  listed in each report as not searched. On a
   physical Windows 11 desktop (2026-09-27) it searched the real Recycle Bin and
   Recent shortcuts and found nothing to remove; removing a real desktop trace
   has not been validated on any platform.
