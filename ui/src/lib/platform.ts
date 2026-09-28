@@ -3,6 +3,7 @@
 // server computed; nothing is asserted by this file.
 
 import type {
+  CapabilityState,
   CapabilityStatus,
   DeviceAssessment,
   NormalizedDevice,
@@ -74,16 +75,34 @@ export function runnableStatus(status: CapabilityStatus | undefined): boolean {
 }
 
 /**
- * Whether a drive option is offered, mirroring `core/platform/base.py`.
+ * Whether a drive option is offered, mirroring `_offerable` in
+ * `core/platform/base.py`.
  *
- * A runnable status, or UNVERIFIED with a method the engine would run: the
- * drive reported the command and the code exists, but no hardware result is
- * recorded. It is offered under the word Unverified, never as supported.
+ * With a resolver state: a runnable state (SUPPORTED or IMPLEMENTED /
+ * UNVALIDATED), or REQUIRES PRIVILEGE, and a method to run (a Clear always has
+ * one). IMPLEMENTED / UNVALIDATED is offered under that word, never as
+ * supported. Without a state (an older payload): a runnable status, or
+ * UNVERIFIED with a method the engine would run.
  */
 export function offeredOption(
-  option: { status: CapabilityStatus; method?: string | null } | null | undefined,
+  option:
+    | {
+        status: CapabilityStatus
+        method?: string | null
+        level?: string
+        state?: CapabilityState | null
+      }
+    | null
+    | undefined,
 ): boolean {
   if (!option) return false
+  if (option.state) {
+    const available =
+      option.state === 'VALIDATED_PHYSICAL' ||
+      option.state === 'IMPLEMENTED_NOT_PHYSICALLY_VALIDATED' ||
+      option.state === 'AVAILABLE_BUT_REQUIRES_PRIVILEGE'
+    return available && (Boolean(option.method) || option.level === 'CLEAR')
+  }
   if (runnableStatus(option.status)) return true
   return option.status === 'UNVERIFIED' && Boolean(option.method)
 }

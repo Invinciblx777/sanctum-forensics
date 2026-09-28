@@ -24,6 +24,7 @@ import {
   Verdict,
 } from '../components/widgets'
 import type { Tone } from '../components/widgets'
+import { ReportSemanticsPanel } from '../components/capabilityState'
 
 /**
  * The case screen: one page that accounts for an investigation.
@@ -591,6 +592,9 @@ function ReportsTab({ detail }: { detail: CaseDetail }) {
       </Empty>
     )
   }
+  // Drive reports carry `method.semantics`: the category and the assurance
+  // the report may claim. They are read from the signed JSON itself.
+  const kinds = new Map(detail.operations.map((op) => [op.operation_id, op.type]))
   return (
     <div className="col">
       {detail.reports.map((item) => (
@@ -617,6 +621,9 @@ function ReportsTab({ detail }: { detail: CaseDetail }) {
                 : []),
             ]}
           />
+          {kinds.get(item.operation_id) === 'erase-drive' && (
+            <ReportSemanticsPanel url={artifactUrl('reports', item.json_name)} />
+          )}
           <div className="row wrap" style={{ gap: 'var(--space-2)' }}>
             <a
               className="btn"

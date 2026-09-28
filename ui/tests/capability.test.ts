@@ -69,6 +69,31 @@ test('an Opal crypto erase without a hardware record is not green either', () =>
   assert.notEqual(badge.tone, 'success')
 })
 
+test('the resolver state outranks the older status for the Purge verdict', () => {
+  const unvalidated = { ...purge('SUPPORTED'), state: 'IMPLEMENTED_NOT_PHYSICALLY_VALIDATED' as const }
+  assert.equal(capabilityBadge(caps, assessment(unvalidated)).label, 'PURGE · UNVERIFIED')
+  const validated = { ...purge('UNVERIFIED'), state: 'VALIDATED_PHYSICAL' as const }
+  assert.equal(capabilityBadge(caps, assessment(validated)).label, 'PURGE AVAILABLE')
+})
+
+test('no Linux probe but a resolver answer is not "Not probed"', () => {
+  const clear: SanitizeOption = {
+    ...purge('UNVERIFIED'),
+    level: 'CLEAR',
+    title: 'Addressable overwrite (Clear)',
+    method: 'SINGLE_PASS_OVERWRITE',
+    why: 'Available - WriteFile to the disk.',
+    state: 'IMPLEMENTED_NOT_PHYSICALLY_VALIDATED',
+    state_label: 'IMPLEMENTED / UNVALIDATED',
+    capability: 'whole_drive_clear',
+    protocol: 'block',
+  }
+  const badge = capabilityBadge(null, { ...assessment(clear), platform: 'windows' })
+  assert.equal(badge.label, 'CLEAR ONLY')
+  assert.match(badge.basis, /IMPLEMENTED \/ UNVALIDATED/)
+  assert.equal(capabilityBadge(null, null).label, 'Not probed')
+})
+
 test('no firmware sanitize is still CLEAR ONLY', () => {
   const badge = capabilityBadge({ ...caps, achievable_levels: ['CLEAR'], ata_sanitize_ops: [] })
   assert.equal(badge.label, 'CLEAR ONLY')

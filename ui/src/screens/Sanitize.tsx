@@ -14,6 +14,7 @@ import type {
 import { currentStep, offeredOption, readBack } from '../lib/platform'
 import { AssessmentSummary, FlowSteps, WorkflowStrip } from '../components/sanitizeFlow'
 import { EraseApproval } from '../components/eraseApproval'
+import { ReportSemanticsPanel } from '../components/capabilityState'
 import { createEpoch } from '../lib/epoch'
 import { refusalFrom, sanitizeWorkflow, signedRecordWording } from '../lib/workflowState'
 import type { ServerRefusal } from '../lib/workflowState'
@@ -738,6 +739,9 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
                     Open signed JSON
                   </a>
                 </div>
+                {/* What the signed report says this was: its category and
+                    assurance, read from the report itself. */}
+                <ReportSemanticsPanel url={report.json_url} />
               </div>
             ) : (
               <div className="row wrap">

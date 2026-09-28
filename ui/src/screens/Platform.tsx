@@ -3,6 +3,9 @@ import { api, RequestFailed } from '../lib/api'
 import type { CapabilityStatus, OperationCapability, PlatformStatus } from '../lib/api'
 import { privilegeWord, STATUS_MEANINGS, statusWord } from '../lib/platform'
 import { NOT_PHYSICALLY_VALIDATED, SAFETY_LINES } from '../lib/summary'
+import { platformMatrix, STATE_MEANINGS, STATE_TONES, validationScope } from '../lib/states'
+import type { MatrixRow } from '../lib/states'
+import { StateMark } from '../components/capabilityState'
 import { Empty, ErrorNotice, Evidence, Limitations, Panel, Stat } from '../components/widgets'
 
 /**
@@ -45,7 +48,9 @@ function CapabilityRow({ row }: { row: OperationCapability }) {
     <>
       <div className="cap-row">
         <span className="cap-row-label">{row.label}</span>
-        <Status status={row.status} />
+        {/* The resolver's word when the row carries a state; the older
+            status word only for a payload from before the resolver. */}
+        <StateMark row={row} />
         <button
           className="link-button"
           aria-expanded={open}
@@ -57,6 +62,24 @@ function CapabilityRow({ row }: { row: OperationCapability }) {
       {open && (
         <div className="cap-row-why">
           <p className="answer-detail">{row.reason}</p>
+          {row.mechanism && (
+            <p className="answer-detail">
+              <strong>Mechanism: </strong>
+              <span className="mono">{row.mechanism}</span>
+            </p>
+          )}
+          {row.state && (
+            <p className="answer-detail">
+              <strong>Physical validation: </strong>
+              {validationScope(row)}
+            </p>
+          )}
+          {row.assurance && (
+            <p className="answer-detail">
+              <strong>Assurance: </strong>
+              {row.assurance}
+            </p>
+          )}
           {row.verification && (
             <p className="answer-detail">
               <strong>Verification: </strong>
@@ -70,6 +93,67 @@ function CapabilityRow({ row }: { row: OperationCapability }) {
         </div>
       )}
     </>
+  )
+}
+
+/**
+ * The resolver's platform matrix: every capability, its precise state, the
+ * reason, the mechanism, and the device classes a physical run is recorded
+ * for. Validation is scoped to those classes and never generalised: a clear
+ * of one USB stick says nothing about an NVMe drive.
+ */
+function CapabilityMatrix({ rows }: { rows: MatrixRow[] }) {
+  return (
+    <div className="scroll-x">
+      <table
+        className="itable cap-table matrix-table"
+        style={{ minWidth: 900 }}
+        data-testid="capability-matrix"
+      >
+        <colgroup>
+          <col style={{ width: '20%' }} />
+          <col style={{ width: 180 }} />
+          <col />
+          <col style={{ width: '20%' }} />
+        </colgroup>
+        <thead>
+          <tr>
+            <th>Capability</th>
+            <th>State</th>
+            <th>Reason and mechanism</th>
+            <th>Physically validated on</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.key} data-capability={row.key}>
+              <td>{row.label}</td>
+              <td>
+                <span className={`state-mark is-${row.tone}`}>{row.word}</span>
+              </td>
+              <td>
+                <span className="cell-stack">
+                  <span className="matrix-reason">{row.reason}</span>
+                  {row.mechanism && (
+                    <span className="matrix-mech mono">{row.mechanism}</span>
+                  )}
+                </span>
+              </td>
+              <td>
+                <span className="cell-stack">
+                  <span className="mono">
+                    {row.validatedClasses.length > 0
+                      ? row.validatedClasses.join(', ')
+                      : 'none recorded'}
+                  </span>
+                  <span className="note-faint">{row.scope}</span>
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }
 
@@ -127,6 +211,7 @@ export default function Platform() {
   const build = status?.platform.build ?? {}
   const detected = (status?.media_classes ?? []).filter((row) => row.detected_now > 0)
   const detectedTotal = detected.reduce((sum, row) => sum + row.detected_now, 0)
+  const matrix = platformMatrix(status)
 
   return (
     <>
@@ -150,6 +235,15 @@ export default function Platform() {
                 <Stat label="Privilege" value={privilegeWord(status.privilege)} />
               </div>
             </Panel>
+
+            {matrix && (
+              <Panel
+                title="Capabilities on this computer"
+                subtitle="The resolver's answer for this build, this platform and this privilege, before any device is chosen. Each device is assessed again on the Devices screen."
+              >
+                <CapabilityMatrix rows={matrix} />
+              </Panel>
+            )}
 
             <div className="overview-grid">
               <Panel
@@ -175,18 +269,33 @@ export default function Platform() {
                 </div>
               </Panel>
 
-              <Panel title="How to read a status">
+              <Panel title={matrix ? 'How to read a state' : 'How to read a status'}>
                 <div className="col">
-                  <dl className="status-legend">
-                    {STATUS_MEANINGS.map((row) => (
-                      <div key={row.status}>
-                        <dt>
-                          <Status status={row.status} />
-                        </dt>
-                        <dd>{row.meaning}</dd>
-                      </div>
-                    ))}
-                  </dl>
+                  {matrix ? (
+                    <dl className="status-legend" data-testid="state-legend">
+                      {STATE_MEANINGS.map((row) => (
+                        <div key={row.label}>
+                          <dt>
+                            <span className={`state-mark is-${STATE_TONES[row.states[0]]}`}>
+                              {row.label}
+                            </span>
+                          </dt>
+                          <dd>{row.meaning}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  ) : (
+                    <dl className="status-legend">
+                      {STATUS_MEANINGS.map((row) => (
+                        <div key={row.status}>
+                          <dt>
+                            <Status status={row.status} />
+                          </dt>
+                          <dd>{row.meaning}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  )}
                   <p className="note">
                     A status says what this build can do here. It is not a
                     record that the operation was run on the storage attached
@@ -205,7 +314,7 @@ export default function Platform() {
                 </ul>
               </Panel>
 
-              <Panel title="Not yet proven on hardware">
+              <Panel title="Not proven on hardware, or not available">
                 <ul className="limitations" data-testid="not-on-hardware">
                   {NOT_PHYSICALLY_VALIDATED.map((line) => (
                     <li key={line}>{line}</li>
@@ -260,6 +369,24 @@ export default function Platform() {
                     ]}
                   />
                 </Panel>
+
+                {matrix && (
+                  <Panel
+                    title="How to read the older status words"
+                    subtitle="The storage and filesystem tables below still use them."
+                  >
+                    <dl className="status-legend">
+                      {STATUS_MEANINGS.map((row) => (
+                        <div key={row.status}>
+                          <dt>
+                            <Status status={row.status} />
+                          </dt>
+                          <dd>{row.meaning}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </Panel>
+                )}
 
                 <Panel
                   title="Storage support"

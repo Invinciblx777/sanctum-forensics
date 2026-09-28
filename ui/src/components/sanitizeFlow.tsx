@@ -6,8 +6,8 @@ import {
   deviceName,
   headlineTone,
   STEPS,
-  statusWord,
 } from '../lib/platform'
+import { capabilityWord, honestLevel, optionCause, optionTitle, purgeAbsence } from '../lib/states'
 import { BACKUP_NOTE } from '../lib/workflowState'
 import type { SanitizeWorkflow } from '../lib/workflowState'
 import { Limitations, Notice, Panel, Railed } from './widgets'
@@ -45,16 +45,89 @@ export function FlowSteps({
   )
 }
 
-function Option({ option }: { option: SanitizeOption }) {
-  const { word, tone } = statusWord(option.status)
+/**
+ * One sanitize option: its NIST level, the resolver's state word, the
+ * mechanism and protocol it would use, and the assurance it can claim.
+ *
+ * The level is the honest one: a host overwrite is shown as Clear whatever
+ * level it arrived with, so an overwrite is never presented as a Purge.
+ */
+function Option({ option, unavailable = false }: { option: SanitizeOption; unavailable?: boolean }) {
+  const { word, tone } = capabilityWord(option)
+  const level = honestLevel(option)
+  const relabelled = level !== option.level
   return (
     <Railed tone={tone}>
       <span className="row spread">
-        <span className="option-title">{option.title}</span>
-        <span className={`state-mark is-${tone}`}>{word}</span>
+        <span className="option-title">{optionTitle(option)}</span>
+        <span className={`state-mark is-${tone}`} data-state={option.state ?? undefined}>
+          {word}
+        </span>
       </span>
+      {unavailable && (
+        <span className="note" data-testid="option-cause">
+          <strong>Not available: </strong>
+          {optionCause(option)}.
+        </span>
+      )}
       <span className="note">{option.why}</span>
+      {relabelled && (
+        <span className="note-faint">
+          This option arrived labelled {option.level}. It is a host overwrite,
+          which is a Clear, and is shown as one.
+        </span>
+      )}
+      {(option.mechanism || option.protocol) && (
+        <span className="note-faint mono">
+          {option.protocol ? `${option.protocol} \u00b7 ` : ''}
+          {option.mechanism || 'mechanism not recorded'}
+        </span>
+      )}
+      {option.assurance && (
+        <span className="note-faint">
+          <strong>Assurance: </strong>
+          {option.assurance}
+        </span>
+      )}
+      {(option.limitations ?? []).length > 0 && (
+        <ul className="limitations">
+          {(option.limitations ?? []).map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      )}
       {option.remediation && <span className="note-faint">{option.remediation}</span>}
+    </Railed>
+  )
+}
+
+/**
+ * Why no Purge is offered, with the server's exact reason: a bridge, the
+ * platform, a probe that did not run, the device itself. Nothing when a Purge
+ * is offered.
+ */
+export function PurgeUnavailable({ assessment }: { assessment: DeviceAssessment }) {
+  const absence = purgeAbsence(assessment)
+  if (!absence) return null
+  return (
+    <Railed tone={absence.tone}>
+      <p className="answer-q">Purge</p>
+      <p className="answer-a" data-testid="purge-unavailable">
+        Not available &mdash; {absence.word}
+      </p>
+      <p className="answer-detail">
+        <strong>Because {absence.causeWord}: </strong>
+        {absence.reason}
+      </p>
+      {absence.mechanism && (
+        <p className="note-faint mono">
+          {absence.protocol ? `${absence.protocol} \u00b7 ` : ''}
+          {absence.mechanism}
+        </p>
+      )}
+      <p className="note-faint">
+        A Clear is not a substitute: it overwrites the addressable range only.
+      </p>
     </Railed>
   )
 }
@@ -85,6 +158,7 @@ export function AssessmentSummary({
 }) {
   const tone = superseded ? 'unknown' : headlineTone(assessment)
   const recommended = assessment.recommended
+  const recommendedWord = recommended ? capabilityWord(recommended) : null
   const available = assessment.headline === 'READY' || assessment.headline === 'NOT AUTHORIZED'
   const verifyTone = recommended?.verification ? 'success' : 'unknown'
   const title = superseded
@@ -129,14 +203,34 @@ export function AssessmentSummary({
               Serial {device.serial || 'not reported'}
             </p>
           </Railed>
-          <Railed tone={recommended ? statusWord(recommended.status).tone : 'destructive'}>
+          <Railed tone={recommendedWord ? recommendedWord.tone : 'destructive'}>
             <p className="answer-q">What will happen</p>
             <p className="answer-a">
-              {recommended ? recommended.title : 'Nothing: no method is available'}
+              {recommended ? optionTitle(recommended) : 'Nothing: no method is available'}
             </p>
+            {recommendedWord && (
+              <p className="answer-detail">
+                <span
+                  className={`state-mark is-${recommendedWord.tone}`}
+                  data-state={recommended?.state ?? undefined}
+                >
+                  {recommendedWord.word}
+                </span>
+                {recommended?.protocol ? ` \u00b7 ${recommended.protocol}` : ''}
+              </p>
+            )}
             <p className="answer-detail">
               {recommended ? recommended.why : 'The device is left untouched.'}
             </p>
+            {recommended?.mechanism && (
+              <p className="note-faint mono">{recommended.mechanism}</p>
+            )}
+            {recommended?.assurance && (
+              <p className="answer-detail">
+                <strong>Assurance: </strong>
+                {recommended.assurance}
+              </p>
+            )}
             {recommended && (
               <p className="answer-detail">All data on the device will be destroyed.</p>
             )}
@@ -169,15 +263,24 @@ export function AssessmentSummary({
           <Notice tone="warn">{assessment.flash_limitation}</Notice>
         )}
 
+        <PurgeUnavailable assessment={assessment} />
+
         {(assessment.alternatives.length > 0 || assessment.unavailable.length > 0) && (
           <div className="options">
             {assessment.alternatives.length > 0 && <strong>Alternative</strong>}
             {assessment.alternatives.map((option) => (
-              <Option key={`alt-${option.level}`} option={option} />
+              <Option
+                key={`alt-${option.level}-${option.capability ?? option.title}`}
+                option={option}
+              />
             ))}
             {assessment.unavailable.length > 0 && <strong>Unavailable, and why</strong>}
             {assessment.unavailable.map((option) => (
-              <Option key={`na-${option.level}`} option={option} />
+              <Option
+                key={`na-${option.level}-${option.capability ?? option.title}`}
+                option={option}
+                unavailable
+              />
             ))}
           </div>
         )}
