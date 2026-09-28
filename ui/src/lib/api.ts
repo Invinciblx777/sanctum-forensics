@@ -124,6 +124,37 @@ export const api = {
       { method: 'POST', body: JSON.stringify(body) },
     ),
 
+  /** Records an image as a backup of a device. A read-only job that hashes the image. */
+  createBackup: (body: CreateBackupBody) =>
+    request<JobAccepted>('/workflow/backup', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /** Plans a restore from a fresh read of the target. Writes nothing. */
+  openRestore: (body: { backup_id: string; target_path: string }) =>
+    request<RestoreView>('/workflow/restore', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  restore: (authorizationId: string) =>
+    request<RestoreView>(`/workflow/restore/${encodeURIComponent(authorizationId)}`),
+
+  /** Records a person's approval of the plan. The only call that can create one. */
+  approveRestore: (authorizationId: string, body: ApproveRestoreBody) =>
+    request<RestoreView>(
+      `/workflow/restore/${encodeURIComponent(authorizationId)}/approve`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+  /** Runs the real restore. The server refuses it without the typed serial. */
+  executeRestore: (authorizationId: string, body: ExecuteRestoreBody) =>
+    request<JobAccepted>(
+      `/workflow/restore/${encodeURIComponent(authorizationId)}/execute`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
   eraseFiles: (body: EraseFilesBody) =>
     request<JobAccepted>('/jobs/erase-files', {
       method: 'POST',
@@ -200,6 +231,12 @@ export const api = {
 
   case: (caseId: string) =>
     request<CaseDetail>(`/cases/${encodeURIComponent(caseId)}`),
+
+  closeCase: (caseId: string) =>
+    request<{ case: CaseSummary; ledger_warning?: string }>(
+      `/cases/${encodeURIComponent(caseId)}/close`,
+      { method: 'POST' },
+    ),
 
   registerEvidence: (caseId: string, body: EvidenceBody) =>
     request<{ evidence: EvidenceRecord }>(
@@ -875,6 +912,46 @@ export interface EraseWorkflowView {
   spent: boolean
 }
 
+export interface CreateBackupBody {
+  backup_image: string
+  source_path: string
+  case_id?: string
+}
+
+export interface ApproveRestoreBody {
+  typed_serial: string
+  acknowledge_data_overwrite: boolean
+}
+
+export interface ExecuteRestoreBody {
+  typed_serial: string
+  case_id?: string
+}
+
+/** api/routes/restore.py:_view. */
+export interface RestoreView {
+  authorization_id: string
+  path: string
+  approved: boolean
+  approved_by: string
+  spent: boolean
+  executed: boolean
+  workflow: { state: string; why_blocked: string[]; next_action: string }
+  backup: { backup_id: string; path: string; sha256: string; size_bytes: number }
+  plan: {
+    identity_relation: string
+    write_offset: number
+    write_length: number
+    target_tail_untouched_bytes: number
+    estimated_write_seconds: number
+    estimated_verify_seconds: number
+    blocking: string[]
+    limitations: string[]
+  }
+  identity_statement: string
+  backup_limitation: string
+}
+
 /** What a sanitization verification concluded. Four outcomes, never three. */
 export interface EraseVerification {
   strategy: string
@@ -1078,6 +1155,8 @@ export interface CaseSummary {
   title: string
   description: string
   status: string
+  closed_at?: string
+  closed_by?: string
   created_at: string
   created_by: string
   updated_at: string

@@ -99,9 +99,11 @@
     "platform": "Linux",
     "capability": "Logical volume acquisition",
     "implementation": "core.carve.acquire",
-    "runtime_availability": "IMPLEMENTED / UNVALIDATED",
-    "state": "IMPLEMENTED_NOT_PHYSICALLY_VALIDATED",
-    "physical_validation": "none recorded",
+    "runtime_availability": "SUPPORTED",
+    "state": "VALIDATED_PHYSICAL",
+    "physical_validation": [
+      "usb-flash"
+    ],
     "limit": "-"
   },
   {

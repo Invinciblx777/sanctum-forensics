@@ -52,6 +52,7 @@ __all__ = [
     "CASE_ID_PATTERN",
     "CaseError",
     "Case",
+    "close_case",
     "create_case",
     "load_case",
     "save_case",
@@ -114,6 +115,8 @@ class Case:
     created_by: str = ""
     updated_at: str = field(default_factory=_now)
     status: CaseStatus = "open"
+    closed_at: str = ""
+    closed_by: str = ""
     evidence: list[dict[str, Any]] = field(default_factory=list)
     operations: list[dict[str, Any]] = field(default_factory=list)
     reports: list[dict[str, Any]] = field(default_factory=list)
@@ -127,6 +130,8 @@ class Case:
             "created_by": self.created_by,
             "updated_at": self.updated_at,
             "status": self.status,
+            "closed_at": self.closed_at,
+            "closed_by": self.closed_by,
             "evidence": self.evidence,
             "operations": self.operations,
             "reports": self.reports,
@@ -143,6 +148,8 @@ class Case:
             created_by=str(raw.get("created_by") or ""),
             updated_at=str(raw.get("updated_at") or _now()),
             status="closed" if status == "closed" else "open",
+            closed_at=str(raw.get("closed_at") or ""),
+            closed_by=str(raw.get("closed_by") or ""),
             evidence=list(raw.get("evidence") or []),
             operations=list(raw.get("operations") or []),
             reports=list(raw.get("reports") or []),
@@ -243,6 +250,32 @@ def create_case(
     return case
 
 
+def close_case(root: Path, *, case_id: str, closed_by: str = "") -> Case:
+    """Mark a case closed. Closing is one-way through this API.
+
+    A closed case keeps everything recorded against it and refuses new
+    evidence registrations. Operations that name it still run and are still
+    chained, because refusing a job over a bookkeeping field could block a
+    wipe that was authorised twice over (see :func:`attach_operation`).
+
+    Raises:
+        CaseError: no such case, or it is already closed.
+    """
+    case = _touch(root, case_id)
+    if case.status == "closed":
+        raise CaseError(
+            f"Case {case_id!r} is already closed"
+            + (f" (closed {case.closed_at})." if case.closed_at else "."),
+            remediation="Nothing was changed. Open a new case for further work.",
+        )
+    case.status = "closed"
+    case.closed_at = _now()
+    case.closed_by = closed_by
+    save_case(root, case)
+    logger.info("case_closed", case_id=case.case_id, closed_by=closed_by)
+    return case
+
+
 def list_cases(root: Path) -> list[dict[str, Any]]:
     """Summaries of every readable case, newest first.
 
@@ -275,6 +308,8 @@ def case_summary(case: Case) -> dict[str, Any]:
         "title": case.title,
         "description": case.description,
         "status": case.status,
+        "closed_at": case.closed_at,
+        "closed_by": case.closed_by,
         "created_at": case.created_at,
         "created_by": case.created_by,
         "updated_at": case.updated_at,
@@ -306,6 +341,11 @@ def attach_evidence(
 ) -> dict[str, Any]:
     """Record one exhibit against a case, replacing an entry with the same id."""
     case = _touch(root, case_id)
+    if case.status == "closed":
+        raise CaseError(
+            f"Case {case_id!r} is closed and takes no new evidence.",
+            remediation="Register the exhibit against an open case.",
+        )
     record = {
         "evidence_id": evidence_id,
         "case_id": case.case_id,

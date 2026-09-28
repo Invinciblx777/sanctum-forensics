@@ -1114,6 +1114,9 @@ def build_restore_report(
             "bytes_planned": result.get("bytes_planned"),
             "bytes_written": result.get("bytes_written"),
             "unwritable": _rows_or_none_recorded(list(result.get("unwritable") or [])),
+            "unwritable_omitted_bytes": int(
+                result.get("unwritable_omitted_bytes") or 0
+            ),
             "plan_digest": str(result.get("plan_digest", "")),
         },
         "restore_verification": {

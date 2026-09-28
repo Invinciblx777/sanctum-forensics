@@ -16,6 +16,7 @@ cannot authorise a wipe of a device that was swapped since the page loaded.
 
 from __future__ import annotations
 
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -258,6 +259,46 @@ def erase_drive(
         job_id=job_id, label=body.operator, case_id=body.case_id,
     )
     return _accepted(job_id, "erase-drive")
+
+
+def _linux_block_identity(source: str) -> Any:
+    """The serial and size to bind a Linux block-device read to.
+
+    A whole disk answers with its own serial and capacity. A partition has no
+    serial of its own, so it is bound to the disk that holds it, and to its own
+    size: an image of ``/dev/sda1`` must come from the disk the operator chose,
+    and must be as long as that partition.
+
+    Raises:
+        DeviceVanished: no enumerated disk or partition is ``source``.
+    """
+    from types import SimpleNamespace
+
+    from core.errors import DeviceVanished
+    from core.platform import current_adapter
+
+    for device in current_adapter().enumerate_devices(include_virtual=True):
+        if source in {device.path, device.id}:
+            return device
+        for partition in device.partitions:
+            if source == partition.id:
+                return SimpleNamespace(
+                    serial=device.serial, capacity_bytes=partition.size_bytes
+                )
+    raise DeviceVanished(
+        f"No storage device or partition matches {source!r}.",
+        remediation="Re-enumerate devices and confirm the target is still connected.",
+    )
+
+
+def _is_block_device(path: str) -> bool:
+    """True when ``path`` names a block device node on this host."""
+    import stat
+
+    try:
+        return stat.S_ISBLK(os.stat(path).st_mode)
+    except OSError:
+        return False
 
 
 def _helper_job(
@@ -552,19 +593,28 @@ def acquire_image(
     is not a check. A path outside the configured directory is now refused with
     a 400 before anything is opened.
 
-    The acquisition itself runs in *this* process, not through the helper: it is
-    an ``O_RDONLY`` read and needs no privilege the operator does not already
-    have. The helper's ``acquire_image`` operation exists for the case where the
-    source is a raw device the operator cannot open, and this route does not use
-    it today.
+    An image file is read in *this* process: an ``O_RDONLY`` read needs no
+    privilege the operator does not already have. A Linux block device is
+    ``root:disk 0660``, which the operator cannot open, so it goes through the
+    helper's ``acquire_image`` operation, bound to the serial the operator chose.
     """
     from core.carve.acquire import AcquireOptions, acquire, is_win32_device_path
     from core.errors import SanctumError
     from core.ledger.chain import Ledger
     from core.platform.base import normalized_serial
 
-    raw_device = is_win32_device_path(body.source) or (
-        sys.platform == "darwin" and body.source.startswith(("/dev/disk", "/dev/rdisk"))
+    # A Linux block device is root:disk 0660, so this unprivileged process
+    # cannot open it. It is read through the helper, which is the one place
+    # that already holds that privilege; the serial binding below applies to it
+    # exactly as it does to a raw disk on the other platforms.
+    linux_block = sys.platform.startswith("linux") and _is_block_device(body.source)
+    raw_device = (
+        is_win32_device_path(body.source)
+        or linux_block
+        or (
+            sys.platform == "darwin"
+            and body.source.startswith(("/dev/disk", "/dev/rdisk"))
+        )
     )
     expected_size = 0
     if is_win32_device_path(body.source) and sys.platform != "win32":
@@ -580,7 +630,11 @@ def acquire_image(
         from core.platform import current_adapter
 
         try:
-            device = current_adapter().inspect_device(body.source)
+            device = (
+                _linux_block_identity(body.source)
+                if linux_block
+                else current_adapter().inspect_device(body.source)
+            )
         except SanctumError as exc:
             raise sanctum_error_response(
                 type(exc).__name__, exc.message, exc.remediation
@@ -625,6 +679,31 @@ def acquire_image(
     )
 
     job_id = f"acquire-{uuid.uuid4().hex[:12]}"
+
+    if linux_block:
+        helper_params: dict[str, Any] = {
+            "source": str(source),
+            "dest": str(dest),
+            "fmt": body.fmt,
+            "compression": body.compression,
+            "expected_serial": body.expected_serial,
+            "expected_size": expected_size,
+            "operator": resolve_identity(services).labelled_actor(body.operator),
+            "ledger_root": str(services.ledger_root),
+            "tool_version": services.tool_version,
+            "pubkey_fingerprint": _signing_fingerprint(services),
+        }
+
+        def helper_factory() -> Any:
+            return _helper_job(
+                services, "acquire_image", helper_params, job_id=job_id
+            )
+
+        _submit(
+            services, "acquire", params, helper_factory,
+            job_id=job_id, label=body.operator, case_id=body.case_id,
+        )
+        return _accepted(job_id, "acquire")
 
     def factory() -> Any:
         return acquire(

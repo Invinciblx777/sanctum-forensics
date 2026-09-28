@@ -286,7 +286,6 @@ def run(
         {
             "SANCTUM_URL_FILE": str(url_file),
             "SANCTUM_STATE_DIR": str(state),
-            "SANCTUM_BROWSER": "1",
         }
     )
     # To a file, not a pipe: the app logs steadily, and a pipe nobody reads

@@ -508,6 +508,8 @@ def _stream_acquire_image(
     options = AcquireOptions(
         compression=str(params.get("compression", "fast")),  # type: ignore[arg-type]
         operator=str(params.get("operator", "sanctum")),
+        expected_serial=str(params.get("expected_serial", "")),
+        expected_size=int(params.get("expected_size") or 0),
     )
     generator = acquire(
         Path(str(params["source"])),
@@ -517,12 +519,30 @@ def _stream_acquire_image(
         ledger=ledger,
         job_id=str(params.get("job_id", "acquire")),
     )
-    while True:
+    try:
+        while True:
+            try:
+                record = next(generator)
+            except StopIteration as stop:
+                return {"record": stop.value.model_dump(mode="json")}
+            yield record.model_dump(mode="json")
+    finally:
+        # The daemon runs as root, so the image it wrote is root-owned. Hand
+        # what this run created to the operator, or the evidence they acquired
+        # is a file they cannot move or delete.
+        _hand_to_operator(Path(str(params["dest"])), _owner_uid(params))
+
+
+def _hand_to_operator(dest: Path, owner: int | None) -> None:
+    """Chown the root-owned files an acquisition wrote at ``dest`` to ``owner``."""
+    if owner is None or os.geteuid() != 0:
+        return
+    for path in dest.parent.glob(f"{dest.stem}*"):
         try:
-            record = next(generator)
-        except StopIteration as stop:
-            return {"record": stop.value.model_dump(mode="json")}
-        yield record.model_dump(mode="json")
+            if path.is_file() and not path.is_symlink() and path.stat().st_uid == 0:
+                os.chown(path, owner, -1)
+        except OSError:
+            logger.warning("acquire_chown_failed", path=str(path))
 
 
 def _open_restore_target(target: Any) -> Any:
@@ -825,6 +845,13 @@ class HelperDaemon:
         # umask would otherwise leave a world-writable socket for the window
         # between bind and chmod.
         os.chmod(self.socket_path, SOCKET_MODE)
+        # A 0600 socket owned by root cannot be opened by the operator, so the
+        # daemon that the manual says the operator's API talks to would refuse
+        # its only client. Hand the file to that one uid; the mode stays 0600,
+        # so no other account gains access, and SO_PEERCRED still checks every
+        # peer. Only root may chown, so an unprivileged daemon (tests) skips it.
+        if os.geteuid() == 0:
+            os.chown(self.socket_path, self.operator_uid, -1)
         server.listen(8)
         self._server = server
         logger.info(

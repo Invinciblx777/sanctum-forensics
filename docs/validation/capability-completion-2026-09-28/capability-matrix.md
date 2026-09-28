@@ -12,7 +12,7 @@
 | Linux | NVMe Format NVM, user-data erase (device sanitize) | `core.erase.drive` | DEVICE-DEPENDENT | none recorded | Only when the controller reports it and no bridge hides it. |
 | Linux | Cryptographic erase | `core.erase.drive` | DEVICE-DEPENDENT | none recorded | Refused on mmc, usb-flash: A USB or card-reader bridge usually translates only reads and writes; ATA and NVMe sanitize commands do not reach the controller behind it. Only when the controller reports it and no bridge hides it. |
 | Linux | Raw physical-device acquisition | `core.carve.acquire` | SUPPORTED | usb-flash | - |
-| Linux | Logical volume acquisition | `core.carve.acquire` | IMPLEMENTED / UNVALIDATED | none recorded | - |
+| Linux | Logical volume acquisition | `core.carve.acquire` | SUPPORTED | usb-flash | - |
 | Linux | HPA / DCO discovery | `core.device.hidden_areas` | DEVICE-DEPENDENT | none recorded | Refused on mmc, usb-flash: A USB or card-reader bridge usually translates only reads and writes; ATA and NVMe sanitize commands do not reach the controller behind it. |
 | Linux | HPA / DCO modification | `core.device.hidden_area_workflow` | DEVICE-DEPENDENT | none recorded | Refused on mmc, usb-flash: A USB or card-reader bridge usually translates only reads and writes; ATA and NVMe sanitize commands do not reach the controller behind it. Only the HPA is changed. DCO RESTORE can make a drive report a different model's geometry and is not issued by this build. |
 | Linux | Backup restore | `core.restore` | IMPLEMENTED / UNVALIDATED | none recorded | - |

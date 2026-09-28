@@ -20,6 +20,7 @@ from core.cases import (
     CaseError,
     attach_evidence,
     case_summary,
+    close_case,
     create_case,
     list_cases,
     load_case,
@@ -39,6 +40,8 @@ router = APIRouter(tags=["cases"])
 
 #: The ledger operation recorded when a case is opened.
 CASE_OPENED = "case.opened"
+#: The ledger operation recorded when a case is closed.
+CASE_CLOSED = "case.closed"
 #: The ledger operation recorded when an exhibit is registered against a case.
 EVIDENCE_REGISTERED = "case.evidence.registered"
 
@@ -97,6 +100,39 @@ def create(
         # Not fatal, and said out loud. The case document is an index; losing
         # its chain entry costs the audit trail one line and costs the case
         # nothing. Failing the request would leave a created case behind a 500.
+        return {"case": case_summary(case), "ledger_warning": str(exc)}
+    return {"case": case_summary(case)}
+
+
+@router.post("/cases/{case_id}/close")
+def close(
+    case_id: str,
+    services: AppServices = Depends(get_services),
+) -> dict[str, Any]:
+    """Close a case. The closing is chained like the opening was."""
+    identity = resolve_identity(services)
+    try:
+        case = close_case(
+            services.cases_dir, case_id=case_id, closed_by=identity.actor
+        )
+    except CaseError as exc:
+        raise _case_error(exc) from exc
+
+    try:
+        services.ledger().append(
+            actor=identity.actor,
+            operation=CASE_CLOSED,
+            params={
+                "case_id": case.case_id,
+                "closed_by": identity.actor,
+                "actor_basis": identity.basis,
+                "evidence_count": len(case.evidence),
+                "operation_count": len(case.operations),
+                "report_count": len(case.reports),
+            },
+            result={},
+        )
+    except Exception as exc:  # noqa: BLE001 - see create()
         return {"case": case_summary(case), "ledger_warning": str(exc)}
     return {"case": case_summary(case)}
 

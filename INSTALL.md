@@ -74,9 +74,8 @@ sudo apt install ./sanctum_<ver>_amd64.deb
 sanctum          # or "Sanctum" in the application menu
 ```
 
-The packaged app opens in your default browser on a private loopback URL.
-The Linux packages do not bundle a native window; to run Sanctum in its own
-window on Linux, install from source (Option B) with the `desktop` extra.
+The packaged app opens in its own native window on a private loopback URL.
+It never opens a browser. If the window cannot start, it prints why and exits.
 
 ### Option B: from source
 
@@ -155,9 +154,8 @@ python -m api.desktop
 ```
 
 It picks a free loopback port, mints a session token and opens the UI in a
-native window. Closing the window stops Sanctum. Without the `desktop` extra,
-the same command opens the default browser instead; `SANCTUM_BROWSER=1` forces
-the browser.
+native window. Closing the window stops Sanctum. Without the `desktop` extra
+the command prints an error and exits; it does not fall back to a browser.
 
 As a plain server, in a browser:
 
