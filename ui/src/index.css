@@ -1127,6 +1127,23 @@ details.tech > .tech-body { display: flex; flex-direction: column; gap: var(--sp
   border: var(--border) solid var(--black);
   padding: 2px var(--space-2);
 }
+/* A dry run is labelled wherever it appears: striped lime and white, so it
+   cannot be read as a notice or a warning, and the words say what it is. */
+.simulation-banner {
+  border: var(--border) solid var(--black);
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-display);
+  font-size: var(--type-md);
+  letter-spacing: 0.06em;
+  text-align: center;
+  color: var(--black);
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--lime) 0 12px,
+    var(--white) 12px 24px
+  );
+  box-shadow: 3px 3px 0 var(--black);
+}
 .operation-mode.is-real { background: var(--red); color: var(--white); }
 
 /* The physical target of a destructive operation, named before any confirm. */
