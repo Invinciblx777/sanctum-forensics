@@ -52,6 +52,13 @@ def test_the_operation_allowlist_is_closed() -> None:
         # Writes a recorded backup image onto a device. Gated at the write seam
         # by helper.authorization.revalidate_restore; dry-run by default.
         "run_restore",
+        # Read-only: a drive's native and accessible maxima, for the HPA/DCO
+        # workflow. Never a SET MAX.
+        "discover_hidden_area",
+        # The only operation that changes a drive's HPA. Gated at the write
+        # seam by helper.authorization.revalidate_hpa (an ``hpa``-kind
+        # authorization only); dry-run by default. Never a DCO change.
+        "run_hpa_change",
     }
 
     daemon = HelperDaemon(operator_uid=_uid())

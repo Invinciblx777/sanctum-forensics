@@ -579,13 +579,15 @@ IMPLEMENTATIONS: dict[tuple[PlatformFamily, Capability], Implementation] = {
         refused_classes={"usb-flash": _BRIDGE, "mmc": _BRIDGE},
     ),
     (_W, C.HPA_DCO_DISCOVERY): Implementation(
-        module="core.device.win.ata",
-        mechanism="IDENTIFY DEVICE, READ NATIVE MAX ADDRESS EXT (27h) and "
-        "DEVICE CONFIGURATION IDENTIFY (B1h/C2h) through IOCTL_ATA_PASS_THROUGH",
+        module="core.device.hidden_area_workflow",
+        mechanism="IDENTIFY DEVICE (ECh), READ NATIVE MAX ADDRESS EXT (27h) and "
+        "DEVICE CONFIGURATION IDENTIFY (B1h/C2h) through IOCTL_ATA_PASS_THROUGH "
+        "(core.device.win.ata), on a handle bound to the disk's serial and size",
         protocol="ATA",
         privilege="administrator",
         verification="Read-only; the reported native maximum is checked for "
-        "plausibility against the Windows disk length.",
+        "plausibility against the Windows disk length, and an IDENTIFY buffer "
+        "whose checksum fails is not believed.",
         assurance="Discovery only.",
         refused_classes={"usb-flash": _BRIDGE, "mmc": _BRIDGE},
     ),
@@ -596,33 +598,46 @@ IMPLEMENTATIONS: dict[tuple[PlatformFamily, Capability], Implementation] = {
     ),
     (_L, C.HPA_DCO_MODIFY): Implementation(
         module="core.device.hidden_area_workflow",
-        mechanism="SET MAX ADDRESS to the native maximum (hdparm -N p<native>), "
-        "only through the guarded HPA/DCO workflow; DCO RESTORE is never issued",
+        mechanism="SET MAX ADDRESS to the native maximum: hdparm -N <native> "
+        "(volatile, the default) or hdparm -N p<native> (permanent, only when "
+        "explicitly requested and approved), only through the guarded HPA/DCO "
+        "workflow; DCO RESTORE and DCO SET are never issued",
         protocol="ATA",
         privilege="root",
-        verification="The native and accessible maxima are read again after "
-        "the change and must equal the requested values.",
+        verification="hdparm -N is read again immediately before the change "
+        "(a drifted plan is refused) and after it: the accessible maximum must "
+        "equal the requested value and the native maximum must be unchanged.",
         assurance="Changes the drive's configuration. Never done implicitly by "
-        "an erase.",
+        "an erase: an ordinary erase covers the accessible range only and "
+        "reports the hidden bytes it did not reach.",
         limitations=(
             "Only the HPA is changed. DCO RESTORE can make a drive report a "
             "different model's geometry and is not issued by this build.",
+            "A volatile change is lost at the next power cycle.",
+            "The kernel keeps the size it read at attach time; the device must "
+            "be rescanned or re-attached before an erase sees the new size.",
         ),
         refused_classes={"usb-flash": _BRIDGE, "mmc": _BRIDGE},
     ),
     (_W, C.HPA_DCO_MODIFY): Implementation(
         module="core.device.hidden_area_workflow",
-        mechanism="SET MAX ADDRESS EXT (37h) to the native maximum through "
-        "IOCTL_ATA_PASS_THROUGH, only through the guarded HPA/DCO workflow; "
-        "DCO RESTORE is never issued",
+        mechanism="SET MAX ADDRESS EXT (37h) to the native maximum with VV=1 "
+        "(volatile, the default; VV=0 only when a permanent change is "
+        "explicitly requested and approved), immediately after READ NATIVE MAX "
+        "ADDRESS EXT (27h), through IOCTL_ATA_PASS_THROUGH, only through the "
+        "guarded HPA/DCO workflow; DCO RESTORE and DCO SET are never issued",
         protocol="ATA",
         privilege="administrator",
-        verification="READ NATIVE MAX ADDRESS EXT and IDENTIFY are read again "
-        "after the change and must equal the requested values.",
+        verification="IDENTIFY DEVICE and READ NATIVE MAX ADDRESS EXT are read "
+        "again immediately before the change (a drifted plan is refused) and "
+        "after it: the accessible maximum must equal the requested value and "
+        "the native maximum must be unchanged.",
         assurance="Changes the drive's configuration. Never done implicitly by "
-        "an erase.",
+        "an erase: an ordinary erase covers the accessible range only and "
+        "reports the hidden bytes it did not reach.",
         limitations=(
             "Only the HPA is changed. DCO RESTORE is not issued by this build.",
+            "A volatile change is lost at the next power cycle.",
         ),
         refused_classes={"usb-flash": _BRIDGE, "mmc": _BRIDGE},
     ),

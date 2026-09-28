@@ -75,6 +75,9 @@ IMPLEMENTED = (
     # Covered by tests/carve/test_platform_sources.py.
     "core.carve.win_source",
     "core.carve.mac_source",
+    # Covered by tests/device/test_hidden_area_workflow.py and
+    # tests/api/test_hidden_area_workflow.py.
+    "core.device.hidden_area_workflow",
 )
 
 

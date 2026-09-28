@@ -408,7 +408,11 @@ never as a pass.
 
 The job moves through six phases — `PREFLIGHT`, `HIDDEN_AREA_UNLOCK`, `ERASE`,
 `HIDDEN_AREA_RESTORE`, `VERIFY`, `REPORT` — and each writes a ledger entry as it
-completes. Progress streams to the screen while the wipe runs. Verification reads
+completes. The two hidden-area phases only record: an ordinary erase never
+changes an HPA or a DCO. If the drive hides sectors, the erase covers the
+accessible range, the report says the hidden bytes were not covered, and the
+HPA/DCO workflow (`POST /workflow/hidden-area`) is the separate, approved way to
+expose them before erasing again. Progress streams to the screen while the wipe runs. Verification reads
 the medium back: exhaustively at or below 64 GiB, and above that the first and last
 1 GiB in full plus 4096 seeded random 1 MiB windows, with the report carrying the
 detection-probability formula and the seed rather than a bare percentage — so a

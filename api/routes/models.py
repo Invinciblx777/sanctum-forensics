@@ -21,6 +21,9 @@ from core.models import DestructionRecord
 from pydantic import BaseModel, Field
 
 __all__ = [
+    "ApproveHiddenAreaRequest",
+    "ExecuteHiddenAreaRequest",
+    "OpenHiddenAreaRequest",
     "ApproveRestoreRequest",
     "CreateBackupRequest",
     "ExecuteRestoreRequest",
@@ -291,6 +294,39 @@ class ExecuteRestoreRequest(BaseModel):
     """Body for ``POST /workflow/restore/{id}/execute``."""
 
     #: Gate one. True means nothing is written. Defaults closed.
+    dry_run: bool = True
+    #: Gate two. Re-checked by the helper against the serial it reads itself.
+    typed_serial: str = ""
+    case_id: str = ""
+    operator: str = "sanctum"
+
+
+class OpenHiddenAreaRequest(BaseModel):
+    """Body for ``POST /workflow/hidden-area``: discover, analyze, plan. No write."""
+
+    path: str
+    #: A recorded backup of the device (``POST /workflow/backup``). It must be
+    #: verified, and cover the accessible range, before approval.
+    backup_id: str = ""
+    #: True (the default): the change lasts until the next power cycle. False
+    #: asks for a permanent SET MAX, which approval must acknowledge separately.
+    volatile: bool = True
+
+
+class ApproveHiddenAreaRequest(BaseModel):
+    """Body for ``POST /workflow/hidden-area/{id}/approve``."""
+
+    typed_serial: str = ""
+    #: Must be sent true, deliberately. The typed serial alone is not approval.
+    acknowledge_configuration_change: bool = False
+    #: Must also be true when the plan is permanent (``volatile`` false).
+    acknowledge_permanent: bool = False
+
+
+class ExecuteHiddenAreaRequest(BaseModel):
+    """Body for ``POST /workflow/hidden-area/{id}/execute``."""
+
+    #: Gate one. True means nothing is sent to the drive. Defaults closed.
     dry_run: bool = True
     #: Gate two. Re-checked by the helper against the serial it reads itself.
     typed_serial: str = ""
