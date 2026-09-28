@@ -670,11 +670,26 @@ def grade_report(
                     + (f" ({count} {noun} in section residual_risk)" if count else "")
                 )
         verification = sections.get("verification")
-        if isinstance(verification, dict) and verification.get("passed") is False:
+        if (
+            isinstance(verification, dict)
+            and verification.get("passed") is False
+            and not _no_readback_attempted(verification)
+        ):
             reasons.append("the report records that its own verification did not pass")
     if reasons:
         return ReportVerdict.VERIFIED_WITH_LIMITATIONS, reasons
     return ReportVerdict.VERIFIED, []
+
+
+def _no_readback_attempted(verification: dict[str, Any]) -> bool:
+    """True for the empty verification block of an operation with no read-back.
+
+    An acquisition report carries the same section as an erase report, filled
+    with its defaults: no strategy and zero bytes checked. That is the absence
+    of a read-back, which the method semantics already state as "not verified",
+    and not a read-back that failed.
+    """
+    return not verification.get("strategy") and verification.get("bytes_checked") == 0
 
 
 def verify_report_file(

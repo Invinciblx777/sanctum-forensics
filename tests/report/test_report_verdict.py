@@ -124,6 +124,19 @@ def test_a_report_recording_its_own_failed_verification_is_not_verified() -> Non
     assert any("did not pass" in reason for reason in reasons)
 
 
+def test_an_empty_verification_block_is_not_a_failed_verification() -> None:
+    """An acquisition never reads back; its defaulted block is absence, not failure."""
+    report = _report(passed=False)
+    report["sections"]["verification"] = {
+        "passed": False,
+        "strategy": "",
+        "bytes_checked": 0,
+    }
+    verdict, reasons = grade_report(report, _checks())
+    assert verdict is ReportVerdict.VERIFIED
+    assert not any("did not pass" in reason for reason in reasons)
+
+
 def test_a_report_without_a_verification_section_is_not_penalised() -> None:
     verdict, _ = grade_report(_report(passed=None), _checks())
     assert verdict is ReportVerdict.VERIFIED
