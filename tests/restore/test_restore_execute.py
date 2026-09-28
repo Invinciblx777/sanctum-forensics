@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 from pathlib import Path
 
 import pytest
@@ -77,6 +78,21 @@ class Recording(FileBlockTarget):
     def flush(self) -> None:
         self.flushes += 1
         super().flush()
+
+
+class Refusing(Recording):
+    """A file target whose writes fail with EIO inside chosen byte ranges."""
+
+    def __init__(self, path: Path, refuse: list[tuple[int, int]]) -> None:
+        super().__init__(path)
+        self.refuse = refuse
+
+    def write_at(self, offset: int, data: bytes) -> int:
+        end = offset + len(data)
+        if any(offset < stop and start < end for start, stop in self.refuse):
+            self.writes.append((offset, len(data)))
+            raise OSError(errno.EIO, "Input/output error")
+        return super().write_at(offset, data)
 
 
 def _run(
@@ -269,3 +285,58 @@ def test_post_restore_verification_passes_on_an_exact_copy(
     assert verification.passed
     assert verification.actual_sha256 == record.image_sha256
     assert verification.bytes_verified == IMAGE_SIZE
+
+
+def test_a_target_that_refuses_every_write_stops_early_and_says_why(
+    record: BackupRecord, plan: RestorePlan, target_path: Path, ledger: Ledger
+) -> None:
+    """The 2026-09-29 freeze: 7 GiB of refused sectors, one object each, no stop."""
+    target = Refusing(target_path, refuse=[(0, TARGET_SIZE)])
+    limit = 16 * 1024
+    with pytest.raises(OverwriteIncomplete, match="EIO") as raised:
+        _run(record, plan, target, ledger, max_consecutive_unwritable=limit)
+    target.close()
+    assert "Input/output error" in str(raised.value)
+    assert target_path.read_bytes() == FILL * TARGET_SIZE
+    # The chunk write, then sectors until the limit is passed - not the image.
+    assert len(target.writes) <= 1 + limit // 512 + 1
+    aborted = params_for(ledger, "restore.aborted")
+    assert len(aborted) == 1
+    entry = aborted[0]
+    assert entry["bytes_written"] == 0
+    assert limit < entry["bytes_unwritable"] <= limit + 512
+    assert "EIO" in entry["reason"]
+    assert "Nothing was written" in entry["note"]
+    assert "PARTIALLY OVERWRITTEN" not in entry["note"]
+    assert "restore.complete" not in operations(ledger)
+
+
+def test_a_contiguous_bad_run_is_one_span_carrying_the_errno_name(
+    record: BackupRecord, plan: RestorePlan, target_path: Path, ledger: Ledger
+) -> None:
+    start = CHUNK + 4096
+    target = Refusing(target_path, refuse=[(start, start + 8 * 512)])
+    result = _run(record, plan, target, ledger)
+    target.close()
+    assert result.result == "INCOMPLETE"  # type: ignore[attr-defined]
+    spans = result.unwritable  # type: ignore[attr-defined]
+    assert [(s.offset, s.length, s.error) for s in spans] == [(start, 8 * 512, "EIO")]
+    assert result.unwritable_omitted_bytes == 0  # type: ignore[attr-defined]
+    assert result.bytes_written + 8 * 512 == result.bytes_planned  # type: ignore[attr-defined]
+
+
+def test_scattered_bad_sectors_are_capped_but_every_byte_is_counted(
+    record: BackupRecord, plan: RestorePlan, target_path: Path, ledger: Ledger
+) -> None:
+    bad = [(CHUNK + i * 1024, CHUNK + i * 1024 + 512) for i in range(10)]
+    target = Refusing(target_path, refuse=bad)
+    result = _run(record, plan, target, ledger, max_recorded_spans=4)
+    target.close()
+    spans = result.unwritable  # type: ignore[attr-defined]
+    assert [s.offset for s in spans] == [start for start, _ in bad[:4]]
+    assert result.unwritable_omitted_bytes == 6 * 512  # type: ignore[attr-defined]
+    assert result.bytes_written + 10 * 512 == result.bytes_planned  # type: ignore[attr-defined]
+    complete = params_for(ledger, "restore.complete")[0]
+    assert complete["bytes_unwritable"] == 10 * 512
+    assert complete["unwritable_omitted_bytes"] == 6 * 512
+    assert len(complete["unwritable"]) == 4

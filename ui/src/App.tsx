@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import {
+  ArchiveRestore,
   Blocks,
   ChevronRight,
   Cpu,
@@ -31,6 +32,7 @@ import Devices from './screens/Devices'
 import Home from './screens/Home'
 import FileEraser from './screens/FileEraser'
 import Recovery from './screens/Recovery'
+import Restore from './screens/Restore'
 import Sanitize from './screens/Sanitize'
 import logoUrl from './assets/sanctum-logo.png'
 
@@ -51,6 +53,7 @@ type ScreenId =
   | 'sanitize'
   | 'files'
   | 'recovery'
+  | 'restore'
   | 'audit'
   | 'platform'
 
@@ -86,6 +89,7 @@ const NAV: { group: string; items: NavEntry[] }[] = [
     group: 'Recover',
     items: [
       { id: 'recovery', label: 'Recovery', hint: 'Carve and undelete, read-only', icon: ScanSearch },
+      { id: 'restore', label: 'Disk restore', hint: 'Write a verified backup image back to a disk', icon: ArchiveRestore },
     ],
   },
   {
@@ -436,6 +440,7 @@ function Shell() {
         {screen === 'sanitize' && <Sanitize selected={selected} />}
         {screen === 'files' && <FileEraser />}
         {screen === 'recovery' && <Recovery />}
+        {screen === 'restore' && <Restore />}
         {screen === 'audit' && <Audit />}
         {screen === 'platform' && <Platform />}
         </main>

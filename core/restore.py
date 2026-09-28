@@ -38,6 +38,7 @@ not touched and not verified.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import stat
@@ -97,6 +98,17 @@ ASSUMED_WRITE_BYTES_PER_SEC = 100 * 1000 * 1000
 
 #: How often a running restore appends a checkpoint entry to the ledger.
 CHECKPOINT_BYTES = 256 * 1024 * 1024
+
+#: A restore stops once the target has refused this many bytes in a row. A few
+#: bad sectors are salvaged around; a target refusing everything is not a
+#: target, and walking a whole image sector by sector only burns time and
+#: memory (2026-09-29: 14.7 million refused sectors froze the host).
+MAX_CONSECUTIVE_UNWRITABLE_BYTES = 1024 * 1024
+
+#: How many separate refused ranges a run keeps in full. Adjacent refused
+#: sectors with the same error merge into one range; past this cap only the
+#: byte count of further ranges is kept, so memory and the ledger stay bounded.
+MAX_RECORDED_SPANS = 1024
 
 _LIMIT_READBACK = (
     "READ_BACK_THROUGH_OS: post-restore verification reads the range back "
@@ -594,6 +606,8 @@ class RestoreResult(BaseModel):
     bytes_planned: int
     bytes_written: int
     unwritable: tuple[UnwritableSpan, ...]
+    #: Refused bytes in ranges beyond ``MAX_RECORDED_SPANS``; counted, not listed.
+    unwritable_omitted_bytes: int = 0
     verification: RestoreVerification | None
     verification_sha256: str
     started_at: datetime
@@ -609,12 +623,44 @@ class RestoreResult(BaseModel):
 class _Tally:
     """How far a run has got. Read by the cancellation handler."""
 
-    def __init__(self, offset: int) -> None:
+    def __init__(
+        self,
+        offset: int,
+        *,
+        max_consecutive_unwritable: int = MAX_CONSECUTIVE_UNWRITABLE_BYTES,
+        max_recorded_spans: int = MAX_RECORDED_SPANS,
+    ) -> None:
         self.start = offset
         self.written = 0
         self.unwritable = 0
-        self.spans: list[UnwritableSpan] = []
+        self.unwritable_omitted = 0
+        self.run = 0
+        self.first_error = ""
+        self.max_run = max_consecutive_unwritable
+        self.max_spans = max_recorded_spans
+        # [offset, length, error]: mutable so a long bad run extends in place.
+        self._spans: list[list[Any]] = []
         self.phase = "RESTORE"
+
+    def refused(self, offset: int, size: int, exc: OSError) -> None:
+        """Account ``size`` refused bytes at ``offset``, merging adjacent runs."""
+        name = errno.errorcode.get(exc.errno or 0, type(exc).__name__)
+        if not self.first_error:
+            self.first_error = f"{name} ({exc.strerror or exc})"
+        self.unwritable += size
+        self.run += size
+        last = self._spans[-1] if self._spans else None
+        if last is not None and last[0] + last[1] == offset and last[2] == name:
+            last[1] += size
+        elif len(self._spans) < self.max_spans:
+            self._spans.append([offset, size, name])
+        else:
+            self.unwritable_omitted += size
+
+    def unwritable_spans(self) -> tuple[UnwritableSpan, ...]:
+        return tuple(
+            UnwritableSpan(offset=o, length=n, error=e) for o, n, e in self._spans
+        )
 
     @property
     def accounted(self) -> int:
@@ -642,7 +688,8 @@ def _write_fully(
     A short write continues from where it stopped. An ``OSError`` falls back to
     writing each remaining sector alone, recording each one that still fails
     as unwritable. A write that returns 0 raises: it made no progress and did
-    not say why.
+    not say why. So does a target that refuses more than
+    ``tally.max_run`` bytes in a row.
     """
     view = memoryview(data)
     done = 0
@@ -660,6 +707,7 @@ def _write_fully(
                 )
             done += count
             tally.written += count
+            tally.run = 0
     except OSError:
         sector = max(1, target.logical_sector)
         position = done
@@ -669,15 +717,19 @@ def _write_fully(
                 piece = bytes(view[position : position + size])
                 count = target.write_at(offset + position, piece)
             except OSError as exc:
-                tally.unwritable += size
-                tally.spans.append(
-                    UnwritableSpan(
-                        offset=offset + position,
-                        length=size,
-                        error=type(exc).__name__,
-                    )
-                )
+                tally.refused(offset + position, size, exc)
                 position += size
+                if tally.run > tally.max_run:
+                    raise OverwriteIncomplete(
+                        f"the target refused {tally.run} consecutive bytes ending "
+                        f"at offset {offset + position}: {tally.first_error}. "
+                        "The restore stops rather than walk the rest of the image "
+                        "against a target that is not accepting writes",
+                        remediation=(
+                            "Do not rely on the target. Check the device, its "
+                            "cable and its write protection, then restore again."
+                        ),
+                    ) from exc
                 continue
             if count != size:
                 raise OverwriteIncomplete(
@@ -686,6 +738,7 @@ def _write_fully(
                     remediation="The restore is incomplete. Do not rely on the target.",
                 ) from None
             tally.written += size
+            tally.run = 0
             position += size
 
 
@@ -699,6 +752,8 @@ def execute_restore(
     ledger: Ledger | None = None,
     verify: bool = True,
     checkpoint_bytes: int = CHECKPOINT_BYTES,
+    max_consecutive_unwritable: int = MAX_CONSECUTIVE_UNWRITABLE_BYTES,
+    max_recorded_spans: int = MAX_RECORDED_SPANS,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> Generator[Progress, None, RestoreResult]:
     """Write the backup image onto ``target`` as planned, then read it back.
@@ -755,7 +810,11 @@ def execute_restore(
         )
 
     _append(ledger, actor, "restore.start", common)
-    tally = _Tally(plan.write_offset)
+    tally = _Tally(
+        plan.write_offset,
+        max_consecutive_unwritable=max_consecutive_unwritable,
+        max_recorded_spans=max_recorded_spans,
+    )
     whole = hashlib.sha256()
     begun = time.monotonic()
     next_checkpoint = checkpoint_bytes
@@ -842,7 +901,10 @@ def execute_restore(
             **common,
             "bytes_written": tally.written,
             "bytes_unwritable": tally.unwritable,
-            "unwritable": [span.model_dump(mode="json") for span in tally.spans],
+            "unwritable": [
+                span.model_dump(mode="json") for span in tally.unwritable_spans()
+            ],
+            "unwritable_omitted_bytes": tally.unwritable_omitted,
         },
         {"image_sha256": record.image_sha256},
     )
@@ -941,6 +1003,31 @@ def verify_restored(
 # --------------------------------------------------------------------------
 
 
+def _stop_note(tally: _Tally, end: int) -> str:
+    if tally.phase != "RESTORE":
+        return (
+            "The full range was written; its read-back was not completed, so "
+            "the restore is unverified."
+        )
+    if tally.written == 0:
+        return (
+            "Nothing was written: the target refused every write and still "
+            "holds what it held before."
+        )
+    note = (
+        f"The target is PARTIALLY OVERWRITTEN: bytes {tally.start} to "
+        f"{end} (exclusive) were reached, {tally.written} of them written with "
+        "the backup image; the rest of the planned range holds whatever it held "
+        "before. It is neither the backup nor its previous contents."
+    )
+    if tally.unwritable:
+        note += (
+            f" {tally.unwritable} byte(s) inside that range were refused and "
+            "keep their previous contents."
+        )
+    return note
+
+
 def _record_stop(
     ledger: Ledger | None,
     actor: str,
@@ -961,15 +1048,7 @@ def _record_stop(
                 "bytes_written": tally.written,
                 "bytes_unwritable": tally.unwritable,
                 "range_written": [tally.start, end],
-                "note": (
-                    f"The target is PARTIALLY OVERWRITTEN: bytes {tally.start} to "
-                    f"{end} (exclusive) now hold the backup image; the rest of the "
-                    "planned range holds whatever it held before. It is neither "
-                    "the backup nor its previous contents."
-                    if tally.phase == "RESTORE"
-                    else "The full range was written; its read-back was not "
-                    "completed, so the restore is unverified."
-                ),
+                "note": _stop_note(tally, end),
             },
         )
     except (OSError, ValueError, RuntimeError) as exc:  # pragma: no cover
@@ -1025,7 +1104,8 @@ def _result(
         write_offset=plan.write_offset,
         bytes_planned=plan.write_length,
         bytes_written=tally.written,
-        unwritable=tuple(tally.spans),
+        unwritable=tally.unwritable_spans(),
+        unwritable_omitted_bytes=tally.unwritable_omitted,
         verification=verification,
         verification_sha256=verification.actual_sha256 if verification else "",
         started_at=started_at,

@@ -114,10 +114,9 @@ SANCTUM_HELPER_SOCKET=/run/sanctum/helper.sock SANCTUM_STATE_DIR=/var/lib/sanctu
    `SameSite=Strict` cookie gets 401 (`api/security.py`).
 3. Starts the API and waits for `/health`.
 4. Opens `http://127.0.0.1:<port>/session/<token>` - in a native window
-   (WebView2 on Windows, WKWebView on macOS, Qt WebEngine on Linux) when
-   `pywebview` is installed, otherwise in the default browser. The Linux
-   packages do not bundle `pywebview`, so they open the browser; a Linux
-   source install with the `desktop` extra gets the Qt window.
+   (WebView2 on Windows, WKWebView on macOS, Qt WebEngine on Linux) and
+   nowhere else. If `pywebview` is missing or the window fails, the launcher
+   prints why and exits 1; it never opens a browser.
 5. Stops when the window closes, or when *Quit Sanctum* is pressed in the
    sidebar.
 
@@ -212,8 +211,8 @@ separates the two.
   without it if that fails (E01 then unavailable in that environment).
 - **AppImage and FUSE:** hosts without FUSE 2 need
   `--appimage-extract-and-run`.
-- **Linux desktop window:** the Linux packages open the default browser; a
-  native window there would need GTK/WebKit bindings the AppImage does not
-  carry.
+- **Linux desktop window:** the launcher needs `pywebview[qt]`. The Linux
+  package build scripts do not yet install the `desktop` extra, so a Linux
+  package built from them has no window to open and exits with an error.
 - **Architectures:** x86_64 Linux and Windows; macOS builds for the build
   machine's architecture (arm64 on `macos-14`). No universal2 build.

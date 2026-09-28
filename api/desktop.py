@@ -12,9 +12,9 @@ developer does not:
   on the machine - another account, a page in some other browser tab - gets
   401. See :mod:`api.security`.
 * **A window.** A native webview (WebView2 on Windows, WKWebView on macOS,
-  Qt WebEngine on Linux) when ``pywebview`` is installed; otherwise the
-  default browser, with the
-  process staying alive until the user presses Quit in the sidebar.
+  Qt WebEngine on Linux), and only that. There is no browser fallback: if the
+  webview cannot start, the launcher says so and exits non-zero rather than
+  hand the session URL to another program.
 * **Its own state directory** in the OS's per-user data location, never the
   directory the launcher happened to be started from.
 
@@ -33,7 +33,6 @@ import threading
 import time
 import urllib.error
 import urllib.request
-import webbrowser
 from pathlib import Path
 from typing import Any
 
@@ -85,8 +84,8 @@ def _serve(port: int, token: str, stop: threading.Event) -> Any:
     return server
 
 
-def _open_window(url: str, stop: threading.Event) -> None:
-    """A native webview if one is bundled, otherwise the default browser.
+def _open_window(url: str, stop: threading.Event) -> bool:
+    """Show the UI in a native webview; False if none could be started.
 
     ``SANCTUM_URL_FILE`` writes the session URL to a file and opens nothing.
     It exists for the packaged smoke test, which has no desktop to open a
@@ -108,43 +107,31 @@ def _open_window(url: str, stop: threading.Event) -> None:
                 pass
         except KeyboardInterrupt:
             stop.set()
-        return
-    if os.environ.get("SANCTUM_BROWSER") != "1":
-        if sys.platform.startswith("linux"):
-            # The `desktop` extra installs the Qt backend on Linux. Without
-            # this, pywebview tries GTK first and prints a traceback when
-            # PyGObject is absent before it falls back to Qt.
-            os.environ.setdefault("PYWEBVIEW_GUI", "qt")
-        try:
-            import webview  # type: ignore[import-not-found,unused-ignore]
-
-            webview.create_window(
-                TITLE, url, width=1280, height=860, min_size=(960, 640)
-            )
-            # The window's own icon, for the title bar and the task switcher
-            # where the platform takes it from the window (Qt and GTK). A
-            # packaged Windows or macOS build carries its icon in the
-            # executable instead (packaging/make_icons.py).
-            icon = _window_icon()
-            webview.start(icon=str(icon) if icon else None)
-            stop.set()
-            return
-        except Exception as exc:  # noqa: BLE001 - any webview failure falls back
-            print(
-                f"Native window unavailable ({exc}); opening the browser.",
-                file=sys.stderr,
-            )
-    webbrowser.open(url)
-    print(
-        f"{TITLE} is running at http://{LOOPBACK}:<port> for this session only. "
-        "Use Quit in the sidebar, or press Ctrl+C here, to stop it.",
-        file=sys.stderr,
-    )
+        return True
+    if sys.platform.startswith("linux"):
+        # The `desktop` extra installs the Qt backend on Linux. Without
+        # this, pywebview tries GTK first and prints a traceback when
+        # PyGObject is absent before it falls back to Qt.
+        os.environ.setdefault("PYWEBVIEW_GUI", "qt")
     try:
-        while not stop.wait(0.5):
-            pass
-    except KeyboardInterrupt:
-        stop.set()
+        import webview  # type: ignore[import-not-found,unused-ignore]
+
+        webview.create_window(TITLE, url, width=1280, height=860, min_size=(960, 640))
+        # The window's own icon, for the title bar and the task switcher
+        # where the platform takes it from the window (Qt and GTK). A
+        # packaged Windows or macOS build carries its icon in the
+        # executable instead (packaging/make_icons.py).
+        icon = _window_icon()
+        webview.start(icon=str(icon) if icon else None)
+    except Exception as exc:  # noqa: BLE001 - any webview failure is fatal
+        print(
+            f"{TITLE} needs its native window and it could not start ({exc}). "
+            "Install the `desktop` extra: pip install -e '.[desktop]'.",
+            file=sys.stderr,
+        )
+        return False
+    stop.set()
+    return True
 
 
 def _window_icon() -> Path | None:
@@ -207,9 +194,9 @@ def main() -> int:
         print(f"{TITLE} did not start: the local API never answered.", file=sys.stderr)
         server.should_exit = True
         return 1
-    _open_window(session_url(port, token), stop)
+    opened = _open_window(session_url(port, token), stop)
     server.should_exit = True
-    return 0
+    return 0 if opened else 1
 
 
 if __name__ == "__main__":  # pragma: no cover
