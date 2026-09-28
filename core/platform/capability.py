@@ -464,8 +464,9 @@ IMPLEMENTATIONS: dict[tuple[PlatformFamily, Capability], Implementation] = {
     ),
     (_L, C.CRYPTO_ERASE): Implementation(
         module="core.erase.drive",
-        mechanism="ATA SANITIZE CRYPTO SCRAMBLE EXT, or TCG Opal revert "
-        "(sedutil-cli), whichever the drive reports",
+        mechanism="ATA SANITIZE CRYPTO SCRAMBLE EXT where the drive reports it. "
+        "A TCG Opal drive is recognised (sedutil-cli) but not reverted: this "
+        "build cannot accept the PSID",
         protocol="ATA",
         privilege="root",
         verification=_VERIFY_FW,

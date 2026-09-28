@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from core.platform.model import STATE_LABELS, CapabilityState
 from core.platform.validation import hardware_passed, load_record
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -87,7 +88,8 @@ def test_the_ui_names_each_unvalidated_capability_with_its_state() -> None:
     summary = (ROOT / "ui" / "src" / "lib" / "summary.ts").read_text(encoding="utf-8")
     block = summary[summary.index("export const NOT_PHYSICALLY_VALIDATED") :]
     block = block[block.index("= [") : block.index("\n]")]
-    unvalidated = "IMPLEMENTED / NOT PHYSICALLY VALIDATED"
+    # The resolver's own label, so the UI line cannot drift from it.
+    unvalidated = STATE_LABELS[CapabilityState.IMPLEMENTED_NOT_PHYSICALLY_VALIDATED]
     lines = [
         line.strip() for line in block.splitlines() if line.strip().startswith("'")
     ]
@@ -118,10 +120,15 @@ def test_the_ui_names_each_unvalidated_capability_with_its_state() -> None:
     # Firmware purge has never run on a physical drive; macOS has no physical run.
     assert "never run on a physical drive" in the_line("Firmware Purge")
     assert "No macOS physical device run is recorded" in block
+    assert "PLATFORM-LIMITED" in the_line("Device sanitize, crypto erase")
+    assert "NOT IMPLEMENTED" in the_line("Free-space wipe on Windows and macOS")
+    assert "never modified" in the_line("HPA change")
     # The old claims are gone: nothing implemented is called unimplemented.
     assert "Backup restoration: not implemented" not in block
     assert "Not implemented on Windows or macOS" not in block
     assert "Raw physical-device acquisition on Windows: not implemented" not in block
+    assert "HPA/DCO unlock" not in block
+    assert "NOT PHYSICALLY VALIDATED" not in block
 
 
 def _readme_evidence_rows() -> dict[str, str]:

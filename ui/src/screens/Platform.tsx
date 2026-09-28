@@ -462,7 +462,7 @@ export default function Platform() {
                               {PLATFORMS.map((p) => (
                                 <td key={p.key}>
                                   <Status
-                                    status={fs.cells[r.key]?.[p.key] ?? 'UNSUPPORTED'}
+                                    status={fs.cells[r.key]?.[p.key] ?? 'UNVERIFIED'}
                                   />
                                 </td>
                               ))}

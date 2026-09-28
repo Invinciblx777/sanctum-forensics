@@ -120,13 +120,18 @@ test('each unvalidated or unavailable capability is named with its state', () =>
   ]) {
     const lines = find(prefix)
     assert.equal(lines.length, 1, prefix)
-    assert.match(lines[0], /IMPLEMENTED \/ NOT PHYSICALLY VALIDATED/, prefix)
+    // The resolver's label (core/platform/model.py STATE_LABELS), not a paraphrase.
+    assert.match(lines[0], /IMPLEMENTED \/ UNVALIDATED/, prefix)
     assert.doesNotMatch(lines[0], /not implemented/i, prefix)
   }
   assert.match(find('ATA SECURITY ERASE on Windows')[0], /NOT IMPLEMENTED/)
   assert.match(find('NVMe Format on Windows')[0], /PLATFORM-LIMITED/)
   assert.match(find('HPA/DCO discovery and modification on macOS')[0], /PLATFORM-LIMITED/)
   assert.match(find('Firmware Purge')[0], /never run on a physical drive/)
+  assert.match(find('Device sanitize, crypto erase')[0], /on macOS: PLATFORM-LIMITED/)
+  assert.match(find('Free-space wipe on Windows and macOS')[0], /NOT IMPLEMENTED/)
+  assert.match(find('HPA change')[0], /DCO is discovered only, never modified/)
+  assert.ok(!NOT_PHYSICALLY_VALIDATED.some((line) => /NOT PHYSICALLY VALIDATED|HPA\/DCO unlock/.test(line)))
   assert.ok(NOT_PHYSICALLY_VALIDATED.some((line) => /No macOS physical device run is recorded/.test(line)))
 })
 

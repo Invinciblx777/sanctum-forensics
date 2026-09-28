@@ -129,7 +129,7 @@ class MacRawDisk:
                 f"macOS refused to open {self.path}"
                 + (" for writing" if self.write else "")
                 + ": raw device access needs root.",
-                remediation="Run the Sanctum helper with sudo. Nothing was opened.",
+                remediation="Start Sanctum itself with sudo. Nothing was opened.",
             ) from exc
         except FileNotFoundError as exc:
             raise DeviceVanished(f"{self.path} is not present.") from exc
