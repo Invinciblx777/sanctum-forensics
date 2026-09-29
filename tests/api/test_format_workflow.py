@@ -69,6 +69,7 @@ def commands(monkeypatch: pytest.MonkeyPatch) -> Commands:
     row = next(r for r in FAKE_DEVICES if r["device"]["path"] == PATH)
     monkeypatch.setattr("core.format.run_command", spy)
     monkeypatch.setattr("helper.daemon._partition_exists", lambda _p: True)
+    monkeypatch.setattr("helper.daemon._format_platform", lambda: "linux")
     monkeypatch.setattr("helper.daemon._require_drive_engine", lambda _p: None)
     monkeypatch.setattr(
         "helper.authorization._fresh_probe",
