@@ -84,7 +84,7 @@ def _serve(port: int, token: str, stop: threading.Event) -> Any:
     return server
 
 
-def _open_window(url: str, stop: threading.Event) -> bool:
+def _open_window(url: str, stop: threading.Event, app: Any = None) -> bool:
     """Show the UI in a native webview; False if none could be started.
 
     ``SANCTUM_URL_FILE`` writes the session URL to a file and opens nothing.
@@ -123,10 +123,14 @@ def _open_window(url: str, stop: threading.Event) -> bool:
             open_dialog=webview.FileDialog.OPEN,
             folder_dialog=webview.FileDialog.FOLDER,
         )
+        if app is not None:
+            # Served over /native-picker, not window.pywebview.api: the
+            # bridge is built with `new Function`, which the page's CSP
+            # forbids, so it never reaches the page.
+            app.state.native_picker = picker
         webview.create_window(
             TITLE,
             url,
-            js_api=picker,
             width=1280,
             height=860,
             min_size=(960, 640),
@@ -208,7 +212,7 @@ def main() -> int:
         print(f"{TITLE} did not start: the local API never answered.", file=sys.stderr)
         server.should_exit = True
         return 1
-    opened = _open_window(session_url(port, token), stop)
+    opened = _open_window(session_url(port, token), stop, server.config.app)
     server.should_exit = True
     return 0 if opened else 1
 

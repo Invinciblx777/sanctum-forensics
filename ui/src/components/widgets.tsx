@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { File, FolderOpen } from 'lucide-react'
-import { nativePicker, pickPaths } from '../lib/nativePicker'
+import { pickPaths, pickerAvailable } from '../lib/nativePicker'
 import type { PickKind } from '../lib/nativePicker'
 import { bytes, duration, exactBytes, percent, rate, shortHash } from '../lib/format'
 import type { Progress } from '../lib/api'
@@ -423,14 +423,16 @@ export function BrowseButton({
   /** Overrides the default wording, e.g. when one field has two buttons. */
   label?: string
 }) {
-  const [available, setAvailable] = useState(() => nativePicker() !== null)
+  const [available, setAvailable] = useState(false)
   const [busy, setBusy] = useState(false)
   useEffect(() => {
-    // The desktop shell injects its bridge shortly after the page loads.
-    const ready = () => setAvailable(nativePicker() !== null)
-    window.addEventListener('pywebviewready', ready)
-    ready()
-    return () => window.removeEventListener('pywebviewready', ready)
+    let live = true
+    void pickerAvailable().then((ok) => {
+      if (live) setAvailable(ok)
+    })
+    return () => {
+      live = false
+    }
   }, [])
   const words =
     label ?? (kind === 'folder' ? 'Choose folder…' : kind === 'files' ? 'Choose files…' : 'Choose file…')
