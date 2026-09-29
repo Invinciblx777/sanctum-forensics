@@ -218,12 +218,24 @@ def fingerprint_of_existing_key(path: Path | str) -> str:
     to unlock one, must still be able to start a chain. It gets ``""``, and
     :data:`core.ledger.chain.NO_SIGNING_KEY` is recorded in genesis so the
     absence is stated rather than left as an empty field.
+
+    Never prompts, and never blocks: without the passphrase in the environment
+    the fingerprint is not read and the answer is ``""``.
     """
     key_path = key_file_for(path)
     if not key_path.is_file():
         return ""
+    # Never prompt. This is a lookup made on every ledger access, from request
+    # threads, and the desktop launcher runs the API from a terminal: a prompt
+    # here blocks the request forever, with nothing in the window to say why. Only
+    # the environment can unlock the key for a lookup; without it the answer is
+    # "" and a chain that has to be started records NO_SIGNING_KEY. Signing a
+    # report is a separate call and may still ask.
+    passphrase = os.environ.get(PASSPHRASE_ENV)
+    if not passphrase:
+        return ""
     try:
-        private = load_or_create_key(key_path)
+        private = load_or_create_key(key_path, passphrase)
     except (SanctumError, ValueError, OSError):
         return ""
     return fingerprint(public_key_of(private))
