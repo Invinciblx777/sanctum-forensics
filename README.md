@@ -601,7 +601,7 @@ class named, and nothing wider.
 
 | Platform | File erase | Whole-drive clear | Device sanitize | Raw acquisition | HPA/DCO change | Restore |
 |---|---|---|---|---|---|---|
-| Linux | IMPLEMENTED / UNVALIDATED | **SUPPORTED** (`usb-flash`) | DEVICE-DEPENDENT | **SUPPORTED** (`usb-flash`) | DEVICE-DEPENDENT (HPA only) | IMPLEMENTED / UNVALIDATED |
+| Linux | IMPLEMENTED / UNVALIDATED | **SUPPORTED** (`usb-flash`) | DEVICE-DEPENDENT | **SUPPORTED** (`usb-flash`) | DEVICE-DEPENDENT (HPA only) |  **SUPPORTED** (`usb-flash`) |
 | Windows | **SUPPORTED** (host disk, class not recorded) | IMPLEMENTED / UNVALIDATED (disk offline, administrator) | DEVICE-DEPENDENT (ATA SANITIZE, NVMe Sanitize); ATA SECURITY ERASE UNIT NOT IMPLEMENTED; NVMe Format PLATFORM-LIMITED | IMPLEMENTED / UNVALIDATED (no software write block) | DEVICE-DEPENDENT (HPA only) | IMPLEMENTED / UNVALIDATED |
 | macOS | IMPLEMENTED / UNVALIDATED (APFS copy-on-write limit) | IMPLEMENTED / UNVALIDATED (external disks; internal Apple storage refused) | PLATFORM-LIMITED | IMPLEMENTED / UNVALIDATED (external disks; no software write block) | PLATFORM-LIMITED | IMPLEMENTED / UNVALIDATED (external disks) |
 
