@@ -1,5 +1,8 @@
-import { Fragment, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
+import { File, FolderOpen } from 'lucide-react'
+import { nativePicker, pickPaths } from '../lib/nativePicker'
+import type { PickKind } from '../lib/nativePicker'
 import { bytes, duration, exactBytes, percent, rate, shortHash } from '../lib/format'
 import type { Progress } from '../lib/api'
 
@@ -397,5 +400,58 @@ export function RealTargetCard({
           ))}
       </dl>
     </div>
+  )
+}
+
+/**
+ * Opens the operating system's own file manager to choose a path.
+ *
+ * It only fills a text field: `onPick` gets the absolute paths and the field's
+ * existing validation and confirmation steps still apply. Where there is no
+ * native window (dev server, plain browser) it is disabled and says why; the
+ * operator can still type the path.
+ */
+export function BrowseButton({
+  kind,
+  onPick,
+  disabled,
+  label,
+}: {
+  kind: PickKind
+  onPick: (paths: string[]) => void
+  disabled?: boolean
+  /** Overrides the default wording, e.g. when one field has two buttons. */
+  label?: string
+}) {
+  const [available, setAvailable] = useState(() => nativePicker() !== null)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    // The desktop shell injects its bridge shortly after the page loads.
+    const ready = () => setAvailable(nativePicker() !== null)
+    window.addEventListener('pywebviewready', ready)
+    ready()
+    return () => window.removeEventListener('pywebviewready', ready)
+  }, [])
+  const words =
+    label ?? (kind === 'folder' ? 'Choose folder…' : kind === 'files' ? 'Choose files…' : 'Choose file…')
+  const Icon = kind === 'folder' ? FolderOpen : File
+  return (
+    <button
+      type="button"
+      className="btn"
+      disabled={disabled || busy || !available}
+      title={available ? undefined : 'Available in the desktop window. Type the path instead.'}
+      onClick={() => {
+        setBusy(true)
+        void pickPaths(kind)
+          .then((paths) => {
+            if (paths.length > 0) onPick(paths)
+          })
+          .finally(() => setBusy(false))
+      }}
+    >
+      <Icon size={16} aria-hidden="true" />
+      {words}
+    </button>
   )
 }

@@ -14,6 +14,7 @@ import { timestamp } from '../lib/format'
 import { HISTORICAL_REHEARSAL_LABEL } from '../lib/legacy'
 import { operationLabel } from '../lib/ledger'
 import {
+  BrowseButton,
   Chip,
   Empty,
   ErrorNotice,
@@ -215,13 +216,17 @@ function RegisterEvidence({
           </label>
           <label className="grow">
             Source
-            <input
-              type="text"
-              value={source}
-              spellCheck={false}
-              placeholder="/dev/sdb, or the acquired image path"
-              onChange={(event) => setSource(event.target.value)}
-            />
+            <div className="row">
+              <input
+                type="text"
+                className="grow"
+                value={source}
+                spellCheck={false}
+                placeholder="/dev/sdb, or the acquired image path"
+                onChange={(event) => setSource(event.target.value)}
+              />
+              <BrowseButton kind="file" onPick={([chosen]) => setSource(chosen)} />
+            </div>
           </label>
           <label>
             Media type

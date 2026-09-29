@@ -19,6 +19,7 @@ import {
   sortByPii,
 } from '../lib/triage'
 import {
+  BrowseButton,
   Empty,
   ErrorNotice,
   JobId,
@@ -659,23 +660,31 @@ export default function Recovery() {
           <div className="row wrap" style={{ alignItems: 'flex-end' }}>
             <label className="grow">
               Evidence image
-              <input
-                type="text"
-                value={image}
-                spellCheck={false}
-                placeholder="/path/to/case.dd or case.E01"
-                onChange={(event) => setImage(event.target.value)}
-              />
+              <div className="row">
+                <input
+                  type="text"
+                  className="grow"
+                  value={image}
+                  spellCheck={false}
+                  placeholder="/path/to/case.dd or case.E01"
+                  onChange={(event) => setImage(event.target.value)}
+                />
+                <BrowseButton kind="file" onPick={([chosen]) => setImage(chosen)} />
+              </div>
             </label>
             <label className="grow">
               Output directory (optional)
-              <input
-                type="text"
-                value={outDir}
-                spellCheck={false}
-                placeholder="leave empty to list candidates without writing"
-                onChange={(event) => setOutDir(event.target.value)}
-              />
+              <div className="row">
+                <input
+                  type="text"
+                  className="grow"
+                  value={outDir}
+                  spellCheck={false}
+                  placeholder="leave empty to list candidates without writing"
+                  onChange={(event) => setOutDir(event.target.value)}
+                />
+                <BrowseButton kind="folder" onPick={([chosen]) => setOutDir(chosen)} />
+              </div>
             </label>
             <label className="inline">
               <input

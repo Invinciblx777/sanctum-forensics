@@ -116,7 +116,21 @@ def _open_window(url: str, stop: threading.Event) -> bool:
     try:
         import webview  # type: ignore[import-not-found,unused-ignore]
 
-        webview.create_window(TITLE, url, width=1280, height=860, min_size=(960, 640))
+        from api.native_picker import NativePicker
+
+        picker = NativePicker(
+            lambda: webview.windows[0] if webview.windows else None,
+            open_dialog=webview.FileDialog.OPEN,
+            folder_dialog=webview.FileDialog.FOLDER,
+        )
+        webview.create_window(
+            TITLE,
+            url,
+            js_api=picker,
+            width=1280,
+            height=860,
+            min_size=(960, 640),
+        )
         # The window's own icon, for the title bar and the task switcher
         # where the platform takes it from the window (Qt and GTK). A
         # packaged Windows or macOS build carries its icon in the
