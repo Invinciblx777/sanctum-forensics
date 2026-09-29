@@ -12,6 +12,7 @@ import type {
 import { bytes } from '../lib/format'
 import { traceKind, traceOutcome, traceSummary } from '../lib/traces'
 import {
+  BrowseButton,
   Empty,
   ErrorNotice,
   FilePath,
@@ -213,6 +214,8 @@ export default function FileEraser() {
                   >
                     Add
                   </button>
+                  <BrowseButton kind="files" onPick={add} />
+                  <BrowseButton kind="folder" onPick={add} />
                 </div>
 
                 {paths.length > 0 && (
@@ -677,6 +680,13 @@ function FreeSpacePanel() {
             spellCheck={false}
             onChange={(event) => {
               setMountPoint(event.target.value)
+              setPlan(null)
+            }}
+          />
+          <BrowseButton
+            kind="folder"
+            onPick={([chosen]) => {
+              setMountPoint(chosen)
               setPlan(null)
             }}
           />
