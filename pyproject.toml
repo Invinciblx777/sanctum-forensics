@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sanctum-forensics"
-version = "0.0.0"
+version = "0.1.0"
 description = "Integrated secure data sanitization and forensic file recovery (SIH 26149, NTRO)"
 readme = "README.md"
 requires-python = "==3.11.*"
