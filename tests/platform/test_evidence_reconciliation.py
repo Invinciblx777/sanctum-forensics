@@ -172,8 +172,14 @@ def test_the_readme_physical_row_names_only_recorded_runs() -> None:
     assert "`usb-flash`" in physical
     assert "class not recorded" in physical
     assert "macOS" not in physical
-    for never_run in ("Purge", "sanitize", "HPA", "restore", "Restore"):
+    for never_run in ("Purge", "sanitize", "HPA"):
         assert never_run not in physical, never_run
+    # A restore may be named only while the record holds one.
+    restored = any(
+        run["platform"] == "linux" and run["capability"] == "backup_restore"
+        for run in runs
+    )
+    assert restored or not ("restore" in physical or "Restore" in physical)
 
 
 # A bare "secure erase" is the undifferentiated label the certificate

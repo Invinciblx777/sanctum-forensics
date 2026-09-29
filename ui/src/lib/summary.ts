@@ -161,7 +161,7 @@ export const NOT_PHYSICALLY_VALIDATED: readonly string[] = [
   'Windows raw physical-device acquisition (read-only \\\\.\\PhysicalDriveN, bound to the selected disk\'s serial): IMPLEMENTED / UNVALIDATED.',
   'Windows device sanitize (ATA SANITIZE through IOCTL_ATA_PASS_THROUGH, NVMe Sanitize through IOCTL_STORAGE_REINITIALIZE_MEDIA): IMPLEMENTED / UNVALIDATED, offered only where the drive reports the command and no bridge hides it.',
   'macOS whole-drive clear and raw acquisition of external disks (/dev/rdiskN): IMPLEMENTED / UNVALIDATED. Internal Apple storage is never raw-written or raw-imaged.',
-  'Backup restore (a verified image written back, then the written range hashed): IMPLEMENTED / UNVALIDATED on Linux, Windows and macOS.',
+  'Backup restore (a verified image written back, then the written range hashed): IMPLEMENTED / UNVALIDATED on Windows and macOS; SUPPORTED on Linux (usb-flash, one same-device restore).',
   'HPA change (guarded, volatile SET MAX by default): IMPLEMENTED / UNVALIDATED on Linux and Windows, never run on hardware. DCO is discovered only, never modified.',
   'ATA SECURITY ERASE on Windows: NOT IMPLEMENTED. The sequence sets a drive password first, and no tested recovery exists for a drive left locked by a refused or interrupted erase.',
   'NVMe Format on Windows: PLATFORM-LIMITED. The in-box NVMe driver does not pass Format NVM; NVMe Sanitize is used where the drive supports it.',

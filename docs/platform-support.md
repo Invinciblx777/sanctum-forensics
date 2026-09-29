@@ -47,10 +47,12 @@ From `core/platform/validation_record.json` `physical_validations`:
 | Linux | Raw physical-device acquisition | usb-flash | same stick, 2026-09-05 | `hardware.md` Phase B |
 | Windows | Device discovery | usb-flash | TOSHIBA TransMemory (`SANCTUMREC`), 2026-09-27 | [`validation/windows-hardware-2026-09-27-fixes/`](validation/windows-hardware-2026-09-27-fixes/README.md) |
 | Windows | File erase | class not recorded | host system disk (NTFS), 2026-09-27 | same |
+| Linux | File erase | usb-flash | same stick (FAT32), 2026-09-28; the overwrite could not be read back (vfat has no extent map) | [`validation/linux-file-erase-restore-2026-09-29/`](validation/linux-file-erase-restore-2026-09-29/README.md) |
+| Linux | Backup restore | usb-flash | same stick, whole device, same-device restore, 2026-09-29; read-back sha256 matches | same |
 
 No firmware Purge has run on any drive, no HPA/DCO change has been made on a
 drive, no Windows or macOS whole-drive clear or raw acquisition has run on a
-physical device, no restore has run on a physical device, and no macOS device
+physical device, no restore has run on a physical device other than that one Linux stick, and no macOS device
 has been through the app at all.
 
 ## Summary by capability
@@ -61,7 +63,7 @@ is right.
 | Capability | Linux | Windows | macOS |
 |---|---|---|---|
 | Device discovery | SUPPORTED (usb-flash) | SUPPORTED (usb-flash) | IMPLEMENTED / UNVALIDATED |
-| File erase | IMPLEMENTED / UNVALIDATED | SUPPORTED (host disk, class not recorded) | IMPLEMENTED / UNVALIDATED; on APFS the verification is refused rather than claimed |
+| File erase | SUPPORTED (usb-flash; FAT32, read-back not possible) | SUPPORTED (host disk, class not recorded) | IMPLEMENTED / UNVALIDATED; on APFS the verification is refused rather than claimed |
 | Free-space wipe | IMPLEMENTED / UNVALIDATED (FAT32, exFAT, ext4) | NOT IMPLEMENTED | NOT IMPLEMENTED |
 | Whole-drive clear (addressable overwrite) | SUPPORTED (usb-flash only) | IMPLEMENTED / UNVALIDATED (`core/erase/blockclear.py` over `\\.\PhysicalDriveN`; the disk must be offline) | IMPLEMENTED / UNVALIDATED (external disks via `/dev/rdiskN`; internal Apple storage BLOCKED FOR SAFETY) |
 | ATA SANITIZE | DEVICE-DEPENDENT | DEVICE-DEPENDENT (`IOCTL_ATA_PASS_THROUGH`) | PLATFORM-LIMITED |
@@ -73,7 +75,7 @@ is right.
 | Logical volume acquisition | IMPLEMENTED / UNVALIDATED | IMPLEMENTED / UNVALIDATED | IMPLEMENTED / UNVALIDATED |
 | HPA / DCO discovery | DEVICE-DEPENDENT | DEVICE-DEPENDENT | PLATFORM-LIMITED |
 | HPA / DCO modification | DEVICE-DEPENDENT (guarded workflow; HPA only, volatile SET MAX by default; DCO never modified) | DEVICE-DEPENDENT (same workflow) | PLATFORM-LIMITED |
-| Backup restore | IMPLEMENTED / UNVALIDATED | IMPLEMENTED / UNVALIDATED | IMPLEMENTED / UNVALIDATED |
+| Backup restore | SUPPORTED (usb-flash, same-device) | IMPLEMENTED / UNVALIDATED | IMPLEMENTED / UNVALIDATED |
 | Live-desktop trace sweep | IMPLEMENTED / UNVALIDATED | IMPLEMENTED / UNVALIDATED | IMPLEMENTED / UNVALIDATED |
 
 Every DEVICE-DEPENDENT device-sanitize and HPA/DCO row is refused on

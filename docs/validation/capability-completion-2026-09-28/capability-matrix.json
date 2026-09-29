@@ -14,9 +14,11 @@
     "platform": "Linux",
     "capability": "File erase",
     "implementation": "core.erase.files",
-    "runtime_availability": "IMPLEMENTED / UNVALIDATED",
-    "state": "IMPLEMENTED_NOT_PHYSICALLY_VALIDATED",
-    "physical_validation": "none recorded",
+    "runtime_availability": "SUPPORTED",
+    "state": "VALIDATED_PHYSICAL",
+    "physical_validation": [
+      "usb-flash"
+    ],
     "limit": "-"
   },
   {
@@ -128,9 +130,11 @@
     "platform": "Linux",
     "capability": "Backup restore",
     "implementation": "core.restore",
-    "runtime_availability": "IMPLEMENTED / UNVALIDATED",
-    "state": "IMPLEMENTED_NOT_PHYSICALLY_VALIDATED",
-    "physical_validation": "none recorded",
+    "runtime_availability": "SUPPORTED",
+    "state": "VALIDATED_PHYSICAL",
+    "physical_validation": [
+      "usb-flash"
+    ],
     "limit": "-"
   },
   {

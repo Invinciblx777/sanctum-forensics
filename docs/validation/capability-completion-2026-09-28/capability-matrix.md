@@ -3,7 +3,7 @@
 | Platform | Capability | Implementation | Runtime availability | Physical validation | Limit |
 |---|---|---|---|---|---|
 | Linux | Device discovery | `core.platform.linux` | SUPPORTED | usb-flash | - |
-| Linux | File erase | `core.erase.files` | IMPLEMENTED / UNVALIDATED | none recorded | - |
+| Linux | File erase | `core.erase.files` | SUPPORTED | usb-flash | - |
 | Linux | Free-space wipe | `core.erase.freespace` | IMPLEMENTED / UNVALIDATED | none recorded | - |
 | Linux | Whole-drive clear (addressable overwrite) | `core.erase.drive` | SUPPORTED | usb-flash | On flash media an overwrite cannot reach blocks the controller has remapped or holds in over-provisioning. This is a Clear of the addressable storage, not NAND-level destruction. |
 | Linux | ATA SANITIZE (device sanitize) | `core.erase.drive` | DEVICE-DEPENDENT | none recorded | Refused on mmc, usb-flash: A USB or card-reader bridge usually translates only reads and writes; ATA and NVMe sanitize commands do not reach the controller behind it. Only when the controller reports it and no bridge hides it. |
@@ -15,7 +15,7 @@
 | Linux | Logical volume acquisition | `core.carve.acquire` | SUPPORTED | usb-flash | - |
 | Linux | HPA / DCO discovery | `core.device.hidden_areas` | DEVICE-DEPENDENT | none recorded | Refused on mmc, usb-flash: A USB or card-reader bridge usually translates only reads and writes; ATA and NVMe sanitize commands do not reach the controller behind it. |
 | Linux | HPA / DCO modification | `core.device.hidden_area_workflow` | DEVICE-DEPENDENT | none recorded | Refused on mmc, usb-flash: A USB or card-reader bridge usually translates only reads and writes; ATA and NVMe sanitize commands do not reach the controller behind it. Only the HPA is changed. DCO RESTORE can make a drive report a different model's geometry and is not issued by this build. |
-| Linux | Backup restore | `core.restore` | IMPLEMENTED / UNVALIDATED | none recorded | - |
+| Linux | Backup restore | `core.restore` | SUPPORTED | usb-flash | - |
 | Linux | Live-desktop trace sweep | `core.erase.traces` | IMPLEMENTED / UNVALIDATED | none recorded | - |
 | Windows | Device discovery | `core.platform.windows` | SUPPORTED | usb-flash | - |
 | Windows | File erase | `core.erase._platform.win` | SUPPORTED | host disk, class not recorded | - |
