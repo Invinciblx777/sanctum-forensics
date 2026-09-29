@@ -559,6 +559,38 @@ Windows the restore target also refuses a disk that still exposes a volume.
 **Restore is IMPLEMENTED / UNVALIDATED on all three platforms: it has never
 been run against a physical device.**
 
+### Make usable: a filesystem after an erase
+
+A completed erase leaves a device with nothing on it, which an operating system
+reads as unformatted. **Make usable** on the Sanitize screen writes one MS-DOS
+partition table with a single partition spanning the device, and one filesystem
+on it (exFAT, FAT32 or ext4, with a label). It is authorized like an erase, in
+three separate calls:
+
+1. `POST /workflow/format` (`path`, `filesystem`, `label`) re-reads the device
+   and refuses unless the ledger's newest job on that device is a completed
+   erase of the same serial. It refuses a system, mounted or serial-less
+   device. Nothing is written.
+2. `POST /workflow/format/{id}/approve` needs the typed serial and
+   `acknowledge_format: true`.
+3. `POST /workflow/format/{id}/execute` runs the real format, with the serial
+   typed again. The helper re-checks the authorization, the device identity and
+   the serial in its own process. The engine appends `format.begin` before the
+   first write and `format.complete` or `format.failed` after, and reads the
+   filesystem type and label back. There is no dry-run mode.
+
+A `format` authorization can never be spent as an erase, restore or HPA change,
+or the reverse. Once a device has been formatted, the ledger's newest job on it
+is the format, so a second format is refused until it is erased again.
+
+What it does not claim: **it does not sanitize.** It writes filesystem metadata
+to a few sectors and leaves every other block as the erase left it; the
+certificate describes the device at the end of the erase, before this step. A
+step that fails after the first write can leave the device with no partition
+table; the failure names the step. Linux only: other hosts refuse with the
+platform's reason and no command runs. **Make usable is IMPLEMENTED / UNVALIDATED:
+it has never been run against a physical device.**
+
 ### What the certificate calls it
 
 Every drive or file report names one category, from

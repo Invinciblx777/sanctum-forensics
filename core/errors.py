@@ -23,6 +23,7 @@ __all__ = [
     "SignatureInvalid",
     "PlatformUnsupported",
     "WorkflowGateRefused",
+    "FormatFailed",
 ]
 
 
@@ -208,3 +209,17 @@ class WorkflowGateRefused(SanctumError):
     ) -> None:
         super().__init__(message, remediation=remediation)
         self.why_blocked: list[str] = list(why_blocked or [])
+
+
+class FormatFailed(SanctumError):
+    """A format was refused by its own checks, or one of its steps failed.
+
+    A step that fails after the first write can leave the device without a
+    partition table or filesystem. The message names the step and says so.
+    """
+
+    default_remediation = (
+        "Read the ledger entry for this job, then open a new format workflow. "
+        "The device holds no data from before the erase; it may hold no "
+        "partition table either."
+    )

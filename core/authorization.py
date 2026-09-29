@@ -11,9 +11,10 @@ size), the capability plan the operator approved, the backup image that was
 verified, and a recorded human approval. It does not bind the device's contents
 and it cannot prove the backup is a copy of the target.
 
-Every authorization also has a ``kind`` (``erase``, ``restore`` or ``hpa``); see
-:func:`kind_mismatch`. A record written before kinds existed carries none and is
-an erase authorization. An approval of one kind is never spendable as another.
+Every authorization also has a ``kind`` (``erase``, ``restore``, ``hpa`` or
+``format``); see :func:`kind_mismatch`. A record written before kinds existed
+carries none and is an erase authorization. An approval of one kind is never
+spendable as another.
 """
 
 from __future__ import annotations
@@ -41,7 +42,7 @@ __all__ = [
 AUTH_ID = re.compile(r"^auth-[0-9a-f]{16}$")
 
 #: What an authorization may authorize. One record authorizes one kind.
-AUTH_KINDS = frozenset({"erase", "restore", "hpa"})
+AUTH_KINDS = frozenset({"erase", "restore", "hpa", "format"})
 
 _PLAN_LISTS = ("achievable_levels", "limitations", "blocking")
 
@@ -60,9 +61,9 @@ def authorization_kind(record: Mapping[str, Any]) -> str:
 def kind_mismatch(record: Mapping[str, Any], expected: str) -> list[str]:
     """One sentence if ``record`` does not authorize ``expected``. Empty if it does.
 
-    An erase, a restore and an HPA change each need their own authorization:
-    all three change a device, and an approval of one is not an approval of
-    another.
+    An erase, a restore, an HPA change and a format each need their own
+    authorization: all four change a device, and an approval of one is not an
+    approval of another.
     """
     kind = authorization_kind(record)
     if kind == expected:

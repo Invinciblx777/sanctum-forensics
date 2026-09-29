@@ -19,6 +19,7 @@ def all_routers() -> list[APIRouter]:
         audit,
         cases,
         devices,
+        format_drive,
         hidden_area,
         jobs,
         picker,
@@ -36,6 +37,7 @@ def all_routers() -> list[APIRouter]:
         audit.router,
         workflow.router,
         restore.router,
+        format_drive.router,
         hidden_area.router,
         picker.router,
     ]

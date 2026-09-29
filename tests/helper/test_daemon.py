@@ -52,6 +52,10 @@ def test_the_operation_allowlist_is_closed() -> None:
         # Writes a recorded backup image onto a device. Gated at the write seam
         # by helper.authorization.revalidate_restore; always a real restore.
         "run_restore",
+        # Writes a partition table and one filesystem onto an erased device.
+        # Gated at the write seam by helper.authorization.revalidate_format (a
+        # ``format``-kind authorization only); always a real format.
+        "run_format",
         "prepare_device",
         # Read-only: a drive's native and accessible maxima, for the HPA/DCO
         # workflow. Never a SET MAX.
