@@ -6,6 +6,7 @@ import { bytes, duration } from '../lib/format'
 import { refusalFrom } from '../lib/workflowState'
 import type { ServerRefusal } from '../lib/workflowState'
 import {
+  BrowseButton,
   Empty,
   ErrorNotice,
   Evidence,
@@ -233,15 +234,23 @@ export default function Restore() {
               </label>
               <label>
                 Backup image, under the evidence directory
-                <input
-                  type="text"
-                  data-testid="restore-image"
-                  value={image}
-                  spellCheck={false}
-                  placeholder="backup.dd"
-                  disabled={Boolean(view) || busy}
-                  onChange={(event) => setImage(event.target.value)}
-                />
+                <div className="row">
+                  <input
+                    type="text"
+                    className="grow"
+                    data-testid="restore-image"
+                    value={image}
+                    spellCheck={false}
+                    placeholder="backup.dd"
+                    disabled={Boolean(view) || busy}
+                    onChange={(event) => setImage(event.target.value)}
+                  />
+                  <BrowseButton
+                    kind="file"
+                    disabled={Boolean(view) || busy}
+                    onPick={([chosen]) => setImage(chosen)}
+                  />
+                </div>
               </label>
               <span className="note-faint">
                 The image is recorded as a backup of the chosen disk, hashed read-only, and the

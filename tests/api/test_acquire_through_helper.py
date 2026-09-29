@@ -7,6 +7,7 @@ Acquire, and the job then failed with Permission denied on the device node.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Generator
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +18,15 @@ from api.deps import AppServices
 from fastapi.testclient import TestClient
 
 from .conftest import settle
+
+# The helper route is taken only when the API process is on Linux
+# (``sys.platform.startswith("linux")`` in api/routes/jobs.py). Elsewhere the
+# same request falls through to the plain-file branch, so these tests would
+# assert Linux behaviour on hosts that do not have it.
+pytestmark = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="helper-bound block-device acquisition is a Linux path",
+)
 
 
 class _StreamingHelper:
