@@ -216,6 +216,7 @@ class _Spy:
 def _patch_engine(monkeypatch: pytest.MonkeyPatch, spy: _Spy) -> None:
     monkeypatch.setattr("core.format.run_command", spy)
     monkeypatch.setattr("helper.daemon._partition_exists", lambda _p: True)
+    monkeypatch.setattr("helper.daemon._format_platform", lambda: "linux")
     monkeypatch.setattr("helper.daemon._require_drive_engine", lambda _p: None)
 
 
