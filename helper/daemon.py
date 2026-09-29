@@ -32,8 +32,11 @@ helper itself re-reads, and a request that still carries a ``dry_run`` or
 helper out of either check, which is the point of putting them here rather than
 in the request handler. ``run_restore`` keeps the same two gates, plus its own
 write-seam revalidation of a ``restore``-kind authorization
-(:func:`helper.authorization.revalidate_restore`). ``run_hpa_change`` - the only
-operation that changes a drive's Host Protected Area - keeps them too, with an
+(:func:`helper.authorization.revalidate_restore`). ``run_format`` writes a
+partition table and one filesystem onto an erased device, with a ``format``-kind
+authorization (:func:`helper.authorization.revalidate_format`).
+``run_hpa_change`` - the only operation that changes a drive's Host Protected
+Area - keeps them too, with an
 ``hpa``-kind authorization (:func:`helper.authorization.revalidate_hpa`); an
 ordinary erase never changes the HPA.
 
@@ -645,6 +648,73 @@ def _stream_run_restore(
         target.close()
 
 
+def _partition_exists(path: str) -> bool:
+    """Whether the kernel has made the partition node yet. A seam for tests."""
+    return os.path.exists(path)
+
+
+def _op_run_format(params: dict[str, Any]) -> dict[str, Any]:
+    """Format an erased device, returning its progress in one batch."""
+    return _drain(_stream_run_format(params))
+
+
+def _stream_run_format(
+    params: dict[str, Any],
+) -> Generator[dict[str, Any], None, dict[str, Any]]:
+    """Write a partition table and one filesystem onto an approved device.
+
+    Every request must carry a ``format`` authorization, which
+    :func:`helper.authorization.revalidate_format` re-checks against a fresh read
+    of the device in *this* process, including the typed serial; it takes the
+    single-use ``.executed`` marker. There is no non-writing mode. A request
+    with no ``ledger_root`` is refused before the marker is taken, because a
+    format must be recorded in the hash-chained ledger. Linux only: another host
+    is refused with the adapter's reason and no command runs.
+    """
+    _require_drive_engine(params)
+    from core.errors import WorkflowGateRefused
+    from core.format import execute_format, run_command
+    from core.ledger.chain import Ledger
+
+    from helper.authorization import revalidate_format
+
+    ledger_root = params.get("ledger_root")
+    if not ledger_root:
+        raise WorkflowGateRefused(
+            "REFUSED: a format must be recorded in the hash-chained ledger and "
+            "the request names none. Nothing was written to the device.",
+            why_blocked=["the request carries no ledger_root"],
+        )
+    authorized = revalidate_format(params)
+    ledger = Ledger(
+        Path(str(ledger_root)),
+        tool_version=str(params.get("tool_version", "sanctum-forensics/0.0.0")),
+        pubkey_fingerprint=str(params.get("pubkey_fingerprint", "")),
+        owner_uid=_owner_uid(params),
+    )
+    generator = execute_format(
+        authorized.plan,
+        authorized.device,
+        runner=run_command,
+        exists=_partition_exists,
+        ledger=ledger,
+        actor=str(params.get("actor") or "sanctum"),
+        job_id=str(params.get("job_id", "format")),
+        authorization_id=authorized.auth_id,
+        platform="linux" if sys.platform.startswith("linux") else sys.platform,
+        owner_uid=_owner_uid(params),
+    )
+    try:
+        while True:
+            try:
+                record = next(generator)
+            except StopIteration as stop:
+                return {"result": stop.value.model_dump(mode="json")}
+            yield record.model_dump(mode="json")
+    finally:
+        generator.close()
+
+
 def _hpa_backend() -> Any:
     """The HPA backend for this host: Linux (hdparm) or Windows (ATA pass-through).
 
@@ -764,6 +834,7 @@ OPERATIONS: dict[str, Handler] = {
     "resume_erase": _op_resume_erase,
     "acquire_image": _op_acquire_image,
     "run_restore": _op_run_restore,
+    "run_format": _op_run_format,
     "prepare_device": _op_prepare_device,
     "discover_hidden_area": _op_discover_hidden_area,
     "run_hpa_change": _op_run_hpa_change,
@@ -777,6 +848,7 @@ STREAMING_OPERATIONS: dict[str, StreamHandler] = {
     "resume_erase": _stream_resume_erase,
     "acquire_image": _stream_acquire_image,
     "run_restore": _stream_run_restore,
+    "run_format": _stream_run_format,
     "run_hpa_change": _stream_run_hpa_change,
 }
 

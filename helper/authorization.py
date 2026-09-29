@@ -56,6 +56,8 @@ from core.device.guard import refuse_removed_mode_keys
 from core.device.hidden_area_workflow import HpaPlan
 from core.device.hidden_area_workflow import plan_digest_of as hpa_plan_digest_of
 from core.errors import EvidenceIntegrityError, WorkflowGateRefused
+from core.format import FormatPlan
+from core.format import plan_digest_of as format_plan_digest_of
 from core.models import Device
 from core.restore import (
     RestorePlan,
@@ -67,9 +69,11 @@ from core.restore import (
 )
 
 __all__ = [
+    "FormatAuthorized",
     "HpaAuthorized",
     "RestoreAuthorized",
     "revalidate_execution",
+    "revalidate_format",
     "revalidate_hpa",
     "revalidate_restore",
 ]
@@ -490,3 +494,127 @@ def revalidate_hpa(
 
     _take_marker(root, auth_id, _refuse_hpa)
     return HpaAuthorized(auth_id=auth_id, plan=plan, device=device)
+
+
+# --------------------------------------------------------------------------
+# Format
+# --------------------------------------------------------------------------
+
+_FORMAT_HINT = (
+    "Open a format workflow (POST /workflow/format), approve it, and execute "
+    "with the authorization it returns. Nothing was written to the device."
+)
+
+
+def _refuse_format(reasons: list[str]) -> WorkflowGateRefused:
+    return WorkflowGateRefused(
+        "REFUSED at the format write seam: "
+        + "; ".join(reasons)
+        + ". Nothing was written to the device.",
+        why_blocked=reasons,
+        remediation=_FORMAT_HINT,
+    )
+
+
+@dataclass(frozen=True)
+class FormatAuthorized:
+    """What passed the format write seam: the approved plan and a fresh device read."""
+
+    auth_id: str
+    plan: FormatPlan
+    device: Device
+
+
+def revalidate_format(
+    params: dict[str, Any],
+    *,
+    probe: Callable[[str], dict[str, Any]] | None = None,
+) -> FormatAuthorized:
+    """Refuse a format unless its authorization holds up here, now.
+
+    Only a record of kind ``format`` is accepted, and a format record is never
+    spendable as any other kind. The record must be approved by a person and
+    consumed by the API gate, name the device and plan the request names, carry
+    a plan whose digest still matches, and describe a device that a fresh read
+    in this process still shows with the same identity, unmounted and not the
+    system disk. The typed serial must equal the serial this process just read.
+    The single-use ``.executed`` marker is taken last. A request that still
+    carries a simulation switch is refused outright.
+
+    No backup is bound: the device holds nothing from before its erase. That the
+    erase happened is checked at the API gate, from the ledger; the helper does
+    not read the ledger.
+    """
+    refuse_removed_mode_keys(params)
+    binding = params.get("authorization")
+    root_raw = params.get("authorization_dir")
+    if not isinstance(binding, dict) or not root_raw:
+        raise _refuse_format(["the request carries no format authorization"])
+    auth_id = str(binding.get("auth_id", ""))
+    if not AUTH_ID.match(auth_id):
+        raise _refuse_format(["the authorization id is malformed"])
+    root = Path(str(root_raw))
+    try:
+        record = json.loads((root / f"{auth_id}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise _refuse_format([f"authorization {auth_id} does not exist"]) from None
+    if not isinstance(record, dict):
+        raise _refuse_format([f"authorization {auth_id} is unreadable"])
+    kind_reasons = kind_mismatch({**record, "auth_id": auth_id}, "format")
+    if kind_reasons:
+        raise _refuse_format(kind_reasons)
+
+    reasons: list[str] = []
+    if not record.get("approved_by"):
+        reasons.append("no person has approved this format")
+    if not (root / f"{auth_id}.spent").exists():
+        reasons.append("the authorization was not consumed by the API gate")
+    path = str(params.get("path", ""))
+    if path != record.get("path"):
+        reasons.append(
+            f"the request's device {path!r} is not the approved {record.get('path')!r}"
+        )
+    for key in ("device", "plan"):
+        if binding.get(key) != record.get(key):
+            reasons.append(f"the request's {key} does not match the recorded approval")
+    if reasons:
+        raise _refuse_format(reasons)
+
+    try:
+        plan = FormatPlan.model_validate(record["plan"])
+    except (KeyError, TypeError, ValueError):
+        raise _refuse_format(["the recorded format plan is unreadable"]) from None
+    if plan.plan_digest != format_plan_digest_of(plan):
+        reasons.append("the approved format plan was altered after it was made")
+    reasons.extend(plan.blocking)
+
+    try:
+        fresh = (probe or _fresh_probe)(path)
+        device = Device.model_validate(fresh["device"])
+    except Exception as exc:  # noqa: BLE001 - any failure to re-read is a refusal
+        raise _refuse_format(
+            [
+                "the device could not be re-read at the write seam "
+                f"({type(exc).__name__})"
+            ]
+        ) from None
+    reasons.extend(identity_drift(record["device"], device_identity(fresh)))
+    if device.is_system_disk:
+        reasons.append("the device hosts the running system")
+    if device.mounted_at:
+        reasons.append(
+            "the device has mounted filesystems: " + ", ".join(device.mounted_at)
+        )
+    typed = str(params.get("typed_serial") or "").strip()
+    serial = device.serial.strip()
+    if not typed:
+        reasons.append("no serial was typed; a format is opt-in twice")
+    elif not serial or typed.casefold() != serial.casefold():
+        reasons.append(
+            "the typed serial does not match the device re-read at the write seam"
+        )
+    if reasons:
+        raise _refuse_format(list(dict.fromkeys(reasons)))
+
+    _take_marker(root, auth_id, _refuse_format)
+    return FormatAuthorized(auth_id=auth_id, plan=plan, device=device)

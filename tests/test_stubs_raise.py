@@ -69,6 +69,8 @@ IMPLEMENTED = (
     # Covered by tests/restore/ and tests/api/test_restore_workflow.py.
     "core.backup",
     "core.restore",
+    # Covered by tests/format/ and tests/api/test_format_workflow.py.
+    "core.format",
     # Covered by tests/erase/test_blockclear.py and tests/platform/test_*_engine.py.
     "core.erase.blockclear",
     "core.erase.devicesanitize",

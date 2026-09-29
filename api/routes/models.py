@@ -33,6 +33,9 @@ __all__ = [
     "ApproveHiddenAreaRequest",
     "ExecuteHiddenAreaRequest",
     "OpenHiddenAreaRequest",
+    "ApproveFormatRequest",
+    "ExecuteFormatRequest",
+    "OpenFormatRequest",
     "ApproveRestoreRequest",
     "CreateBackupRequest",
     "ExecuteRestoreRequest",
@@ -360,6 +363,31 @@ class ApproveHiddenAreaRequest(DestructiveRequest):
 
 class ExecuteHiddenAreaRequest(DestructiveRequest):
     """Body for ``POST /workflow/hidden-area/{id}/execute``. Always a real change."""
+
+    #: Required. Re-checked by the helper against the serial it reads itself.
+    typed_serial: str = ""
+    case_id: str = ""
+    operator: str = "sanctum"
+
+
+class OpenFormatRequest(Request):
+    """Body for ``POST /workflow/format``: plan one format. Writes nothing."""
+
+    path: str
+    filesystem: str = "exfat"
+    label: str = "USB"
+
+
+class ApproveFormatRequest(DestructiveRequest):
+    """Body for ``POST /workflow/format/{id}/approve``."""
+
+    typed_serial: str = ""
+    #: Must be sent true, deliberately. The typed serial alone is not approval.
+    acknowledge_format: bool = False
+
+
+class ExecuteFormatRequest(DestructiveRequest):
+    """Body for ``POST /workflow/format/{id}/execute``. Always a real format."""
 
     #: Required. Re-checked by the helper against the serial it reads itself.
     typed_serial: str = ""

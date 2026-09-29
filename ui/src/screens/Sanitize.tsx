@@ -14,6 +14,8 @@ import type {
 import { currentStep, offeredOption, readBack } from '../lib/platform'
 import { AssessmentSummary, FlowSteps, WorkflowStrip } from '../components/sanitizeFlow'
 import { EraseApproval } from '../components/eraseApproval'
+import { MakeUsable } from '../components/makeUsable'
+import { showMakeUsable } from '../lib/makeUsable'
 import { ReportSemanticsPanel } from '../components/capabilityState'
 import { createEpoch } from '../lib/epoch'
 import { refusalFrom, sanitizeWorkflow, signedRecordWording } from '../lib/workflowState'
@@ -308,6 +310,14 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
   // component for the one request and never stored anywhere.
   const [needsPassphrase, setNeedsPassphrase] = useState(false)
   const [passphrase, setPassphrase] = useState('')
+  // A failed certificate request is shown beside the button that caused it. The
+  // page-level notice sits at the top of a long screen, out of sight from here.
+  const [certificateError, setCertificateError] = useState<{
+    message: string
+    kind?: string
+    remediation?: string
+  } | null>(null)
+  const [certificateBusy, setCertificateBusy] = useState(false)
   const { openCase } = useCase()
   const detach = useRef<(() => void) | null>(null)
 
@@ -348,6 +358,26 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
     }
   }, [selected])
   useEffect(() => () => detach.current?.(), [])
+
+  // Whether Make usable is offered. The server answers from the ledger, so a
+  // device erased in an earlier session is still offered it. Re-read when a job
+  // of this screen ends: that is when the answer can change.
+  const [formatEligible, setFormatEligible] = useState(false)
+  const devicePath = selected?.device?.path
+  useEffect(() => {
+    if (!devicePath) {
+      setFormatEligible(false)
+      return
+    }
+    let live = true
+    api
+      .formatEligibility(devicePath)
+      .then((answer) => live && setFormatEligible(answer.eligible))
+      .catch(() => live && setFormatEligible(false))
+    return () => {
+      live = false
+    }
+  }, [devicePath, status?.state, status?.settled])
 
   // Resumability is read from the chain once the job reaches a terminal state:
   // a cancelled or failed overwrite is exactly the case resume exists for, and
@@ -460,7 +490,9 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
   }
 
   async function certificate() {
-    if (!jobId) return
+    if (!jobId || certificateBusy) return
+    setCertificateBusy(true)
+    setCertificateError(null)
     try {
       setReport(
         await api.generateReport(jobId, {
@@ -475,11 +507,13 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
     } catch (exc) {
       const failure = exc as RequestFailed
       if (failure.kind === 'KeyPassphraseMissing') setNeedsPassphrase(true)
-      setError({
+      setCertificateError({
         message: failure.message,
         kind: failure.kind,
         remediation: failure.remediation,
       })
+    } finally {
+      setCertificateBusy(false)
     }
   }
 
@@ -762,13 +796,24 @@ export default function Sanitize({ selected }: { selected: DeviceRow | null }) {
                     />
                   </label>
                 )}
-                <button className="btn primary" onClick={() => void certificate()}>
-                  {wording.action}
+                <button
+                  className="btn primary"
+                  disabled={certificateBusy}
+                  onClick={() => void certificate()}
+                >
+                  {certificateBusy ? 'Signing...' : wording.action}
                 </button>
                 <span className="note">{wording.note}</span>
+                <div style={{ flexBasis: '100%' }}>
+                  <ErrorNotice error={certificateError} />
+                </div>
               </div>
             )}
           </Panel>
+        )}
+
+        {device && showMakeUsable(formatEligible, { started: Boolean(jobId), finished }) && (
+          <MakeUsable device={device} caseId={openCase?.case_id ?? ''} />
         )}
 
         <details className="tech" open={(!normalized || reviewing || Boolean(jobId)) && offered}>

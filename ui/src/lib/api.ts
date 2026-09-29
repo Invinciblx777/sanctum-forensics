@@ -155,6 +155,33 @@ export const api = {
       { method: 'POST', body: JSON.stringify(body) },
     ),
 
+  /** Whether Make usable is offered for a device now. Reads the ledger. */
+  formatEligibility: (path: string) =>
+    request<FormatEligibility>(
+      `/workflow/format/eligibility?path=${encodeURIComponent(path)}`,
+    ),
+
+  /** Plan a format of an erased device. Reads only; nothing is written. */
+  openFormat: (body: OpenFormatBody) =>
+    request<FormatView>('/workflow/format', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /** Record the human approval: the typed serial and the acknowledgement. */
+  approveFormat: (authorizationId: string, body: ApproveFormatBody) =>
+    request<FormatView>(
+      `/workflow/format/${encodeURIComponent(authorizationId)}/approve`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+  /** Runs the real format. The server refuses it without the typed serial. */
+  executeFormat: (authorizationId: string, body: ExecuteFormatBody) =>
+    request<JobAccepted>(
+      `/workflow/format/${encodeURIComponent(authorizationId)}/execute`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
   eraseFiles: (body: EraseFilesBody) =>
     request<JobAccepted>('/jobs/erase-files', {
       method: 'POST',
@@ -926,6 +953,45 @@ export interface ApproveRestoreBody {
 export interface ExecuteRestoreBody {
   typed_serial: string
   case_id?: string
+}
+
+export interface FormatEligibility {
+  eligible: boolean
+  follows_job: string
+  reasons: string[]
+}
+
+export interface OpenFormatBody {
+  path: string
+  filesystem: string
+  label: string
+}
+
+export interface ApproveFormatBody {
+  typed_serial: string
+  acknowledge_format: boolean
+}
+
+export interface ExecuteFormatBody {
+  typed_serial: string
+  case_id?: string
+}
+
+/** api/routes/format_drive.py:_view. */
+export interface FormatView {
+  authorization_id: string
+  path: string
+  approved: boolean
+  approved_by: string
+  spent: boolean
+  plan: {
+    filesystem: string
+    label: string
+    follows_job: string
+    plan_digest: string
+    blocking: string[]
+  }
+  notice: string
 }
 
 /** api/routes/restore.py:_view. */
