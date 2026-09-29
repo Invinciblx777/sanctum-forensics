@@ -701,7 +701,7 @@ def _stream_run_format(
         actor=str(params.get("actor") or "sanctum"),
         job_id=str(params.get("job_id", "format")),
         authorization_id=authorized.auth_id,
-        platform="linux" if sys.platform.startswith("linux") else sys.platform,
+        platform=_format_platform(),
         owner_uid=_owner_uid(params),
     )
     try:
@@ -713,6 +713,11 @@ def _stream_run_format(
             yield record.model_dump(mode="json")
     finally:
         generator.close()
+
+
+def _format_platform() -> str:
+    """This host as ``execute_format`` names it: ``linux``, else ``sys.platform``."""
+    return "linux" if sys.platform.startswith("linux") else sys.platform
 
 
 def _hpa_backend() -> Any:
